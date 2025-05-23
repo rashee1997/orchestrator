@@ -297,6 +297,25 @@ export const schemas = {
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
     },
+    refineUserPrompt: { // New schema name
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
+            raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
+            target_ai_persona: {
+              type: ['string', 'null'],
+              description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). This helps the refiner tailor the output.",
+              default: null
+            },
+            conversation_context_ids: {
+              type: ['array', 'null'],
+              items: { type: 'string' },
+              description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
+              default: null
+            }
+          },
+          required: ['agent_id', 'raw_user_prompt']
+    },
 };
 
 // Compile schemas

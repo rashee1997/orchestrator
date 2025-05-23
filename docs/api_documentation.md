@@ -380,3 +380,78 @@ Errors will be returned in the `isError: true` field of the tool response, with 
         ]
       }]
     }
+
+---
+
+### `refine_user_prompt`
+
+*   **Description:** Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent (e.g., 'cline')." },
+        "raw_user_prompt": { "type": "string", "description": "The raw text prompt received from the user." },
+        "target_ai_persona": {
+          "type": ["string", "null"],
+          "description": "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). This helps the refiner tailor the output.",
+          "default": null
+        },
+        "conversation_context_ids": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
+          "default": null
+        }
+      },
+      "required": ["agent_id", "raw_user_prompt"]
+    }
+    ```
+*   **Output:** Returns a structured JSON object representing the "Refined Prompt for AI".
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
+          "original_prompt_text": "The exact raw user prompt text that was processed.",
+          "refinement_engine_model": "gemini-2.0-flash",
+          "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
+          "overall_goal": "A clear, concise statement of the user's primary objective, as interpreted from the prompt.",
+          "decomposed_tasks": [
+            "Sub-task 1 identified from the prompt.",
+            "Sub-task 2 identified from the prompt."
+          ],
+          "key_entities_identified": [
+            "Entity A (e.g., filename, function name, concept)",
+            "Entity B"
+          ],
+          "implicit_assumptions_made_by_refiner": [
+            "Assuming 'the dashboard' refers to the main application dashboard."
+          ],
+          "explicit_constraints_from_prompt": [
+            "The solution must be implemented in Python 3.9."
+          ],
+          "suggested_ai_role_for_agent": "Example: Act as a Senior Python Developer specializing in API security and database interactions.",
+          "suggested_reasoning_strategy_for_agent": "Example: Prioritize security best practices. Analyze potential attack vectors.",
+          "desired_output_characteristics_inferred": {
+            "type": "Example: A fully functional Python module with accompanying unit tests.",
+            "key_content_elements": [
+              "Refactored Python code for user_authentication.py."
+            ],
+            "level_of_detail": "Example: Sufficient for another developer to understand."
+          },
+          "suggested_context_analysis_for_agent": [
+            {
+              "suggestion_type": "MEMORY_RETRIEVAL",
+              "tool_to_use": "get_conversation_history",
+              "parameters": {"limit": 5, "offset": 0},
+              "rationale": "To understand immediate preceding dialogue for context."
+            }
+          ],
+          "confidence_in_refinement_score": "High",
+          "refinement_error_message": null
+        }
+      }]
+    }

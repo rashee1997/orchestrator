@@ -16,13 +16,24 @@ interface KnowledgeGraph {
 
 export class MemoryManager {
     private db!: Database;
+    private genAI?: GoogleGenAI; // Make genAI optional
 
-    private constructor() {
+    private constructor(genAIInstance?: GoogleGenAI) {
         // Private constructor to enforce async factory
+        if (genAIInstance) {
+            this.genAI = genAIInstance;
+        } else {
+            const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+            if (!GEMINI_API_KEY) {
+                this.genAI = undefined; // Explicitly set to undefined if API key is missing
+            } else {
+                this.genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+            }
+        }
     }
 
-    public static async create(): Promise<MemoryManager> {
-        const instance = new MemoryManager();
+    public static async create(genAIInstance?: GoogleGenAI): Promise<MemoryManager> {
+        const instance = new MemoryManager(genAIInstance);
         await instance.init(); // Await initialization here
         return instance;
     }
@@ -836,12 +847,10 @@ export class MemoryManager {
         context_type: string,
         version: number | null = null
     ) {
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-        if (!GEMINI_API_KEY) {
-            return `Gemini API key is not configured. Cannot perform summarization.`;
+        if (!this.genAI) {
+            return `Gemini API not initialized. Cannot perform summarization.`;
         }
 
-        const genAI = new GoogleGenAI({apiKey: GEMINI_API_KEY}); // Initialize with new SDK
         const modelName = "gemini-2.0-flash"; // Using gemini-2.0-flash for text tasks
 
         const db = this.db;
@@ -864,7 +873,7 @@ export class MemoryManager {
 
         try {
             const prompt = `Summarize the following text:\n\n${textToSummarize}`;
-            const result = await genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+            const result = await this.genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
             const summary = result.text; // Directly access text property
             return summary;
         } catch (error: any) {
@@ -879,12 +888,10 @@ export class MemoryManager {
         context_type: string,
         version: number | null = null
     ) {
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-        if (!GEMINI_API_KEY) {
-            return { entities: [], keywords: [], message: `Gemini API key is not configured. Cannot perform entity extraction.` };
+        if (!this.genAI) {
+            return { entities: [], keywords: [], message: `Gemini API not initialized. Cannot perform entity extraction.` };
         }
 
-        const genAI = new GoogleGenAI({apiKey: GEMINI_API_KEY});
         const modelName = "gemini-2.0-flash";
 
         const db = this.db;
@@ -907,7 +914,7 @@ export class MemoryManager {
 
         try {
             const prompt = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: 'entities' and 'keywords'.\n\n${textToExtractFrom}`;
-            const result = await genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+            const result = await this.genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
             const textResponse = result.text ?? ''; // Directly access text property, provide empty string if undefined
 
             // Attempt to parse the JSON response, handling markdown code blocks
@@ -1092,6 +1099,187 @@ export class MemoryManager {
         } catch (error: any) {
             console.error(`Error restoring database from ${backupFilePath}:`, error);
             throw new Error(`Failed to restore database: ${error.message}`);
+        }
+    }
+
+    // --- New: Prompt Refinement Tool ---
+    async processAndRefinePrompt(
+        agent_id: string,
+        raw_user_prompt: string,
+        target_ai_persona: string | null = null,
+        conversation_context_ids: string[] | null = null
+    ): Promise<any> {
+        if (!this.genAI) {
+            return {
+                refined_prompt_id: randomUUID(),
+                original_prompt_text: raw_user_prompt,
+                refinement_engine_model: "gemini-2.0-flash",
+                refinement_timestamp: new Date().toISOString(),
+                overall_goal: "Error: Gemini API not initialized.",
+                decomposed_tasks: [],
+                key_entities_identified: [],
+                implicit_assumptions_made_by_refiner: [],
+                explicit_constraints_from_prompt: [],
+                suggested_ai_role_for_agent: null,
+                suggested_reasoning_strategy_for_agent: null,
+                desired_output_characteristics_inferred: {},
+                suggested_context_analysis_for_agent: [],
+                confidence_in_refinement_score: "Low",
+                refinement_error_message: "Gemini API not initialized. Ensure GEMINI_API_KEY is set."
+            };
+        }
+
+        const modelName = "gemini-2.0-flash";
+
+        const metaPrompt = `
+You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it, and transform it into a highly structured and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request.
+
+You MUST output the refined prompt as a JSON object, strictly adhering to the following schema. Do not include any other text or markdown outside of the JSON block.
+
+JSON Schema for Refined Prompt:
+\`\`\`json
+{
+  "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
+  "original_prompt_text": "The exact raw user prompt text that was processed.",
+  "refinement_engine_model": "gemini-2.0-flash",
+  "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
+  "overall_goal": "A clear, concise statement of the user's primary objective, as interpreted from the prompt.",
+  "decomposed_tasks": [ // Array of strings, each a specific, actionable sub-task
+    "Sub-task 1 identified from the prompt.",
+    "Sub-task 2 identified from the prompt."
+  ],
+  "key_entities_identified": [ // Array of strings or objects detailing key entities
+    // Example: "Filename: user_authentication.py", "Concept: Argon2 Hashing"
+    // Or structured: {"type": "filename", "value": "user_authentication.py"}, {"type": "concept", "value": "Argon2 Hashing"}
+    "Entity A (e.g., filename, function name, concept)",
+    "Entity B"
+  ],
+  "implicit_assumptions_made_by_refiner": [ // Assumptions the refinement LLM made
+    "Assuming 'the dashboard' refers to the main application dashboard.",
+    "Assuming standard Python library availability unless specified otherwise."
+  ],
+  "explicit_constraints_from_prompt": [ // Constraints directly stated by the user
+    "The solution must be implemented in Python 3.9.",
+    "The UI must remain consistent with the existing design language."
+  ],
+  "suggested_ai_role_for_agent": "Example: Act as a Senior Python Developer specializing in API security and database interactions.",
+  "suggested_reasoning_strategy_for_agent": "Example: Prioritize security best practices. Analyze potential attack vectors. Ensure input validation. Plan for data migration if schema changes are needed.",
+  "desired_output_characteristics_inferred": {
+    "type": "Example: A fully functional Python module with accompanying unit tests.", // e.g., Code Solution, Explanatory text, Plan, Diagram
+    "key_content_elements": [ // Specific items the final output from the agent should contain
+      "Refactored Python code for user_authentication.py.",
+      "Detailed explanation of Argon2 parameter choices.",
+      "Unit tests covering new hashing and verification logic."
+    ],
+    "level_of_detail": "Example: Sufficient for another developer to understand, integrate, and maintain the changes." // e.g., High-level overview, Detailed step-by-step
+  },
+  "suggested_context_analysis_for_agent": [ // Actionable suggestions for the AI agent
+    // Can be simple strings or more structured objects. Prioritize memory retrieval tools.
+    {
+      "suggestion_type": "MEMORY_RETRIEVAL",
+      "tool_to_use": "get_conversation_history",
+      "parameters": {"limit": 5, "offset": 0},
+      "rationale": "To understand immediate preceding dialogue for context."
+    },
+    {
+      "suggestion_type": "MEMORY_RETRIEVAL",
+      "tool_to_use": "search_context_by_keywords",
+      "parameters": {"context_type": "project_documentation_v1", "keywords": "authentication security policy"},
+      "rationale": "Prompt mentions security and authentication; check for existing policies."
+    },
+    {
+      "suggestion_type": "KNOWLEDGE_GRAPH_QUERY",
+      "tool_to_use": "knowledge_graph_memory",
+      "parameters": {"operation": "search_nodes", "query": "Argon2 implementation details"},
+      "rationale": "To find any existing internal knowledge about Argon2."
+    },
+    {
+      "suggestion_type": "FILE_ANALYSIS_SUGGESTION",
+      "tool_to_use": "read_file",
+      "parameters": {"path": "src/config/app_settings.json"},
+      "rationale": "If the prompt implies configuration, check common config files."
+    }
+  ],
+  "confidence_in_refinement_score": "High", // e.g., High, Medium, Low
+  "refinement_error_message": null // String message if refinement process itself had an issue, otherwise null
+}
+\`\`\`
+
+Raw User Prompt:
+\`\`\`
+${raw_user_prompt}
+\`\`\`
+
+${target_ai_persona ? `Suggested AI Persona: ${target_ai_persona}\n` : ''}
+${conversation_context_ids && conversation_context_ids.length > 0 ? `Recent Conversation Context IDs: ${conversation_context_ids.join(', ')}\n` : ''}
+
+Please provide the JSON object only.
+`;
+
+        try {
+            const result = await this.genAI.models.generateContent({
+                model: modelName,
+                contents: [{ role: "user", parts: [{ text: metaPrompt }] }]
+            });
+            const textResponse = result.text ?? '';
+
+            let parsedResponse: any;
+            try {
+                // Attempt to parse the JSON response, handling markdown code blocks
+                let jsonString = textResponse;
+                const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
+                if (jsonMatch && jsonMatch[1]) {
+                    jsonString = jsonMatch[1];
+                }
+                parsedResponse = JSON.parse(jsonString);
+            } catch (parseError) {
+                console.error(`Error parsing Gemini API response for prompt refinement:`, parseError);
+                return {
+                    refined_prompt_id: randomUUID(),
+                    original_prompt_text: raw_user_prompt,
+                    refinement_engine_model: modelName,
+                    refinement_timestamp: new Date().toISOString(),
+                    overall_goal: "Error: Failed to parse Gemini API response.",
+                    decomposed_tasks: [],
+                    key_entities_identified: [],
+                    implicit_assumptions_made_by_refiner: [],
+                    explicit_constraints_from_prompt: [],
+                    suggested_ai_role_for_agent: null,
+                    suggested_reasoning_strategy_for_agent: null,
+                    desired_output_characteristics_inferred: {},
+                    suggested_context_analysis_for_agent: [],
+                    confidence_in_refinement_score: "Low",
+                    refinement_error_message: `Failed to parse Gemini API response: ${textResponse.substring(0, 200)}...`
+                };
+            }
+
+            // Ensure server-generated fields are correct
+            parsedResponse.refined_prompt_id = randomUUID();
+            parsedResponse.original_prompt_text = raw_user_prompt;
+            parsedResponse.refinement_engine_model = modelName;
+            parsedResponse.refinement_timestamp = new Date().toISOString();
+
+            return parsedResponse;
+
+        } catch (error: any) {
+            console.error(`Error calling Gemini API for prompt refinement:`, error);
+            return {
+                refined_prompt_id: randomUUID(),
+                original_prompt_text: raw_user_prompt,
+                refinement_engine_model: modelName,
+                refinement_timestamp: new Date().toISOString(),
+                overall_goal: "Error: Gemini API call failed.",
+                decomposed_tasks: [],
+                key_entities_identified: [],
+                implicit_assumptions_made_by_refiner: [],
+                explicit_constraints_from_prompt: [],
+                suggested_ai_role_for_agent: null,
+                suggested_reasoning_strategy_for_agent: null,
+                desired_output_characteristics_inferred: {},
+                suggested_context_analysis_for_agent: [],
+                confidence_in_refinement_score: "Low",
+                refinement_error_message: `Gemini API call failed: ${error.message}`
+            };
         }
     }
 

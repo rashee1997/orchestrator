@@ -269,6 +269,11 @@ class MemoryMcpServer {
                                 additionalProperties: false,
                             },
                         },
+                        'refine_user_prompt': {
+                            name: 'refine_user_prompt',
+                            description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.',
+                            inputSchema: schemas.refineUserPrompt
+                        },
                     },
                 },
             }
@@ -876,6 +881,9 @@ class MemoryMcpServer {
                     case 'delete_task_plan': // New tool
                         validationResult = validate('deleteTaskPlan', args);
                         break;
+                    case 'refine_user_prompt': // New tool
+                        validationResult = validate('refineUserPrompt', args);
+                        break;
                     // For 'get' operations, validation is often simpler and handled by optional parameters
                     default:
                         validationResult = { valid: true, errors: null }; // No specific schema for get operations
@@ -1216,6 +1224,15 @@ class MemoryMcpServer {
                             args.plan_id as string
                         );
                         return { content: [{ type: 'text', text: `Plan deletion ${success ? 'succeeded' : 'failed'}` }] };
+                    }
+                    case 'refine_user_prompt': { // New tool
+                        const refinedPromptObject = await this.memoryManager.processAndRefinePrompt(
+                            args.agent_id as string,
+                            args.raw_user_prompt as string,
+                            args.target_ai_persona as string | undefined,
+                            args.conversation_context_ids as string[] | undefined
+                        );
+                        return { content: [{ type: 'text', text: JSON.stringify(refinedPromptObject, null, 2) }] };
                     }
                     default:
                         throw new McpError(
