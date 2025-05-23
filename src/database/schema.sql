@@ -161,3 +161,35 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
 CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks (plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_tasks_agent_id_status ON plan_tasks (agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id_status ON plan_tasks (plan_id, status);
+
+-- New table for Refined Prompts
+CREATE TABLE IF NOT EXISTS refined_prompts (
+    refined_prompt_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    original_prompt_text TEXT NOT NULL,
+    refinement_engine_model TEXT,
+    refinement_timestamp INTEGER NOT NULL,
+    overall_goal TEXT,
+    decomposed_tasks TEXT, -- JSON array of strings
+    key_entities_identified TEXT, -- JSON array of strings/objects
+    implicit_assumptions_made_by_refiner TEXT, -- JSON array of strings
+    explicit_constraints_from_prompt TEXT, -- JSON array of strings
+    suggested_ai_role_for_agent TEXT,
+    suggested_reasoning_strategy_for_agent TEXT,
+    desired_output_characteristics_inferred TEXT, -- JSON object
+    suggested_context_analysis_for_agent TEXT, -- JSON array of objects
+    confidence_in_refinement_score TEXT,
+    refinement_error_message TEXT,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id) -- Assuming an 'agents' table exists or will exist
+);
+
+CREATE INDEX IF NOT EXISTS idx_refined_prompts_agent_id ON refined_prompts (agent_id);
+CREATE INDEX IF NOT EXISTS idx_refined_prompts_timestamp ON refined_prompts (refinement_timestamp);
+
+-- New table for Agents
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id TEXT PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    creation_timestamp INTEGER NOT NULL
+);

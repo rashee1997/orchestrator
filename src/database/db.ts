@@ -24,6 +24,14 @@ export async function initializeDatabase() {
     const schema = readFileSync(SCHEMA_PATH, 'utf-8');
     await db.exec(schema);
     console.log('Database initialized and schema applied.');
+
+    // Insert default agent 'cline' if not exists
+    await db.run(
+        `INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp) VALUES (?, ?, ?, ?)`,
+        'cline', 'Cline', 'AI coding agent', Math.floor(Date.now() / 1000)
+    );
+    console.log('Default agent "cline" ensured in database.');
+
     return db;
 }
 

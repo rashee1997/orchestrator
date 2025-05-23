@@ -1258,6 +1258,10 @@ Please provide the JSON object only.
             parsedResponse.original_prompt_text = raw_user_prompt;
             parsedResponse.refinement_engine_model = modelName;
             parsedResponse.refinement_timestamp = new Date().toISOString();
+            parsedResponse.agent_id = agent_id; // Add agent_id to the refined prompt object
+
+            // Store the refined prompt in the database
+            await this.storeRefinedPrompt(parsedResponse);
 
             return parsedResponse;
 
@@ -1281,6 +1285,61 @@ Please provide the JSON object only.
                 refinement_error_message: `Gemini API call failed: ${error.message}`
             };
         }
+    }
+
+    // --- New: Store Refined Prompt Tool ---
+    async storeRefinedPrompt(refinedPrompt: any): Promise<string> {
+        const db = this.db;
+        const refined_prompt_id = refinedPrompt.refined_prompt_id || randomUUID();
+        const timestamp = refinedPrompt.refinement_timestamp ? new Date(refinedPrompt.refinement_timestamp).getTime() : Date.now();
+
+        await db.run(
+            `INSERT INTO refined_prompts (
+                refined_prompt_id, agent_id, original_prompt_text, refinement_engine_model,
+                refinement_timestamp, overall_goal, decomposed_tasks, key_entities_identified,
+                implicit_assumptions_made_by_refiner, explicit_constraints_from_prompt,
+                suggested_ai_role_for_agent, suggested_reasoning_strategy_for_agent,
+                desired_output_characteristics_inferred, suggested_context_analysis_for_agent,
+                confidence_in_refinement_score, refinement_error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            refined_prompt_id,
+            refinedPrompt.agent_id,
+            refinedPrompt.original_prompt_text,
+            refinedPrompt.refinement_engine_model || null,
+            timestamp,
+            refinedPrompt.overall_goal || null,
+            refinedPrompt.decomposed_tasks ? JSON.stringify(refinedPrompt.decomposed_tasks) : null,
+            refinedPrompt.key_entities_identified ? JSON.stringify(refinedPrompt.key_entities_identified) : null,
+            refinedPrompt.implicit_assumptions_made_by_refiner ? JSON.stringify(refinedPrompt.implicit_assumptions_made_by_refiner) : null,
+            refinedPrompt.explicit_constraints_from_prompt ? JSON.stringify(refinedPrompt.explicit_constraints_from_prompt) : null,
+            refinedPrompt.suggested_ai_role_for_agent || null,
+            refinedPrompt.suggested_reasoning_strategy_for_agent || null,
+            refinedPrompt.desired_output_characteristics_inferred ? JSON.stringify(refinedPrompt.desired_output_characteristics_inferred) : null,
+            refinedPrompt.suggested_context_analysis_for_agent ? JSON.stringify(refinedPrompt.suggested_context_analysis_for_agent) : null,
+            refinedPrompt.confidence_in_refinement_score || null,
+            refinedPrompt.refinement_error_message || null
+        );
+        return refined_prompt_id;
+    }
+
+    // --- New: Get Refined Prompt Tool ---
+    async getRefinedPrompt(refined_prompt_id: string): Promise<any | null> {
+        const db = this.db;
+        const result = await db.get(
+            `SELECT * FROM refined_prompts WHERE refined_prompt_id = ?`,
+            refined_prompt_id
+        );
+
+        if (result) {
+            // Parse JSON stringified fields back into objects/arrays
+            if (result.decomposed_tasks) result.decomposed_tasks = JSON.parse(result.decomposed_tasks);
+            if (result.key_entities_identified) result.key_entities_identified = JSON.parse(result.key_entities_identified);
+            if (result.implicit_assumptions_made_by_refiner) result.implicit_assumptions_made_by_refiner = JSON.parse(result.implicit_assumptions_made_by_refiner);
+            if (result.explicit_constraints_from_prompt) result.explicit_constraints_from_prompt = JSON.parse(result.explicit_constraints_from_prompt);
+            if (result.desired_output_characteristics_inferred) result.desired_output_characteristics_inferred = JSON.parse(result.desired_output_characteristics_inferred);
+            if (result.suggested_context_analysis_for_agent) result.suggested_context_analysis_for_agent = JSON.parse(result.suggested_context_analysis_for_agent);
+        }
+        return result;
     }
 
 }

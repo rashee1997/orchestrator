@@ -254,4 +254,92 @@ describe('Prompt Refinement Tool', () => {
     // Restore the API key
     process.env.GEMINI_API_KEY = originalApiKey;
   });
+
+  it('should store a refined prompt in the database', async () => {
+    const refinedPromptData = {
+      refined_prompt_id: randomUUID(),
+      agent_id: 'test-agent-3',
+      original_prompt_text: 'Test prompt for storage.',
+      refinement_engine_model: 'gemini-2.0-flash',
+      refinement_timestamp: new Date().toISOString(),
+      overall_goal: 'Store this prompt.',
+      decomposed_tasks: ['Task A', 'Task B'],
+      key_entities_identified: ['Entity X', 'Entity Y'],
+      implicit_assumptions_made_by_refiner: ['Assumption 1'],
+      explicit_constraints_from_prompt: ['Constraint 1'],
+      suggested_ai_role_for_agent: 'Storage Agent',
+      suggested_reasoning_strategy_for_agent: 'Store it well.',
+      desired_output_characteristics_inferred: { type: 'Stored Data' },
+      suggested_context_analysis_for_agent: [{ suggestion_type: 'NONE' }],
+      confidence_in_refinement_score: 'High',
+      refinement_error_message: null
+    };
+
+    const storedId = await memoryManager.storeRefinedPrompt(refinedPromptData);
+    expect(storedId).toBe(refinedPromptData.refined_prompt_id);
+
+    // Verify it can be retrieved
+    const retrievedPrompt = await memoryManager.getRefinedPrompt(storedId);
+    expect(retrievedPrompt).toBeDefined();
+    expect(retrievedPrompt.refined_prompt_id).toBe(refinedPromptData.refined_prompt_id);
+    expect(retrievedPrompt.original_prompt_text).toBe(refinedPromptData.original_prompt_text);
+    expect(retrievedPrompt.decomposed_tasks).toEqual(refinedPromptData.decomposed_tasks);
+    expect(retrievedPrompt.key_entities_identified).toEqual(refinedPromptData.key_entities_identified);
+  });
+
+  it('should retrieve a refined prompt using the get_refined_prompt MCP tool', async () => {
+    // First, generate and store a refined prompt using the refine_user_prompt tool
+    const agentId = 'test-agent-4';
+    const rawPrompt = 'Generate a report on climate change impacts.';
+
+    const refineRequest = {
+      params: {
+        name: 'refine_user_prompt',
+        arguments: {
+          agent_id: agentId,
+          raw_user_prompt: rawPrompt,
+        },
+      },
+    };
+
+    const refineResponse = await mcpServer.callToolHandler(refineRequest);
+    const refinedPromptObject = JSON.parse(refineResponse.content[0].text);
+    const refinedPromptId = refinedPromptObject.refined_prompt_id;
+
+    expect(refinedPromptId).toBeDefined();
+
+    // Now, use the get_refined_prompt tool to retrieve it
+    const getRequest = {
+      params: {
+        name: 'get_refined_prompt',
+        arguments: {
+          refined_prompt_id: refinedPromptId,
+        },
+      },
+    };
+
+    const getResponse = await mcpServer.callToolHandler(getRequest);
+    const retrievedContent = JSON.parse(getResponse.content[0].text);
+
+    expect(retrievedContent).toBeDefined();
+    expect(retrievedContent.refined_prompt_id).toBe(refinedPromptId);
+    expect(retrievedContent.original_prompt_text).toBe(rawPrompt);
+    expect(retrievedContent.overall_goal).toBe(refinedPromptObject.overall_goal);
+    expect(retrievedContent.decomposed_tasks).toEqual(refinedPromptObject.decomposed_tasks);
+  });
+
+  it('should return null or not found message for a non-existent refined prompt ID', async () => {
+    const nonExistentId = randomUUID();
+    const getRequest = {
+      params: {
+        name: 'get_refined_prompt',
+        arguments: {
+          refined_prompt_id: nonExistentId,
+        },
+      },
+    };
+
+    const getResponse = await mcpServer.callToolHandler(getRequest);
+    expect(getResponse.content[0].text).toContain(`Refined prompt with ID ${nonExistentId} not found.`);
+  });
 });

@@ -274,6 +274,18 @@ class MemoryMcpServer {
                             description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.',
                             inputSchema: schemas.refineUserPrompt
                         },
+                        'get_refined_prompt': {
+                            name: 'get_refined_prompt',
+                            description: 'Retrieves a previously stored refined prompt by its ID.',
+                            inputSchema: {
+                                type: 'object',
+                                properties: {
+                                    refined_prompt_id: { type: 'string', description: 'The unique ID of the refined prompt to retrieve.' }
+                                },
+                                required: ['refined_prompt_id'],
+                                additionalProperties: false
+                            }
+                        }
                     },
                 },
             }
@@ -770,6 +782,23 @@ class MemoryMcpServer {
                         additionalProperties: false,
                     },
                 },
+                {
+                    name: 'refine_user_prompt',
+                    description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.',
+                    inputSchema: schemas.refineUserPrompt
+                },
+                {
+                    name: 'get_refined_prompt',
+                    description: 'Retrieves a previously stored refined prompt by its ID.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            refined_prompt_id: { type: 'string', description: 'The unique ID of the refined prompt to retrieve.' }
+                        },
+                        required: ['refined_prompt_id'],
+                        additionalProperties: false
+                    }
+                }
             ],
         }));
 
@@ -1233,6 +1262,15 @@ class MemoryMcpServer {
                             args.conversation_context_ids as string[] | undefined
                         );
                         return { content: [{ type: 'text', text: JSON.stringify(refinedPromptObject, null, 2) }] };
+                    }
+                    case 'get_refined_prompt': { // New tool handler
+                        const refinedPrompt = await this.memoryManager.getRefinedPrompt(
+                            args.refined_prompt_id as string
+                        );
+                        if (!refinedPrompt) {
+                            return { content: [{ type: 'text', text: `Refined prompt with ID ${args.refined_prompt_id} not found.` }] };
+                        }
+                        return { content: [{ type: 'text', text: JSON.stringify(refinedPrompt, null, 2) }] };
                     }
                     default:
                         throw new McpError(

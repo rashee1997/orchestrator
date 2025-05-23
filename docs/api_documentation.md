@@ -455,3 +455,56 @@ Errors will be returned in the `isError: true` field of the tool response, with 
         }
       }]
     }
+
+---
+
+### `get_refined_prompt`
+
+*   **Description:** Retrieves a previously stored refined prompt by its unique ID.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "refined_prompt_id": { "type": "string", "description": "The unique ID of the refined prompt to retrieve." }
+      },
+      "required": ["refined_prompt_id"],
+      "additionalProperties": false
+    }
+    ```
+*   **Output:** Returns a structured JSON object representing the "Refined Prompt for AI" if found, otherwise a message indicating it was not found.
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
+          "agent_id": "cline",
+          "original_prompt_text": "The exact raw user prompt text that was processed.",
+          "refinement_engine_model": "gemini-2.0-flash",
+          "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
+          "overall_goal": "A clear, concise statement of the user's primary objective.",
+          "decomposed_tasks": [
+            "Sub-task 1.",
+            "Sub-task 2."
+          ],
+          "key_entities_identified": [
+            "Entity A",
+            "Entity B"
+          ],
+          "implicit_assumptions_made_by_refiner": [],
+          "explicit_constraints_from_prompt": [],
+          "suggested_ai_role_for_agent": "Example Role",
+          "suggested_reasoning_strategy_for_agent": "Example Strategy",
+          "desired_output_characteristics_inferred": {
+            "type": "Code Solution",
+            "key_content_elements": [],
+            "level_of_detail": "Detailed"
+          },
+          "suggested_context_analysis_for_agent": [],
+          "confidence_in_refinement_score": "High",
+          "refinement_error_message": null
+        }
+      }]
+    }
+    ```
