@@ -440,7 +440,7 @@ export class MemoryManager {
                     plan_id,
                     agent_id,
                     task.task_number,
-                    task.title,
+                    task.title || 'Untitled Task', // Ensure title is never null
                     task.description || null,
                     task.status || 'PLANNED',
                     task.purpose || null,
