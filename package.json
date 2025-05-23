@@ -11,11 +11,12 @@
     "build"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\" && copyfiles -u 1 src/database/schema.sql build/database",
+    "build": "rmdir /s /q build && tsc && node -e \"require('fs').chmodSync('build/index.js', '755'); require('fs').mkdirSync('build/database', { recursive: true }); require('fs').copyFileSync('src/database/schema.sql', 'build/database/schema.sql');\"",
     "start": "node build/index.js",
     "prepare": "npm run build",
     "watch": "tsc --watch",
-    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "test": "set NODE_OPTIONS=--experimental-vm-modules && jest"
   },
   "dependencies": {
     "@google/genai": "^1.0.1",
@@ -27,9 +28,11 @@
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
-    "@types/ajv": "^1.0.4",
-    "@types/node": "^20.11.24",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.17.50",
     "copyfiles": "^2.4.1",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.3.4",
     "typescript": "^5.3.3"
   }
 }

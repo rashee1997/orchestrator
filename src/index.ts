@@ -12,12 +12,17 @@ import { callTavilyApi } from './integrations/tavily.js';
 import { validate, schemas } from './utils/validation.js';
 
 class MemoryMcpServer {
-    private server: Server;
-    private memoryManager: MemoryManager;
+    private server!: Server;
+    private memoryManager!: MemoryManager;
 
-    constructor() {
-        this.memoryManager = new MemoryManager();
-        this.server = new Server(
+    private constructor() {
+        // Private constructor to enforce async factory
+    }
+
+    public static async create(): Promise<MemoryMcpServer> {
+        const instance = new MemoryMcpServer();
+        instance.memoryManager = await MemoryManager.create(); // Initialize asynchronously
+        instance.server = new Server(
             {
                 name: 'memory-mcp-server',
                 version: '0.1.0',
@@ -46,14 +51,16 @@ class MemoryMcpServer {
             }
         );
 
-        this.setupToolHandlers();
+        instance.setupToolHandlers();
 
         // Error handling
-        this.server.onerror = (error) => console.error('[MCP Error]', error);
+        instance.server.onerror = (error) => console.error('[MCP Error]', error);
         process.on('SIGINT', async () => {
-            await this.server.close();
+            await instance.server.close();
             process.exit(0);
         });
+
+        return instance;
     }
 
     private setupToolHandlers() {
@@ -395,6 +402,146 @@ class MemoryMcpServer {
                         required: ['backupFilePath'],
                     },
                 },
+                // New: Plan and Task Management Tools
+                {
+                    name: 'create_task_plan',
+                    description: 'Creates a new task plan with its initial set of tasks.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            planData: {
+                                type: 'object',
+                                properties: {
+                                    title: { type: 'string' },
+                                    overall_goal: { type: ['string', 'null'] },
+                                    status: { type: 'string' },
+                                    version: { type: 'number' },
+                                    refined_prompt_id_associated: { type: ['string', 'null'] },
+                                    analysis_report_id_referenced: { type: ['string', 'null'] },
+                                    metadata: { type: ['object', 'null'] }
+                                },
+                                required: ['title'],
+                                additionalProperties: false
+                            },
+                            tasksData: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        task_number: { type: 'number' },
+                                        title: { type: 'string' },
+                                        description: { type: ['string', 'null'] },
+                                        status: { type: 'string' },
+                                        purpose: { type: ['string', 'null'] },
+                                        action_description: { type: ['string', 'null'] },
+                                        files_involved: { type: ['array', 'null'], items: { type: 'string' } },
+                                        dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
+                                        tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+                                        inputs_summary: { type: ['string', 'null'] },
+                                        outputs_summary: { type: ['string', 'null'] },
+                                        success_criteria_text: { type: ['string', 'null'] },
+                                        estimated_effort_hours: { type: ['number', 'null'] },
+                                        assigned_to: { type: ['string', 'null'] },
+                                        verification_method: { type: ['string', 'null'] },
+                                        notes: { type: ['object', 'null'] }
+                                    },
+                                    required: ['task_number', 'title'],
+                                    additionalProperties: false
+                                },
+                                minItems: 1
+                            }
+                        },
+                        required: ['agent_id', 'planData', 'tasksData'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'get_task_plan_details',
+                    description: 'Retrieves details for a specific task plan.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            plan_id: { type: 'string', description: 'Unique ID of the plan.' }
+                        },
+                        required: ['agent_id', 'plan_id'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'list_task_plans',
+                    description: 'Lists task plans for an agent, optionally filtered by status.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            status_filter: { type: ['string', 'null'], description: 'Optional: Filter plans by status (e.g., "DRAFT", "IN_PROGRESS").' },
+                            limit: { type: 'number', description: 'Maximum number of plans to retrieve.', default: 100 },
+                            offset: { type: 'number', description: 'Offset for pagination.', default: 0 }
+                        },
+                        required: ['agent_id'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'get_plan_tasks',
+                    description: 'Retrieves tasks for a specific plan, optionally filtered by status.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            plan_id: { type: 'string', description: 'Unique ID of the plan.' },
+                            status_filter: { type: ['string', 'null'], description: 'Optional: Filter tasks by status (e.g., "PLANNED", "COMPLETED").' },
+                            limit: { type: 'number', description: 'Maximum number of tasks to retrieve.', default: 100 },
+                            offset: { type: 'number', description: 'Offset for pagination.', default: 0 }
+                        },
+                        required: ['agent_id', 'plan_id'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'update_task_plan_status',
+                    description: 'Updates the status of a specified task plan.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            plan_id: { type: 'string', description: 'Unique ID of the plan to update.' },
+                            new_status: { type: 'string', description: 'The new status for the plan.' }
+                        },
+                        required: ['agent_id', 'plan_id', 'new_status'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'update_plan_task_status',
+                    description: 'Updates the status of a specific task within a plan.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            task_id: { type: 'string', description: 'Unique ID of the task to update.' },
+                            new_status: { type: 'string', description: 'The new status for the task.' },
+                            completion_timestamp: { type: ['number', 'null'], description: 'Optional: Unix timestamp when the task was completed/failed.' }
+                        },
+                        required: ['agent_id', 'task_id', 'new_status'],
+                        additionalProperties: false,
+                    },
+                },
+                {
+                    name: 'delete_task_plan',
+                    description: 'Deletes a task plan and all its associated tasks.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                            plan_id: { type: 'string', description: 'Unique ID of the plan to delete.' }
+                        },
+                        required: ['agent_id', 'plan_id'],
+                        additionalProperties: false,
+                    },
+                },
             ],
         }));
 
@@ -482,6 +629,27 @@ class MemoryMcpServer {
                         break;
                     case 'restore_database': // New tool
                         validationResult = validate('restoreDatabase', args);
+                        break;
+                    case 'create_task_plan': // New tool
+                        validationResult = validate('createTaskPlan', args);
+                        break;
+                    case 'get_task_plan_details': // New tool
+                        validationResult = validate('getTaskPlanDetails', args);
+                        break;
+                    case 'list_task_plans': // New tool
+                        validationResult = validate('listTaskPlans', args);
+                        break;
+                    case 'get_plan_tasks': // New tool
+                        validationResult = validate('getPlanTasks', args);
+                        break;
+                    case 'update_task_plan_status': // New tool
+                        validationResult = validate('updateTaskPlanStatus', args);
+                        break;
+                    case 'update_plan_task_status': // New tool
+                        validationResult = validate('updatePlanTaskStatus', args);
+                        break;
+                    case 'delete_task_plan': // New tool
+                        validationResult = validate('deleteTaskPlan', args);
                         break;
                     // For 'get' operations, validation is often simpler and handled by optional parameters
                     default:
@@ -782,5 +950,5 @@ class MemoryMcpServer {
     }
 }
 
-const server = new MemoryMcpServer();
+const server = await MemoryMcpServer.create();
 server.run().catch(console.error);

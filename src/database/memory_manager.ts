@@ -15,10 +15,16 @@ interface KnowledgeGraph {
 }
 
 export class MemoryManager {
-    private db!: Database; // Still needed for other memory types
+    private db!: Database;
 
-    constructor() {
-        this.init();
+    private constructor() {
+        // Private constructor to enforce async factory
+    }
+
+    public static async create(): Promise<MemoryManager> {
+        const instance = new MemoryManager();
+        await instance.init(); // Await initialization here
+        return instance;
     }
 
     private async init() {
@@ -76,7 +82,7 @@ export class MemoryManager {
         context_snapshot_id: string | null = null,
         source_attribution_id: string | null = null
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const conversation_id = randomUUID();
         const timestamp = Date.now();
         await db.run(
@@ -96,7 +102,7 @@ export class MemoryManager {
         limit: number = 100,
         offset: number = 0
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM conversation_history WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
 
@@ -118,7 +124,7 @@ export class MemoryManager {
         context_data: any, // Will be JSON stringified
         parent_context_id: string | null = null
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const context_id = randomUUID();
         const timestamp = Date.now();
         const context_data_json = JSON.stringify(context_data);
@@ -150,7 +156,7 @@ export class MemoryManager {
         version: number | null = null,
         snippet_index: number | null = null // New parameter
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM context_information WHERE agent_id = ? AND context_type = ?`;
         const params: (string | number)[] = [agent_id, context_type];
 
@@ -184,7 +190,7 @@ export class MemoryManager {
     }
 
     async getAllContexts(agent_id: string) {
-        const db = await getDatabase();
+        const db = this.db;
         const results = await db.all(`SELECT * FROM context_information WHERE agent_id = ? ORDER BY timestamp DESC`, agent_id);
         return results.map((row: any) => {
             if (row.context_data) {
@@ -207,7 +213,7 @@ export class MemoryManager {
         description: string | null = null,
         associated_conversation_id: string | null = null
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const reference_id = randomUUID();
         const timestamp = Date.now();
         await db.run(
@@ -225,7 +231,7 @@ export class MemoryManager {
         limit: number = 100,
         offset: number = 0
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM reference_keys WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
 
@@ -250,7 +256,7 @@ export class MemoryManager {
         full_content_hash: string | null = null,
         full_content_json: string | null = null // New parameter
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const attribution_id = randomUUID();
         await db.run(
             `INSERT INTO source_attribution (
@@ -267,7 +273,7 @@ export class MemoryManager {
         limit: number = 100,
         offset: number = 0
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM source_attribution WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
 
@@ -292,7 +298,7 @@ export class MemoryManager {
         reason: string | null,
         applied_automatically: boolean
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const correction_id = randomUUID();
         const timestamp = Date.now();
         const original_value_json = original_value ? JSON.stringify(original_value) : null;
@@ -315,7 +321,7 @@ export class MemoryManager {
         limit: number = 100,
         offset: number = 0
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM correction_logs WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
 
@@ -344,7 +350,7 @@ export class MemoryManager {
         associated_task_id: string | null = null,
         metadata: any | null = null // Will be JSON stringified
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const metric_id = randomUUID();
         const timestamp = Date.now();
         const metadata_json = metadata ? JSON.stringify(metadata) : null;
@@ -364,7 +370,7 @@ export class MemoryManager {
         limit: number = 100,
         offset: number = 0
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         let query = `SELECT * FROM success_metrics WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
 
@@ -383,13 +389,195 @@ export class MemoryManager {
         });
     }
 
+    // --- Plan and Task Management ---
+
+    async createPlanWithTasks(
+        agent_id: string,
+        planData: { title: string; overall_goal?: string; status?: string; version?: number; refined_prompt_id_associated?: string; analysis_report_id_referenced?: string; metadata?: any },
+        tasksData: Array<{ task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved?: string[]; dependencies_task_ids?: string[]; tools_required_list?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; notes?: any }>
+    ): Promise<{ plan_id: string; task_ids: string[] }> {
+        const db = this.db;
+        const plan_id = randomUUID();
+        const timestamp = Date.now();
+
+        await db.run('BEGIN TRANSACTION');
+        try {
+            await db.run(
+                `INSERT INTO plans (
+                    plan_id, agent_id, title, overall_goal, status, version,
+                    creation_timestamp, last_updated_timestamp, refined_prompt_id_associated,
+                    analysis_report_id_referenced, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                plan_id,
+                agent_id,
+                planData.title,
+                planData.overall_goal || null,
+                planData.status || 'DRAFT',
+                planData.version || 1,
+                timestamp,
+                timestamp,
+                planData.refined_prompt_id_associated || null,
+                planData.analysis_report_id_referenced || null,
+                planData.metadata ? JSON.stringify(planData.metadata) : null
+            );
+
+            const task_ids: string[] = [];
+            const taskStmt = await db.prepare(
+                `INSERT INTO plan_tasks (
+                    task_id, plan_id, agent_id, task_number, title, description, status,
+                    purpose, action_description, files_involved, dependencies_task_ids,
+                    tools_required_list, inputs_summary, outputs_summary, success_criteria_text,
+                    estimated_effort_hours, assigned_to, verification_method,
+                    creation_timestamp, last_updated_timestamp, completion_timestamp, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            );
+
+            for (const task of tasksData) {
+                const task_id = randomUUID();
+                task_ids.push(task_id);
+                await taskStmt.run(
+                    task_id,
+                    plan_id,
+                    agent_id,
+                    task.task_number,
+                    task.title,
+                    task.description || null,
+                    task.status || 'PLANNED',
+                    task.purpose || null,
+                    task.action_description || null,
+                    task.files_involved ? JSON.stringify(task.files_involved) : null,
+                    task.dependencies_task_ids ? JSON.stringify(task.dependencies_task_ids) : null,
+                    task.tools_required_list ? JSON.stringify(task.tools_required_list) : null,
+                    task.inputs_summary || null,
+                    task.outputs_summary || null,
+                    task.success_criteria_text || null,
+                    task.estimated_effort_hours || null,
+                    task.assigned_to || null,
+                    task.verification_method || null,
+                    timestamp,
+                    timestamp,
+                    task.status === 'COMPLETED' || task.status === 'FAILED' ? timestamp : null,
+                    task.notes ? JSON.stringify(task.notes) : null
+                );
+            }
+            await taskStmt.finalize();
+            await db.run('COMMIT');
+            return { plan_id, task_ids };
+        } catch (error) {
+            await db.run('ROLLBACK');
+            console.error('Error creating plan with tasks:', error);
+            throw error;
+        }
+    }
+
+    async getPlan(agent_id: string, plan_id: string): Promise<object | null> {
+        const db = this.db;
+        const plan = await db.get(
+            `SELECT * FROM plans WHERE agent_id = ? AND plan_id = ?`,
+            agent_id, plan_id
+        );
+        if (plan && plan.metadata) {
+            plan.metadata = JSON.parse(plan.metadata);
+        }
+        return plan;
+    }
+
+    async getPlans(agent_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<object[]> {
+        const db = this.db;
+        let query = `SELECT * FROM plans WHERE agent_id = ?`;
+        const params: (string | number)[] = [agent_id];
+
+        if (status_filter) {
+            query += ` AND status = ?`;
+            params.push(status_filter);
+        }
+
+        query += ` ORDER BY creation_timestamp DESC LIMIT ? OFFSET ?`;
+        params.push(limit, offset);
+
+        const results = await db.all(query, ...params as any[]);
+        return results.map((row: any) => {
+            if (row.metadata) {
+                row.metadata = JSON.parse(row.metadata);
+            }
+            return row;
+        });
+    }
+
+    async getPlanTasks(agent_id: string, plan_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<object[]> {
+        const db = this.db;
+        let query = `SELECT * FROM plan_tasks WHERE agent_id = ? AND plan_id = ?`;
+        const params: (string | number)[] = [agent_id, plan_id];
+
+        if (status_filter) {
+            query += ` AND status = ?`;
+            params.push(status_filter);
+        }
+
+        query += ` ORDER BY task_number ASC LIMIT ? OFFSET ?`;
+        params.push(limit, offset);
+
+        const results = await db.all(query, ...params as any[]);
+        return results.map((row: any) => {
+            if (row.files_involved) row.files_involved = JSON.parse(row.files_involved);
+            if (row.dependencies_task_ids) row.dependencies_task_ids = JSON.parse(row.dependencies_task_ids);
+            if (row.tools_required_list) row.tools_required_list = JSON.parse(row.tools_required_list);
+            if (row.notes) row.notes = JSON.parse(row.notes);
+            return row;
+        });
+    }
+
+    async updatePlanStatus(agent_id: string, plan_id: string, new_status: string): Promise<boolean> {
+        const db = this.db;
+        const timestamp = Date.now();
+        const result = await db.run(
+            `UPDATE plans SET status = ?, last_updated_timestamp = ? WHERE agent_id = ? AND plan_id = ?`,
+            new_status, timestamp, agent_id, plan_id
+        );
+        return (result?.changes || 0) > 0;
+    }
+
+    async updateTaskStatus(agent_id: string, task_id: string, new_status: string, completion_timestamp?: number): Promise<boolean> {
+        const db = this.db;
+        const timestamp = Date.now();
+        const result = await db.run(
+            `UPDATE plan_tasks SET status = ?, last_updated_timestamp = ?, completion_timestamp = ? WHERE agent_id = ? AND task_id = ?`,
+            new_status, timestamp, completion_timestamp || null, agent_id, task_id
+        );
+        return (result?.changes || 0) > 0;
+    }
+
+    async deletePlan(agent_id: string, plan_id: string): Promise<boolean> {
+        const db = this.db;
+        const result = await db.run(
+            `DELETE FROM plans WHERE agent_id = ? AND plan_id = ?`,
+            agent_id, plan_id
+        );
+        return (result?.changes || 0) > 0;
+    }
+
+    async getTask(agent_id: string, task_id: string): Promise<object | null> {
+        const db = this.db;
+        const task = await db.get(
+            `SELECT * FROM plan_tasks WHERE agent_id = ? AND task_id = ?`,
+            agent_id, task_id
+        );
+        if (task) {
+            if (task.files_involved) task.files_involved = JSON.parse(task.files_involved);
+            if (task.dependencies_task_ids) task.dependencies_task_ids = JSON.parse(task.dependencies_task_ids);
+            if (task.tools_required_list) task.tools_required_list = JSON.parse(task.tools_required_list);
+            if (task.notes) task.notes = JSON.parse(task.notes);
+        }
+        return task;
+    }
+
     // --- Knowledge Graph Memory Tools ---
 
     async createEntities(
         agent_id: string,
         entities: Array<{ name: string; entityType: string; observations: string[] }>
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const stmt = await db.prepare(
             `INSERT INTO knowledge_graph_nodes (node_id, agent_id, name, entity_type, observations, timestamp)
              VALUES (?, ?, ?, ?, ?, ?)`
@@ -410,7 +598,7 @@ export class MemoryManager {
         agent_id: string,
         relations: Array<{ from: string; to: string; relationType: string }>
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const stmt = await db.prepare(
             `INSERT INTO knowledge_graph_relations (relation_id, agent_id, from_node_id, to_node_id, relation_type, timestamp)
              VALUES (?, ?, ?, ?, ?, ?)`
@@ -444,7 +632,7 @@ export class MemoryManager {
         agent_id: string,
         observations: Array<{ entityName: string; contents: string[] }>
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const results = [];
         for (const obs of observations) {
             const node = await db.get(`SELECT node_id, observations FROM knowledge_graph_nodes WHERE agent_id = ? AND name = ?`, agent_id, obs.entityName);
@@ -469,7 +657,7 @@ export class MemoryManager {
         agent_id: string,
         entityNames: string[]
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const results = [];
         for (const name of entityNames) {
             const node = await db.get(`SELECT node_id FROM knowledge_graph_nodes WHERE agent_id = ? AND name = ?`, agent_id, name);
@@ -491,7 +679,7 @@ export class MemoryManager {
         agent_id: string,
         deletions: Array<{ entityName: string; observations: string[] }>
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const results = [];
         for (const del of deletions) {
             const node = await db.get(`SELECT node_id, observations FROM knowledge_graph_nodes WHERE agent_id = ? AND name = ?`, agent_id, del.entityName);
@@ -518,7 +706,7 @@ export class MemoryManager {
         agent_id: string,
         relations: Array<{ from: string; to: string; relationType: string }>
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const results = [];
         for (const relation of relations) {
             const fromNode = await db.get(`SELECT node_id FROM knowledge_graph_nodes WHERE agent_id = ? AND name = ?`, agent_id, relation.from);
@@ -539,7 +727,7 @@ export class MemoryManager {
     }
 
     async readGraph(agent_id: string) {
-        const db = await getDatabase();
+        const db = this.db;
         const nodes = await db.all(`SELECT node_id, name, entity_type, observations FROM knowledge_graph_nodes WHERE agent_id = ?`, agent_id);
         const relations = await db.all(`SELECT r.relation_id, r.relation_type, n1.name AS from_name, n2.name AS to_name FROM knowledge_graph_relations r JOIN knowledge_graph_nodes n1 ON r.from_node_id = n1.node_id JOIN knowledge_graph_nodes n2 ON r.to_node_id = n2.node_id WHERE r.agent_id = ?`, agent_id);
 
@@ -560,7 +748,7 @@ export class MemoryManager {
     }
 
     async searchNodes(agent_id: string, query: string) {
-        const db = await getDatabase();
+        const db = this.db;
         const searchQuery = `%${query.toLowerCase()}%`;
         const nodes = await db.all(
             `SELECT node_id, name, entity_type, observations FROM knowledge_graph_nodes
@@ -576,7 +764,7 @@ export class MemoryManager {
     }
 
     async openNodes(agent_id: string, names: string[]) {
-        const db = await getDatabase();
+        const db = this.db;
         const placeholders = names.map(() => '?').join(',');
         const nodes = await db.all(
             `SELECT node_id, name, entity_type, observations FROM knowledge_graph_nodes
@@ -597,7 +785,7 @@ export class MemoryManager {
         context_type: string,
         keywords: string
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         // Retrieve the latest version of the context for the given agent and context_type
         const contextResult = await this.getContext(agent_id, context_type);
 
@@ -627,7 +815,7 @@ export class MemoryManager {
         max_age_ms: number,
         context_type: string | null = null
     ) {
-        const db = await getDatabase();
+        const db = this.db;
         const cutoffTimestamp = Date.now() - max_age_ms;
 
         let query = `DELETE FROM context_information WHERE agent_id = ? AND timestamp < ?`;
@@ -656,7 +844,7 @@ export class MemoryManager {
         const genAI = new GoogleGenAI({apiKey: GEMINI_API_KEY}); // Initialize with new SDK
         const modelName = "gemini-2.0-flash"; // Using gemini-2.0-flash for text tasks
 
-        const db = await getDatabase();
+        const db = this.db;
         const contextResult = await this.getContext(agent_id, context_type, version);
 
         if (!contextResult || !contextResult.context_data) {
@@ -699,7 +887,7 @@ export class MemoryManager {
         const genAI = new GoogleGenAI({apiKey: GEMINI_API_KEY});
         const modelName = "gemini-2.0-flash";
 
-        const db = await getDatabase();
+        const db = this.db;
         const contextResult = await this.getContext(agent_id, context_type, version);
 
         if (!contextResult || !contextResult.context_data) {
@@ -760,7 +948,7 @@ export class MemoryManager {
         const genAI = new GoogleGenAI({apiKey: GEMINI_API_KEY});
         const modelName = "models/text-embedding-004";
 
-        const db = await getDatabase();
+        const db = this.db;
         const contextResult = await this.getContext(agent_id, context_type);
 
         if (!contextResult || !contextResult.context_data || !contextResult.context_data.documentation_snippets || !Array.isArray(contextResult.context_data.documentation_snippets)) {
@@ -824,7 +1012,7 @@ export class MemoryManager {
 
     // --- New: Export Data to CSV Tool ---
     async exportDataToCsv(tableName: string, filePath: string) {
-        const db = await getDatabase();
+        const db = this.db;
         try {
             const rows = await db.all(`SELECT * FROM ${tableName}`);
             if (rows.length === 0) {

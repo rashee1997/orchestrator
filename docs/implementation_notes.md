@@ -21,12 +21,20 @@ The project follows a modular structure to separate concerns:
 *   `initializeDatabase()`: Ensures the database file exists and applies the `schema.sql`.
 *   `getDatabase()`: Provides a way to get a database connection instance. It's designed to reuse the connection if already open, or open a new one if needed.
 
+### Plan and Task Tables
+
+*   **Dedicated Tables:** The `plans` and `plan_tasks` tables are introduced to specifically manage task plans and their individual steps. This provides a normalized and optimized structure for plan-related data, separating it from the generic `context_information` table.
+*   **`plans` table:** Stores high-level plan information such as `plan_id`, `agent_id`, `title`, `overall_goal`, `status`, `version`, timestamps, and optional metadata.
+*   **`plan_tasks` table:** Stores individual tasks within a plan, including `task_id`, `plan_id` (foreign key to `plans`), `agent_id`, `task_number`, `title`, `description`, `status`, and other task-specific details.
+*   **Cascading Delete:** The `plan_tasks` table has a `FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE`. This ensures that when a plan is deleted from the `plans` table, all its associated tasks in the `plan_tasks` table are automatically deleted, maintaining data integrity.
+*   **Indexing:** Appropriate indexes are defined in `schema.sql` on `agent_id`, `status`, and `plan_id` to optimize retrieval and filtering of plans and tasks.
+
 ### MemoryManager Class
 
-*   The `MemoryManager` class in `memory_manager.ts` encapsulates all CRUD (Create, Read, Update, Delete) operations for the various memory types.
-*   **UUIDs for IDs:** `crypto.randomUUID()` is used to generate unique identifiers for all primary keys (`conversation_id`, `context_id`, etc.), ensuring global uniqueness.
+*   The `MemoryManager` class in `memory_manager.ts` encapsulates all CRUD (Create, Read, Update, Delete) operations for the various memory types, including the new plan and task management functionalities.
+*   **UUIDs for IDs:** `crypto.randomUUID()` is used to generate unique identifiers for all primary keys (`conversation_id`, `context_id`, `plan_id`, `task_id`, etc.), ensuring global uniqueness.
 *   **Timestamping:** `Date.now()` is used to record Unix timestamps in milliseconds for all relevant entries.
-*   **JSON Stringification:** Fields designed to store structured data (e.g., `context_data`, `tool_info`, `metadata`, `original_value`, `corrected_value`) are stored as `TEXT` in SQLite and are JSON stringified before insertion and parsed after retrieval. This allows flexible schema-less storage within a structured relational database.
+*   **JSON Stringification:** Fields designed to store structured data (e.g., `context_data`, `tool_info`, `metadata`, `original_value`, `corrected_value`, `files_involved`, `dependencies_task_ids`, `tools_required_list`, `notes`) are stored as `TEXT` in SQLite and are JSON stringified before insertion and parsed after retrieval. This allows flexible schema-less storage within a structured relational database.
 *   **Context Versioning:** The `storeContext` method includes logic to automatically increment the `version` for a given `agent_id` and `context_type`, allowing for historical tracking of context changes.
 *   **Query Optimization:** All queries use parameterized statements (`?` placeholders) to prevent SQL injection vulnerabilities and allow SQLite to cache query plans, improving performance. Indexes are defined in `schema.sql` to speed up common lookup operations.
 

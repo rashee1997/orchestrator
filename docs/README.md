@@ -6,6 +6,7 @@ This is a Model Context Protocol (MCP) server designed for persistent memory man
 
 *   **Persistent Memory:** All data is stored in a SQLite database, ensuring persistence across sessions.
 *   **Comprehensive Memory Types:** Manages conversation history, contextual information, external references, source attributions, correction logs, and performance metrics.
+*   **Plan and Task Management:** Dedicated tables and tools for creating, retrieving, updating, and deleting structured task plans and their individual steps, ensuring clear organization and optimized access.
 *   **Efficient Retrieval:** Optimized for fast and targeted retrieval with appropriate indexing.
 *   **Context-Aware Storage:** Links memory entries to their relevant operational context.
 *   **Version Tracking:** Tracks versions of critical context information for historical analysis.
@@ -107,14 +108,46 @@ Once installed, the `memory-mcp-server` will expose various tools for memory man
 </use_mcp_tool>
 ```
 
-**4. Perform Tavily Search:**
+**4. Create a Task Plan:**
 ```xml
 <use_mcp_tool>
 <server_name>memory-mcp-server</server_name>
-<tool_name>perform_tavily_search</tool_name>
+<tool_name>create_task_plan</tool_name>
 <arguments>
 {
   "agent_id": "my-ai-agent-001",
+  "planData": {
+    "title": "Implement New Feature X",
+    "overall_goal": "Develop and deploy feature X to production.",
+    "status": "DRAFT"
+  },
+  "tasksData": [
+    {
+      "task_number": 1,
+      "title": "Design Database Schema",
+      "description": "Create ERD and SQL migration scripts.",
+      "status": "PLANNED"
+    },
+    {
+      "task_number": 2,
+      "title": "Implement Backend API",
+      "description": "Develop REST endpoints for feature X.",
+      "status": "PLANNED",
+      "dependencies_task_ids": ["task-1-uuid"]
+    }
+  ]
+}
+</arguments>
+</use_mcp_tool>
+```
+
+**5. Perform Tavily Web Search:**
+```xml
+<use_mcp_tool>
+<server_name>memory-mcp-server</server_name>
+<tool_name>tavily_web_search</tool_name>
+<arguments>
+{
   "query": "latest advancements in large language models",
   "search_depth": "advanced"
 }

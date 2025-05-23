@@ -186,6 +186,117 @@ export const schemas = {
         required: ['backupFilePath'],
         additionalProperties: false,
     },
+    createTaskPlan: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            planData: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string' },
+                    overall_goal: { type: ['string', 'null'] },
+                    status: { type: 'string' },
+                    version: { type: 'number' },
+                    refined_prompt_id_associated: { type: ['string', 'null'] },
+                    analysis_report_id_referenced: { type: ['string', 'null'] },
+                    metadata: { type: ['object', 'null'] }
+                },
+                required: ['title'],
+                additionalProperties: false
+            },
+            tasksData: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        task_number: { type: 'number' },
+                        title: { type: 'string' },
+                        description: { type: ['string', 'null'] },
+                        status: { type: 'string' },
+                        purpose: { type: ['string', 'null'] },
+                        action_description: { type: ['string', 'null'] },
+                        files_involved: { type: ['array', 'null'], items: { type: 'string' } },
+                        dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
+                        tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+                        inputs_summary: { type: ['string', 'null'] },
+                        outputs_summary: { type: ['string', 'null'] },
+                        success_criteria_text: { type: ['string', 'null'] },
+                        estimated_effort_hours: { type: ['number', 'null'] },
+                        assigned_to: { type: ['string', 'null'] },
+                        verification_method: { type: ['string', 'null'] },
+                        notes: { type: ['object', 'null'] }
+                    },
+                    required: ['task_number', 'title'],
+                    additionalProperties: false
+                },
+                minItems: 1
+            }
+        },
+        required: ['agent_id', 'planData', 'tasksData'],
+        additionalProperties: false,
+    },
+    getTaskPlanDetails: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' }
+        },
+        required: ['agent_id', 'plan_id'],
+        additionalProperties: false,
+    },
+    listTaskPlans: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            status_filter: { type: ['string', 'null'] },
+            limit: { type: 'number' },
+            offset: { type: 'number' }
+        },
+        required: ['agent_id'],
+        additionalProperties: false,
+    },
+    getPlanTasks: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            status_filter: { type: ['string', 'null'] },
+            limit: { type: 'number' },
+            offset: { type: 'number' }
+        },
+        required: ['agent_id', 'plan_id'],
+        additionalProperties: false,
+    },
+    updateTaskPlanStatus: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            new_status: { type: 'string' }
+        },
+        required: ['agent_id', 'plan_id', 'new_status'],
+        additionalProperties: false,
+    },
+    updatePlanTaskStatus: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            task_id: { type: 'string' },
+            new_status: { type: 'string' },
+            completion_timestamp: { type: ['number', 'null'] }
+        },
+        required: ['agent_id', 'task_id', 'new_status'],
+        additionalProperties: false,
+    },
+    deleteTaskPlan: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' }
+        },
+        required: ['agent_id', 'plan_id'],
+        additionalProperties: false,
+    },
 };
 
 // Compile schemas

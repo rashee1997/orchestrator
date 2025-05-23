@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const DB_PATH = join(__dirname, '../../memory.db');
-const SCHEMA_PATH = join(__dirname, 'database', 'schema.sql');
+const SCHEMA_PATH = join(__dirname, 'schema.sql');
 
 export async function initializeDatabase() {
     const db = await open({
@@ -18,6 +18,8 @@ export async function initializeDatabase() {
 
     // Enable WAL mode for better concurrency and crash recovery
     await db.exec('PRAGMA journal_mode = WAL;');
+    // Enable foreign key constraints for cascade deletes
+    await db.exec('PRAGMA foreign_keys = ON;');
 
     const schema = readFileSync(SCHEMA_PATH, 'utf-8');
     await db.exec(schema);
