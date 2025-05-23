@@ -32,8 +32,16 @@ export async function initializeDatabase() {
     );
     console.log('Default agent "cline" ensured in database.');
 
+    // Insert default agent 'BLACKBOXAI' if not exists to avoid foreign key constraint failures
+    await db.run(
+        `INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp) VALUES (?, ?, ?, ?)`,
+        'BLACKBOXAI', 'Blackbox AI Agent', 'Default agent for AI operations', Math.floor(Date.now() / 1000)
+    );
+    console.log('Default agent "BLACKBOXAI" ensured in database.');
+
     return db;
 }
+
 
 export async function getDatabase() {
     return open({

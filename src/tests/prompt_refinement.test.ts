@@ -126,7 +126,7 @@ describe('Prompt Refinement Tool', () => {
     }));
     const mockGenAIInstance = new MockGoogleGenAI();
 
-    memoryManager = await MemoryManager.create(mockGenAIInstance as any); // Pass the mock instance
+    memoryManager = await MemoryManager.create(); // Initialize without passing mock instance
 
     // Mock the Server's internal methods to avoid actual stdio transport
     // and directly call the request handlers.
