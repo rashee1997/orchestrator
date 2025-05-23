@@ -234,4 +234,48 @@ describe('MemoryManager Plan and Task Management', () => {
         expect((retrievedTask as any).title).toBe('Single Task');
         expect((retrievedTask as any).notes.important).toBe('note');
     });
+
+    it('should add a new task to an existing plan', async () => {
+        const agentId = 'test-agent-add-task';
+        const planId = randomUUID();
+        const ts = Date.now();
+        await db.run(`INSERT INTO plans (plan_id, agent_id, title, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?)`, planId, agentId, 'Plan for Adding Task', ts, ts);
+
+        const newTaskData = { task_number: 1, title: 'New Task for Existing Plan', description: 'This task is added later.' };
+        const newTaskId = await memoryManager.addTaskToPlan(agentId, planId, newTaskData);
+
+        expect(newTaskId).toBeDefined();
+
+        const retrievedTasks = await memoryManager.getPlanTasks(agentId, planId);
+        expect(retrievedTasks).toHaveLength(1);
+        expect((retrievedTasks[0] as any).task_id).toBe(newTaskId);
+        expect((retrievedTasks[0] as any).title).toBe('New Task for Existing Plan');
+        expect((retrievedTasks[0] as any).plan_id).toBe(planId);
+    });
+
+    it('should throw an error if adding a task to a non-existent plan', async () => {
+        const agentId = 'test-agent-add-task-nonexistent-plan';
+        const nonExistentPlanId = randomUUID();
+        const newTaskData = { task_number: 1, title: 'Task for Non-Existent Plan' };
+
+        await expect(memoryManager.addTaskToPlan(agentId, nonExistentPlanId, newTaskData)).rejects.toThrow(`Plan with ID ${nonExistentPlanId} not found for agent ${agentId}.`);
+
+        // Verify no task was added
+        const tasks = await db.all(`SELECT * FROM plan_tasks WHERE agent_id = ?`, agentId);
+        expect(tasks).toHaveLength(0);
+    });
+
+    it('should throw an error if adding a task with invalid data', async () => {
+        const agentId = 'test-agent-add-task-invalid-data';
+        const planId = randomUUID();
+        const ts = Date.now();
+        await db.run(`INSERT INTO plans (plan_id, agent_id, title, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?)`, planId, agentId, 'Plan for Invalid Task', ts, ts);
+
+        const invalidTaskData = { task_number: 1, title: null }; // title is NOT NULL
+        await expect(memoryManager.addTaskToPlan(agentId, planId, invalidTaskData as any)).rejects.toThrow(/Invalid input for addTaskToPlan/);
+
+        // Verify no task was added
+        const tasks = await db.all(`SELECT * FROM plan_tasks WHERE plan_id = ?`, planId);
+        expect(tasks).toHaveLength(0);
+    });
 });

@@ -175,42 +175,86 @@ Errors will be returned in the `isError: true` field of the tool response, with 
 
 ---
 
-### `add_reference_key`
+### `add_task_to_plan`
 
-*   **Description:** Adds a reference key to an external knowledge source or internal memory entry.
+*   **Description:** Adds a new task to an existing plan.
 *   **Input Schema:**
     ```json
     {
       "type": "object",
       "properties": {
         "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
-        "key_type": { "type": "string", "description": "Type of reference (e.g., document_id, memory_entry_id, external_api_id)." },
-        "key_value": { "type": "string", "description": "The actual key/identifier." },
-        "description": { "type": "string", "description": "Human-readable description of what the key references.", "nullable": true },
-        "associated_conversation_id": { "type": "string", "description": "Optional, link to conversation.", "nullable": true }
+        "plan_id": { "type": "string", "description": "Unique ID of the plan to add the task to." },
+        "taskData": {
+            "type": "object",
+            "properties": {
+                "task_number": { "type": "number" },
+                "title": { "type": "string" },
+                "description": { "type": ["string", "null"] },
+                "status": { "type": "string" },
+                "purpose": { "type": ["string", "null"] },
+                "action_description": { "type": ["string", "null"] },
+                "files_involved": { "type": ["array", "null"], "items": { "type": "string" } },
+                "dependencies_task_ids": { "type": ["array", "null"], "items": { "type": "string" } },
+                "tools_required_list": { "type": ["array", "null"], "items": { "type": "string" } },
+                "inputs_summary": { "type": ["string", "null"] },
+                "outputs_summary": { "type": ["string", "null"] },
+                "success_criteria_text": { "type": ["string", "null"] },
+                "estimated_effort_hours": { "type": ["number", "null"] },
+                "assigned_to": { "type": ["string", "null"] },
+                "verification_method": { "type": ["string", "null"] },
+                "notes": { "type": ["object", "null"] }
+            },
+            "required": ["task_number", "title"],
+            "additionalProperties": false
+        }
       },
-      "required": ["agent_id", "key_type", "key_value"]
+      "required": ["agent_id", "plan_id", "taskData"]
     }
     ```
-*   **Output:** Returns a text message with the generated `reference_id`.
+*   **Output:** Returns a text message with the generated `task_id`.
+    ```json
+    { "content": [{ "type": "text", "text": "Task added with ID: [UUID]" }] }
+    ```
 
 ---
 
-### `get_reference_keys`
+### `backup_database`
 
-*   **Description:** Retrieves reference keys for a given agent, optionally filtered by key type.
+*   **Description:** Creates a backup copy of the SQLite database file.
 *   **Input Schema:**
     ```json
     {
       "type": "object",
       "properties": {
-        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
-        "key_type": { "type": "string", "description": "Optional type of reference to filter by.", "nullable": true },
-        "limit": { "type": "number", "description": "Maximum number of keys to retrieve.", "default": 100 },
-        "offset": { "type": "number", "description": "Offset for pagination.", "default": 0 }
+        "backupFilePath": { "type": "string", "description": "The path where the database backup file will be saved." }
       },
-      "required": ["agent_id"]
+      "required": ["backupFilePath"]
     }
+    ```
+*   **Output:** Returns a text message indicating success or failure.
+    ```json
+    { "content": [{ "type": "text", "text": "Database backed up successfully to /path/to/backup.db" }] }
+    ```
+
+---
+
+### `restore_database`
+
+*   **Description:** Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "backupFilePath": { "type": "string", "description": "The path to the database backup file to restore from." }
+      },
+      "required": ["backupFilePath"]
+    }
+    ```
+*   **Output:** Returns a text message indicating success or failure.
+    ```json
+    { "content": [{ "type": "text", "text": "Database restored successfully from /path/to/backup.db" }] }
     ```
 *   **Output:** Returns a JSON array of reference key objects.
 

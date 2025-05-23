@@ -28,14 +28,15 @@ export function formatTasksListToMarkdownTable(tasks: any[]): string {
     if (!tasks || tasks.length === 0) {
         return "No tasks found.\n";
     }
-    let md = "| Task No. | Title | Status | Dependencies | Assigned To |\n";
-    md += "|----------|-------|--------|--------------|-------------|\n";
+    let md = "| Task No. | Title | Status | Dependencies | Assigned To | Task ID |\n";
+    md += "|----------|-------|--------|--------------|-------------|---------|\n";
     tasks.forEach(task => {
         md += `| ${task.task_number || 'N/A'} `
             + `| ${task.title || 'N/A'} `
             + `| ${task.status || 'N/A'} `
             + `| ${(task.dependencies_task_ids && task.dependencies_task_ids.length > 0) ? task.dependencies_task_ids.join(', ') : 'None'} `
-            + `| ${task.assigned_to || 'N/A'} |\n`;
+            + `| ${task.assigned_to || 'N/A'} `
+            + `| ${task.task_id || 'N/A'} |\n`;
     });
     return md;
 }

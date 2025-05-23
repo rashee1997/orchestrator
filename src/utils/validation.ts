@@ -297,6 +297,38 @@ export const schemas = {
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
     },
+    addTaskToPlan: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            plan_id: { type: 'string', description: 'Unique ID of the plan to add the task to.' },
+            taskData: {
+                type: 'object',
+                properties: {
+                    task_number: { type: 'number' },
+                    title: { type: 'string' },
+                    description: { type: ['string', 'null'] },
+                    status: { type: 'string' },
+                    purpose: { type: ['string', 'null'] },
+                    action_description: { type: ['string', 'null'] },
+                    files_involved: { type: ['array', 'null'], items: { type: 'string' } },
+                    dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
+                    tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+                    inputs_summary: { type: ['string', 'null'] },
+                    outputs_summary: { type: ['string', 'null'] },
+                    success_criteria_text: { type: ['string', 'null'] },
+                    estimated_effort_hours: { type: ['number', 'null'] },
+                    assigned_to: { type: ['string', 'null'] },
+                    verification_method: { type: ['string', 'null'] },
+                    notes: { type: ['object', 'null'] }
+                },
+                required: ['task_number', 'title'],
+                additionalProperties: false
+            }
+        },
+        required: ['agent_id', 'plan_id', 'taskData'],
+        additionalProperties: false,
+    },
     refineUserPrompt: { // New schema name
         type: 'object',
         properties: {

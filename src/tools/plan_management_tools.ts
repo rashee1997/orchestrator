@@ -1,7 +1,7 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
-import { formatTasksListToMarkdownTable, formatPlansListToMarkdownTable } from '../utils/formatters.js';
+import { formatPlanToMarkdown, formatTasksListToMarkdownTable, formatPlansListToMarkdownTable } from '../utils/formatters.js';
 
 export const planManagementToolDefinitions = [
     {
@@ -143,6 +143,42 @@ export const planManagementToolDefinitions = [
             additionalProperties: false,
         },
     },
+    {
+        name: 'add_task_to_plan',
+        description: 'Adds a new task to an existing plan.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                plan_id: { type: 'string', description: 'Unique ID of the plan to add the task to.' },
+                taskData: {
+                    type: 'object',
+                    properties: {
+                        task_number: { type: 'number' },
+                        title: { type: 'string' },
+                        description: { type: ['string', 'null'] },
+                        status: { type: 'string' },
+                        purpose: { type: ['string', 'null'] },
+                        action_description: { type: ['string', 'null'] },
+                        files_involved: { type: ['array', 'null'], items: { type: 'string' } },
+                        dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
+                        tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+                        inputs_summary: { type: ['string', 'null'] },
+                        outputs_summary: { type: ['string', 'null'] },
+                        success_criteria_text: { type: ['string', 'null'] },
+                        estimated_effort_hours: { type: ['number', 'null'] },
+                        assigned_to: { type: ['string', 'null'] },
+                        verification_method: { type: ['string', 'null'] },
+                        notes: { type: ['object', 'null'] }
+                    },
+                    required: ['task_number', 'title'],
+                    additionalProperties: false
+                }
+            },
+            required: ['agent_id', 'plan_id', 'taskData'],
+            additionalProperties: false,
+        },
+    },
 ];
 
 export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
@@ -178,7 +214,8 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 return { content: [{ type: 'text', text: `Plan with ID ${args.plan_id} not found.` }] };
             }
             const tasks = await memoryManager.getPlanTasks(agent_id, args.plan_id as string);
-            return { content: [{ type: 'json', json: { plan: planDetails, tasks: tasks } }] };
+            const markdownOutput = formatPlanToMarkdown(planDetails, tasks as any[]);
+            return { content: [{ type: 'text', text: markdownOutput }] };
         },
         'list_task_plans': async (args: any, agent_id: string) => {
             const validationResult = validate('listTaskPlans', args);
@@ -259,6 +296,21 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 args.plan_id as string
             );
             return { content: [{ type: 'text', text: `Plan deletion ${success ? 'succeeded' : 'failed'}` }] };
+        },
+        'add_task_to_plan': async (args: any, agent_id: string) => {
+            const validationResult = validate('addTaskToPlan', args);
+            if (!validationResult.valid) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    `Validation failed for tool add_task_to_plan: ${JSON.stringify(validationResult.errors)}`
+                );
+            }
+            const task_id = await memoryManager.addTaskToPlan(
+                agent_id,
+                args.plan_id as string,
+                args.taskData as any
+            );
+            return { content: [{ type: 'text', text: `Task added with ID: ${task_id}` }] };
         },
     };
 }

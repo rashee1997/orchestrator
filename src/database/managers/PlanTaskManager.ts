@@ -210,4 +210,62 @@ export class PlanTaskManager {
         }
         return task;
     }
+
+    async addTaskToPlan(
+        agent_id: string,
+        plan_id: string,
+        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved?: string[]; dependencies_task_ids?: string[]; tools_required_list?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; notes?: any }
+    ): Promise<string> {
+        const db = this.dbService.getDb();
+        const timestamp = Date.now();
+
+        // Validate input against the addTaskToPlan schema
+        const validationResult = validate('addTaskToPlan', { agent_id, plan_id, taskData });
+        if (!validationResult.valid) {
+            console.error('Validation errors for addTaskToPlan:', validationResult.errors);
+            throw new Error(`Invalid input for addTaskToPlan: ${JSON.stringify(validationResult.errors)}`);
+        }
+
+        // Ensure the plan exists
+        const plan = await this.getPlan(agent_id, plan_id);
+        if (!plan) {
+            throw new Error(`Plan with ID ${plan_id} not found for agent ${agent_id}.`);
+        }
+
+        const task_id = randomUUID();
+
+        await db.run(
+            `INSERT INTO plan_tasks (
+                task_id, plan_id, agent_id, task_number, title, description, status,
+                purpose, action_description, files_involved, dependencies_task_ids,
+                tools_required_list, inputs_summary, outputs_summary, success_criteria_text,
+                estimated_effort_hours, assigned_to, verification_method,
+                creation_timestamp, last_updated_timestamp, completion_timestamp, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            task_id,
+            plan_id,
+            agent_id,
+            taskData.task_number,
+            taskData.title,
+            taskData.description || null,
+            taskData.status || 'PLANNED',
+            taskData.purpose || null,
+            taskData.action_description || null,
+            taskData.files_involved ? JSON.stringify(taskData.files_involved) : null,
+            taskData.dependencies_task_ids ? JSON.stringify(taskData.dependencies_task_ids) : null,
+            taskData.tools_required_list ? JSON.stringify(taskData.tools_required_list) : null,
+            taskData.inputs_summary || null,
+            taskData.outputs_summary || null,
+            taskData.success_criteria_text || null,
+            taskData.estimated_effort_hours || null,
+            taskData.assigned_to || null,
+            taskData.verification_method || null,
+            timestamp,
+            timestamp,
+            taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? timestamp : null,
+            taskData.notes ? JSON.stringify(taskData.notes) : null
+        );
+
+        return task_id;
+    }
 }

@@ -30,6 +30,7 @@ The project follows a modular structure to separate concerns:
 *   **Data Validation:**
     *   `createPlanWithTasks`: Explicit validation using `src/utils/validation.ts` schemas is performed on `tasksData` before database insertion to ensure data integrity and prevent invalid task creation.
     *   `updateTaskStatus`: Application-level validation ensures that both the task and its associated plan exist before allowing status updates, preventing updates to orphaned or non-existent tasks.
+    *   `addTaskToPlan`: This new method allows adding individual tasks to an existing plan. It includes validation to ensure the target plan exists and the new task data conforms to the schema, preventing the creation of orphaned or invalid tasks.
 *   **Indexing:** Appropriate indexes are defined in `schema.sql` on `agent_id`, `status`, and `plan_id` to optimize retrieval and filtering of plans and tasks.
 
 ### MemoryManager Class

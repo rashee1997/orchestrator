@@ -154,6 +154,10 @@ export class MemoryManager {
         return this.planTaskManager.getTask(...args);
     }
 
+    async addTaskToPlan(...args: Parameters<PlanTaskManager['addTaskToPlan']>) {
+        return this.planTaskManager.addTaskToPlan(...args);
+    }
+
     // --- Knowledge Graph Memory Tools (Delegated) ---
     async createEntities(...args: Parameters<KnowledgeGraphManager['createEntities']>) {
         return this.knowledgeGraphManager.createEntities(...args);
