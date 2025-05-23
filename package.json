@@ -1,0 +1,35 @@
+{
+  "name": "memory-mcp-server",
+  "version": "0.1.0",
+  "description": "A Model Context Protocol server for persistent memory management in AI agents using SQLite.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "memory-mcp-server": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\" && copyfiles -u 1 src/database/schema.sql build/database",
+    "start": "node build/index.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.1",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "@tavily/core": "^0.5.2",
+    "ajv": "^8.17.1",
+    "axios": "^1.9.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@types/ajv": "^1.0.4",
+    "@types/node": "^20.11.24",
+    "copyfiles": "^2.4.1",
+    "typescript": "^5.3.3"
+  }
+}
