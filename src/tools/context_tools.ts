@@ -137,7 +137,9 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 args.snippet_index as number | null
             );
             if (context && typeof context.content === 'string') {
-                return { content: [{ type: 'markdown', markdown: context.content }] };
+                // Always return type 'text', even if content is markdown.
+                // The client will render markdown if the text content is markdown.
+                return { content: [{ type: 'text', text: context.content }] };
             }
             return { content: [{ type: 'text', text: JSON.stringify(context, null, 2) }] };
         },

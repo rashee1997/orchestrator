@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
+import { validate, schemas } from '../../utils/validation.js';
 
 export class PlanTaskManager {
     private dbService: DatabaseService;
@@ -16,6 +17,13 @@ export class PlanTaskManager {
         const db = this.dbService.getDb();
         const plan_id = randomUUID();
         const timestamp = Date.now();
+
+        // Validate input against the createTaskPlan schema
+        const validationResult = validate('createTaskPlan', { agent_id, planData, tasksData });
+        if (!validationResult.valid) {
+            console.error('Validation errors for createPlanWithTasks:', validationResult.errors);
+            throw new Error(`Invalid input for createPlanWithTasks: ${JSON.stringify(validationResult.errors)}`);
+        }
 
         await db.run('BEGIN TRANSACTION');
         try {
@@ -157,6 +165,21 @@ export class PlanTaskManager {
     async updateTaskStatus(agent_id: string, task_id: string, new_status: string, completion_timestamp?: number): Promise<boolean> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
+
+        // First, retrieve the task to ensure it exists and get its plan_id
+        const task = await this.getTask(agent_id, task_id);
+        if (!task) {
+            console.warn(`Attempted to update non-existent task: ${task_id} for agent: ${agent_id}`);
+            return false; // Task not found
+        }
+
+        // Ensure the task's plan still exists
+        const plan = await this.getPlan(agent_id, (task as any).plan_id);
+        if (!plan) {
+            console.warn(`Attempted to update task ${task_id} whose associated plan ${((task as any).plan_id)} does not exist for agent: ${agent_id}`);
+            return false; // Associated plan not found
+        }
+
         const result = await db.run(
             `UPDATE plan_tasks SET status = ?, last_updated_timestamp = ?, completion_timestamp = ? WHERE agent_id = ? AND task_id = ?`,
             new_status, timestamp, completion_timestamp || null, agent_id, task_id

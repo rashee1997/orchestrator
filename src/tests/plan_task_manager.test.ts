@@ -159,6 +159,35 @@ describe('MemoryManager Plan and Task Management', () => {
         expect(updatedTask.completion_timestamp).toBe(completionTs);
     });
 
+    it('should not update task status if task does not exist', async () => {
+        const agentId = 'test-agent-nonexistent';
+        const nonExistentTaskId = randomUUID();
+        const success = await memoryManager.updateTaskStatus(agentId, nonExistentTaskId, 'COMPLETED');
+        expect(success).toBe(false);
+    });
+
+    it('should not update task status if associated plan does not exist', async () => {
+        const agentId = 'test-agent-plan-deleted';
+        const planId = randomUUID(); // This plan will be deleted
+        const taskId = randomUUID();
+        const ts = Date.now();
+
+        // Create a plan and a task
+        await db.run(`INSERT INTO plans (plan_id, agent_id, title, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?)`, planId, agentId, 'Plan for Deleted Test', ts, ts);
+        await db.run(`INSERT INTO plan_tasks (task_id, plan_id, agent_id, task_number, title, status, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, taskId, planId, agentId, 1, 'Task for Deleted Plan', 'PLANNED', ts, ts);
+
+        // Delete the plan (this should cascade delete the task due to FK, but we're testing the application logic's robustness)
+        await memoryManager.deletePlan(agentId, planId);
+
+        // Attempt to update the task, which should now fail because its plan is gone
+        const success = await memoryManager.updateTaskStatus(agentId, taskId, 'COMPLETED');
+        expect(success).toBe(false);
+
+        // Verify the task is indeed gone (due to cascade delete)
+        const deletedTask = await db.get(`SELECT * FROM plan_tasks WHERE task_id = ?`, taskId);
+        expect(deletedTask).toBeUndefined();
+    });
+
     it('should delete a plan and cascade delete its tasks', async () => {
         const agentId = 'test-agent-8';
         const planId = randomUUID();

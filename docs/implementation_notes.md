@@ -27,6 +27,9 @@ The project follows a modular structure to separate concerns:
 *   **`plans` table:** Stores high-level plan information such as `plan_id`, `agent_id`, `title`, `overall_goal`, `status`, `version`, timestamps, and optional metadata.
 *   **`plan_tasks` table:** Stores individual tasks within a plan, including `task_id`, `plan_id` (foreign key to `plans`), `agent_id`, `task_number`, `title`, `description`, `status`, and other task-specific details.
 *   **Cascading Delete:** The `plan_tasks` table has a `FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE`. This ensures that when a plan is deleted from the `plans` table, all its associated tasks in the `plan_tasks` table are automatically deleted, maintaining data integrity.
+*   **Data Validation:**
+    *   `createPlanWithTasks`: Explicit validation using `src/utils/validation.ts` schemas is performed on `tasksData` before database insertion to ensure data integrity and prevent invalid task creation.
+    *   `updateTaskStatus`: Application-level validation ensures that both the task and its associated plan exist before allowing status updates, preventing updates to orphaned or non-existent tasks.
 *   **Indexing:** Appropriate indexes are defined in `schema.sql` on `agent_id`, `status`, and `plan_id` to optimize retrieval and filtering of plans and tasks.
 
 ### MemoryManager Class

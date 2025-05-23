@@ -1,7 +1,7 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
-import { formatPlanToMarkdown, formatTasksListToMarkdownTable, formatPlansListToMarkdownTable } from '../utils/formatters.js';
+import { formatTasksListToMarkdownTable, formatPlansListToMarkdownTable } from '../utils/formatters.js';
 
 export const planManagementToolDefinitions = [
     {
@@ -175,11 +175,10 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 args.plan_id as string
             );
             if (!planDetails) {
-                return { content: [{ type: 'markdown', markdown: `Plan with ID ${args.plan_id} not found.` }] };
+                return { content: [{ type: 'text', text: `Plan with ID ${args.plan_id} not found.` }] };
             }
             const tasks = await memoryManager.getPlanTasks(agent_id, args.plan_id as string);
-            const markdownOutput = formatPlanToMarkdown(planDetails, tasks as any[]);
-            return { content: [{ type: 'text', text: markdownOutput }] };
+            return { content: [{ type: 'json', json: { plan: planDetails, tasks: tasks } }] };
         },
         'list_task_plans': async (args: any, agent_id: string) => {
             const validationResult = validate('listTaskPlans', args);
