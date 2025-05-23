@@ -507,4 +507,331 @@ Errors will be returned in the `isError: true` field of the tool response, with 
         }
       }]
     }
+---
+
+### `summarize_context`
+
+*   **Description:** Generates a summary of stored contextual data. (Placeholder: Requires external NLP integration for full functionality).
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "context_type": { "type": "string", "description": "Category of context to summarize." },
+        "version": { "type": "number", "description": "Optional specific version of the context. If not provided, the latest version is summarized.", "nullable": true }
+      },
+      "required": ["agent_id", "context_type"]
+    }
+    ```
+*   **Output:** Returns a text summary of the context.
+    ```json
+    { "content": [{ "type": "text", "text": "Summary of the context data." }] }
+    ```
+
+---
+
+### `extract_entities`
+
+*   **Description:** Extracts key entities and keywords from stored contextual data. (Placeholder: Requires external NLP integration for full functionality).
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "context_type": { "type": "string", "description": "Category of context to extract from." },
+        "version": { "type": "number", "description": "Optional specific version of the context. If not provided, the latest version is used.", "nullable": true }
+      },
+      "required": ["agent_id", "context_type"]
+    }
+    ```
+*   **Output:** Returns a JSON object containing extracted entities and keywords.
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "entities": ["entity1", "entity2"],
+          "keywords": ["keyword1", "keyword2"],
+          "message": "Successfully extracted entities and keywords."
+        }
+      }]
+    }
+    ```
+
+---
+
+### `semantic_search_context`
+
+*   **Description:** Performs a semantic search on stored contextual data using vector embeddings. (Placeholder: Requires external embedding model integration for full functionality).
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "context_type": { "type": "string", "description": "Category of context to search within." },
+        "query_text": { "type": "string", "description": "The text query for semantic search." },
+        "top_k": { "type": "number", "description": "Optional: Number of top similar results to return.", "default": 5, "minimum": 1 }
+      },
+      "required": ["agent_id", "context_type", "query_text"]
+    }
+    ```
+*   **Output:** Returns a JSON object containing search results with similarity scores.
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "results": [
+            { "score": 0.95, "snippet": { "TITLE": "Relevant Doc", "DESCRIPTION": "...", "CODE": "..." } }
+          ],
+          "message": "Successfully performed semantic search."
+        }
+      }]
+    }
+    ```
+
+---
+
+### `refine_user_prompt`
+
+*   **Description:** Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent (e.g., 'cline')." },
+        "raw_user_prompt": { "type": "string", "description": "The raw text prompt received from the user." },
+        "target_ai_persona": {
+          "type": ["string", "null"],
+          "description": "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). This helps the refiner tailor the output.",
+          "default": null
+        },
+        "conversation_context_ids": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
+          "default": null
+        }
+      },
+      "required": ["agent_id", "raw_user_prompt"]
+    }
+    ```
+*   **Output:** Returns a structured JSON object representing the "Refined Prompt for AI".
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
+          "original_prompt_text": "The exact raw user prompt text that was processed.",
+          "refinement_engine_model": "gemini-2.0-flash",
+          "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
+          "overall_goal": "A clear, concise statement of the user's primary objective, as interpreted from the prompt.",
+          "decomposed_tasks": [
+            "Sub-task 1 identified from the prompt.",
+            "Sub-task 2 identified from the prompt."
+          ],
+          "key_entities_identified": [
+            "Entity A (e.g., filename, function name, concept)",
+            "Entity B"
+          ],
+          "implicit_assumptions_made_by_refiner": [
+            "Assuming 'the dashboard' refers to the main application dashboard."
+          ],
+          "explicit_constraints_from_prompt": [
+            "The solution must be implemented in Python 3.9."
+          ],
+          "suggested_ai_role_for_agent": "Example: Act as a Senior Python Developer specializing in API security and database interactions.",
+          "suggested_reasoning_strategy_for_agent": "Example: Prioritize security best practices. Analyze potential attack vectors.",
+          "desired_output_characteristics_inferred": {
+            "type": "Example: A fully functional Python module with accompanying unit tests.",
+            "key_content_elements": [
+              "Refactored Python code for user_authentication.py."
+            ],
+            "level_of_detail": "Example: Sufficient for another developer to understand."
+          },
+          "suggested_context_analysis_for_agent": [
+            {
+              "suggestion_type": "MEMORY_RETRIEVAL",
+              "tool_to_use": "get_conversation_history",
+              "parameters": {"limit": 5, "offset": 0},
+              "rationale": "To understand immediate preceding dialogue for context."
+            }
+          ],
+          "confidence_in_refinement_score": "High",
+          "refinement_error_message": null
+        }
+      }]
+    }
+
+---
+
+### `get_refined_prompt`
+
+*   **Description:** Retrieves a previously stored refined prompt by its unique ID.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "refined_prompt_id": { "type": "string", "description": "The unique ID of the refined prompt to retrieve." }
+      },
+      "required": ["refined_prompt_id"],
+      "additionalProperties": false
+    }
+    ```
+*   **Output:** Returns a structured JSON object representing the "Refined Prompt for AI" if found, otherwise a message indicating it was not found.
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": {
+          "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
+          "agent_id": "cline",
+          "original_prompt_text": "The exact raw user prompt text that was processed.",
+          "refinement_engine_model": "gemini-2.0-flash",
+          "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
+          "overall_goal": "A clear, concise statement of the user's primary objective.",
+          "decomposed_tasks": [
+            "Sub-task 1.",
+            "Sub-task 2."
+          ],
+          "key_entities_identified": [
+            "Entity A",
+            "Entity B"
+          ],
+          "implicit_assumptions_made_by_refiner": [],
+          "explicit_constraints_from_prompt": [],
+          "suggested_ai_role_for_agent": "Example Role",
+          "suggested_reasoning_strategy_for_agent": "Example Strategy",
+          "desired_output_characteristics_inferred": {
+            "type": "Code Solution",
+            "key_content_elements": [],
+            "level_of_detail": "Detailed"
+          },
+          "suggested_context_analysis_for_agent": [],
+          "confidence_in_refinement_score": "High",
+          "refinement_error_message": null
+        }
+      }]
+    }
+
+---
+
+### `search_context_by_keywords`
+
+*   **Description:** Searches stored contextual data (specifically documentation snippets) by keywords.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "context_type": { "type": "string", "description": "Category of context to search within (e.g., \"daisyui_component_creation_docs\")." },
+        "keywords": { "type": "string", "description": "Keywords to search for within the documentation snippets (case-insensitive)." }
+      },
+      "required": ["agent_id", "context_type", "keywords"]
+    }
+    ```
+*   **Output:** Returns a JSON array of matching documentation snippets.
+    ```json
+    {
+      "content": [{
+        "type": "json",
+        "json": [
+          {
+            "TITLE": "Snippet Title",
+            "DESCRIPTION": "Snippet description containing keywords.",
+            "CODE": "console.log('example');"
+          }
+        ]
+      }]
+    }
+    ```
+
+---
+
+### `prune_old_context`
+
+*   **Description:** Deletes old context entries based on a specified age (in milliseconds).
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "context_type": { "type": "string", "description": "Optional: Category of context to prune. If not provided, prunes all context types for the agent." },
+        "max_age_ms": { "type": "number", "description": "Context entries older than this age (in milliseconds) will be deleted." }
+      },
+      "required": ["agent_id", "max_age_ms"]
+    }
+    ```
+*   **Output:** Returns a text message indicating the number of deleted entries.
+    ```json
+    { "content": [{ "type": "text", "text": "Deleted 5 old context entries." }] }
+    ```
+
+---
+
+### `export_data_to_csv`
+
+*   **Description:** Exports data from a specified database table to a CSV file.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "tableName": { "type": "string", "description": "The name of the database table to export." },
+        "filePath": { "type": "string", "description": "The path where the CSV file will be saved." }
+      },
+      "required": ["tableName", "filePath"]
+    }
+    ```
+*   **Output:** Returns a text message indicating success or failure.
+    ```json
+    { "content": [{ "type": "text", "text": "Successfully exported data from table 'conversation_history' to /path/to/file.csv" }] }
+    ```
+
+---
+
+### `backup_database`
+
+*   **Description:** Creates a backup copy of the SQLite database file.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "backupFilePath": { "type": "string", "description": "The path where the database backup file will be saved." }
+      },
+      "required": ["backupFilePath"]
+    }
+    ```
+*   **Output:** Returns a text message indicating success or failure.
+    ```json
+    { "content": [{ "type": "text", "text": "Database backed up successfully to /path/to/backup.db" }] }
+    ```
+
+---
+
+### `restore_database`
+
+*   **Description:** Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database.
+*   **Input Schema:**
+    ```json
+    {
+      "type": "object",
+      "properties": {
+        "backupFilePath": { "type": "string", "description": "The path to the database backup file to restore from." }
+      },
+      "required": ["backupFilePath"]
+    }
+    ```
+*   **Output:** Returns a text message indicating success or failure.
+    ```json
+    { "content": [{ "type": "text", "text": "Database restored successfully from /path/to/backup.db" }] }
     ```

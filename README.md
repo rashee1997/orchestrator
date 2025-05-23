@@ -15,6 +15,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
     * **Source Attribution:** Log the origin of information for transparency and traceability.
     * **Correction Logs:** Record instances of corrections for learning and auditing.
     * **Success Metrics:** Track quantitative and qualitative performance indicators.
+    * **Refined Prompts:** Store structured versions of user prompts for consistent AI processing.
 * 🕸️ **Knowledge Graph Management:** Create, update, and query a structured knowledge graph of entities and their relationships.
 * 📝 **Advanced Plan & Task Management:**
     * Define complex plans with overall goals and statuses.
@@ -23,12 +24,14 @@ This server empowers your AI agents to learn, remember, and operate with greater
 * 🌐 **External Integrations:**
     * **Tavily AI:** Perform advanced web searches.
     * **Google Gemini:** Leverage powerful LLM capabilities for:
+        * Prompt Refinement
         * Context Summarization
         * Entity & Keyword Extraction
         * Semantic Search (Vector Embeddings)
 * 🛠️ **Data Utilities:**
     * Backup and restore the entire memory database.
     * Export table data to CSV.
+    * Prune old context entries based on age.
 * 🛡️ **Data Validation:** Ensures integrity of incoming data using JSON schemas.
 * ⚙️ **MCP Compliant:** Seamlessly integrates with MCP-compatible clients.
 * 📄 **Structured Output:** Provides human-readable Markdown for plan and task details.
@@ -91,11 +94,13 @@ This server empowers your AI agents to learn, remember, and operate with greater
           "C:/Users/user/Dropbox/PC/Documents/Cline/MCP/memory-mcp-server/build/index.js"
         ],
         "env": {
+          "TAVILY_API_KEY": "your_tavily_api_key",
+          "GEMINI_API_KEY": "your_google_gemini_api_key"
         }
       }
     }
     ```
-    **Note:** Ensure the path in `args` is the correct absolute path to the `build/index.js` file on your system.
+    **Note:** Ensure the path in `args` is the correct absolute path to the `build/index.js` file on your system. Also, ensure that `TAVILY_API_KEY` and `GEMINI_API_KEY` are correctly set in the `env` section if you are not using a global `.env` file for the MCP server.
 
 ## 🧭 Core Concepts
 
@@ -126,7 +131,7 @@ The server exposes a rich set of tools for memory management and external servic
 * `log_success_metric`, `get_success_metrics`
 
 ### 🕸️ Knowledge Graph
-* `knowledge_graph_memory` (with operations like `create_entities`, `create_relations`, `add_observations`, `read_graph`, `search_nodes`, `delete_entities`, etc.)
+* `knowledge_graph_memory` (with operations like `create_entities`, `create_relations`, `add_observations`, `read_graph`, `search_nodes`, `open_nodes`, `delete_entities`, `delete_observations`, `delete_relations`, etc.)
 
 ### 🗺️ Plan & Task Management
 * `create_task_plan`
@@ -139,6 +144,8 @@ The server exposes a rich set of tools for memory management and external servic
 
 ### 🌐 External Integrations & LLM Tools
 * `tavily_web_search`
+* `refine_user_prompt`
+* `get_refined_prompt`
 * `summarize_context` (Uses Gemini)
 * `extract_entities` (Uses Gemini)
 * `semantic_search_context` (Uses Gemini for embeddings)
@@ -152,7 +159,36 @@ The server exposes a rich set of tools for memory management and external servic
 
 Here are a few examples of how an AI agent might use the Memory MCP Server:
 
-**1. Store Current Task Context:**
+**1. Refine a User Prompt:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>refine_user_prompt</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "raw_user_prompt": "I need to implement a new user registration flow with email verification.",
+      "target_ai_persona": "Senior Backend Developer"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+*(The MCP client would receive the structured 'Refined Prompt for AI' JSON object)*
+
+**2. Get a Refined Prompt by ID:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>get_refined_prompt</tool_name>
+  <arguments>
+    {
+      "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**3. Store Current Task Context:**
 ```xml
 <use_mcp_tool>
   <server_name>memory-mcp-server</server_name>
@@ -173,7 +209,7 @@ Here are a few examples of how an AI agent might use the Memory MCP Server:
 </use_mcp_tool>
 ```
 
-**2. Create a Development Plan:**
+**4. Create a Development Plan:**
 ```xml
 <use_mcp_tool>
   <server_name>memory-mcp-server</server_name>
@@ -210,7 +246,7 @@ Here are a few examples of how an AI agent might use the Memory MCP Server:
 ```
 *(The MCP client would receive `{ "plan_id": "...", "task_ids": ["...", "..."] }`)*
 
-**3. Perform a Web Search with Tavily and Log Attribution:**
+**5. Perform a Web Search with Tavily and Log Attribution:**
 ```xml
 <use_mcp_tool>
   <server_name>memory-mcp-server</server_name>
@@ -238,7 +274,122 @@ Here are a few examples of how an AI agent might use the Memory MCP Server:
 </use_mcp_tool>
 ```
 
-**4. Read the Knowledge Graph:**
+**6. Summarize Context:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>summarize_context</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "context_type": "project_documentation_v1",
+      "version": 1
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**7. Extract Entities from Context:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>extract_entities</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "context_type": "meeting_notes_v1"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**8. Perform Semantic Search on Context:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>semantic_search_context</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "context_type": "technical_specifications_v1",
+      "query_text": "how to integrate with external APIs",
+      "top_k": 3
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**9. Export Data to CSV:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>export_data_to_csv</tool_name>
+  <arguments>
+    {
+      "tableName": "conversation_history",
+      "filePath": "C:/Users/user/Desktop/conversation_history.csv"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**10. Backup Database:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>backup_database</tool_name>
+  <arguments>
+    {
+      "backupFilePath": "C:/Users/user/Desktop/memory_backup_20250523.db"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**11. Restore Database:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>restore_database</tool_name>
+  <arguments>
+    {
+      "backupFilePath": "C:/Users/user/Desktop/memory_backup_20250523.db"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**12. Search Context by Keywords:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>search_context_by_keywords</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "context_type": "project_documentation_v1",
+      "keywords": "installation steps"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**13. Prune Old Context:**
+```xml
+<use_mcp_tool>
+  <server_name>memory-mcp-server</server_name>
+  <tool_name>prune_old_context</tool_name>
+  <arguments>
+    {
+      "agent_id": "my-ai-agent-001",
+      "max_age_ms": 2592000000,
+      "context_type": "temporary_logs"
+    }
+  </arguments>
+</use_mcp_tool>
+```
+
+**14. Read the Knowledge Graph:**
 ```xml
 <use_mcp_tool>
   <server_name>memory-mcp-server</server_name>
@@ -252,7 +403,7 @@ Here are a few examples of how an AI agent might use the Memory MCP Server:
 </use_mcp_tool>
 ```
 
-**5. Get Plan Details (receives Markdown):**
+**15. Get Plan Details (receives Markdown):**
 ```xml
 <use_mcp_tool>
   <server_name>memory-mcp-server</server_name>
@@ -348,4 +499,3 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 ## 📜 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details (assuming you add one).
-    
