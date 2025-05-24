@@ -8,8 +8,16 @@ import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } 
 import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './plan_management_tools.js';
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './knowledge_graph_tools.js';
+import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from './mode_instruction_tools.js';
 
 import { MemoryManager } from '../database/memory_manager.js';
+
+export interface Tool {
+    name: string;
+    description: string;
+    inputSchema: object; // Use camelCase to match other tools
+    func: (args: any) => Promise<any>;
+}
 
 export const allToolDefinitions = [
     ...conversationToolDefinitions,
@@ -22,7 +30,9 @@ export const allToolDefinitions = [
     ...planManagementToolDefinitions,
     ...promptRefinementToolDefinitions,
     ...knowledgeGraphToolDefinitions,
+    ...modeInstructionToolDefinitions,
 ];
+console.log('allToolDefinitions initialized:', allToolDefinitions.map(t => t.name));
 
 export function getAllToolHandlers(memoryManager: MemoryManager) {
     return {
@@ -36,5 +46,6 @@ export function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getPlanManagementToolHandlers(memoryManager),
         ...getPromptRefinementToolHandlers(memoryManager),
         ...getKnowledgeGraphToolHandlers(memoryManager),
+        ...getModeInstructionToolHandlers(memoryManager),
     };
 }

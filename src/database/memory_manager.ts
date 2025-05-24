@@ -9,6 +9,7 @@ import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphManager } from './managers/KnowledgeGraphManager.js';
+import { ModeInstructionManager } from './managers/ModeInstructionManager.js';
 import { GeminiIntegrationService } from './services/GeminiIntegrationService.js';
 import { DatabaseUtilityService } from './services/DatabaseUtilityService.js';
 
@@ -23,6 +24,7 @@ export class MemoryManager {
     public planTaskManager!: PlanTaskManager;
     public subtaskManager!: SubtaskManager;
     public knowledgeGraphManager!: KnowledgeGraphManager;
+    public modeInstructionManager!: ModeInstructionManager;
     private geminiIntegrationService!: GeminiIntegrationService;
     private databaseUtilityService!: DatabaseUtilityService;
 
@@ -49,6 +51,7 @@ export class MemoryManager {
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
         this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService);
+        this.modeInstructionManager = new ModeInstructionManager(this.dbService);
 
         // Initialize GeminiIntegrationService with DatabaseService and ContextInformationManager
         const GEMINI_API_KEY = process.env.GEMINI_API_KEY;

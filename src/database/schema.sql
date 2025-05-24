@@ -214,3 +214,18 @@ CREATE TABLE IF NOT EXISTS agents (
     description TEXT,
     creation_timestamp INTEGER NOT NULL
 );
+
+-- New table for Mode Instructions
+CREATE TABLE IF NOT EXISTS mode_instructions (
+    instruction_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    mode_name TEXT NOT NULL,
+    instruction_content TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    creation_timestamp INTEGER NOT NULL,
+    last_updated_timestamp INTEGER NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+    UNIQUE (agent_id, mode_name, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mode_instructions_agent_mode ON mode_instructions (agent_id, mode_name);
