@@ -1,6 +1,7 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
+import { formatObjectToMarkdown } from '../utils/formatters.js';
 
 export const promptRefinementToolDefinitions = [
     {
@@ -38,7 +39,7 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
                 args.target_ai_persona as string | undefined,
                 args.conversation_context_ids as string[] | undefined
             );
-            return { content: [{ type: 'text', text: JSON.stringify(refinedPromptObject, null, 2) }] };
+            return { content: [{ type: 'text', text: formatObjectToMarkdown(refinedPromptObject) }] };
         },
         'get_refined_prompt': async (args: any) => { // agent_id is not required for this tool
             const refinedPrompt = await memoryManager.getRefinedPrompt(
@@ -47,7 +48,7 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
             if (!refinedPrompt) {
                 return { content: [{ type: 'text', text: `Refined prompt with ID ${args.refined_prompt_id} not found.` }] };
             }
-            return { content: [{ type: 'text', text: JSON.stringify(refinedPrompt, null, 2) }] };
+            return { content: [{ type: 'text', text: formatObjectToMarkdown(refinedPrompt) }] };
         },
     };
 }

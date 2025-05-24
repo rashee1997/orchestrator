@@ -1,6 +1,7 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
+import { formatObjectToMarkdown } from '../utils/formatters.js';
 
 export const successMetricsToolDefinitions = [
     {
@@ -62,7 +63,7 @@ export function getSuccessMetricsToolHandlers(memoryManager: MemoryManager) {
                 args.limit as number,
                 args.offset as number
             );
-            return { content: [{ type: 'text', text: JSON.stringify(metrics, null, 2) }] };
+            return { content: [{ type: 'text', text: formatObjectToMarkdown(metrics) }] };
         },
     };
 }
