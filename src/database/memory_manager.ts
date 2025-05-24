@@ -7,20 +7,22 @@ import { SourceAttributionManager } from './managers/SourceAttributionManager.js
 import { CorrectionLogManager } from './managers/CorrectionLogManager.js';
 import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
+import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphManager } from './managers/KnowledgeGraphManager.js';
 import { GeminiIntegrationService } from './services/GeminiIntegrationService.js';
 import { DatabaseUtilityService } from './services/DatabaseUtilityService.js';
 
 export class MemoryManager {
     private dbService!: DatabaseService;
-    private conversationHistoryManager!: ConversationHistoryManager;
-    private contextInformationManager!: ContextInformationManager;
-    private referenceKeyManager!: ReferenceKeyManager;
-    private sourceAttributionManager!: SourceAttributionManager;
-    private correctionLogManager!: CorrectionLogManager;
-    private successMetricsManager!: SuccessMetricsManager;
-    private planTaskManager!: PlanTaskManager;
-    private knowledgeGraphManager!: KnowledgeGraphManager;
+    public conversationHistoryManager!: ConversationHistoryManager;
+    public contextInformationManager!: ContextInformationManager;
+    public referenceKeyManager!: ReferenceKeyManager;
+    public sourceAttributionManager!: SourceAttributionManager;
+    public correctionLogManager!: CorrectionLogManager;
+    public successMetricsManager!: SuccessMetricsManager;
+    public planTaskManager!: PlanTaskManager;
+    public subtaskManager!: SubtaskManager;
+    public knowledgeGraphManager!: KnowledgeGraphManager;
     private geminiIntegrationService!: GeminiIntegrationService;
     private databaseUtilityService!: DatabaseUtilityService;
 
@@ -45,6 +47,7 @@ export class MemoryManager {
         this.correctionLogManager = new CorrectionLogManager(this.dbService);
         this.successMetricsManager = new SuccessMetricsManager(this.dbService);
         this.planTaskManager = new PlanTaskManager(this.dbService);
+        this.subtaskManager = new SubtaskManager(this.dbService);
         this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService);
 
         // Initialize GeminiIntegrationService with DatabaseService and ContextInformationManager

@@ -23,6 +23,22 @@ export function formatTaskToMarkdown(task: any): string {
     return md;
 }
 
+// Helper function to format a list of subtasks into a Markdown table
+export function formatSubtasksListToMarkdownTable(subtasks: any[]): string {
+    if (!subtasks || subtasks.length === 0) {
+        return "No subtasks found.\n";
+    }
+    let md = "| Subtask ID | Title | Status | Parent Task ID |\n";
+    md += "|------------|-------|--------|----------------|\n";
+    subtasks.forEach(subtask => {
+        md += `| ${subtask.subtask_id || 'N/A'} `
+            + `| ${subtask.title || 'N/A'} `
+            + `| ${subtask.status || 'N/A'} `
+            + `| ${subtask.parent_task_id || 'N/A'} |\n`;
+    });
+    return md;
+}
+
 // Helper function to format a list of tasks into a Markdown table
 export function formatTasksListToMarkdownTable(tasks: any[]): string {
     if (!tasks || tasks.length === 0) {
@@ -37,12 +53,22 @@ export function formatTasksListToMarkdownTable(tasks: any[]): string {
             + `| ${(task.dependencies_task_ids && task.dependencies_task_ids.length > 0) ? task.dependencies_task_ids.join(', ') : 'None'} `
             + `| ${task.assigned_to || 'N/A'} `
             + `| ${task.task_id || 'N/A'} |\n`;
+
+        if (task.subtasks && task.subtasks.length > 0) {
+            md += `| | **Subtasks:** | | | | |\n`;
+            md += `| | --- | --- | --- | --- | --- |\n`;
+            task.subtasks.forEach((subtask: any) => {
+                md += `| | - ${subtask.title || 'N/A'} `
+                    + `| ${subtask.status || 'N/A'} `
+                    + `| | | ${subtask.subtask_id || 'N/A'} |\n`;
+            });
+        }
     });
     return md;
 }
 
 // Helper function to format a single plan into a Markdown string
-export function formatPlanToMarkdown(plan: any, tasks: any[] = []): string {
+export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = []): string {
     let md = `## Plan: ${plan.title || 'N/A'} (ID: ${plan.plan_id})\n`;
     md += `- **Agent ID:** ${plan.agent_id}\n`;
     md += `- **Status:** ${plan.status || 'N/A'}\n`;
@@ -59,6 +85,11 @@ export function formatPlanToMarkdown(plan: any, tasks: any[] = []): string {
         md += formatTasksListToMarkdownTable(tasks);
     } else {
         md += "\nNo tasks associated with this plan currently.\n"
+    }
+
+    if (planSubtasks && planSubtasks.length > 0) {
+        md += "\n### Subtasks for this Plan (not linked to specific parent tasks):\n";
+        md += formatSubtasksListToMarkdownTable(planSubtasks);
     }
     return md;
 }

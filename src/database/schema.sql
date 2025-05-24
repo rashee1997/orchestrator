@@ -162,6 +162,27 @@ CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks (plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_tasks_agent_id_status ON plan_tasks (agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id_status ON plan_tasks (plan_id, status);
 
+-- New table for Subtasks
+CREATE TABLE IF NOT EXISTS subtasks (
+    subtask_id TEXT PRIMARY KEY,                -- Unique ID for the subtask
+    plan_id TEXT NOT NULL,                      -- FK to plans.plan_id
+    parent_task_id TEXT,                        -- FK to plan_tasks.task_id (nullable, if subtask is directly under a plan)
+    agent_id TEXT NOT NULL,                     -- Scopes subtask to an agent
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'PLANNED',     -- e.g., PLANNED, IN_PROGRESS, COMPLETED, FAILED, BLOCKED, SKIPPED
+    creation_timestamp INTEGER NOT NULL,
+    last_updated_timestamp INTEGER NOT NULL,
+    completion_timestamp INTEGER,               -- Timestamp when subtask was marked COMPLETED or FAILED
+    notes TEXT,                                 -- JSON blob for subtask-specific notes or sub-results
+    FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_task_id) REFERENCES plan_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_subtasks_plan_id ON subtasks (plan_id);
+CREATE INDEX IF NOT EXISTS idx_subtasks_parent_task_id ON subtasks (parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_subtasks_agent_id_status ON subtasks (agent_id, status);
+
 -- New table for Refined Prompts
 CREATE TABLE IF NOT EXISTS refined_prompts (
     refined_prompt_id TEXT PRIMARY KEY,
