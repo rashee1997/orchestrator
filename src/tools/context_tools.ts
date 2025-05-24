@@ -1,7 +1,7 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
-import { formatPlanToMarkdown } from '../utils/formatters.js'; // Assuming formatPlanToMarkdown is needed for get_task_plan_details output
+import { formatPlanToMarkdown, formatObjectToMarkdown } from '../utils/formatters.js'; // Assuming formatPlanToMarkdown is needed for get_task_plan_details output
 
 export const contextToolDefinitions = [
     {
@@ -111,6 +111,10 @@ export const contextToolDefinitions = [
     },
 ];
 
+function createMissingContextResponse(agent_id: string, context_type: string) {
+    return { content: [{ type: 'text', text: `Context not found for agent_id: ${agent_id}, context_type: ${context_type}` }] };
+}
+
 export function getContextToolHandlers(memoryManager: MemoryManager) {
     return {
         'store_context': async (args: any, agent_id: string) => {
@@ -136,16 +140,37 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 args.version as number | null,
                 args.snippet_index as number | null
             );
+            if (!context) {
+                return createMissingContextResponse(agent_id, args.context_type);
+            }
             if (context && typeof context.content === 'string') {
                 // Always return type 'text', even if content is markdown.
                 // The client will render markdown if the text content is markdown.
                 return { content: [{ type: 'text', text: context.content }] };
+            } else if (context) {
+                // If context is an object but content is not a string, format the entire object as Markdown
+                return { content: [{ type: 'text', text: formatObjectToMarkdown(context) }] };
             }
-            return { content: [{ type: 'text', text: JSON.stringify(context, null, 2) }] };
+            return { content: [{ type: 'text', text: `Context not found for agent_id: ${agent_id}, context_type: ${args.context_type}` }] };
         },
         'get_all_contexts': async (args: any, agent_id: string) => {
             const allContexts = await memoryManager.getAllContexts(agent_id);
-            return { content: [{ type: 'text', text: JSON.stringify(allContexts, null, 2) }] };
+            if (!allContexts || allContexts.length === 0) {
+                return { content: [{ type: 'text', text: `No contexts found for agent_id: ${agent_id}` }] };
+            }
+            const formattedContexts = allContexts.map(context => {
+                let md = `## Context ID: ${context.context_id}\n`;
+                md += `- **Agent ID:** ${context.agent_id}\n`;
+                md += `- **Timestamp:** ${new Date(context.timestamp).toLocaleString()}\n`;
+                md += `- **Context Type:** ${context.context_type}\n`;
+                md += `- **Version:** ${context.version}\n`;
+                if (context.parent_context_id) md += `- **Parent Context ID:** ${context.parent_context_id}\n`;
+                md += `### Context Data:\n`;
+                md += formatObjectToMarkdown(context.context_data, 1); // Indent context_data
+                return md;
+            }).join('\n---\n\n'); // Separate each context with a horizontal rule
+
+            return { content: [{ type: 'text', text: formattedContexts }] };
         },
         'search_context_by_keywords': async (args: any, agent_id: string) => {
             const validationResult = validate('searchContextByKeywords', args);
@@ -160,7 +185,18 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 args.context_type as string,
                 args.keywords as string
             );
-            return { content: [{ type: 'text', text: JSON.stringify(searchResults, null, 2) }] };
+            if (!searchResults || searchResults.length === 0) {
+                return { content: [{ type: 'text', text: `No results found for keywords: ${args.keywords} in context type: ${args.context_type}` }] };
+            }
+            const formattedResults = searchResults.map((result: { context_id: string; context_type: string; timestamp: number; content_snippet: any; }) => {
+                let md = `### Search Result ID: ${result.context_id}\n`;
+                md += `- **Context Type:** ${result.context_type}\n`;
+                md += `- **Timestamp:** ${new Date(result.timestamp).toLocaleString()}\n`;
+                md += `#### Content Snippet:\n`;
+                md += formatObjectToMarkdown(result.content_snippet, 1);
+                return md;
+            }).join('\n---\n\n');
+            return { content: [{ type: 'text', text: formattedResults }] };
         },
         'prune_old_context': async (args: any, agent_id: string) => {
             const validationResult = validate('pruneOldContext', args);
@@ -205,7 +241,13 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 args.context_type as string,
                 args.version as number | null
             );
-            return { content: [{ type: 'text', text: JSON.stringify(extractedData, null, 2) }] };
+            if (!extractedData) {
+                return { content: [{ type: 'text', text: `No entities found for context type: ${args.context_type}` }] };
+            }
+            let md = `### Extracted Entities for Context Type: ${args.context_type}\n`;
+            if (args.version) md += `- **Version:** ${args.version}\n`;
+            md += formatObjectToMarkdown(extractedData, 1);
+            return { content: [{ type: 'text', text: md }] };
         },
         'semantic_search_context': async (args: any, agent_id: string) => {
             const validationResult = validate('semanticSearchContext', args);
@@ -221,7 +263,16 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 args.query_text as string,
                 args.top_k as number
             );
-            return { content: [{ type: 'text', text: JSON.stringify(semanticResults, null, 2) }] };
+            if (!semanticResults || !semanticResults.results || semanticResults.results.length === 0) {
+                return { content: [{ type: 'text', text: `No semantic search results found for query: "${args.query_text}" in context type: ${args.context_type}` }] };
+            }
+            const formattedResults = semanticResults.results.map((result: { score: number; snippet: any; }) => {
+                let md = `### Semantic Search Result (Score: ${result.score})\n`;
+                md += `#### Content Snippet:\n`;
+                md += formatObjectToMarkdown(result.snippet, 1);
+                return md;
+            }).join('\n---\n\n');
+            return { content: [{ type: 'text', text: formattedResults }] };
         },
     };
 }

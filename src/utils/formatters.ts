@@ -23,6 +23,40 @@ export function formatTaskToMarkdown(task: any): string {
     return md;
 }
 
+// Helper function to format a generic object into a Markdown string
+export function formatObjectToMarkdown(obj: any, indent: number = 0): string {
+    let md = '';
+    const indentStr = ' '.repeat(indent * 2); // 2 spaces per indent level
+
+    if (obj === null || typeof obj === 'undefined') {
+        return `${indentStr}* N/A\n`;
+    }
+
+    if (typeof obj !== 'object') {
+        return `${indentStr}${obj}\n`;
+    }
+
+    if (Array.isArray(obj)) {
+        obj.forEach((item, index) => {
+            md += `${indentStr}- Item ${index + 1}:\n`;
+            md += formatObjectToMarkdown(item, indent + 1);
+        });
+    } else {
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const value = obj[key];
+                if (typeof value === 'object' && value !== null) {
+                    md += `${indentStr}- **${key}:**\n`;
+                    md += formatObjectToMarkdown(value, indent + 1);
+                } else {
+                    md += `${indentStr}- **${key}:** ${value}\n`;
+                }
+            }
+        }
+    }
+    return md;
+}
+
 // Helper function to format a list of subtasks into a Markdown table
 export function formatSubtasksListToMarkdownTable(subtasks: any[]): string {
     if (!subtasks || subtasks.length === 0) {
