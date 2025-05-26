@@ -181,9 +181,17 @@ export function log_task_progress(memory: MemoryManager): LoggingTool {
         status_of_step_execution,
         output_summary_or_error: output_summary_or_error || null
       };
-      const logId = await memory.taskProgressLogManager.createTaskProgressLog(logData);
-      return { content: [{ type: 'text', text: `Task progress logged with ID: ${logId}` }] };
+      try {
+        const logId = await memory.taskProgressLogManager.createTaskProgressLog(logData);
+        return { content: [{ type: 'text', text: `Task progress logged with ID: ${logId}` }] };
+      } catch (error: any) {
+        if (error.message && error.message.includes('FOREIGN KEY constraint failed')) {
+          return { content: [{ type: 'text', text: 'Error: The specified task is not part of the plan. Task progress not updated.' }] };
+        }
+        throw error;
+      }
     }
+
   };
 }
 

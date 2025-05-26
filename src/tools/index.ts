@@ -9,6 +9,7 @@ import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './knowledge_graph_tools.js';
 import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from './mode_instruction_tools.js';
+import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 
 import { 
     log_tool_execution, get_tool_execution_logs, update_tool_execution_log_status, 
@@ -87,6 +88,7 @@ export async function getAllToolDefinitions(): Promise<Tool[]> {
         ...promptRefinementToolDefinitions,
         ...knowledgeGraphToolDefinitions,
         ...modeInstructionToolDefinitions,
+        ...reviewLogToolDefinitions,
         // getLoggingToolDefinitions returns Tool[] (name, desc, schema), compatible
         ...(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]), 
     ];
@@ -117,7 +119,8 @@ export function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getPromptRefinementToolHandlers(memoryManager),
         ...getKnowledgeGraphToolHandlers(memoryManager),
         ...getModeInstructionToolHandlers(memoryManager),
-        
+        ...getReviewLogToolHandlers(memoryManager),
+
         log_tool_execution: log_tool_execution(memoryManager).call,
         get_tool_execution_logs: get_tool_execution_logs(memoryManager).call,
         update_tool_execution_log_status: update_tool_execution_log_status(memoryManager).call,
@@ -130,3 +133,6 @@ export function getAllToolHandlers(memoryManager: MemoryManager) {
         update_correction_log_status: update_correction_log_status(memoryManager).call,
     };
 }
+
+// Register tool validation schemas if needed
+import { schemas } from '../utils/validation.js';

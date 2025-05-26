@@ -361,6 +361,51 @@ CREATE INDEX IF NOT EXISTS idx_error_logs_status ON error_logs (status);
 CREATE INDEX IF NOT EXISTS idx_error_logs_plan_id ON error_logs (associated_plan_id);
 CREATE INDEX IF NOT EXISTS idx_error_logs_task_id ON error_logs (associated_task_id);
 
+-- Table for Task Review Logs (per task step, linked to plan_id and task_id)
+CREATE TABLE IF NOT EXISTS task_review_logs (
+    review_log_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    reviewer TEXT,
+    review_timestamp_unix INTEGER NOT NULL,
+    review_timestamp_iso TEXT NOT NULL,
+    review_status TEXT NOT NULL, -- e.g., PASSED, FAILED, NEEDS_CHANGES
+    review_notes_md TEXT,
+    issues_found_json TEXT,
+    resolution_notes_md TEXT,
+    last_updated_timestamp_unix INTEGER NOT NULL,
+    last_updated_timestamp_iso TEXT NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES plan_tasks(task_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_review_logs_plan_id ON task_review_logs (plan_id);
+CREATE INDEX IF NOT EXISTS idx_task_review_logs_task_id ON task_review_logs (task_id);
+CREATE INDEX IF NOT EXISTS idx_task_review_logs_agent_id ON task_review_logs (agent_id);
+CREATE INDEX IF NOT EXISTS idx_task_review_logs_status ON task_review_logs (review_status);
+
+-- Table for Final Plan Review Logs (one per plan, after all tasks, linked to plan_id only)
+CREATE TABLE IF NOT EXISTS final_plan_review_logs (
+    final_review_log_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    reviewer TEXT,
+    review_timestamp_unix INTEGER NOT NULL,
+    review_timestamp_iso TEXT NOT NULL,
+    review_status TEXT NOT NULL, -- e.g., PASSED, FAILED, NEEDS_CHANGES
+    review_notes_md TEXT,
+    issues_found_json TEXT,
+    resolution_notes_md TEXT,
+    last_updated_timestamp_unix INTEGER NOT NULL,
+    last_updated_timestamp_iso TEXT NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_plan_id ON final_plan_review_logs (plan_id);
+CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_agent_id ON final_plan_review_logs (agent_id);
+CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_status ON final_plan_review_logs (review_status);
+
 -- Ensure a default agent exists for foreign key constraints
 INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
 VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));

@@ -1,4 +1,5 @@
 import Ajv from 'ajv';
+import { reviewLogToolDefinitions } from '../tools/review_log_tools.js';
 
 const ajv = new Ajv.default({ allErrors: true });
 
@@ -364,6 +365,88 @@ export const schemas = {
           },
           required: ['agent_id', 'raw_user_prompt']
     },
+    create_task_review_log: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            task_id: { type: 'string' },
+            reviewer: { type: 'string' },
+            review_status: { type: 'string' },
+            review_notes_md: { type: 'string' },
+            issues_found_json: { type: 'string' },
+            resolution_notes_md: { type: 'string' }
+        },
+        required: ['agent_id', 'plan_id', 'task_id', 'review_status'],
+        additionalProperties: false
+    },
+    get_task_review_logs: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            task_id: { type: 'string' },
+            review_status: { type: 'string' }
+        },
+        additionalProperties: false
+    },
+    update_task_review_log: {
+        type: 'object',
+        properties: {
+            review_log_id: { type: 'string' },
+            updates: { type: 'object' }
+        },
+        required: ['review_log_id', 'updates'],
+        additionalProperties: false
+    },
+    delete_task_review_log: {
+        type: 'object',
+        properties: {
+            review_log_id: { type: 'string' }
+        },
+        required: ['review_log_id'],
+        additionalProperties: false
+    },
+    create_final_plan_review_log: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            reviewer: { type: 'string' },
+            review_status: { type: 'string' },
+            review_notes_md: { type: 'string' },
+            issues_found_json: { type: 'string' },
+            resolution_notes_md: { type: 'string' }
+        },
+        required: ['agent_id', 'plan_id', 'review_status'],
+        additionalProperties: false
+    },
+    get_final_plan_review_logs: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            review_status: { type: 'string' }
+        },
+        additionalProperties: false
+    },
+    update_final_plan_review_log: {
+        type: 'object',
+        properties: {
+            final_review_log_id: { type: 'string' },
+            updates: { type: 'object' }
+        },
+        required: ['final_review_log_id', 'updates'],
+        additionalProperties: false
+    },
+    delete_final_plan_review_log: {
+        type: 'object',
+        properties: {
+            final_review_log_id: { type: 'string' }
+        },
+        required: ['final_review_log_id'],
+        additionalProperties: false
+    },
 };
 
 // Compile schemas
@@ -372,6 +455,8 @@ for (const key in schemas) {
         ajv.addSchema((schemas as any)[key], key);
     }
 }
+
+// Removed redundant schema registration loop to prevent duplicate schema errors
 
 export function validate(schemaName: string, data: any) {
     const validateFn = ajv.getSchema(schemaName);

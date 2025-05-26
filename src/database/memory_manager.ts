@@ -15,6 +15,7 @@ import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
 import { ErrorLogManager } from './managers/ErrorLogManager.js';
 import { GeminiIntegrationService } from './services/GeminiIntegrationService.js';
 import { DatabaseUtilityService } from './services/DatabaseUtilityService.js';
+import { TaskReviewLogManager, FinalPlanReviewLogManager } from './managers/TaskReviewLogManager.js';
 
 export class MemoryManager {
     private dbService!: DatabaseService;
@@ -33,6 +34,8 @@ export class MemoryManager {
     public errorLogManager!: ErrorLogManager;
     private geminiIntegrationService!: GeminiIntegrationService;
     private databaseUtilityService!: DatabaseUtilityService;
+    public taskReviewLogManager!: import('./managers/TaskReviewLogManager.js').TaskReviewLogManager;
+    public finalPlanReviewLogManager!: import('./managers/TaskReviewLogManager.js').FinalPlanReviewLogManager;
 
     private constructor() {
         // Private constructor to enforce async factory
@@ -61,6 +64,8 @@ export class MemoryManager {
         this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
         this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
         this.errorLogManager = new ErrorLogManager(this.dbService);
+        this.taskReviewLogManager = new (await import('./managers/TaskReviewLogManager.js')).TaskReviewLogManager(this.dbService);
+        this.finalPlanReviewLogManager = new (await import('./managers/TaskReviewLogManager.js')).FinalPlanReviewLogManager(this.dbService);
 
         // Initialize GeminiIntegrationService with DatabaseService and ContextInformationManager
         const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -310,4 +315,15 @@ export class MemoryManager {
     async restoreDatabase(...args: Parameters<DatabaseUtilityService['restoreDatabase']>) {
         return this.databaseUtilityService.restoreDatabase(...args);
     }
+
+    // --- Task Review Logs (Delegated) ---
+    async createTaskReviewLog(data: any) { return this.taskReviewLogManager.createTaskReviewLog(data); }
+    async getTaskReviewLogs(query: any) { return this.taskReviewLogManager.getTaskReviewLogs(query); }
+    async updateTaskReviewLog(review_log_id: string, updates: any) { return this.taskReviewLogManager.updateTaskReviewLog(review_log_id, updates); }
+    async deleteTaskReviewLog(review_log_id: string) { return this.taskReviewLogManager.deleteTaskReviewLog(review_log_id); }
+    // --- Final Plan Review Logs (Delegated) ---
+    async createFinalPlanReviewLog(data: any) { return this.finalPlanReviewLogManager.createFinalPlanReviewLog(data); }
+    async getFinalPlanReviewLogs(query: any) { return this.finalPlanReviewLogManager.getFinalPlanReviewLogs(query); }
+    async updateFinalPlanReviewLog(final_review_log_id: string, updates: any) { return this.finalPlanReviewLogManager.updateFinalPlanReviewLog(final_review_log_id, updates); }
+    async deleteFinalPlanReviewLog(final_review_log_id: string) { return this.finalPlanReviewLogManager.deleteFinalPlanReviewLog(final_review_log_id); }
 }
