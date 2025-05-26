@@ -262,12 +262,18 @@ export class GeminiIntegrationService {
     ): Promise<any> { 
         this.checkApiInitialized();
 
-        const modelName = "gemini-1.5-flash-latest"; // Or "gemini-2.0-flash"
+        const modelName = "gemini-2.5-flash-preview-05-20"; // Or "gemini-2.0-flash"
         
         const metaPrompt = `
-You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it, and transform it into a highly structured and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request.
+You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it thoroughly, and transform it into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request with precision.
 
-You MUST output the refined prompt as a JSON object, strictly adhering to the following schema. Do not include any other text or markdown outside of the JSON block.
+You MUST perform 100% comprehensive code analysis of the prompt content and produce a 100% complete refactoring plan. Your output must include detailed planning steps to ensure clarity and actionable guidance.
+
+For planning steps, follow the PLAN_MODE_RULES format strictly, which includes adaptive planning depth with quick, standard, and comprehensive plans. Use clear goals, timelines, success criteria, phases, milestones, risk management, decision points, resource plans, and communication matrices as applicable.
+
+You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema without any additional text, explanation, or markdown outside the JSON block.
+
+Ensure the JSON is valid and complete. If any field is not applicable, use null or empty arrays/objects as appropriate.
 
 JSON Schema for Refined Prompt:
 \`\`\`json
@@ -310,9 +316,7 @@ JSON Schema for Refined Prompt:
       "parameters": {"limit": 5, "offset": 0},
       "rationale": "To understand immediate preceding dialogue for context."
     }
-  ],
-  "confidence_in_refinement_score": "High", 
-  "refinement_error_message": null 
+  ]
 }
 \`\`\`
 
@@ -326,6 +330,8 @@ ${conversation_context_ids && conversation_context_ids.length > 0 ? `Recent Conv
 
 Please provide the JSON object only.
 `;
+
+
 
         try {
             const contents: Content[] = [{ role: "user", parts: [{ text: metaPrompt }] }];
@@ -494,13 +500,13 @@ Please provide the JSON object only.
             return `Type: ${log.correction_type || 'N/A'}\nReason: ${log.reason || 'N/A'}\nOriginal: ${original}\nCorrected: ${corrected}\nStatus: ${log.status || 'N/A'}`;
         }).join('\n---\n');
 
-        const prompt = `Summarize the following correction logs into a concise list of past mistakes and strict instructions for the agent to follow to avoid repeating them. Focus on actionable advice.\n\nLogs:\n${textToSummarize}`;
+        const prompt = `You are an expert AI assistant specialized in analyzing correction logs to identify patterns of mistakes and provide clear, actionable instructions to prevent recurrence. Carefully review the following correction logs and produce a concise, prioritized list of past mistakes along with strict guidelines the agent must follow to avoid repeating these errors. Emphasize clarity, specificity, and practical advice.\n\nCorrection Logs:\n${textToSummarize}`;
         
         try {
             const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
             // Assuming result.text exists for this SDK pattern
             const result = await this.genAI!.models.generateContent({ 
-                model: "gemini-1.5-flash-latest", // or "gemini-2.0-flash"
+                model: "gemini-2.5-flash-preview-05-20", // or "gemini-2.0-flash"
                 contents: contents
             });
             return result.text ?? 'Could not generate summary.';
