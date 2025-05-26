@@ -21,8 +21,10 @@ describe('SubtaskManager', () => {
                 overall_goal TEXT,
                 status TEXT NOT NULL DEFAULT 'DRAFT',
                 version INTEGER NOT NULL DEFAULT 1,
-                creation_timestamp INTEGER NOT NULL,
-                last_updated_timestamp INTEGER NOT NULL,
+                creation_timestamp_unix INTEGER NOT NULL,
+                creation_timestamp_iso TEXT NOT NULL,
+                last_updated_timestamp_unix INTEGER NOT NULL,
+                last_updated_timestamp_iso TEXT NOT NULL,
                 refined_prompt_id_associated TEXT,
                 analysis_report_id_referenced TEXT,
                 metadata TEXT
@@ -47,9 +49,13 @@ describe('SubtaskManager', () => {
                 estimated_effort_hours REAL,
                 assigned_to TEXT,
                 verification_method TEXT,
-                creation_timestamp INTEGER NOT NULL,
-                last_updated_timestamp INTEGER NOT NULL,
-                completion_timestamp INTEGER,
+                creation_timestamp_unix INTEGER NOT NULL,
+                creation_timestamp_iso TEXT NOT NULL,
+                last_updated_timestamp_unix INTEGER NOT NULL,
+                last_updated_timestamp_iso TEXT NOT NULL,
+                completion_timestamp_unix INTEGER,
+                completion_timestamp_iso TEXT,
+
                 notes TEXT,
                 FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE
             );
@@ -62,9 +68,12 @@ describe('SubtaskManager', () => {
                 title TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL DEFAULT 'PLANNED',
-                creation_timestamp INTEGER NOT NULL,
-                last_updated_timestamp INTEGER NOT NULL,
-                completion_timestamp INTEGER,
+                creation_timestamp_unix INTEGER NOT NULL,
+                creation_timestamp_iso TEXT NOT NULL,
+                last_updated_timestamp_unix INTEGER NOT NULL,
+                last_updated_timestamp_iso TEXT NOT NULL,
+                completion_timestamp_unix INTEGER,
+                completion_timestamp_iso TEXT,
                 notes TEXT,
                 FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE,
                 FOREIGN KEY (parent_task_id) REFERENCES plan_tasks(task_id) ON DELETE CASCADE
@@ -90,14 +99,14 @@ describe('SubtaskManager', () => {
     beforeEach(async () => {
         // Create a plan and a task for testing subtasks
         const planResult = await db.run(
-            `INSERT INTO plans (plan_id, agent_id, title, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?)`,
-            'plan-123', agentId, 'Test Plan', Date.now(), Date.now()
+            `INSERT INTO plans (plan_id, agent_id, title, creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso) VALUES (?, ?, ?, ?, ?, ?, ?)`, 
+            'plan-123', agentId, 'Test Plan', Math.floor(Date.now() / 1000), new Date().toISOString(), Math.floor(Date.now() / 1000), new Date().toISOString()
         );
         planId = 'plan-123';
 
         const taskResult = await db.run(
-            `INSERT INTO plan_tasks (task_id, plan_id, agent_id, task_number, title, creation_timestamp, last_updated_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            'task-456', planId, agentId, 1, 'Test Task', Date.now(), Date.now()
+            `INSERT INTO plan_tasks (task_id, plan_id, agent_id, task_number, title, creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+            'task-456', planId, agentId, 1, 'Test Task', Math.floor(Date.now() / 1000), new Date().toISOString(), Math.floor(Date.now() / 1000), new Date().toISOString()
         );
         taskId = 'task-456';
     });

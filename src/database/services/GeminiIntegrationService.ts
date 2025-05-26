@@ -1,12 +1,33 @@
-import { GoogleGenAI, createUserContent, createPartFromUri } from '@google/genai';
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content } from "@google/genai"; // Using GoogleGenAI as per user's old code
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { ContextInformationManager } from '../managers/ContextInformationManager.js';
 
+// Custom error for when Gemini API is not initialized
+export class GeminiApiNotInitializedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "GeminiApiNotInitializedError";
+    }
+}
+
 export class GeminiIntegrationService {
-    private genAI?: GoogleGenAI;
+    private genAI?: GoogleGenAI; // Using GoogleGenAI
     private dbService: DatabaseService;
     private contextManager: ContextInformationManager;
+    private safetySettings = [
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+    ];
+    private generationConfig: GenerationConfig = { // This might need to be part of the generateContent call argument directly
+        temperature: 0.7,
+        topK: 1,
+        topP: 1,
+        maxOutputTokens: 2048,
+    };
+
 
     constructor(dbService: DatabaseService, contextManager: ContextInformationManager, genAIInstance?: GoogleGenAI) {
         this.dbService = dbService;
@@ -17,9 +38,16 @@ export class GeminiIntegrationService {
             const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
             if (!GEMINI_API_KEY) {
                 this.genAI = undefined;
+                console.warn('Gemini API key not found. GeminiIntegrationService will not be functional.');
             } else {
-                this.genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+                this.genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY }); // User's constructor pattern
             }
+        }
+    }
+
+    private checkApiInitialized() {
+        if (!this.genAI) {
+            throw new GeminiApiNotInitializedError("Gemini API not initialized. Ensure GEMINI_API_KEY is set.");
         }
     }
 
@@ -27,39 +55,43 @@ export class GeminiIntegrationService {
         agent_id: string,
         context_type: string,
         version: number | null = null
-    ) {
-        if (!this.genAI) {
-            return `Gemini API not initialized. Cannot perform summarization.`;
-        }
+    ): Promise<string> {
+        this.checkApiInitialized();
 
-        const modelName = "gemini-2.0-flash";
-
-        const db = this.dbService.getDb();
+        const modelName = "gemini-2.5-flash-preview-05-20"; // Or "gemini-2.0-flash" from user's old code if preferred
         const contextResult = await this.contextManager.getContext(agent_id, context_type, version);
 
-        if (!contextResult || !contextResult.context_data) {
-            return `No context found for agent_id: ${agent_id}, context_type: ${context_type}`;
+        if (!contextResult || (!contextResult.context_data && !contextResult.context_data_parsed)) {
+            return `No context data found for agent_id: ${agent_id}, context_type: ${context_type}, version: ${version}`;
         }
 
         let textToSummarize = '';
-        if (contextResult.context_data.documentation_snippets && Array.isArray(contextResult.context_data.documentation_snippets)) {
-            textToSummarize = contextResult.context_data.documentation_snippets.map((s: any) => `${s.TITLE}: ${s.DESCRIPTION} ${s.CODE}`).join('\n\n');
-        } else {
-            textToSummarize = JSON.stringify(contextResult.context_data);
+        const dataToUse = contextResult.context_data_parsed || contextResult.context_data;
+
+        if (dataToUse && dataToUse.documentation_snippets && Array.isArray(dataToUse.documentation_snippets)) {
+            textToSummarize = dataToUse.documentation_snippets.map((s: any) => `${s.TITLE || ''}: ${s.DESCRIPTION || ''} ${s.CODE || ''}`).join('\n\n');
+        } else if (typeof dataToUse === 'object') {
+            textToSummarize = JSON.stringify(dataToUse);
+        } else if (typeof dataToUse === 'string') {
+             textToSummarize = dataToUse;
         }
 
-        if (textToSummarize.length === 0) {
+        if (textToSummarize.trim().length === 0) {
             return `No content to summarize for agent_id: ${agent_id}, context_type: ${context_type}`;
         }
 
         try {
-            const prompt = `Summarize the following text:\n\n${textToSummarize}`;
-            const result = await this.genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
-            const summary = result.text;
-            return summary;
+            const prompt = `Summarize the following text concisely:\n\n${textToSummarize}`;
+            const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+            const result = await this.genAI!.models.generateContent({ 
+                model: modelName, 
+                contents: contents
+            });
+            // Assuming result.text is the way to get text from the response in this SDK version
+            return result.text ?? 'Could not generate summary.'; 
         } catch (error: any) {
-            console.error(`Error calling Gemini API for summarization:`, error);
-            return `Failed to summarize context using Gemini API: ${error.message}`;
+            console.error(`Error calling Gemini API for summarization (context: ${context_type}, agent: ${agent_id}):`, error);
+            throw new Error(`Failed to summarize context using Gemini API: ${error.message}`);
         }
     }
 
@@ -67,34 +99,38 @@ export class GeminiIntegrationService {
         agent_id: string,
         context_type: string,
         version: number | null = null
-    ) {
-        if (!this.genAI) {
-            return { entities: [], keywords: [], message: `Gemini API not initialized. Cannot perform entity extraction.` };
-        }
+    ): Promise<{ entities: string[]; keywords: string[]; message: string }> {
+        this.checkApiInitialized();
 
-        const modelName = "gemini-2.0-flash";
-
-        const db = this.dbService.getDb();
+        const modelName = "gemini-1.5-flash-latest"; // Or "gemini-2.0-flash"
         const contextResult = await this.contextManager.getContext(agent_id, context_type, version);
 
-        if (!contextResult || !contextResult.context_data) {
-            return { entities: [], keywords: [], message: `No context found for agent_id: ${agent_id}, context_type: ${context_type}` };
+        if (!contextResult || (!contextResult.context_data && !contextResult.context_data_parsed)) {
+            return { entities: [], keywords: [], message: `No context data found for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
-
+        
+        const dataToUse = contextResult.context_data_parsed || contextResult.context_data;
         let textToExtractFrom = '';
-        if (contextResult.context_data.documentation_snippets && Array.isArray(contextResult.context_data.documentation_snippets)) {
-            textToExtractFrom = contextResult.context_data.documentation_snippets.map((s: any) => `${s.TITLE}: ${s.DESCRIPTION} ${s.CODE}`).join('\n\n');
-        } else {
-            textToExtractFrom = JSON.stringify(contextResult.context_data);
+
+        if (dataToUse && dataToUse.documentation_snippets && Array.isArray(dataToUse.documentation_snippets)) {
+            textToExtractFrom = dataToUse.documentation_snippets.map((s: any) => `${s.TITLE || ''}: ${s.DESCRIPTION || ''} ${s.CODE || ''}`).join('\n\n');
+        } else if (typeof dataToUse === 'object') {
+            textToExtractFrom = JSON.stringify(dataToUse);
+        } else if (typeof dataToUse === 'string') {
+            textToExtractFrom = dataToUse;
         }
 
-        if (textToExtractFrom.length === 0) {
+        if (textToExtractFrom.trim().length === 0) {
             return { entities: [], keywords: [], message: `No content to extract entities from for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
 
         try {
-            const prompt = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: 'entities' and 'keywords'.\n\n${textToExtractFrom}`;
-            const result = await this.genAI.models.generateContent({ model: modelName, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+            const prompt = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: "entities" and "keywords".\n\nText:\n${textToExtractFrom}`;
+            const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+            const result = await this.genAI!.models.generateContent({
+                model: modelName,
+                contents: contents
+            });
             const textResponse = result.text ?? '';
 
             try {
@@ -102,6 +138,14 @@ export class GeminiIntegrationService {
                 const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
                 if (jsonMatch && jsonMatch[1]) {
                     jsonString = jsonMatch[1];
+                } else if (!(textResponse.startsWith("{") && textResponse.endsWith("}"))) {
+                    const firstBrace = textResponse.indexOf('{');
+                    const lastBrace = textResponse.lastIndexOf('}');
+                    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                        jsonString = textResponse.substring(firstBrace, lastBrace + 1);
+                    } else {
+                        throw new Error("Response from Gemini was not in a recognizable JSON format.");
+                    }
                 }
                 const parsedResponse = JSON.parse(jsonString);
                 return {
@@ -109,13 +153,13 @@ export class GeminiIntegrationService {
                     keywords: parsedResponse.keywords || [],
                     message: `Successfully extracted entities and keywords using Gemini API.`
                 };
-            } catch (parseError) {
-                console.error(`Error parsing Gemini API response for entity extraction:`, parseError);
-                return { entities: [], keywords: [], message: `Failed to parse Gemini API response: ${textResponse}` };
+            } catch (parseError: any) {
+                console.error(`Error parsing Gemini API JSON response for entity extraction. Raw response: "${textResponse}". Parse error:`, parseError);
+                throw new Error(`Failed to parse Gemini API response for entity extraction. Raw response: "${textResponse.substring(0,200)}...". Error: ${parseError.message}`);
             }
         } catch (error: any) {
-            console.error(`Error calling Gemini API for entity extraction:`, error);
-            return { entities: [], keywords: [], message: `Failed to extract entities using Gemini API: ${error.message}` };
+            console.error(`Error calling Gemini API for entity extraction (context: ${context_type}, agent: ${agent_id}):`, error);
+            throw new Error(`Failed to extract entities using Gemini API: ${error.message}`);
         }
     }
 
@@ -124,33 +168,50 @@ export class GeminiIntegrationService {
         context_type: string,
         query_text: string,
         top_k: number = 5
-    ) {
-        if (!this.genAI) {
-            return { results: [], message: `Gemini API not initialized. Cannot perform semantic search.` };
-        }
+    ): Promise<{ results: Array<{ score: number; snippet: any }>; message: string }> {
+        this.checkApiInitialized();
 
-        const modelName = "models/text-embedding-004";
+        const embeddingModelName = "models/text-embedding-004"; 
 
-        const db = this.dbService.getDb();
         const contextResult = await this.contextManager.getContext(agent_id, context_type);
+        const dataToSearch = contextResult?.context_data_parsed || contextResult?.context_data;
 
-        if (!contextResult || !contextResult.context_data || !contextResult.context_data.documentation_snippets || !Array.isArray(contextResult.context_data.documentation_snippets)) {
+        if (!dataToSearch || !dataToSearch.documentation_snippets || !Array.isArray(dataToSearch.documentation_snippets) || dataToSearch.documentation_snippets.length === 0) {
             return { results: [], message: `No context or documentation snippets found for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
 
         try {
-            const queryEmbeddingResponse = await this.genAI.models.embedContent({ model: modelName, contents: [{ text: query_text }] });
-            const queryEmbedding = queryEmbeddingResponse.embeddings?.[0]?.values || [];
+            // Embed the query text
+            const queryContents: Content[] = [{ role: "user", parts: [{ text: query_text }] }];
+            const queryEmbeddingResponse = await this.genAI!.models.embedContent({ model: embeddingModelName, contents: queryContents });
+            // Assuming response structure { embeddings: [{ values: number[] }] } based on user's old code for individual embeddings
+            const queryEmbedding = queryEmbeddingResponse.embeddings?.[0]?.values;
+
+
+            if (!queryEmbedding || queryEmbedding.length === 0) {
+                 throw new Error("Failed to generate embedding for the query text.");
+            }
 
             const snippetsWithEmbeddings: { snippet: any; embedding: number[] }[] = [];
 
-            for (const snippet of contextResult.context_data.documentation_snippets) {
-                const snippetText = `${snippet.TITLE}: ${snippet.DESCRIPTION} ${snippet.CODE}`;
-                const snippetEmbeddingResponse = await this.genAI.models.embedContent({ model: modelName, contents: [{ text: snippetText }] });
-                snippetsWithEmbeddings.push({
-                    snippet: snippet,
-                    embedding: snippetEmbeddingResponse.embeddings?.[0]?.values || []
-                });
+            for (const snippet of dataToSearch.documentation_snippets) {
+                const snippetText = `${snippet.TITLE || ''}: ${snippet.DESCRIPTION || ''} ${snippet.CODE || ''}`;
+                if (!snippetText.trim()) continue;
+                
+                const snippetContents: Content[] = [{ role: "user", parts: [{ text: snippetText }] }];
+                const snippetEmbeddingResponse = await this.genAI!.models.embedContent({ model: embeddingModelName, contents: snippetContents });
+                const snippetEmbedding = snippetEmbeddingResponse.embeddings?.[0]?.values;
+
+                if (snippetEmbedding && snippetEmbedding.length > 0) {
+                    snippetsWithEmbeddings.push({
+                        snippet: snippet,
+                        embedding: snippetEmbedding
+                    });
+                }
+            }
+            
+            if (snippetsWithEmbeddings.length === 0) {
+                 return { results: [], message: "Failed to generate embeddings for any snippet." };
             }
 
             const searchResults = snippetsWithEmbeddings.map(item => {
@@ -163,12 +224,16 @@ export class GeminiIntegrationService {
                 message: `Successfully performed semantic search using Gemini API.`
             };
         } catch (error: any) {
-            console.error(`Error calling Gemini API for semantic search:`, error);
-            return { results: [], message: `Failed to perform semantic search using Gemini API: ${error.message}` };
+            console.error(`Error calling Gemini API for semantic search (context: ${context_type}, agent: ${agent_id}):`, error);
+            throw new Error(`Failed to perform semantic search using Gemini API: ${error.message}`);
         }
     }
 
     private cosineSimilarity(vecA: number[], vecB: number[]): number {
+        if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) {
+            console.warn("Cosine similarity: Invalid input vectors.", {vecALength: vecA?.length, vecBLength: vecB?.length});
+            return 0; 
+        }
         let dotProduct = 0;
         let magnitudeA = 0;
         let magnitudeB = 0;
@@ -194,29 +259,11 @@ export class GeminiIntegrationService {
         raw_user_prompt: string,
         target_ai_persona: string | null = null,
         conversation_context_ids: string[] | null = null
-    ): Promise<any> {
-        if (!this.genAI) {
-            return {
-                refined_prompt_id: randomUUID(),
-                original_prompt_text: raw_user_prompt,
-                refinement_engine_model: "gemini-2.0-flash",
-                refinement_timestamp: new Date().toISOString(),
-                overall_goal: "Error: Gemini API not initialized.",
-                decomposed_tasks: [],
-                key_entities_identified: [],
-                implicit_assumptions_made_by_refiner: [],
-                explicit_constraints_from_prompt: [],
-                suggested_ai_role_for_agent: null,
-                suggested_reasoning_strategy_for_agent: null,
-                desired_output_characteristics_inferred: {},
-                suggested_context_analysis_for_agent: [],
-                confidence_in_refinement_score: "Low",
-                refinement_error_message: "Gemini API not initialized. Ensure GEMINI_API_KEY is set."
-            };
-        }
+    ): Promise<any> { 
+        this.checkApiInitialized();
 
-        const modelName = "gemini-2.0-flash";
-
+        const modelName = "gemini-1.5-flash-latest"; // Or "gemini-2.0-flash"
+        
         const metaPrompt = `
 You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it, and transform it into a highly structured and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request.
 
@@ -227,67 +274,45 @@ JSON Schema for Refined Prompt:
 {
   "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
   "original_prompt_text": "The exact raw user prompt text that was processed.",
-  "refinement_engine_model": "gemini-2.0-flash",
+  "refinement_engine_model": "${modelName}",
   "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
   "overall_goal": "A clear, concise statement of the user's primary objective, as interpreted from the prompt.",
-  "decomposed_tasks": [ // Array of strings, each a specific, actionable sub-task
+  "decomposed_tasks": [ 
     "Sub-task 1 identified from the prompt.",
     "Sub-task 2 identified from the prompt."
   ],
-  "key_entities_identified": [ // Array of strings or objects detailing key entities
-    // Example: "Filename: user_authentication.py", "Concept: Argon2 Hashing"
-    // Or structured: {"type": "filename", "value": "user_authentication.py"}, {"type": "concept", "value": "Argon2 Hashing"}
-    "Entity A (e.g., filename, function name, concept)",
-    "Entity B"
+  "key_entities_identified": [ 
+    {"type": "filename", "value": "user_authentication.py"}, {"type": "concept", "value": "Argon2 Hashing"}
   ],
-  "implicit_assumptions_made_by_refiner": [ // Assumptions the refinement LLM made
+  "implicit_assumptions_made_by_refiner": [ 
     "Assuming 'the dashboard' refers to the main application dashboard.",
     "Assuming standard Python library availability unless specified otherwise."
   ],
-  "explicit_constraints_from_prompt": [ // Constraints directly stated by the user
+  "explicit_constraints_from_prompt": [ 
     "The solution must be implemented in Python 3.9.",
     "The UI must remain consistent with the existing design language."
   ],
   "suggested_ai_role_for_agent": "Example: Act as a Senior Python Developer specializing in API security and database interactions.",
   "suggested_reasoning_strategy_for_agent": "Example: Prioritize security best practices. Analyze potential attack vectors. Ensure input validation. Plan for data migration if schema changes are needed.",
   "desired_output_characteristics_inferred": {
-    "type": "Example: A fully functional Python module with accompanying unit tests.", // e.g., Code Solution, Explanatory text, Plan, Diagram
-    "key_content_elements": [ // Specific items the final output from the agent should contain
+    "type": "Example: A fully functional Python module with accompanying unit tests.", 
+    "key_content_elements": [ 
       "Refactored Python code for user_authentication.py.",
       "Detailed explanation of Argon2 parameter choices.",
       "Unit tests covering new hashing and verification logic."
     ],
-    "level_of_detail": "Example: Sufficient for another developer to understand, integrate, and maintain the changes." // e.g., High-level overview, Detailed step-by-step
+    "level_of_detail": "Example: Sufficient for another developer to understand, integrate, and maintain the changes." 
   },
-  "suggested_context_analysis_for_agent": [ // Actionable suggestions for the AI agent
-    // Can be simple strings or more structured objects. Prioritize memory retrieval tools.
+  "suggested_context_analysis_for_agent": [ 
     {
       "suggestion_type": "MEMORY_RETRIEVAL",
       "tool_to_use": "get_conversation_history",
       "parameters": {"limit": 5, "offset": 0},
       "rationale": "To understand immediate preceding dialogue for context."
-    },
-    {
-      "suggestion_type": "MEMORY_RETRIEVAL",
-      "tool_to_use": "search_context_by_keywords",
-      "parameters": {"context_type": "project_documentation_v1", "keywords": "authentication security policy"},
-      "rationale": "Prompt mentions security and authentication; check for existing policies."
-    },
-    {
-      "suggestion_type": "KNOWLEDGE_GRAPH_QUERY",
-      "tool_to_use": "knowledge_graph_memory",
-      "parameters": {"operation": "search_nodes", "query": "Argon2 implementation details"},
-      "rationale": "To find any existing internal knowledge about Argon2."
-    },
-    {
-      "suggestion_type": "FILE_ANALYSIS_SUGGESTION",
-      "tool_to_use": "read_file",
-      "parameters": {"path": "src/config/app_settings.json"},
-      "rationale": "If the prompt implies configuration, check common config files."
     }
   ],
-  "confidence_in_refinement_score": "High", // e.g., High, Medium, Low
-  "refinement_error_message": null // String message if refinement process itself had an issue, otherwise null
+  "confidence_in_refinement_score": "High", 
+  "refinement_error_message": null 
 }
 \`\`\`
 
@@ -303,77 +328,70 @@ Please provide the JSON object only.
 `;
 
         try {
-            const result = await this.genAI.models.generateContent({
+            const contents: Content[] = [{ role: "user", parts: [{ text: metaPrompt }] }];
+            const result = await this.genAI!.models.generateContent({
                 model: modelName,
-                contents: [{ role: "user", parts: [{ text: metaPrompt }] }]
+                contents: contents
             });
-            const textResponse = result.text ?? '';
-
+            const textResponse = result.text ?? ''; // Assuming result.text exists
             let parsedResponse: any;
+
             try {
-                // Attempt to parse the JSON response, handling markdown code blocks
                 let jsonString = textResponse;
                 const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
                 if (jsonMatch && jsonMatch[1]) {
                     jsonString = jsonMatch[1];
+                } else if (textResponse.startsWith("{") && textResponse.endsWith("}")) {
+                    jsonString = textResponse;
+                } else {
+                    throw new Error("Response from Gemini was not in the expected JSON format or markdown JSON block.");
                 }
                 parsedResponse = JSON.parse(jsonString);
-            } catch (parseError) {
-                console.error(`Error parsing Gemini API response for prompt refinement:`, parseError);
-                return {
-                    refined_prompt_id: randomUUID(),
-                    original_prompt_text: raw_user_prompt,
-                    refinement_engine_model: modelName,
-                    refinement_timestamp: new Date().toISOString(),
-                    overall_goal: "Error: Failed to parse Gemini API response.",
-                    decomposed_tasks: [],
-                    key_entities_identified: [],
-                    implicit_assumptions_made_by_refiner: [],
-                    explicit_constraints_from_prompt: [],
-                    suggested_ai_role_for_agent: null,
-                    suggested_reasoning_strategy_for_agent: null,
-                    desired_output_characteristics_inferred: {},
-                    suggested_context_analysis_for_agent: [],
-                    confidence_in_refinement_score: "Low",
-                    refinement_error_message: `Failed to parse Gemini API response: ${textResponse.substring(0, 200)}...`
-                };
+            } catch (parseError: any) {
+                console.error(`Error parsing Gemini API response for prompt refinement. Raw response: "${textResponse}". Parse error:`, parseError);
+                throw new Error(`Failed to parse Gemini API response for prompt refinement. Raw response: "${textResponse.substring(0,200)}...". Error: ${parseError.message}`);
             }
 
-            // Ensure server-generated fields are correct
-            parsedResponse.refined_prompt_id = randomUUID();
-            parsedResponse.original_prompt_text = raw_user_prompt;
+            parsedResponse.refined_prompt_id = parsedResponse.refined_prompt_id && parsedResponse.refined_prompt_id !== "server_generated_uuid_for_this_refinement_instance" 
+                ? parsedResponse.refined_prompt_id 
+                : randomUUID();
+            parsedResponse.original_prompt_text = raw_user_prompt; 
             parsedResponse.refinement_engine_model = modelName;
             parsedResponse.refinement_timestamp = new Date().toISOString();
-            parsedResponse.agent_id = agent_id; // Add agent_id to the refined prompt object
+            parsedResponse.agent_id = agent_id; 
 
-            // Store the refined prompt in the database
+            if (!parsedResponse.overall_goal) {
+                console.warn("Refined prompt from Gemini is missing 'overall_goal'. Using raw prompt as fallback.");
+                parsedResponse.overall_goal = raw_user_prompt; 
+            }
+
             await this.storeRefinedPrompt(parsedResponse);
-
             return parsedResponse;
 
-        } catch (error: any) {
-            console.error(`Error calling Gemini API for prompt refinement:`, error);
+} catch (error: any) {
+             console.error(`Error in processAndRefinePrompt (agent: ${agent_id}):`, error);
+             if (error instanceof GeminiApiNotInitializedError) throw error;
+            // Return fallback response structure if API call fails
             return {
-                refined_prompt_id: randomUUID(),
-                original_prompt_text: raw_user_prompt,
-                refinement_engine_model: modelName,
-                refinement_timestamp: new Date().toISOString(),
-                overall_goal: "Error: Gemini API call failed.",
-                decomposed_tasks: [],
-                key_entities_identified: [],
-                implicit_assumptions_made_by_refiner: [],
-                explicit_constraints_from_prompt: [],
-                suggested_ai_role_for_agent: null,
-                suggested_reasoning_strategy_for_agent: null,
-                desired_output_characteristics_inferred: {},
-                suggested_context_analysis_for_agent: [],
-                confidence_in_refinement_score: "Low",
-                refinement_error_message: `Gemini API call failed: ${error.message}`
-            };
+                     refined_prompt_id: randomUUID(),
+                     original_prompt_text: raw_user_prompt,
+                     refinement_engine_model: modelName,
+                     refinement_timestamp: new Date().toISOString(),
+                     overall_goal: "Error: Gemini API call failed during prompt refinement.",
+                     decomposed_tasks: [],
+                     key_entities_identified: [],
+                     implicit_assumptions_made_by_refiner: [],
+                     explicit_constraints_from_prompt: [],
+                     suggested_ai_role_for_agent: null,
+                     suggested_reasoning_strategy_for_agent: null,
+                     desired_output_characteristics_inferred: {},
+                     suggested_context_analysis_for_agent: [],
+                     confidence_in_refinement_score: "Low",
+                     refinement_error_message: `Gemini API call failed: ${error.message}`
+                 };
         }
     }
 
-    // --- New: Store Refined Prompt Tool ---
     async storeRefinedPrompt(refinedPrompt: any): Promise<string> {
         const db = this.dbService.getDb();
         const refined_prompt_id = refinedPrompt.refined_prompt_id || randomUUID();
@@ -392,7 +410,7 @@ Please provide the JSON object only.
             refinedPrompt.agent_id,
             refinedPrompt.original_prompt_text,
             refinedPrompt.refinement_engine_model || null,
-            timestamp,
+            timestamp, 
             refinedPrompt.overall_goal || null,
             refinedPrompt.decomposed_tasks ? JSON.stringify(refinedPrompt.decomposed_tasks) : null,
             refinedPrompt.key_entities_identified ? JSON.stringify(refinedPrompt.key_entities_identified) : null,
@@ -408,21 +426,80 @@ Please provide the JSON object only.
         return refined_prompt_id;
     }
 
-    async getRefinedPrompt(refined_prompt_id: string): Promise<any | null> {
+    async getRefinedPrompt(agent_id: string, refined_prompt_id: string): Promise<any | null> {
         const db = this.dbService.getDb();
         const result = await db.get(
-            `SELECT * FROM refined_prompts WHERE refined_prompt_id = ?`,
-            refined_prompt_id
+            `SELECT * FROM refined_prompts WHERE agent_id = ? AND refined_prompt_id = ?`,
+            agent_id, refined_prompt_id
         );
 
         if (result) {
-            if (result.decomposed_tasks) result.decomposed_tasks = JSON.parse(result.decomposed_tasks);
-            if (result.key_entities_identified) result.key_entities_identified = JSON.parse(result.key_entities_identified);
-            if (result.implicit_assumptions_made_by_refiner) result.implicit_assumptions_made_by_refiner = JSON.parse(result.implicit_assumptions_made_by_refiner);
-            if (result.explicit_constraints_from_prompt) result.explicit_constraints_from_prompt = JSON.parse(result.explicit_constraints_from_prompt);
-            if (result.desired_output_characteristics_inferred) result.desired_output_characteristics_inferred = JSON.parse(result.desired_output_characteristics_inferred);
-            if (result.suggested_context_analysis_for_agent) result.suggested_context_analysis_for_agent = JSON.parse(result.suggested_context_analysis_for_agent);
+            const fieldsToParse = [
+                'decomposed_tasks', 'key_entities_identified', 
+                'implicit_assumptions_made_by_refiner', 'explicit_constraints_from_prompt',
+                'desired_output_characteristics_inferred', 'suggested_context_analysis_for_agent'
+            ];
+            for (const field of fieldsToParse) {
+                const jsonField = result[field]; 
+                if (jsonField && typeof jsonField === 'string') {
+                    try {
+                        result[`${field}_parsed`] = JSON.parse(jsonField);
+                    } catch (e) {
+                        console.error(`Failed to parse ${field} for refined_prompt_id ${refined_prompt_id}:`, e);
+                        result[`${field}_parsed`] = null;
+                        result[`${field}_parsing_error`] = true;
+                        result[`raw_${field}`] = jsonField; 
+                    }
+                } else {
+                     result[`${field}_parsed`] = jsonField === null ? null : jsonField; 
+                }
+            }
+            if (result.refinement_timestamp) {
+                result.refinement_timestamp_iso = new Date(result.refinement_timestamp).toISOString();
+            }
         }
         return result;
+    }
+
+    async summarizeCorrectionLogs(agent_id: string, maxLogs: number = 10): Promise<string> {
+        this.checkApiInitialized();
+        const db = this.dbService.getDb();
+        
+        const correctionLogs = await db.all(
+            `SELECT * FROM correction_logs WHERE agent_id = ? ORDER BY creation_timestamp_unix DESC LIMIT ?`,
+            agent_id, maxLogs
+        );
+
+        if (!correctionLogs || correctionLogs.length === 0) {
+            return 'No correction logs found to summarize.';
+        }
+        
+        const textToSummarize = correctionLogs.map((log: any) => {
+            let original = 'N/A';
+            let corrected = 'N/A';
+            try { original = log.original_value_json ? JSON.stringify(JSON.parse(log.original_value_json)) : 'N/A'; } catch { /* ignore */ }
+            try { corrected = log.corrected_value_json ? JSON.stringify(JSON.parse(log.corrected_value_json)) : 'N/A'; } catch { /* ignore */ }
+            
+            return `Type: ${log.correction_type || 'N/A'}\nReason: ${log.reason || 'N/A'}\nOriginal: ${original}\nCorrected: ${corrected}\nStatus: ${log.status || 'N/A'}`;
+        }).join('\n---\n');
+
+        const prompt = `Summarize the following correction logs into a concise list of past mistakes and strict instructions for the agent to follow to avoid repeating them. Focus on actionable advice.\n\nLogs:\n${textToSummarize}`;
+        
+        try {
+            const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+            // Assuming result.text exists for this SDK pattern
+            const result = await this.genAI!.models.generateContent({ 
+                model: "gemini-1.5-flash-latest", // or "gemini-2.0-flash"
+                contents: contents
+            });
+            return result.text ?? 'Could not generate summary.';
+        } catch (error: any) {
+            console.error(`Error calling Gemini API for correction log summarization (agent: ${agent_id}):`, error);
+            // Revert to returning a string on error to match user's old code structure for this specific method's error handling
+            if (! (error instanceof GeminiApiNotInitializedError)) {
+                return `Failed to summarize correction logs using Gemini API: ${error.message}`;
+            }
+            throw error; // Re-throw GeminiApiNotInitializedError
+        }
     }
 }

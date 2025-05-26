@@ -279,7 +279,7 @@ describe('Prompt Refinement Tool', () => {
     expect(storedId).toBe(refinedPromptData.refined_prompt_id);
 
     // Verify it can be retrieved
-    const retrievedPrompt = await memoryManager.getRefinedPrompt(storedId);
+    const retrievedPrompt = await memoryManager.getRefinedPrompt(refinedPromptData.agent_id, storedId);
     expect(retrievedPrompt).toBeDefined();
     expect(retrievedPrompt.refined_prompt_id).toBe(refinedPromptData.refined_prompt_id);
     expect(retrievedPrompt.original_prompt_text).toBe(refinedPromptData.original_prompt_text);
@@ -313,6 +313,7 @@ describe('Prompt Refinement Tool', () => {
       params: {
         name: 'get_refined_prompt',
         arguments: {
+          agent_id: agentId, // Add agent_id to the request
           refined_prompt_id: refinedPromptId,
         },
       },
@@ -334,12 +335,13 @@ describe('Prompt Refinement Tool', () => {
       params: {
         name: 'get_refined_prompt',
         arguments: {
+          agent_id: 'test-agent-1', // Assuming a default agent_id for this test case
           refined_prompt_id: nonExistentId,
         },
       },
     };
 
     const getResponse = await mcpServer.callToolHandler(getRequest);
-    expect(getResponse.content[0].text).toContain(`Refined prompt with ID ${nonExistentId} not found.`);
+    expect(getResponse.content[0].text).toContain(`Refined prompt with ID ${nonExistentId} not found for agent test-agent-1.`);
   });
 });

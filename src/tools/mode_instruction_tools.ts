@@ -1,7 +1,9 @@
 import { MemoryManager } from '../database/memory_manager.js';
-import { Tool } from './index.js';
+// Import Tool and InternalToolDefinition from index.ts
+import { Tool, InternalToolDefinition } from './index.js'; 
 
-export const modeInstructionToolDefinitions: Tool[] = [
+// Use InternalToolDefinition for this array as it includes 'func'
+export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
   {
     name: 'add_mode',
     description: 'Stores a mode-specific instruction for an AI agent.',
@@ -17,8 +19,9 @@ export const modeInstructionToolDefinitions: Tool[] = [
       additionalProperties: false
     },
     func: async (args: any) => {
-      // This func will be replaced by the actual handler in getModeInstructionToolHandlers
-      throw new Error('Handler not implemented for definition');
+      // This func is a placeholder for the definition structure.
+      // The actual handler is in getModeInstructionToolHandlers.
+      throw new Error('Handler not implemented for definition placeholder');
     }
   },
   {
@@ -35,8 +38,7 @@ export const modeInstructionToolDefinitions: Tool[] = [
       additionalProperties: false
     },
     func: async (args: any) => {
-      // This func will be replaced by the actual handler in getModeInstructionToolHandlers
-      throw new Error('Handler not implemented for definition');
+      throw new Error('Handler not implemented for definition placeholder');
     }
   },
   {
@@ -53,8 +55,7 @@ export const modeInstructionToolDefinitions: Tool[] = [
       additionalProperties: false
     },
     func: async (args: any) => {
-      // This func will be replaced by the actual handler in getModeInstructionToolHandlers
-      throw new Error('Handler not implemented for definition');
+      throw new Error('Handler not implemented for definition placeholder');
     }
   },
   {
@@ -72,18 +73,19 @@ export const modeInstructionToolDefinitions: Tool[] = [
       additionalProperties: false
     },
     func: async (args: any) => {
-      // This func will be replaced by the actual handler in getModeInstructionToolHandlers
-      throw new Error('Handler not implemented for definition');
+      throw new Error('Handler not implemented for definition placeholder');
     }
   }
 ];
 
 export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
   return {
-    'add_mode': async (args: any, agent_id: string) => {
+    'add_mode': async (args: any, agent_id_from_server?: string) => { // agent_id_from_server is passed by MCP server
+      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      if (!agent_id_to_use) throw new Error("agent_id is required for add_mode");
       try {
         const instruction_id = await memoryManager.modeInstructionManager.storeModeInstruction(
-          agent_id,
+          agent_id_to_use,
           args.mode_name,
           args.instruction_content,
           args.instruction_version
@@ -94,10 +96,12 @@ export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
         return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
       }
     },
-    'get_mode': async (args: any, agent_id: string) => {
+    'get_mode': async (args: any, agent_id_from_server?: string) => {
+      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      if (!agent_id_to_use) throw new Error("agent_id is required for get_mode");
       try {
         const instruction = await memoryManager.modeInstructionManager.getModeInstruction(
-          agent_id,
+          agent_id_to_use,
           args.mode_name,
           args.instruction_version
         );
@@ -111,10 +115,12 @@ export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
         return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
       }
     },
-    'delete_mode': async (args: any, agent_id: string) => {
+    'delete_mode': async (args: any, agent_id_from_server?: string) => {
+      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      if (!agent_id_to_use) throw new Error("agent_id is required for delete_mode");
       try {
         const changes = await memoryManager.modeInstructionManager.deleteModeInstruction(
-          agent_id,
+          agent_id_to_use,
           args.mode_name,
           args.instruction_version
         );
@@ -124,15 +130,18 @@ export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
         return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
       }
     },
-    'update_mode': async (args: any, agent_id: string) => {
+    'update_mode': async (args: any, agent_id_from_server?: string) => {
+      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      if (!agent_id_to_use) throw new Error("agent_id is required for update_mode");
       try {
+        // update_mode is essentially storeModeInstruction which handles insert or update via ON CONFLICT
         const instruction_id = await memoryManager.modeInstructionManager.storeModeInstruction(
-          agent_id,
+          agent_id_to_use,
           args.mode_name,
           args.instruction_content,
-          args.instruction_version
+          args.instruction_version 
         );
-        return { content: [{ type: 'text', text: `Mode instruction updated with ID: ${instruction_id}` }] };
+        return { content: [{ type: 'text', text: `Mode instruction updated (or added) with ID: ${instruction_id}` }] };
       } catch (error: any) {
         console.error('Error updating mode instruction:', error);
         return { content: [{ type: 'text', text: `Error: ${error.message}` }] };

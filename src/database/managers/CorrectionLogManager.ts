@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
+import { CorrectionLog } from '../../types/index.js';
 
 export class CorrectionLogManager {
     private dbService: DatabaseService;
@@ -12,26 +13,81 @@ export class CorrectionLogManager {
         agent_id: string,
         correction_type: string,
         original_entry_id: string | null,
-        original_value: any | null, // Will be JSON stringified
-        corrected_value: any | null, // Will be JSON stringified
+        original_value: any | null, // Expects an object, will be JSON stringified
+        corrected_value: any | null, // Expects an object, will be JSON stringified
         reason: string | null,
-        applied_automatically: boolean
-    ) {
+        correction_summary: string | null,
+        applied_automatically: boolean,
+        status: string = 'LOGGED'
+    ): Promise<string> {
         const db = this.dbService.getDb();
         const correction_id = randomUUID();
-        const timestamp = Date.now();
-        const original_value_json = original_value ? JSON.stringify(original_value) : null;
-        const corrected_value_json = corrected_value ? JSON.stringify(corrected_value) : null;
+        const creation_timestamp_unix = Date.now();
+        const creation_timestamp_iso = new Date(creation_timestamp_unix).toISOString();
+        const last_updated_timestamp_unix = creation_timestamp_unix;
+        const last_updated_timestamp_iso = creation_timestamp_iso;
 
-        await db.run(
-            `INSERT INTO correction_logs (
-                correction_id, agent_id, timestamp, correction_type, original_entry_id,
-                original_value, corrected_value, reason, applied_automatically
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            correction_id, agent_id, timestamp, correction_type, original_entry_id,
-            original_value_json, corrected_value_json, reason, applied_automatically
-        );
-        return correction_id;
+        const original_value_json = original_value !== null ? JSON.stringify(original_value) : null;
+        const corrected_value_json = corrected_value !== null ? JSON.stringify(corrected_value) : null;
+
+        const agentExists = await db.get(`SELECT agent_id FROM agents WHERE agent_id = ?`, agent_id);
+        if (!agentExists) {
+            throw new Error(`Agent with ID '${agent_id}' not found. Cannot log correction.`);
+        }
+
+        try {
+            await db.run(
+                `INSERT INTO correction_logs (
+                    correction_id, agent_id, correction_type, original_entry_id,
+                    original_value_json, corrected_value_json, reason, correction_summary,
+                    applied_automatically, creation_timestamp_unix, creation_timestamp_iso,
+                    last_updated_timestamp_unix, last_updated_timestamp_iso, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                correction_id, agent_id, correction_type, original_entry_id,
+                original_value_json, corrected_value_json, reason || null, correction_summary || null,
+                applied_automatically, creation_timestamp_unix, creation_timestamp_iso,
+                last_updated_timestamp_unix, last_updated_timestamp_iso, status
+            );
+            return correction_id;
+        } catch (error) {
+            console.error(`Error logging correction for agent ${agent_id}:`, error);
+            if (error instanceof Error && error.message.includes('FOREIGN KEY constraint failed')) {
+                throw new Error(`Failed to log correction due to a database constraint. Ensure all referenced IDs are valid. Original error: ${error.message}`);
+            }
+            throw error;
+        }
+    }
+
+    private parseJsonFields(log: any): any {
+        if (log) {
+            // Parse original_value_json
+            if (typeof log.original_value_json === 'string') {
+                try {
+                    log.original_value_parsed = JSON.parse(log.original_value_json);
+                } catch (e) {
+                    console.error(`Failed to parse original_value_json for correction_id ${log.correction_id}:`, e);
+                    log.original_value_parsed = null;
+                    log.original_value_json_parsing_error = true;
+                }
+            } else {
+                log.original_value_parsed = null;
+            }
+
+            // Parse corrected_value_json
+            if (typeof log.corrected_value_json === 'string') {
+                try {
+                    log.corrected_value_parsed = JSON.parse(log.corrected_value_json);
+                } catch (e) {
+                    console.error(`Failed to parse corrected_value_json for correction_id ${log.correction_id}:`, e);
+                    log.corrected_value_parsed = null;
+                    log.corrected_value_json_parsing_error = true;
+                }
+            } else {
+                log.corrected_value_parsed = null;
+            }
+        }
+        // The original _json fields (e.g., log.original_value_json) are preserved as they came from the DB.
+        return log;
     }
 
     async getCorrectionLogs(
@@ -39,7 +95,7 @@ export class CorrectionLogManager {
         correction_type: string | null = null,
         limit: number = 100,
         offset: number = 0
-    ) {
+    ): Promise<CorrectionLog[]> { // Adjusted return type if parseJsonFields modifies structure significantly
         const db = this.dbService.getDb();
         let query = `SELECT * FROM correction_logs WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
@@ -49,14 +105,25 @@ export class CorrectionLogManager {
             params.push(correction_type);
         }
 
-        query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+        query += ` ORDER BY creation_timestamp_unix DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
-        const results = await db.all(query, ...params as any[]);
-        return results.map((row: any) => {
-            if (row.original_value) row.original_value = JSON.parse(row.original_value);
-            if (row.corrected_value) row.corrected_value = JSON.parse(row.corrected_value);
-            return row;
-        });
+        const results: CorrectionLog[] = await db.all(query, ...params as any[]);
+        return results.map(row => this.parseJsonFields(row));
+    }
+
+    async updateCorrectionLogStatus(
+        correction_id: string,
+        new_status: string,
+        // Removed last_updated_timestamp_unix and last_updated_timestamp_iso as params,
+        // as they should be set by the method itself upon update.
+    ): Promise<void> {
+        const db = this.dbService.getDb();
+        const timestamp = Date.now();
+        const isoTimestamp = new Date(timestamp).toISOString();
+        await db.run(
+            `UPDATE correction_logs SET status = ?, last_updated_timestamp_unix = ?, last_updated_timestamp_iso = ? WHERE correction_id = ?`,
+            new_status, timestamp, isoTimestamp, correction_id
+        );
     }
 }

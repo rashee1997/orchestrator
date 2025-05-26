@@ -10,6 +10,9 @@ import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphManager } from './managers/KnowledgeGraphManager.js';
 import { ModeInstructionManager } from './managers/ModeInstructionManager.js';
+import { ToolExecutionLogManager } from './managers/ToolExecutionLogManager.js';
+import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
+import { ErrorLogManager } from './managers/ErrorLogManager.js';
 import { GeminiIntegrationService } from './services/GeminiIntegrationService.js';
 import { DatabaseUtilityService } from './services/DatabaseUtilityService.js';
 
@@ -25,6 +28,9 @@ export class MemoryManager {
     public subtaskManager!: SubtaskManager;
     public knowledgeGraphManager!: KnowledgeGraphManager;
     public modeInstructionManager!: ModeInstructionManager;
+    public toolExecutionLogManager!: ToolExecutionLogManager;
+    public taskProgressLogManager!: TaskProgressLogManager;
+    public errorLogManager!: ErrorLogManager;
     private geminiIntegrationService!: GeminiIntegrationService;
     private databaseUtilityService!: DatabaseUtilityService;
 
@@ -52,6 +58,9 @@ export class MemoryManager {
         this.subtaskManager = new SubtaskManager(this.dbService);
         this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService);
         this.modeInstructionManager = new ModeInstructionManager(this.dbService);
+        this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
+        this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
+        this.errorLogManager = new ErrorLogManager(this.dbService);
 
         // Initialize GeminiIntegrationService with DatabaseService and ContextInformationManager
         const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -59,6 +68,69 @@ export class MemoryManager {
         this.geminiIntegrationService = new GeminiIntegrationService(this.dbService, this.contextInformationManager, genAIInstance);
 
         this.databaseUtilityService = new DatabaseUtilityService(this.dbService);
+    }
+
+    // --- Tool Execution Logs (Delegated) ---
+    async createToolExecutionLog(...args: Parameters<ToolExecutionLogManager['createToolExecutionLog']>) {
+        return this.toolExecutionLogManager.createToolExecutionLog(...args);
+    }
+
+    async getToolExecutionLogById(...args: Parameters<ToolExecutionLogManager['getToolExecutionLogById']>) {
+        return this.toolExecutionLogManager.getToolExecutionLogById(...args);
+    }
+
+    async getToolExecutionLogsByAgentId(...args: Parameters<ToolExecutionLogManager['getToolExecutionLogsByAgentId']>) {
+        return this.toolExecutionLogManager.getToolExecutionLogsByAgentId(...args);
+    }
+
+    async updateToolExecutionLogStatus(...args: Parameters<ToolExecutionLogManager['updateToolExecutionLogStatus']>) {
+        return this.toolExecutionLogManager.updateToolExecutionLogStatus(...args);
+    }
+
+    async deleteToolExecutionLog(...args: Parameters<ToolExecutionLogManager['deleteToolExecutionLog']>) {
+        return this.toolExecutionLogManager.deleteToolExecutionLog(...args);
+    }
+
+    // --- Task Progress Logs (Delegated) ---
+    async createTaskProgressLog(...args: Parameters<TaskProgressLogManager['createTaskProgressLog']>) {
+        return this.taskProgressLogManager.createTaskProgressLog(...args);
+    }
+
+    async getTaskProgressLogById(...args: Parameters<TaskProgressLogManager['getTaskProgressLogById']>) {
+        return this.taskProgressLogManager.getTaskProgressLogById(...args);
+    }
+
+    async getTaskProgressLogsByAgentId(...args: Parameters<TaskProgressLogManager['getTaskProgressLogsByAgentId']>) {
+        return this.taskProgressLogManager.getTaskProgressLogsByAgentId(...args);
+    }
+
+    async updateTaskProgressLogStatus(...args: Parameters<TaskProgressLogManager['updateTaskProgressLogStatus']>) {
+        return this.taskProgressLogManager.updateTaskProgressLogStatus(...args);
+    }
+
+    async deleteTaskProgressLog(...args: Parameters<TaskProgressLogManager['deleteTaskProgressLog']>) {
+        return this.taskProgressLogManager.deleteTaskProgressLog(...args);
+    }
+
+    // --- Error Logs (Delegated) ---
+    async createErrorLog(...args: Parameters<ErrorLogManager['createErrorLog']>) {
+        return this.errorLogManager.createErrorLog(...args);
+    }
+
+    async getErrorLogById(...args: Parameters<ErrorLogManager['getErrorLogById']>) {
+        return this.errorLogManager.getErrorLogById(...args);
+    }
+
+    async getErrorLogsByAgentId(...args: Parameters<ErrorLogManager['getErrorLogsByAgentId']>) {
+        return this.errorLogManager.getErrorLogsByAgentId(...args);
+    }
+
+    async updateErrorLogStatus(...args: Parameters<ErrorLogManager['updateErrorLogStatus']>) {
+        return this.errorLogManager.updateErrorLogStatus(...args);
+    }
+
+    async deleteErrorLog(...args: Parameters<ErrorLogManager['deleteErrorLog']>) {
+        return this.errorLogManager.deleteErrorLog(...args);
     }
 
     // --- Conversation History (Delegated) ---

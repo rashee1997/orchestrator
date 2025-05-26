@@ -85,10 +85,13 @@ export const schemas = {
             corrected_value: { type: ['object', 'null'] },
             reason: { type: ['string', 'null'] },
             applied_automatically: { type: 'boolean' },
+            correction_summary: { type: ['string', 'null'] },
+            status: { type: ['string', 'null'] }
         },
         required: ['agent_id', 'correction_type', 'applied_automatically'],
         additionalProperties: false,
     },
+
     successMetric: {
         type: 'object',
         properties: {

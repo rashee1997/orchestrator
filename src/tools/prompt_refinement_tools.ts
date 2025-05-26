@@ -15,9 +15,10 @@ export const promptRefinementToolDefinitions = [
         inputSchema: {
             type: 'object',
             properties: {
-                refined_prompt_id: { type: 'string', description: 'The unique ID of the refined prompt to retrieve.' }
+                refined_prompt_id: { type: 'string', description: 'The unique ID of the refined prompt to retrieve.' },
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' }
             },
-            required: ['refined_prompt_id'],
+            required: ['refined_prompt_id', 'agent_id'],
             additionalProperties: false
         }
     }
@@ -41,12 +42,13 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
             );
             return { content: [{ type: 'text', text: formatObjectToMarkdown(refinedPromptObject) }] };
         },
-        'get_refined_prompt': async (args: any) => { // agent_id is not required for this tool
+        'get_refined_prompt': async (args: any, agent_id: string) => { // agent_id is now required for this tool
             const refinedPrompt = await memoryManager.getRefinedPrompt(
+                agent_id, // Pass agent_id to the manager
                 args.refined_prompt_id as string
             );
             if (!refinedPrompt) {
-                return { content: [{ type: 'text', text: `Refined prompt with ID ${args.refined_prompt_id} not found.` }] };
+                return { content: [{ type: 'text', text: `Refined prompt with ID ${args.refined_prompt_id} not found for agent ${agent_id}.` }] };
             }
             return { content: [{ type: 'text', text: formatObjectToMarkdown(refinedPrompt) }] };
         },

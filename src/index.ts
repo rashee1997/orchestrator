@@ -8,7 +8,6 @@ import {
     McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { MemoryManager } from './database/memory_manager.js';
-import { callTavilyApi } from './integrations/tavily.js';
 import { validate, schemas } from './utils/validation.js';
 import {
     formatTaskToMarkdown,
@@ -17,7 +16,7 @@ import {
     formatPlansListToMarkdownTable
 } from './utils/formatters.js';
 
-import { allToolDefinitions, getAllToolHandlers } from './tools/index.js';
+import { getAllToolDefinitions, getAllToolHandlers } from './tools/index.js';
 
 class MemoryMcpServer {
     private server!: Server;
@@ -31,6 +30,7 @@ class MemoryMcpServer {
     public static async create(): Promise<MemoryMcpServer> {
         const instance = new MemoryMcpServer();
         instance.memoryManager = await MemoryManager.create(); // Initialize asynchronously
+        const toolDefinitions = await getAllToolDefinitions();
         instance.server = new Server(
             {
                 name: 'memory-mcp-server',
@@ -39,7 +39,7 @@ class MemoryMcpServer {
             },
             {
                 capabilities: {
-                    tools: allToolDefinitions.reduce((acc, tool) => {
+                    tools: toolDefinitions.reduce((acc, tool) => {
                         acc[tool.name] = tool;
                         return acc;
                     }, {} as { [key: string]: any }),
@@ -47,7 +47,7 @@ class MemoryMcpServer {
             }
         );
 
-        instance.setupToolHandlers();
+        instance.setupToolHandlers(toolDefinitions);
 
         // Error handling
         instance.server.onerror = (error) => console.error('[MCP Error]', error);
@@ -59,11 +59,11 @@ class MemoryMcpServer {
         return instance;
     }
 
-    private setupToolHandlers() {
+    private setupToolHandlers(toolDefinitions: any[]) {
         this.toolHandlers = getAllToolHandlers(this.memoryManager);
 
         this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-            tools: allToolDefinitions,
+            tools: toolDefinitions,
         }));
 
         this.server.setRequestHandler(CallToolRequestSchema, async (request) => {

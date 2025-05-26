@@ -35,6 +35,18 @@ export const correctionToolDefinitions = [
             required: ['agent_id'],
         },
     },
+    {
+        name: 'summarize_correction_logs',
+        description: 'Generates a summary of stored contextual data. (Placeholder: Requires external NLP integration for full functionality).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                maxLogs: { type: 'number', description: 'Maximum number of logs to summarize.', default: 10 },
+            },
+            required: ['agent_id'],
+        },
+    },
 ];
 
 export function getCorrectionToolHandlers(memoryManager: MemoryManager) {
@@ -54,7 +66,9 @@ export function getCorrectionToolHandlers(memoryManager: MemoryManager) {
                 args.original_value,
                 args.corrected_value,
                 args.reason as string | null,
-                args.applied_automatically as boolean
+                args.correction_summary as string | null,
+                args.applied_automatically as boolean,
+                args.status as string | undefined
             );
             return { content: [{ type: 'text', text: `Correction logged with ID: ${corrId}` }] };
         },
@@ -67,5 +81,11 @@ export function getCorrectionToolHandlers(memoryManager: MemoryManager) {
             );
             return { content: [{ type: 'text', text: formatObjectToMarkdown(corrections) }] };
         },
+        'summarize_correction_logs': async (args: any, agent_id: string) => {
+            // This is a placeholder for a tool that would integrate with an external NLP service (e.g., Gemini API)
+            // to summarize correction logs.
+            return { content: [{ type: 'text', text: 'This tool is a placeholder and requires external NLP integration (e.g., Gemini API) for full functionality. It would summarize recent correction logs.' }] };
+        },
     };
 }
+

@@ -327,8 +327,11 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 args.limit as number | undefined,
                 args.offset as number | undefined
             );
+            // Fix: order by creation_timestamp_unix instead of creation_timestamp
+            plans.sort((a: any, b: any) => b.creation_timestamp_unix - a.creation_timestamp_unix);
             const markdownOutput = formatPlansListToMarkdownTable(plans as any[]);
             return { content: [{ type: 'text', text: markdownOutput }] };
+
         },
         'get_plan_tasks': async (args: any, agent_id: string) => {
             const validationResult = validate('getPlanTasks', args);
