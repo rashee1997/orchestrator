@@ -18,21 +18,21 @@ export class PlanTaskManager {
         const plan_id = randomUUID();
         const timestamp = Date.now();
 
-        // Validate input against the createTaskPlan schema
         const validationResult = validate('createTaskPlan', { agent_id, planData, tasksData });
         if (!validationResult.valid) {
             console.error('Validation errors for createPlanWithTasks:', validationResult.errors);
             throw new Error(`Invalid input for createPlanWithTasks: ${JSON.stringify(validationResult.errors)}`);
         }
 
-        await db.run('BEGIN TRANSACTION');
         try {
+            await db.run('BEGIN TRANSACTION');
+
             await db.run(
                 `INSERT INTO plans (
                     plan_id, agent_id, title, overall_goal, status, version,
-                    creation_timestamp, last_updated_timestamp, refined_prompt_id_associated,
+                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, refined_prompt_id_associated,
                     analysis_report_id_referenced, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 plan_id,
                 agent_id,
                 planData.title,
@@ -40,7 +40,9 @@ export class PlanTaskManager {
                 planData.status || 'DRAFT',
                 planData.version || 1,
                 timestamp,
+                new Date(timestamp).toISOString(),
                 timestamp,
+                new Date(timestamp).toISOString(),
                 planData.refined_prompt_id_associated || null,
                 planData.analysis_report_id_referenced || null,
                 planData.metadata ? JSON.stringify(planData.metadata) : null
@@ -50,11 +52,11 @@ export class PlanTaskManager {
             const taskStmt = await db.prepare(
                 `INSERT INTO plan_tasks (
                     task_id, plan_id, agent_id, task_number, title, description, status,
-                    purpose, action_description, files_involved, dependencies_task_ids,
-                    tools_required_list, inputs_summary, outputs_summary, success_criteria_text,
+                    purpose, action_description, files_involved_json, dependencies_task_ids_json,
+                    tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
                     estimated_effort_hours, assigned_to, verification_method,
-                    creation_timestamp, last_updated_timestamp, completion_timestamp, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, completion_timestamp_unix, completion_timestamp_iso, notes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             );
 
             for (const task of tasksData) {
@@ -65,7 +67,7 @@ export class PlanTaskManager {
                     plan_id,
                     agent_id,
                     task.task_number,
-                    task.title || 'Untitled Task', // Ensure title is never null
+                    task.title || 'Untitled Task',
                     task.description || null,
                     task.status || 'PLANNED',
                     task.purpose || null,
@@ -80,8 +82,11 @@ export class PlanTaskManager {
                     task.assigned_to || null,
                     task.verification_method || null,
                     timestamp,
+                    new Date(timestamp).toISOString(),
                     timestamp,
+                    new Date(timestamp).toISOString(),
                     task.status === 'COMPLETED' || task.status === 'FAILED' ? timestamp : null,
+                    task.status === 'COMPLETED' || task.status === 'FAILED' ? new Date(timestamp).toISOString() : null,
                     task.notes ? JSON.stringify(task.notes) : null
                 );
             }
@@ -90,7 +95,7 @@ export class PlanTaskManager {
             return { plan_id, task_ids };
         } catch (error) {
             await db.run('ROLLBACK');
-            console.error('Error creating plan with tasks:', error);
+            console.error('Error creating plan with tasks, transaction rolled back:', error);
             throw error;
         }
     }
@@ -101,8 +106,17 @@ export class PlanTaskManager {
             `SELECT * FROM plans WHERE agent_id = ? AND plan_id = ?`,
             agent_id, plan_id
         );
-        if (plan && plan.metadata) {
-            plan.metadata = JSON.parse(plan.metadata);
+        if (plan && plan.metadata) { // Check if metadata exists and is a string
+            try {
+                plan.metadata_parsed = JSON.parse(plan.metadata); // Store parsed JSON in a new key
+            } catch (e) {
+                console.error(`Failed to parse metadata for plan ${plan_id}:`, e);
+                plan.metadata_parsed = null; // Indicate parsing failure
+                plan.metadata_parsing_error = true; // Add an error flag
+                // Keep plan.metadata as the original string
+            }
+        } else if (plan) {
+            plan.metadata_parsed = null; // Ensure metadata_parsed exists even if metadata was null/undefined
         }
         return plan;
     }
@@ -117,17 +131,27 @@ export class PlanTaskManager {
             params.push(status_filter);
         }
 
-        query += ` ORDER BY creation_timestamp DESC LIMIT ? OFFSET ?`;
+        query += ` ORDER BY creation_timestamp_unix DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
         const results = await db.all(query, ...params as any[]);
         return results.map((row: any) => {
-            if (row.metadata) {
-                row.metadata = JSON.parse(row.metadata);
+            if (row.metadata) { // Check if metadata exists and is a string
+                try {
+                    row.metadata_parsed = JSON.parse(row.metadata);
+                } catch (e) {
+                    console.error(`Failed to parse metadata for plan ${row.plan_id}:`, e);
+                    row.metadata_parsed = null;
+                    row.metadata_parsing_error = true;
+                    // Keep row.metadata as the original string
+                }
+            } else {
+                row.metadata_parsed = null;
             }
             return row;
         });
     }
+
 
     async getPlanTasks(agent_id: string, plan_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<object[]> {
         const db = this.dbService.getDb();
@@ -144,10 +168,46 @@ export class PlanTaskManager {
 
         const results = await db.all(query, ...params as any[]);
         return results.map((row: any) => {
-            if (row.files_involved) row.files_involved = JSON.parse(row.files_involved);
-            if (row.dependencies_task_ids) row.dependencies_task_ids = JSON.parse(row.dependencies_task_ids);
-            if (row.tools_required_list) row.tools_required_list = JSON.parse(row.tools_required_list);
-            if (row.notes) row.notes = JSON.parse(row.notes);
+            // Safely parse JSON fields, adding error flags and keeping raw data if parsing fails
+            if (row.files_involved_json) {
+                try { row.files_involved = JSON.parse(row.files_involved_json); } 
+                catch (e) { 
+                    console.error(`Failed to parse files_involved_json for task ${row.task_id}:`, e); 
+                    row.files_involved = null; // Or []
+                    row.files_involved_json_parsing_error = true;
+                    row.raw_files_involved_json = row.files_involved_json;
+                }
+            } else { row.files_involved = []; }
+
+            if (row.dependencies_task_ids_json) {
+                try { row.dependencies_task_ids = JSON.parse(row.dependencies_task_ids_json); }
+                catch (e) {
+                    console.error(`Failed to parse dependencies_task_ids_json for task ${row.task_id}:`, e);
+                    row.dependencies_task_ids = null; // Or []
+                    row.dependencies_task_ids_json_parsing_error = true;
+                    row.raw_dependencies_task_ids_json = row.dependencies_task_ids_json;
+                }
+            } else { row.dependencies_task_ids = []; }
+
+            if (row.tools_required_list_json) {
+                try { row.tools_required_list = JSON.parse(row.tools_required_list_json); }
+                catch (e) {
+                    console.error(`Failed to parse tools_required_list_json for task ${row.task_id}:`, e);
+                    row.tools_required_list = null; // Or []
+                    row.tools_required_list_json_parsing_error = true;
+                    row.raw_tools_required_list_json = row.tools_required_list_json;
+                }
+            } else { row.tools_required_list = []; }
+            
+            if (row.notes_json) {
+                try { row.notes = JSON.parse(row.notes_json); }
+                catch (e) {
+                    console.error(`Failed to parse notes_json for task ${row.task_id}:`, e);
+                    row.notes = null; // Or {}
+                    row.notes_json_parsing_error = true;
+                    row.raw_notes_json = row.notes_json;
+                }
+            } else { row.notes = null; }
             return row;
         });
     }
@@ -156,8 +216,8 @@ export class PlanTaskManager {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
         const result = await db.run(
-            `UPDATE plans SET status = ?, last_updated_timestamp = ? WHERE agent_id = ? AND plan_id = ?`,
-            new_status, timestamp, agent_id, plan_id
+            `UPDATE plans SET status = ?, last_updated_timestamp_unix = ?, last_updated_timestamp_iso = ? WHERE agent_id = ? AND plan_id = ?`,
+            new_status, timestamp, new Date(timestamp).toISOString(), agent_id, plan_id
         );
         return (result?.changes || 0) > 0;
     }
@@ -166,23 +226,21 @@ export class PlanTaskManager {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
 
-        // First, retrieve the task to ensure it exists and get its plan_id
         const task = await this.getTask(agent_id, task_id);
         if (!task) {
             console.warn(`Attempted to update non-existent task: ${task_id} for agent: ${agent_id}`);
-            return false; // Task not found
+            return false;
         }
 
-        // Ensure the task's plan still exists
         const plan = await this.getPlan(agent_id, (task as any).plan_id);
         if (!plan) {
             console.warn(`Attempted to update task ${task_id} whose associated plan ${((task as any).plan_id)} does not exist for agent: ${agent_id}`);
-            return false; // Associated plan not found
+            return false;
         }
 
         const result = await db.run(
-            `UPDATE plan_tasks SET status = ?, last_updated_timestamp = ?, completion_timestamp = ? WHERE agent_id = ? AND task_id = ?`,
-            new_status, timestamp, completion_timestamp || null, agent_id, task_id
+            `UPDATE plan_tasks SET status = ?, last_updated_timestamp_unix = ?, last_updated_timestamp_iso = ?, completion_timestamp_unix = ?, completion_timestamp_iso = ? WHERE agent_id = ? AND task_id = ?`,
+            new_status, timestamp, new Date(timestamp).toISOString(), completion_timestamp || null, completion_timestamp ? new Date(timestamp).toISOString() : null, agent_id, task_id
         );
         return (result?.changes || 0) > 0;
     }
@@ -203,10 +261,45 @@ export class PlanTaskManager {
             agent_id, task_id
         );
         if (task) {
-            if (task.files_involved) task.files_involved = JSON.parse(task.files_involved);
-            if (task.dependencies_task_ids) task.dependencies_task_ids = JSON.parse(task.dependencies_task_ids);
-            if (task.tools_required_list) task.tools_required_list = JSON.parse(task.tools_required_list);
-            if (task.notes) task.notes = JSON.parse(task.notes);
+            if (task.files_involved_json) {
+                try { task.files_involved = JSON.parse(task.files_involved_json); }
+                catch (e) {
+                    console.error(`Failed to parse files_involved_json for task ${task.task_id}:`, e);
+                    task.files_involved = null; // Or []
+                    task.files_involved_json_parsing_error = true;
+                    task.raw_files_involved_json = task.files_involved_json;
+                }
+            } else { task.files_involved = []; }
+
+            if (task.dependencies_task_ids_json) {
+                try { task.dependencies_task_ids = JSON.parse(task.dependencies_task_ids_json); }
+                catch (e) {
+                    console.error(`Failed to parse dependencies_task_ids_json for task ${task.task_id}:`, e);
+                    task.dependencies_task_ids = null; // Or []
+                    task.dependencies_task_ids_json_parsing_error = true;
+                    task.raw_dependencies_task_ids_json = task.dependencies_task_ids_json;
+                }
+            } else { task.dependencies_task_ids = []; }
+
+            if (task.tools_required_list_json) {
+                try { task.tools_required_list = JSON.parse(task.tools_required_list_json); }
+                catch (e) {
+                    console.error(`Failed to parse tools_required_list_json for task ${task.task_id}:`, e);
+                    task.tools_required_list = null; // Or []
+                    task.tools_required_list_json_parsing_error = true;
+                    task.raw_tools_required_list_json = task.tools_required_list_json;
+                }
+            } else { task.tools_required_list = []; }
+
+            if (task.notes_json) {
+                try { task.notes = JSON.parse(task.notes_json); }
+                catch (e) {
+                    console.error(`Failed to parse notes_json for task ${task.task_id}:`, e);
+                    task.notes = null; // Or {}
+                    task.notes_json_parsing_error = true;
+                    task.raw_notes_json = task.notes_json;
+                }
+            } else { task.notes = null; }
         }
         return task;
     }
@@ -219,53 +312,57 @@ export class PlanTaskManager {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
 
-        // Validate input against the addTaskToPlan schema
         const validationResult = validate('addTaskToPlan', { agent_id, plan_id, taskData });
         if (!validationResult.valid) {
             console.error('Validation errors for addTaskToPlan:', validationResult.errors);
             throw new Error(`Invalid input for addTaskToPlan: ${JSON.stringify(validationResult.errors)}`);
         }
 
-        // Ensure the plan exists
         const plan = await this.getPlan(agent_id, plan_id);
         if (!plan) {
             throw new Error(`Plan with ID ${plan_id} not found for agent ${agent_id}.`);
         }
 
         const task_id = randomUUID();
-
-        await db.run(
-            `INSERT INTO plan_tasks (
-                task_id, plan_id, agent_id, task_number, title, description, status,
-                purpose, action_description, files_involved, dependencies_task_ids,
-                tools_required_list, inputs_summary, outputs_summary, success_criteria_text,
-                estimated_effort_hours, assigned_to, verification_method,
-                creation_timestamp, last_updated_timestamp, completion_timestamp, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            task_id,
-            plan_id,
-            agent_id,
-            taskData.task_number,
-            taskData.title,
-            taskData.description || null,
-            taskData.status || 'PLANNED',
-            taskData.purpose || null,
-            taskData.action_description || null,
-            taskData.files_involved ? JSON.stringify(taskData.files_involved) : null,
-            taskData.dependencies_task_ids ? JSON.stringify(taskData.dependencies_task_ids) : null,
-            taskData.tools_required_list ? JSON.stringify(taskData.tools_required_list) : null,
-            taskData.inputs_summary || null,
-            taskData.outputs_summary || null,
-            taskData.success_criteria_text || null,
-            taskData.estimated_effort_hours || null,
-            taskData.assigned_to || null,
-            taskData.verification_method || null,
-            timestamp,
-            timestamp,
-            taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? timestamp : null,
-            taskData.notes ? JSON.stringify(taskData.notes) : null
-        );
-
-        return task_id;
+        try {
+            await db.run(
+                `INSERT INTO plan_tasks (
+                    task_id, plan_id, agent_id, task_number, title, description, status,
+                    purpose, action_description, files_involved_json, dependencies_task_ids_json,
+                    tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
+                    estimated_effort_hours, assigned_to, verification_method,
+                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, completion_timestamp_unix, completion_timestamp_iso, notes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                task_id,
+                plan_id,
+                agent_id,
+                taskData.task_number,
+                taskData.title,
+                taskData.description || null,
+                taskData.status || 'PLANNED',
+                taskData.purpose || null,
+                taskData.action_description || null,
+                taskData.files_involved ? JSON.stringify(taskData.files_involved) : null,
+                taskData.dependencies_task_ids ? JSON.stringify(taskData.dependencies_task_ids) : null,
+                taskData.tools_required_list ? JSON.stringify(taskData.tools_required_list) : null,
+                taskData.inputs_summary || null,
+                taskData.outputs_summary || null,
+                taskData.success_criteria_text || null,
+                taskData.estimated_effort_hours || null,
+                taskData.assigned_to || null,
+                taskData.verification_method || null,
+                timestamp,
+                new Date(timestamp).toISOString(),
+                timestamp,
+                new Date(timestamp).toISOString(),
+                taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? timestamp : null,
+                taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? new Date(timestamp).toISOString() : null,
+                taskData.notes ? JSON.stringify(taskData.notes) : null
+            );
+            return task_id;
+        } catch (error) {
+            console.error(`Error adding task to plan ${plan_id}:`, error);
+            throw error;
+        }
     }
 }

@@ -394,8 +394,19 @@ Please provide the JSON object only.
 
     async storeRefinedPrompt(refinedPrompt: any): Promise<string> {
         const db = this.dbService.getDb();
-        const refined_prompt_id = refinedPrompt.refined_prompt_id || randomUUID();
+        let refined_prompt_id = refinedPrompt.refined_prompt_id || randomUUID();
         const timestamp = refinedPrompt.refinement_timestamp ? new Date(refinedPrompt.refinement_timestamp).getTime() : Date.now();
+
+        // Ensure the ID is unique before insertion
+        let isUnique = false;
+        while (!isUnique) {
+            const existing = await db.get(`SELECT refined_prompt_id FROM refined_prompts WHERE refined_prompt_id = ?`, refined_prompt_id);
+            if (existing) {
+                refined_prompt_id = randomUUID(); // Generate a new ID if it already exists
+            } else {
+                isUnique = true;
+            }
+        }
 
         await db.run(
             `INSERT INTO refined_prompts (
@@ -410,7 +421,7 @@ Please provide the JSON object only.
             refinedPrompt.agent_id,
             refinedPrompt.original_prompt_text,
             refinedPrompt.refinement_engine_model || null,
-            timestamp, 
+            timestamp,
             refinedPrompt.overall_goal || null,
             refinedPrompt.decomposed_tasks ? JSON.stringify(refinedPrompt.decomposed_tasks) : null,
             refinedPrompt.key_entities_identified ? JSON.stringify(refinedPrompt.key_entities_identified) : null,
