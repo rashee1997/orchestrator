@@ -106,7 +106,12 @@ export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
           args.instruction_version
         );
         if (instruction) {
-          return { content: [{ type: 'text', text: JSON.stringify(instruction, null, 2) }] };
+          // Format the instruction content as Markdown
+          const mdContent = `# Mode Instruction: ${instruction.mode_name}\n\n` +
+            `**Version:** ${instruction.instruction_version ?? 'latest'}\n\n` +
+            `---\n\n` +
+            `${instruction.instruction_content}\n`;
+          return { content: [{ type: 'text', text: mdContent }] };
         } else {
           return { content: [{ type: 'text', text: 'No mode instruction found.' }] };
         }
