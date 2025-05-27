@@ -365,6 +365,64 @@ export const schemas = {
           },
           required: ['agent_id', 'raw_user_prompt']
     },
+    addSubtaskToPlan: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: 'string' },
+            parent_task_id: { type: ['string', 'null'] },
+            subtaskData: {
+                type: 'object',
+                properties: {
+                    title: { type: 'string' },
+                    description: { type: ['string', 'null'] },
+                    status: { type: 'string' },
+                    notes: { type: ['object', 'null'] }
+                },
+                required: ['title'],
+                additionalProperties: false
+            }
+        },
+        required: ['agent_id', 'plan_id', 'subtaskData'],
+        additionalProperties: false
+    },
+    getSubtasks: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            plan_id: { type: ['string', 'null'] },
+            parent_task_id: { type: ['string', 'null'] },
+            status_filter: { type: ['string', 'null'] },
+            limit: { type: 'number' },
+            offset: { type: 'number' }
+        },
+        oneOf: [
+            { required: ['plan_id'] },
+            { required: ['parent_task_id'] }
+        ],
+        required: ['agent_id'],
+        additionalProperties: false
+    },
+    updateSubtaskStatus: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            subtask_id: { type: 'string' },
+            new_status: { type: 'string' },
+            completion_timestamp: { type: ['number', 'null'] }
+        },
+        required: ['agent_id', 'subtask_id', 'new_status'],
+        additionalProperties: false
+    },
+    deleteSubtask: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            subtask_id: { type: 'string' }
+        },
+        required: ['agent_id', 'subtask_id'],
+        additionalProperties: false
+    },
     create_task_review_log: {
         type: 'object',
         properties: {

@@ -423,7 +423,13 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             return { content: [{ type: 'text', text: `Task added with ID: ${task_id}` }] };
         },
         'add_subtask_to_plan': async (args: any, agent_id: string) => {
-            // TODO: Add validation for add_subtask_to_plan schema
+            const validationResult = validate('addSubtaskToPlan', args);
+            if (!validationResult.valid) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    `Validation failed for tool add_subtask_to_plan: ${JSON.stringify(validationResult.errors)}`
+                );
+            }
             const subtask_id = await memoryManager.subtaskManager.createSubtask(
                 agent_id,
                 args.plan_id as string,
@@ -432,7 +438,13 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             return { content: [{ type: 'text', text: `Subtask added with ID: ${subtask_id}` }] };
         },
         'get_subtasks': async (args: any, agent_id: string) => {
-            // TODO: Add validation for get_subtasks schema
+            const validationResult = validate('getSubtasks', args);
+            if (!validationResult.valid) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    `Validation failed for tool get_subtasks: ${JSON.stringify(validationResult.errors)}`
+                );
+            }
             let subtasks;
             if (args.plan_id && args.parent_task_id) {
                 subtasks = await memoryManager.subtaskManager.getSubtasksByPlanAndParentTask(
@@ -469,7 +481,13 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             return { content: [{ type: 'text', text: markdownOutput }] };
         },
         'update_subtask_status': async (args: any, agent_id: string) => {
-            // TODO: Add validation for update_subtask_status schema
+            const validationResult = validate('updateSubtaskStatus', args);
+            if (!validationResult.valid) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    `Validation failed for tool update_subtask_status: ${JSON.stringify(validationResult.errors)}`
+                );
+            }
             const success = await memoryManager.subtaskManager.updateSubtaskStatus(
                 agent_id,
                 args.subtask_id as string,
@@ -479,7 +497,13 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             return { content: [{ type: 'text', text: `Subtask status update ${success ? 'succeeded' : 'failed'}` }] };
         },
         'delete_subtask': async (args: any, agent_id: string) => {
-            // TODO: Add validation for delete_subtask schema
+            const validationResult = validate('deleteSubtask', args);
+            if (!validationResult.valid) {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    `Validation failed for tool delete_subtask: ${JSON.stringify(validationResult.errors)}`
+                );
+            }
             const success = await memoryManager.subtaskManager.deleteSubtask(
                 agent_id,
                 args.subtask_id as string
