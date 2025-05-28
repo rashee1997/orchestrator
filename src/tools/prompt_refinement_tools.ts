@@ -6,12 +6,12 @@ import { formatObjectToMarkdown } from '../utils/formatters.js';
 export const promptRefinementToolDefinitions = [
     {
         name: 'refine_user_prompt',
-        description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.',
+        description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis. This tool strictly requires the agent_id parameter.',
         inputSchema: schemas.refineUserPrompt
     },
     {
         name: 'get_refined_prompt',
-        description: 'Retrieves a previously stored refined prompt by its ID.',
+        description: 'Retrieves a previously stored refined prompt by its ID. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -22,6 +22,7 @@ export const promptRefinementToolDefinitions = [
             additionalProperties: false
         }
     }
+
 ];
 
 export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {

@@ -7,3 +7,4 @@ build/
 memory.db
 memory.db-shm
 memory.db-wal
+package-lock.json

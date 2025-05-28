@@ -100,6 +100,7 @@ export async function getAllToolDefinitions(): Promise<Tool[]> {
     });
 }
 
+
 export function getAllToolHandlers(memoryManager: MemoryManager) {
     return {
         ...getConversationToolHandlers(memoryManager),

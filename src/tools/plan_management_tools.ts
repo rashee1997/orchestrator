@@ -7,7 +7,7 @@ import { formatPlanToMarkdown, formatTasksListToMarkdownTable, formatPlansListTo
 export const planManagementToolDefinitions = [
     {
         name: 'create_task_plan',
-        description: 'Creates a new task plan with its initial set of tasks.',
+        description: 'Creates a new task plan with its initial set of tasks. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -57,10 +57,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'planData', 'tasksData'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'get_task_plan_details',
-        description: 'Retrieves details for a specific task plan.',
+        description: 'Retrieves details for a specific task plan. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -70,10 +71,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'list_task_plans',
-        description: 'Lists task plans for an agent, optionally filtered by status.',
+        description: 'Lists task plans for an agent, optionally filtered by status. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -85,10 +87,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'get_plan_tasks',
-        description: 'Retrieves tasks for a specific plan, optionally filtered by status.',
+        description: 'Retrieves tasks for a specific plan, optionally filtered by status. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -101,10 +104,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'update_task_plan_status',
-        description: 'Updates the status of a specified task plan.',
+        description: 'Updates the status of a specified task plan. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -115,10 +119,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id', 'new_status'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'update_plan_task_status',
-        description: 'Updates the status of a specific task within a plan.',
+        description: 'Updates the status of a specific task within a plan. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -130,10 +135,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'task_id', 'new_status'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'delete_task_plan',
-        description: 'Deletes a task plan and all its associated tasks.',
+        description: 'Deletes a task plan and all its associated tasks. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -143,10 +149,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'add_task_to_plan',
-        description: 'Adds a new task to an existing plan.',
+        description: 'Adds a new task to an existing plan. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -179,10 +186,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id', 'taskData'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'add_subtask_to_plan',
-        description: 'Adds a new subtask to an existing plan, optionally linked to a parent task.',
+        description: 'Adds a new subtask to an existing plan, optionally linked to a parent task. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -204,10 +212,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'plan_id', 'subtaskData'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'get_subtasks',
-        description: 'Retrieves subtasks for a given plan or parent task, optionally filtered by status.',
+        description: 'Retrieves subtasks for a given plan or parent task, optionally filtered by status. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -225,10 +234,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'update_subtask_status',
-        description: 'Updates the status of a specific subtask.',
+        description: 'Updates the status of a specific subtask. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -240,10 +250,11 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'subtask_id', 'new_status'],
             additionalProperties: false,
         },
+
     },
     {
         name: 'delete_subtask',
-        description: 'Deletes a subtask.',
+        description: 'Deletes a subtask. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -253,6 +264,7 @@ export const planManagementToolDefinitions = [
             required: ['agent_id', 'subtask_id'],
             additionalProperties: false,
         },
+
     },
 ];
 

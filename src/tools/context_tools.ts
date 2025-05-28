@@ -6,7 +6,7 @@ import { formatPlanToMarkdown, formatObjectToMarkdown } from '../utils/formatter
 export const contextToolDefinitions = [
     {
         name: 'store_context',
-        description: 'Stores dynamic contextual data for an AI agent.',
+        description: 'Stores dynamic contextual data for an AI agent. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -17,10 +17,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'context_type', 'context_data'],
         },
+
     },
     {
         name: 'get_context',
-        description: 'Retrieves contextual data for a given agent and context type, optionally by version or a specific snippet index.',
+        description: 'Retrieves contextual data for a given agent and context type, optionally by version or a specific snippet index. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -31,10 +32,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'context_type'],
         },
+
     },
     {
         name: 'get_all_contexts',
-        description: 'Retrieves all contextual data for a given agent.',
+        description: 'Retrieves all contextual data for a given agent. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -42,10 +44,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id'],
         },
+
     },
     {
         name: 'search_context_by_keywords',
-        description: 'Searches stored contextual data (specifically documentation snippets) by keywords.',
+        description: 'Searches stored contextual data (specifically documentation snippets) by keywords. This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -55,10 +58,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'context_type', 'keywords'],
         },
+
     },
     {
         name: 'prune_old_context',
-        description: 'Deletes old context entries based on a specified age (in milliseconds).',
+        description: 'Deletes old context entries based on a specified age (in milliseconds). This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -68,10 +72,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'max_age_ms'],
         },
+
     },
     {
         name: 'summarize_context',
-        description: 'Generates a summary of stored contextual data. (Placeholder: Requires external NLP integration for full functionality).',
+        description: 'Generates a summary of stored contextual data. (Placeholder: Requires external NLP integration for full functionality). This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -81,10 +86,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'context_type'],
         },
+
     },
     {
         name: 'extract_entities',
-        description: 'Extracts key entities and keywords from stored contextual data. (Placeholder: Requires external NLP integration for full functionality).',
+        description: 'Extracts key entities and keywords from stored contextual data. (Placeholder: Requires external NLP integration for full functionality). This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -94,10 +100,11 @@ export const contextToolDefinitions = [
             },
             required: ['agent_id', 'context_type'],
         },
+
     },
     {
         name: 'semantic_search_context',
-        description: 'Performs a semantic search on stored contextual data using vector embeddings. (Placeholder: Requires external embedding model integration for full functionality).',
+        description: 'Performs a semantic search on stored contextual data using vector embeddings. (Placeholder: Requires external embedding model integration for full functionality). This tool strictly requires the agent_id parameter.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -109,6 +116,7 @@ export const contextToolDefinitions = [
             required: ['agent_id', 'context_type', 'query_text'],
         },
     },
+
 ];
 
 function createMissingContextResponse(agent_id: string, context_type: string) {
