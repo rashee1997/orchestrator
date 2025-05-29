@@ -47,7 +47,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
 
 1.  **Clone the Repository:**
     ```bash
-    git clone <your-repository-url> orchestrator
+    git clone https://github.com/rashee1997/orchestrator orchestrator
     cd orchestrator
     ```
     (If you've already downloaded it, navigate to the `orchestrator` directory)
@@ -66,7 +66,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
 4.  **Configure API Keys:**
     The server requires API keys for some of its integrated services. These should be configured directly within your MCP client's settings, as shown in the next step.
 
-5.  **MCP Client Configuration (Example for VS Code Claude Dev Extension):**
+5.  **MCP Client Configuration (Example for VS Code cline Dev Extension):**
     Add or update the server configuration in your MCP client's settings file. For the VS code cline extension Claude Dev Extension, this is typically located at:
     *   **Windows:** `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
     *   **macOS:** `~/Library/Application Support/Code/User/globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
@@ -146,6 +146,10 @@ memory-mcp-server/
 ├── tsconfig.json             # TypeScript configuration
 └── ...                       # Other configuration and generated files
 ```
+
+## 📄 Rules and Protocols
+
+The Orchestrator adheres to strict operational rules and protocols defined in **workflow.md**. This file outlines the agent's roles, goals, and mandatory modes of operation, ensuring accurate, safe, and high-quality task execution.modify as your wish to ai agent work for . warning: its a static rules so Ai will follow for every task.this can be added in ai agents rules files. AI may not follow the full rules some times.
 
 ## 💻 Development
 
