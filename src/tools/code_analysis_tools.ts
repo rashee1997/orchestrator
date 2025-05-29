@@ -14,7 +14,7 @@ interface AnalyzeCodeFileArgs {
     filepath: string;
     language: string | null;
     analysis_focus_points: string[];
-    gemini_model_name: string;
+    gemini_model_name?: string;
 }
 
 export const analyzeCodeFileToolDefinition: InternalToolDefinition = {
@@ -35,7 +35,13 @@ export const analyzeCodeFileToolDefinition: InternalToolDefinition = {
                         "Best Practices & Conventions",
                         "Performance",
                         "Security Vulnerabilities",
-                        "Readability & Maintainability"
+                        "Readability & Maintainability",
+                        "Duplications",
+                        "Code Smells",
+                        "Testability",
+                        "Error Handling",
+                        "Modularity & Coupling",
+                        "Documentation & Comments"
                     ]
                 },
                 description: 'Specific aspects to focus on during the review. If empty or not provided, a general comprehensive review is performed.',
@@ -61,17 +67,17 @@ export const analyzeCodeFileToolDefinition: InternalToolDefinition = {
 
         const { agent_id, filepath, language, analysis_focus_points, gemini_model_name } = args;
 
-        let codeToAnalyze: string;
-        try {
-            codeToAnalyze = await fs.readFile(filepath, 'utf-8');
-        } catch (error: any) {
-            console.error(`Error reading file ${filepath}:`, error);
-            throw new McpError(ErrorCode.InvalidParams, `Failed to read file at path: ${filepath}. Error: ${error.message}`);
+        const CHUNK_SIZE = 10000; // Adjust as needed
+        let analysisResult = "";
+        let fileContent = "";
+        let focusString = "all aspects including:\n1.  **Potential Bugs & Errors**: Identify any logical errors, runtime exceptions, or edge cases that might not be handled.\n2.  **Best Practices & Conventions**: Check for adherence to common coding standards and language-specific best practices.\n3.  **Performance**: Suggest optimizations for speed or resource usage, if applicable.\n4.  **Security Vulnerabilities**: Point out any potential security risks (e.g., XSS, SQL injection, insecure handling of secrets).\n5.  **Readability & Maintainability**: Comment on code clarity, naming conventions, and overall structure. Suggest improvements for easier understanding and future maintenance.";
+        
+        if (analysis_focus_points && analysis_focus_points.length > 0) {
+            focusString = "the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
         }
 
-        if (!codeToAnalyze.trim()) {
-            return { content: [{ type: 'text', text: formatSimpleMessage(`File at \`${filepath}\` is empty. No code to analyze.`, "Code Analysis") }] };
-        }
+        const embeddingModelName = "gemini-embedding-exp";
+        const modelToUse = gemini_model_name || analyzeCodeFileToolDefinition.inputSchema.properties.gemini_model_name.default as string;
 
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
         const contextManager = (memoryManagerInstance as any).contextInformationManager as ContextInformationManager | undefined;
@@ -86,45 +92,49 @@ export const analyzeCodeFileToolDefinition: InternalToolDefinition = {
 
         const geminiService = new GeminiIntegrationService(dbService, contextManager);
 
-        // Construct the detailed prompt for Gemini
-        let focusString = "all aspects including:\n1.  **Potential Bugs & Errors**: Identify any logical errors, runtime exceptions, or edge cases that might not be handled.\n2.  **Best Practices & Conventions**: Check for adherence to common coding standards and language-specific best practices.\n3.  **Performance**: Suggest optimizations for speed or resource usage, if applicable.\n4.  **Security Vulnerabilities**: Point out any potential security risks (e.g., XSS, SQL injection, insecure handling of secrets).\n5.  **Readability & Maintainability**: Comment on code clarity, naming conventions, and overall structure. Suggest improvements for easier understanding and future maintenance.";
-
-        if (analysis_focus_points && analysis_focus_points.length > 0) {
-            focusString = "the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
+        try {
+            fileContent = await fs.readFile(filepath, 'utf-8');
+        } catch (error: any) {
+            console.error(`Error reading file ${filepath}:`, error);
+            throw new McpError(ErrorCode.InvalidParams, `Failed to read file at path: ${filepath}. Error: ${error.message}`);
         }
 
-        const systemPrompt = `You are an expert AI code reviewer. Your task is to analyze the provided code snippet and offer constructive feedback.
+        if (!fileContent.trim()) {
+            return { content: [{ type: 'text', text: formatSimpleMessage(`File at \`${filepath}\` is empty. No code to analyze.`, "Code Analysis") }] };
+        }
+
+        for (let i = 0; i < fileContent.length; i += CHUNK_SIZE) {
+            const chunk = fileContent.substring(i, i + CHUNK_SIZE);
+            const chunkSystemPrompt = `You are an expert AI code reviewer. Your task is to analyze the provided code snippet and offer constructive feedback.
 Focus on ${focusString}
 Provide clear, concise, and actionable feedback. Structure your review logically, addressing specific lines or code blocks where applicable. Use Markdown for formatting, including code blocks for suggestions.
 Begin your analysis with a brief overview of the code's purpose if discernible, then proceed to the detailed review.
 If the language is not specified, try to infer it.`;
 
-        const userQuery = `Please review the following ${language ? language + ' ' : ''}code from the file \`${filepath}\`:\n\n\`\`\`${language || ''}\n${codeToAnalyze}\n\`\`\`\n\nProvide a detailed analysis.`;
+            const chunkUserQuery = `Please review the following ${language ? language + ' ' : ''}code from the file \`${filepath}\` (Chunk ${i / CHUNK_SIZE + 1}):\n\n\`\`\`${language || ''}\n${chunk}\n\`\`\`\n\nProvide a detailed analysis.`;
 
-        try {
-            const response = await geminiService.askGemini(userQuery, gemini_model_name || DEFAULT_GEMINI_MODEL, systemPrompt);
-            
-            const analysisResult = response.content && response.content[0] && response.content[0].text
-                ? response.content[0].text
-                : "Gemini did not provide a specific analysis for the code.";
-
-            // Format the output
-            let markdownOutput = `## Code Analysis Report for \`${filepath}\`\n\n`;
-            if(language) markdownOutput += `**Language:** ${language}\n`;
-            markdownOutput += `**Focus Areas:** ${analysis_focus_points ? analysis_focus_points.join(', ') : 'General Comprehensive Review'}\n\n`;
-            markdownOutput += "### Gemini's Analysis:\n\n";
-            markdownOutput += analysisResult; // Assuming Gemini's response is already well-formatted or plain text.
-
-            return { content: [{ type: 'text', text: markdownOutput }] };
-
-        } catch (error: any) {
-            console.error(`Error during Gemini code analysis for ${filepath} (agent_id: ${agent_id}):`, error);
-            if (error instanceof McpError) throw error;
-            if (error.code === 'ENOENT') {
-                throw new McpError(ErrorCode.InvalidParams, `File not found at path: ${filepath} (agent_id: ${agent_id}).`);
+            try {
+                const response = await geminiService.askGemini(chunkUserQuery, gemini_model_name || DEFAULT_GEMINI_MODEL, chunkSystemPrompt);
+                const chunkAnalysisResult = response.content && response.content[0] && response.content[0].text
+                    ? response.content[0].text
+                    : "Gemini did not provide a specific analysis for this code chunk.";
+                analysisResult += `\n\n--- Chunk ${i / CHUNK_SIZE + 1} Analysis: ---\n${chunkAnalysisResult}`;
+            } catch (error: any) {
+                console.error(`Error during Gemini code analysis for chunk ${i / CHUNK_SIZE + 1} of ${filepath} (agent_id: ${agent_id}):`, error);
+                if (error instanceof McpError) throw error;
+                throw new McpError(ErrorCode.InternalError, `Gemini code analysis failed for chunk ${i / CHUNK_SIZE + 1} of file ${filepath} (agent_id: ${agent_id}): ${error.message}`);
             }
-            throw new McpError(ErrorCode.InternalError, `Gemini code analysis failed for file ${filepath} (agent_id: ${agent_id}): ${error.message}`);
         }
+
+        // Format the output
+        let markdownOutput = `## Code Analysis Report for \`${filepath}\`\n\n`;
+        if(language) markdownOutput += `**Language:** ${language}\n`;
+        markdownOutput += `**Focus Areas:** ${analysis_focus_points ? analysis_focus_points.join(', ') : 'General Comprehensive Review'}\n\n`;
+        markdownOutput += "### Gemini's Analysis:\n\n";
+        markdownOutput += analysisResult; // Assuming Gemini's response is already well-formatted or plain text.
+
+        return { content: [{ type: 'text', text: markdownOutput }] };
+
     }
 };
 

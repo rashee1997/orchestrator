@@ -41,6 +41,14 @@ export class MemoryManager {
         // Private constructor to enforce async factory
     }
 
+    public getDbService(): DatabaseService {
+        return this.dbService;
+    }
+
+    public getContextInformationManager(): ContextInformationManager {
+        return this.contextInformationManager;
+    }
+
     public static async create(): Promise<MemoryManager> {
         const instance = new MemoryManager();
         await instance.init();

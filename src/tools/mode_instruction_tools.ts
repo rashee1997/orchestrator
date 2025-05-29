@@ -18,9 +18,9 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
       required: ['agent_id', 'mode_name', 'instruction_content'],
       additionalProperties: false
     },
-    func: async (args: any, memoryManagerInstance?: MemoryManager, agent_id_from_server?: string) => {
+    func: async (args: any, memoryManagerInstance?: MemoryManager) => {
       if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required.");
-      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      const agent_id_to_use = args.agent_id;
       if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for add_mode");
       
       const instruction_id = await memoryManagerInstance.modeInstructionManager.storeModeInstruction(
@@ -45,9 +45,9 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
       required: ['agent_id', 'mode_name'],
       additionalProperties: false
     },
-    func: async (args: any, memoryManagerInstance?: MemoryManager, agent_id_from_server?: string) => {
+    func: async (args: any, memoryManagerInstance?: MemoryManager) => {
       if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required.");
-      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      const agent_id_to_use = args.agent_id;
       if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for get_mode");
 
       const instruction = await memoryManagerInstance.modeInstructionManager.getModeInstruction(
@@ -61,7 +61,7 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
         md += `- **Instruction ID:** \`${instruction.instruction_id}\`\n`;
         md += `- **Created:** ${new Date(instruction.creation_timestamp * 1000).toLocaleString()}\n`;
         md += `- **Last Updated:** ${new Date(instruction.last_updated_timestamp * 1000).toLocaleString()}\n`;
-        md += `### Content:\n${formatJsonToMarkdownCodeBlock(instruction.instruction_content, 'text')}\n`; // Assuming content might be multi-line
+        md += `### Content:\n${formatJsonToMarkdownCodeBlock(instruction.instruction_content, 'text')}\n`;
         return { content: [{ type: 'text', text: md }] };
       } else {
         return { content: [{ type: 'text', text: formatSimpleMessage(`No mode instruction found for mode \`${args.mode_name}\` (version ${args.instruction_version || 'latest'}).`, "Mode Instruction Not Found") }] };
@@ -81,9 +81,9 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
       required: ['agent_id', 'mode_name'],
       additionalProperties: false
     },
-    func: async (args: any, memoryManagerInstance?: MemoryManager, agent_id_from_server?: string) => {
+    func: async (args: any, memoryManagerInstance?: MemoryManager) => {
       if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required.");
-      const agent_id_to_use = args.agent_id || agent_id_from_server;
+      const agent_id_to_use = args.agent_id;
       if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_mode");
 
       const changes = await memoryManagerInstance.modeInstructionManager.deleteModeInstruction(
@@ -95,7 +95,7 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
     }
   },
   {
-    name: 'update_mode', // This is essentially an alias for add_mode due to ON CONFLICT behavior
+    name: 'update_mode',
     description: 'Updates an existing mode-specific instruction for an AI agent by mode name. If the mode/version doesn\'t exist, it will be created. Output is Markdown formatted.',
     inputSchema: {
       type: 'object',
@@ -108,9 +108,9 @@ export const modeInstructionToolDefinitions: InternalToolDefinition[] = [
       required: ['agent_id', 'mode_name', 'instruction_content'],
       additionalProperties: false
     },
-    func: async (args: any, memoryManagerInstance?: MemoryManager, agent_id_from_server?: string) => {
+    func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required.");
-        const agent_id_to_use = args.agent_id || agent_id_from_server;
+        const agent_id_to_use = args.agent_id;
         if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for update_mode");
         
         const instruction_id = await memoryManagerInstance.modeInstructionManager.storeModeInstruction(
@@ -128,7 +128,7 @@ export function getModeInstructionToolHandlers(memoryManager: MemoryManager) {
   const handlers: { [key: string]: Function } = {};
   modeInstructionToolDefinitions.forEach(def => {
     if (def.func) {
-      handlers[def.name] = (args: any, agent_id_from_server?: string) => def.func!(args, memoryManager, agent_id_from_server);
+      handlers[def.name] = (args: any, agent_id_from_server?: string) => def.func!(args, memoryManager);
     }
   });
   return handlers;

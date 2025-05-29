@@ -503,7 +503,6 @@ export function update_correction_log_status(memory: MemoryManager): LoggingTool
   };
 }
 
-// This function is used by the main tool index to get all definitions for MCP server listing.
 export function getLoggingToolDefinitions(memoryManager: MemoryManager) {
   // We return the schema part of the tool, not the 'call' function itself for definitions.
   return [
@@ -520,4 +519,21 @@ export function getLoggingToolDefinitions(memoryManager: MemoryManager) {
     { name: get_correction_logs(memoryManager).name, description: get_correction_logs(memoryManager).description, inputSchema: get_correction_logs(memoryManager).inputSchema },
     { name: update_correction_log_status(memoryManager).name, description: update_correction_log_status(memoryManager).description, inputSchema: update_correction_log_status(memoryManager).inputSchema },
   ];
+}
+
+export function getLoggingToolHandlers(memoryManager: MemoryManager) {
+  return {
+    log_tool_execution: log_tool_execution(memoryManager).call,
+    get_tool_execution_logs: get_tool_execution_logs(memoryManager).call,
+    update_tool_execution_log_status: update_tool_execution_log_status(memoryManager).call,
+    log_task_progress: log_task_progress(memoryManager).call,
+    get_task_progress_logs: get_task_progress_logs(memoryManager).call,
+    update_task_progress_log_status: update_task_progress_log_status(memoryManager).call,
+    log_error: log_error(memoryManager).call,
+    get_error_logs: get_error_logs(memoryManager).call,
+    update_error_log_status: update_error_log_status(memoryManager).call,
+    log_correction: log_correction(memoryManager).call,
+    get_correction_logs: get_correction_logs(memoryManager).call,
+    update_correction_log_status: update_correction_log_status(memoryManager).call,
+  };
 }

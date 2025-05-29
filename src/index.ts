@@ -30,7 +30,7 @@ class MemoryMcpServer {
     public static async create(): Promise<MemoryMcpServer> {
         const instance = new MemoryMcpServer();
         instance.memoryManager = await MemoryManager.create(); // Initialize asynchronously
-        const toolDefinitions = await getAllToolDefinitions();
+        const toolDefinitions = await getAllToolDefinitions(instance.memoryManager);
         instance.server = new Server(
             {
                 name: 'memory-mcp-server',
