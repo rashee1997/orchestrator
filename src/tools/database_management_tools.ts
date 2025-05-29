@@ -1,11 +1,12 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
+import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 
 export const databaseManagementToolDefinitions = [
     {
         name: 'export_data_to_csv',
-        description: 'Exports data from a specified database table to a CSV file.',
+        description: 'Exports data from a specified database table to a CSV file. Output is Markdown formatted.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -17,7 +18,7 @@ export const databaseManagementToolDefinitions = [
     },
     {
         name: 'backup_database',
-        description: 'Creates a backup copy of the SQLite database file.',
+        description: 'Creates a backup copy of the SQLite database file. Output is Markdown formatted.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -28,7 +29,7 @@ export const databaseManagementToolDefinitions = [
     },
     {
         name: 'restore_database',
-        description: 'Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database.',
+        description: 'Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database. Output is Markdown formatted.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -46,40 +47,40 @@ export function getDatabaseManagementToolHandlers(memoryManager: MemoryManager) 
             if (!validationResult.valid) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
-                    `Validation failed for tool export_data_to_csv: ${JSON.stringify(validationResult.errors)}`
+                    `Validation failed for tool export_data_to_csv: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
             const exportResult = await memoryManager.exportDataToCsv(
                 args.tableName as string,
                 args.filePath as string
             );
-            return { content: [{ type: 'text', text: exportResult }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(exportResult, "CSV Export") }] };
         },
         'backup_database': async (args: any) => { // agent_id is not required for this tool
             const validationResult = validate('backupDatabase', args);
             if (!validationResult.valid) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
-                    `Validation failed for tool backup_database: ${JSON.stringify(validationResult.errors)}`
+                    `Validation failed for tool backup_database: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
             const backupResult = await memoryManager.backupDatabase(
                 args.backupFilePath as string
             );
-            return { content: [{ type: 'text', text: backupResult }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(backupResult, "Database Backup") }] };
         },
         'restore_database': async (args: any) => { // agent_id is not required for this tool
             const validationResult = validate('restoreDatabase', args);
             if (!validationResult.valid) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
-                    `Validation failed for tool restore_database: ${JSON.stringify(validationResult.errors)}`
+                    `Validation failed for tool restore_database: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
             const restoreResult = await memoryManager.restoreDatabase(
                 args.backupFilePath as string
             );
-            return { content: [{ type: 'text', text: restoreResult }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(restoreResult, "Database Restore") }] };
         },
     };
 }

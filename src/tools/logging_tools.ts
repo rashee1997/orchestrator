@@ -1,20 +1,27 @@
 import { MemoryManager } from '../database/memory_manager.js';
-import { ToolExecutionLog, TaskProgressLog, ErrorLog } from '../types/index.js'; // CorrectionLog might be needed if its schema is used here
+import { ToolExecutionLog, TaskProgressLog, ErrorLog, CorrectionLog } from '../types/index.js';
+import { 
+    formatSimpleMessage, 
+    formatJsonToMarkdownCodeBlock,
+    formatToolExecutionLogToMarkdown,
+    formatTaskProgressLogToMarkdown,
+    formatErrorLogToMarkdown,
+    formatCorrectionLogToMarkdown // Assuming you might add a get_correction_log_by_id
+} from '../utils/formatters.js';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
-// Helper function to define a tool structure, can be expanded
 interface LoggingTool {
     name: string;
     description: string;
-    schema: object; // JSON schema for input
-    call: (args: any) => Promise<any>; // The function to execute the tool
+    inputSchema: object; // Changed from 'schema' to 'inputSchema'
+    call: (args: any) => Promise<any>; 
 }
-
 
 export function log_tool_execution(memory: MemoryManager): LoggingTool {
   return {
     name: 'log_tool_execution',
-    description: 'Logs the initiation or completion details of a specific tool execution attempt by the agent. Called before and after a tool runs.',
-    schema: {
+    description: 'Logs the initiation or completion details of a specific tool execution attempt by the agent. Called before and after a tool runs. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
@@ -22,7 +29,7 @@ export function log_tool_execution(memory: MemoryManager): LoggingTool {
         task_id: { type: ['string', 'null'], description: 'Optional: Link to the specific task if applicable.' },
         subtask_id: { type: ['string', 'null'], description: 'Optional: Link to the specific subtask if applicable.' },
         tool_name: { type: 'string', description: 'Name of the tool being logged.' },
-        arguments_json: { type: ['object', 'string'], description: 'JSON object or string of arguments passed to the tool.' }, // Allow object for easier use
+        arguments_json: { type: ['object', 'string'], description: 'JSON object or string of arguments passed to the tool.' },
         status: { type: 'string', description: 'Updatable: e.g., ATTEMPTING_EXECUTION, EXECUTION_SUCCESS, EXECUTION_FAILURE, RETRYING.' },
         output_summary: { type: ['string', 'null'], description: 'Summary of the tool\'s output or error message.' },
         execution_start_timestamp_unix: { type: 'number', description: 'Unix timestamp of when the execution started.' },
@@ -34,7 +41,6 @@ export function log_tool_execution(memory: MemoryManager): LoggingTool {
         plan_step_title: { type: ['string', 'null'], description: 'The title of the plan step.' }
       },
       required: ['agent_id', 'tool_name', 'status', 'execution_start_timestamp_unix', 'execution_start_timestamp_iso'],
-      // additionalProperties: false // Consider if strict adherence is needed or if extra args should be ignored/logged
     },
     async call(args: any) {
       const {
@@ -44,7 +50,6 @@ export function log_tool_execution(memory: MemoryManager): LoggingTool {
         step_number_executed, plan_step_title
       } = args;
 
-      // Ensure arguments_json is a string for storage
       const final_arguments_json = typeof arguments_json === 'string' ? arguments_json : JSON.stringify(arguments_json);
 
       const logData: Omit<ToolExecutionLog, 'log_id' | 'log_creation_timestamp_unix' | 'log_creation_timestamp_iso' | 'last_updated_timestamp_unix' | 'last_updated_timestamp_iso'> = {
@@ -65,7 +70,7 @@ export function log_tool_execution(memory: MemoryManager): LoggingTool {
         plan_step_title: plan_step_title || null
       };
       const logId = await memory.toolExecutionLogManager.createToolExecutionLog(logData);
-      return { content: [{ type: 'text', text: `Tool execution logged with ID: ${logId}` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Tool execution logged with ID: \`${logId}\``, "Tool Execution Logged") }] };
     }
   };
 }
@@ -73,25 +78,27 @@ export function log_tool_execution(memory: MemoryManager): LoggingTool {
 export function get_tool_execution_logs(memory: MemoryManager): LoggingTool {
   return {
     name: 'get_tool_execution_logs',
-    description: 'Retrieves historical tool execution logs based on specified filters to aid in review, debugging, or agent learning.',
-    schema: {
+    description: 'Retrieves historical tool execution logs based on specified filters. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
         limit: { type: 'number', default: 100, description: "Maximum number of logs to retrieve." },
         offset: { type: 'number', default: 0, description: "Offset for pagination." },
-        // Add other filters as needed, e.g., plan_id, task_id, tool_name, status, date_range
       },
       required: ['agent_id'],
     },
     async call(args: any) {
-      const { agent_id, limit, offset /*, other filters */ } = args;
-      // Pass filters to the manager method if it supports them
-      const logs = await memory.toolExecutionLogManager.getToolExecutionLogsByAgentId(agent_id, limit, offset);
+      const { agent_id, limit, offset } = args;
+      const logs: ToolExecutionLog[] = await memory.toolExecutionLogManager.getToolExecutionLogsByAgentId(agent_id, limit, offset);
       if (logs.length === 0) {
-        return { content: [{ type: 'text', text: `No tool execution logs found for agent_id: ${agent_id}` }] };
+        return { content: [{ type: 'text', text: formatSimpleMessage(`No tool execution logs found for agent ID: \`${agent_id}\``, "Tool Execution Logs") }] };
       }
-      return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+      let md = `## Tool Execution Logs for Agent: \`${agent_id}\` (Limit: ${limit}, Offset: ${offset})\n\n`;
+      logs.forEach(log => {
+        md += formatToolExecutionLogToMarkdown(log) + "\n---\n\n";
+      });
+      return { content: [{ type: 'text', text: md }] };
     }
   };
 }
@@ -99,17 +106,14 @@ export function get_tool_execution_logs(memory: MemoryManager): LoggingTool {
 export function update_tool_execution_log_status(memory: MemoryManager): LoggingTool {
   return {
     name: 'update_tool_execution_log_status',
-    description: 'Updates the status or outcome of a previously logged tool execution entry.',
-    schema: {
+    description: 'Updates the status or outcome of a previously logged tool execution entry. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
-        // agent_id is not strictly needed if log_id is globally unique, but good for namespacing/auth
-        // agent_id: { type: 'string', description: 'Identifier of the AI agent.' }, 
         log_id: { type: 'string', description: 'Unique ID of the tool execution log to update.' },
         new_status: { type: 'string', description: 'The new status for the log entry.' },
         output_summary: { type: ['string', 'null'], description: 'Optional: Updated summary of the tool\'s output or error message.' },
         execution_end_timestamp_unix: { type: ['number', 'null'], description: 'Unix timestamp of when the execution ended.' },
-        // execution_end_timestamp_iso is derived in manager
         duration_ms: { type: ['number', 'null'], description: 'Calculated duration in milliseconds.' }
       },
       required: ['log_id', 'new_status'],
@@ -119,12 +123,12 @@ export function update_tool_execution_log_status(memory: MemoryManager): Logging
       await memory.toolExecutionLogManager.updateToolExecutionLogStatus(
           log_id, 
           new_status, 
-          output_summary || undefined, // Pass undefined if null/empty
+          output_summary || undefined,
           execution_end_timestamp_unix || undefined, 
-          undefined, // execution_end_timestamp_iso is derived in manager
+          undefined, 
           duration_ms || undefined
       );
-      return { content: [{ type: 'text', text: `Tool execution log ${log_id} status updated to ${new_status}.` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Tool execution log \`${log_id}\` status updated to \`${new_status}\`.`, "Tool Log Status Updated") }] };
     }
   };
 }
@@ -132,8 +136,8 @@ export function update_tool_execution_log_status(memory: MemoryManager): Logging
 export function log_task_progress(memory: MemoryManager): LoggingTool {
   return {
     name: 'log_task_progress',
-    description: 'Records a summary of the agent\'s progress after completing a significant step or action within a planned task or subtask.',
-    schema: {
+    description: 'Records a summary of the agent\'s progress after completing a significant step or action within a planned task or subtask. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
@@ -146,7 +150,6 @@ export function log_task_progress(memory: MemoryManager): LoggingTool {
         tool_parameters_summary_json: { type: ['object','string', 'null'], description: 'JSON object/string summarizing tool parameters.' },
         files_modified_list_json: { type: ['array','string', 'null'], items: { type: 'string' }, description: 'JSON array/string of paths of modified files.' },
         change_summary_text: { type: ['string', 'null'], description: 'Human-readable summary of changes or actions.' },
-        // execution_timestamp_unix and _iso are generated by the manager
         status_of_step_execution: { type: 'string', description: 'Updatable: e.g., SUCCESS, FAILURE, PARTIAL_SUCCESS.' },
         output_summary_or_error: { type: ['string', 'null'], description: 'Summary of the outcome or error details for this step.' }
       },
@@ -183,39 +186,41 @@ export function log_task_progress(memory: MemoryManager): LoggingTool {
       };
       try {
         const logId = await memory.taskProgressLogManager.createTaskProgressLog(logData);
-        return { content: [{ type: 'text', text: `Task progress logged with ID: ${logId}` }] };
+        return { content: [{ type: 'text', text: formatSimpleMessage(`Task progress logged with ID: \`${logId}\``,"Task Progress Logged") }] };
       } catch (error: any) {
         if (error.message && error.message.includes('FOREIGN KEY constraint failed')) {
-          return { content: [{ type: 'text', text: 'Error: The specified task is not part of the plan. Task progress not updated.' }] };
+          throw new McpError(ErrorCode.InvalidParams, 'Error: The specified task or plan ID is invalid. Task progress not logged.');
         }
         throw error;
       }
     }
-
   };
 }
 
 export function get_task_progress_logs(memory: MemoryManager): LoggingTool {
   return {
     name: 'get_task_progress_logs',
-    description: 'Retrieves historical task progress logs, allowing for review of how tasks and plans were executed over time.',
-    schema: {
+    description: 'Retrieves historical task progress logs. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
         limit: { type: 'number', default: 100 },
         offset: { type: 'number', default: 0 },
-        // Add other filters as needed
       },
       required: ['agent_id'],
     },
     async call(args: any) {
       const { agent_id, limit, offset } = args;
-      const logs = await memory.taskProgressLogManager.getTaskProgressLogsByAgentId(agent_id, limit, offset);
+      const logs: TaskProgressLog[] = await memory.taskProgressLogManager.getTaskProgressLogsByAgentId(agent_id, limit, offset);
       if (logs.length === 0) {
-        return { content: [{ type: 'text', text: `No task progress logs found for agent_id: ${agent_id}` }] };
+        return { content: [{ type: 'text', text: formatSimpleMessage(`No task progress logs found for agent ID: \`${agent_id}\``, "Task Progress Logs") }] };
       }
-      return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+      let md = `## Task Progress Logs for Agent: \`${agent_id}\` (Limit: ${limit}, Offset: ${offset})\n\n`;
+      logs.forEach(log => {
+        md += formatTaskProgressLogToMarkdown(log) + "\n---\n\n";
+      });
+      return { content: [{ type: 'text', text: md }] };
     }
   };
 }
@@ -223,11 +228,10 @@ export function get_task_progress_logs(memory: MemoryManager): LoggingTool {
 export function update_task_progress_log_status(memory: MemoryManager): LoggingTool {
   return {
     name: 'update_task_progress_log_status',
-    description: 'Updates the status or outcome of a previously logged task progress entry.',
-    schema: {
+    description: 'Updates the status or outcome of a previously logged task progress entry. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
-        // agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
         progress_log_id: { type: 'string', description: 'Unique ID of the task progress log to update.' },
         new_status_of_step_execution: { type: 'string', description: 'The new status for the log entry.' },
         output_summary_or_error: { type: ['string', 'null'], description: 'Optional: Updated summary of the outcome or error details.' },
@@ -241,7 +245,7 @@ export function update_task_progress_log_status(memory: MemoryManager): LoggingT
           new_status_of_step_execution, 
           output_summary_or_error || undefined
       );
-      return { content: [{ type: 'text', text: `Task progress log ${progress_log_id} status updated.` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Task progress log \`${progress_log_id}\` status updated.`, "Task Progress Log Updated") }] };
     }
   };
 }
@@ -249,8 +253,8 @@ export function update_task_progress_log_status(memory: MemoryManager): LoggingT
 export function log_error(memory: MemoryManager): LoggingTool {
   return {
     name: 'log_error',
-    description: 'Logs an error encountered by the agent during its operation.',
-    schema: {
+    description: 'Logs an error encountered by the agent during its operation. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
@@ -266,7 +270,6 @@ export function log_error(memory: MemoryManager): LoggingTool {
         severity: { type: 'string', default: 'MEDIUM', description: 'e.g., LOW, MEDIUM, HIGH, CRITICAL.' },
         status: { type: 'string', default: 'NEW', description: 'Updatable: e.g., NEW, ACKNOWLEDGED, INVESTIGATING, RESOLVED, IGNORED.' },
         resolution_details: { type: ['string', 'null'] },
-        // error_timestamp_unix and _iso are generated by the manager
       },
       required: ['agent_id', 'error_type', 'error_message'],
     },
@@ -277,7 +280,6 @@ export function log_error(memory: MemoryManager): LoggingTool {
         source_file, source_line, severity, status, resolution_details
       } = args;
 
-      // Timestamps are generated by the manager
       const error_timestamp_unix = Date.now();
       const error_timestamp_iso = new Date(error_timestamp_unix).toISOString();
 
@@ -295,11 +297,11 @@ export function log_error(memory: MemoryManager): LoggingTool {
         severity: severity || 'MEDIUM',
         status: status || 'NEW',
         resolution_details: resolution_details || null,
-        error_timestamp_unix, // Generated here for the log entry
-        error_timestamp_iso   // Generated here for the log entry
+        error_timestamp_unix,
+        error_timestamp_iso
       };
       const logId = await memory.errorLogManager.createErrorLog(logData);
-      return { content: [{ type: 'text', text: `Error logged with ID: ${logId}` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Error logged with ID: \`${logId}\``, "Error Logged") }] };
     }
   };
 }
@@ -307,24 +309,27 @@ export function log_error(memory: MemoryManager): LoggingTool {
 export function get_error_logs(memory: MemoryManager): LoggingTool {
   return {
     name: 'get_error_logs',
-    description: 'Retrieves historical error logs for debugging, analysis, and identifying patterns in agent failures.',
-    schema: {
+    description: 'Retrieves historical error logs. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
         limit: { type: 'number', default: 100 },
         offset: { type: 'number', default: 0 },
-        // Add other filters
       },
       required: ['agent_id'],
     },
     async call(args: any) {
       const { agent_id, limit, offset } = args;
-      const logs = await memory.errorLogManager.getErrorLogsByAgentId(agent_id, limit, offset);
+      const logs: ErrorLog[] = await memory.errorLogManager.getErrorLogsByAgentId(agent_id, limit, offset);
       if (logs.length === 0) {
-        return { content: [{ type: 'text', text: `No error logs found for agent_id: ${agent_id}` }] };
+        return { content: [{ type: 'text', text: formatSimpleMessage(`No error logs found for agent ID: \`${agent_id}\``, "Error Logs") }] };
       }
-      return { content: [{ type: 'text', text: JSON.stringify(logs, null, 2) }] };
+      let md = `## Error Logs for Agent: \`${agent_id}\` (Limit: ${limit}, Offset: ${offset})\n\n`;
+      logs.forEach(log => {
+        md += formatErrorLogToMarkdown(log) + "\n---\n\n";
+      });
+      return { content: [{ type: 'text', text: md }] };
     }
   };
 }
@@ -332,15 +337,13 @@ export function get_error_logs(memory: MemoryManager): LoggingTool {
 export function update_error_log_status(memory: MemoryManager): LoggingTool {
   return {
     name: 'update_error_log_status',
-    description: 'Updates the status of a previously logged error, typically as part of a debugging or resolution workflow.',
-    schema: {
+    description: 'Updates the status of a previously logged error. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
-        // agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
         error_log_id: { type: 'string', description: 'Unique ID of the error log to update.' },
         new_status: { type: 'string', description: 'The new status for the error log.' },
         resolution_details: { type: ['string', 'null'], description: 'Optional: Details on how the error was resolved.' },
-        // Timestamps are handled by the manager
       },
       required: ['error_log_id', 'new_status'],
     },
@@ -350,9 +353,8 @@ export function update_error_log_status(memory: MemoryManager): LoggingTool {
           error_log_id, 
           new_status, 
           resolution_details || undefined
-          // Timestamps are handled by manager
       );
-      return { content: [{ type: 'text', text: `Error log ${error_log_id} status updated.` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Error log \`${error_log_id}\` status updated to \`${new_status}\`.`, "Error Log Status Updated") }] };
     }
   };
 }
@@ -360,91 +362,37 @@ export function update_error_log_status(memory: MemoryManager): LoggingTool {
 export function update_correction_log_status(memory: MemoryManager): LoggingTool {
   return {
     name: 'update_correction_log_status',
-    description: 'Updates the status of a previously logged correction entry.',
-    schema: {
+    description: 'Updates the status of a previously logged correction entry. Output is Markdown formatted.',
+    inputSchema: {
       type: 'object',
       properties: {
-        // agent_id is not strictly needed by manager if correction_id is unique
-        // agent_id: { type: 'string', description: 'Identifier of the AI agent.' }, 
         correction_id: { type: 'string', description: 'Unique ID of the correction log to update.' },
         new_status: { type: 'string', description: 'The new status for the correction log.' },
-        // Timestamps are handled by the manager
       },
       required: ['correction_id', 'new_status'],
     },
     async call(args: any) {
-      const { correction_id, new_status } = args; // agent_id removed from destructuring
-      // Call manager method with only the required arguments
+      const { correction_id, new_status } = args;
       await memory.correctionLogManager.updateCorrectionLogStatus(
         correction_id,
         new_status
-        // Timestamps are handled by manager
       );
-      return { content: [{ type: 'text', text: `Correction log ${correction_id} status updated.` }] };
+      return { content: [{ type: 'text', text: formatSimpleMessage(`Correction log \`${correction_id}\` status updated to \`${new_status}\`.`, "Correction Log Status Updated") }] };
     }
   };
 }
 
-// This structure is for MCP server listing, not direct execution.
-// The actual handlers are generated by getLoggingToolDefinitions.
-export const loggingToolDefinitionsForMcp = [
-  // Definitions will be populated by getLoggingToolDefinitions
-];
-
-// Factory function to generate logging tool definitions with a bound MemoryManager
-// These are the definitions the MCP server will use.
 export function getLoggingToolDefinitions(memoryManager: MemoryManager) {
   return [
-    {
-      name: 'log_tool_execution',
-      description: log_tool_execution(memoryManager).description,
-      inputSchema: log_tool_execution(memoryManager).schema,
-      // func is not part of MCP definition, it's for internal use by the server handler
-    },
-    {
-      name: 'get_tool_execution_logs',
-      description: get_tool_execution_logs(memoryManager).description,
-      inputSchema: get_tool_execution_logs(memoryManager).schema,
-    },
-    {
-      name: 'update_tool_execution_log_status',
-      description: update_tool_execution_log_status(memoryManager).description,
-      inputSchema: update_tool_execution_log_status(memoryManager).schema,
-    },
-    {
-      name: 'log_task_progress',
-      description: log_task_progress(memoryManager).description,
-      inputSchema: log_task_progress(memoryManager).schema,
-    },
-    {
-      name: 'get_task_progress_logs',
-      description: get_task_progress_logs(memoryManager).description,
-      inputSchema: get_task_progress_logs(memoryManager).schema,
-    },
-    {
-      name: 'update_task_progress_log_status',
-      description: update_task_progress_log_status(memoryManager).description,
-      inputSchema: update_task_progress_log_status(memoryManager).schema,
-    },
-    {
-      name: 'log_error',
-      description: log_error(memoryManager).description,
-      inputSchema: log_error(memoryManager).schema,
-    },
-    {
-      name: 'get_error_logs',
-      description: get_error_logs(memoryManager).description,
-      inputSchema: get_error_logs(memoryManager).schema,
-    },
-    {
-      name: 'update_error_log_status',
-      description: update_error_log_status(memoryManager).description,
-      inputSchema: update_error_log_status(memoryManager).schema,
-    },
-    {
-      name: 'update_correction_log_status',
-      description: update_correction_log_status(memoryManager).description,
-      inputSchema: update_correction_log_status(memoryManager).schema,
-    },
+    { name: 'log_tool_execution', description: log_tool_execution(memoryManager).description, inputSchema: log_tool_execution(memoryManager).inputSchema },
+    { name: 'get_tool_execution_logs', description: get_tool_execution_logs(memoryManager).description, inputSchema: get_tool_execution_logs(memoryManager).inputSchema },
+    { name: 'update_tool_execution_log_status', description: update_tool_execution_log_status(memoryManager).description, inputSchema: update_tool_execution_log_status(memoryManager).inputSchema },
+    { name: 'log_task_progress', description: log_task_progress(memoryManager).description, inputSchema: log_task_progress(memoryManager).inputSchema },
+    { name: 'get_task_progress_logs', description: get_task_progress_logs(memoryManager).description, inputSchema: get_task_progress_logs(memoryManager).inputSchema },
+    { name: 'update_task_progress_log_status', description: update_task_progress_log_status(memoryManager).description, inputSchema: update_task_progress_log_status(memoryManager).inputSchema },
+    { name: 'log_error', description: log_error(memoryManager).description, inputSchema: log_error(memoryManager).inputSchema },
+    { name: 'get_error_logs', description: get_error_logs(memoryManager).description, inputSchema: get_error_logs(memoryManager).inputSchema },
+    { name: 'update_error_log_status', description: update_error_log_status(memoryManager).description, inputSchema: update_error_log_status(memoryManager).inputSchema },
+    { name: 'update_correction_log_status', description: update_correction_log_status(memoryManager).description, inputSchema: update_correction_log_status(memoryManager).inputSchema },
   ];
 }

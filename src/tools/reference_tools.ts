@@ -1,12 +1,12 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
-import { formatObjectToMarkdown } from '../utils/formatters.js';
+import { formatObjectToMarkdown, formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 
 export const referenceToolDefinitions = [
     {
         name: 'add_reference_key',
-        description: 'Adds a reference key to an external knowledge source or internal memory entry.',
+        description: 'Adds a reference key to an external knowledge source or internal memory entry. Output is Markdown formatted.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -21,7 +21,7 @@ export const referenceToolDefinitions = [
     },
     {
         name: 'get_reference_keys',
-        description: 'Retrieves reference keys for a given agent, optionally filtered by key type.',
+        description: 'Retrieves reference keys for a given agent, optionally filtered by key type. Output is Markdown formatted.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -42,7 +42,7 @@ export function getReferenceToolHandlers(memoryManager: MemoryManager) {
             if (!validationResult.valid) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
-                    `Validation failed for tool add_reference_key: ${JSON.stringify(validationResult.errors)}`
+                    `Validation failed for tool add_reference_key: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
             const refId = await memoryManager.addReferenceKey(
@@ -52,7 +52,7 @@ export function getReferenceToolHandlers(memoryManager: MemoryManager) {
                 args.description as string | null,
                 args.associated_conversation_id as string | null
             );
-            return { content: [{ type: 'text', text: `Reference key added with ID: ${refId}` }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(`Reference key added with ID: \`${refId}\``, "Reference Key Added") }] };
         },
         'get_reference_keys': async (args: any, agent_id: string) => {
             const refKeys = await memoryManager.getReferenceKeys(
@@ -61,7 +61,22 @@ export function getReferenceToolHandlers(memoryManager: MemoryManager) {
                 args.limit as number,
                 args.offset as number
             );
-            return { content: [{ type: 'text', text: formatObjectToMarkdown(refKeys) }] };
+            if (!refKeys || refKeys.length === 0) {
+                return { content: [{ type: 'text', text: formatSimpleMessage("No reference keys found for the given criteria.", "Reference Keys") }] };
+            }
+            let md = `## Reference Keys for Agent: \`${agent_id}\`\n`;
+            if (args.key_type) md += `### Filtered by Type: \`${args.key_type}\`\n`;
+            md += "| Reference ID | Key Type | Key Value | Description | Timestamp | Conversation ID |\n";
+            md += "|--------------|----------|-----------|-------------|-----------|-----------------|\n";
+            refKeys.forEach((key: any) => {
+                md += `| \`${key.reference_id}\` `
+                    + `| ${key.key_type} `
+                    + `| \`${key.key_value}\` `
+                    + `| ${key.description || '*N/A*'} `
+                    + `| ${new Date(key.timestamp).toLocaleString()} `
+                    + `| ${key.associated_conversation_id ? `\`${key.associated_conversation_id}\`` : '*N/A*'} |\n`;
+            });
+            return { content: [{ type: 'text', text: md }] };
         },
     };
 }

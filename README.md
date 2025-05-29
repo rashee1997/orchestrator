@@ -1,7 +1,7 @@
-# 🧠 Memory MCP Server: Your Agent's Persistent Brain 🧠
+# 🧠 Orchestrator: Your Agent's Persistent Brain 🧠
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-The **Memory MCP Server** is a robust Model Context Protocol (MCP) server designed to provide AI agents with a powerful and persistent memory system. Built with TypeScript and leveraging SQLite, it offers a comprehensive suite of tools for managing various forms of agent knowledge, from conversation histories and contextual data to complex task plans and a structured knowledge graph.
+The **Orchestrator** is a robust Model Context Protocol (MCP) server designed to provide AI agents with a powerful and persistent memory system. Built with TypeScript and leveraging SQLite, it offers a comprehensive suite of tools for managing various forms of agent knowledge, from conversation histories and contextual data to complex task plans and a structured knowledge graph.
 
 This server empowers your AI agents to learn, remember, and operate with greater intelligence and consistency across sessions.
 
@@ -47,10 +47,10 @@ This server empowers your AI agents to learn, remember, and operate with greater
 
 1.  **Clone the Repository:**
     ```bash
-    git clone <your-repository-url> memory-mcp-server
-    cd memory-mcp-server
+    git clone <your-repository-url> orchestrator
+    cd orchestrator
     ```
-    (If you've already downloaded it, navigate to the `C:\Users\user\Dropbox\PC\Documents\Cline\MCP\memory-mcp-server` directory)
+    (If you've already downloaded it, navigate to the `C:\Users\user\PC\Documents\Cline\MCP\orchestrator` directory)
 
 2.  **Install Dependencies:**
     ```bash
@@ -64,7 +64,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
     ```
 
 4.  **Configure Environment Variables:**
-    The server requires API keys for some of its integrated services. Create a `.env` file in the root of the `memory-mcp-server` directory (e.g., `C:\Users\user\Dropbox\PC\Documents\Cline\MCP\memory-mcp-server\.env`) with the following content:
+    The server requires API keys for some of its integrated services. Create a `.env` file in the root of the `orchestrator` directory (e.g., `C:\Users\user\Dropbox\PC\Documents\Cline\MCP\orchestrator\.env`) with the following content:
 
     ```env
     TAVILY_API_KEY="your_tavily_api_key"
@@ -84,14 +84,14 @@ This server empowers your AI agents to learn, remember, and operate with greater
     Add the following entry:
     ```json
     {
-      "memory-mcp-server": {
+      "orchestrator": {
         "disabled": false,
         "autoApprove": [], 
         "timeout": 120,    
         "transportType": "stdio",
         "command": "node",
         "args": [
-          "C:/Users/user/Dropbox/PC/Documents/Cline/MCP/memory-mcp-server/build/index.js"
+          "C:/Users/user/Dropbox/PC/Documents/Cline/MCP/orchestrator/build/index.js"
         ],
         "env": {
           "TAVILY_API_KEY": "your_tavily_api_key",
@@ -104,7 +104,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
 
 ## 🧭 Core Concepts
 
-The Memory MCP Server is designed around the concept of providing a persistent, structured memory for AI agents. Key ideas include:
+The Orchestrator is designed around the concept of the concept of providing a persistent, structured memory for AI agents. Key ideas include:
 
 * **Agent-Centric Storage:** Most memory entries are associated with an `agent_id`, allowing multiple agents to use the same server without interference.
 * **Typed Memory:** Different types of information (conversations, context, plans) are stored in dedicated, appropriately indexed SQLite tables for efficient querying.

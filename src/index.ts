@@ -59,8 +59,8 @@ class MemoryMcpServer {
         return instance;
     }
 
-    private setupToolHandlers(toolDefinitions: any[]) {
-        this.toolHandlers = getAllToolHandlers(this.memoryManager);
+    private async setupToolHandlers(toolDefinitions: any[]) {
+        this.toolHandlers = await getAllToolHandlers(this.memoryManager);
 
         this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
             tools: toolDefinitions,

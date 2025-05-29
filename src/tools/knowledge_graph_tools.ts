@@ -1,10 +1,11 @@
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatObjectToMarkdown } from '../utils/formatters.js';
 
 export const knowledgeGraphToolDefinitions = [
     {
         name: 'knowledge_graph_memory',
-        description: `A tool for interacting with the knowledge graph memory. Supported operations: 
+        description: `A tool for interacting with the knowledge graph memory. Output is Markdown formatted. Supported operations: 
 - "create_entities": Adds new entities (nodes) to the graph. Requires 'entities' array in arguments.
 - "create_relations": Adds new relationships between existing entities. Requires 'relations' array in arguments.
 - "add_observations": Adds observations to existing entities. Requires 'observations' array in arguments.
@@ -33,7 +34,6 @@ export const knowledgeGraphToolDefinitions = [
                         "open_nodes"
                     ]
                 },
-                // Arguments for specific operations (optional depending on the operation)
                 entities: { 
                     type: 'array', 
                     items: { 
@@ -100,9 +100,6 @@ export const knowledgeGraphToolDefinitions = [
                 }
             },
             required: ['agent_id', 'operation'],
-            // Note: Specific argument requirements depend on the 'operation' value.
-            // This could be further refined with 'if/then/else' or 'oneOf' in JSON schema if needed,
-            // but for now, the description clarifies the conditional requirements.
         },
     },
 ];
@@ -111,53 +108,69 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
     return {
         'knowledge_graph_memory': async (args: any, agent_id: string) => {
             const operation = args.operation as string;
-            // 'key' and 'value' are not directly used by the KG manager methods in this way.
-            // The specific arguments like 'entities', 'relations', 'query' are used.
+            let kgResult: any;
+            let title = `Knowledge Graph Operation: ${operation}`;
+            let resultData: any;
 
-            let kgResult;
-            switch (operation) {
-                case 'create_entities':
-                    if (!args.entities) throw new McpError(ErrorCode.InvalidParams, "Missing 'entities' argument for 'create_entities' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, args.entities as Array<{ name: string; entityType: string; observations: string[] }>);
-                    break;
-                case 'create_relations':
-                    if (!args.relations) throw new McpError(ErrorCode.InvalidParams, "Missing 'relations' argument for 'create_relations' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, args.relations as Array<{ from: string; to: string; relationType: string }>);
-                    break;
-                case 'add_observations':
-                    if (!args.observations) throw new McpError(ErrorCode.InvalidParams, "Missing 'observations' argument for 'add_observations' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, args.observations as Array<{ entityName: string; contents: string[] }>);
-                    break;
-                case 'delete_entities':
-                    if (!args.entityNames) throw new McpError(ErrorCode.InvalidParams, "Missing 'entityNames' argument for 'delete_entities' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.deleteEntities(agent_id, args.entityNames as string[]);
-                    break;
-                case 'delete_observations':
-                    if (!args.deletions) throw new McpError(ErrorCode.InvalidParams, "Missing 'deletions' argument for 'delete_observations' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.deleteObservations(agent_id, args.deletions as Array<{ entityName: string; observations: string[] }>);
-                    break;
-                case 'delete_relations':
-                    if (!args.relations) throw new McpError(ErrorCode.InvalidParams, "Missing 'relations' argument for 'delete_relations' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.deleteRelations(agent_id, args.relations as Array<{ from: string; to: string; relationType: string }>);
-                    break;
-                case 'read_graph':
-                    kgResult = await memoryManager.knowledgeGraphManager.readGraph(agent_id);
-                    break;
-                case 'search_nodes':
-                    if (!args.query) throw new McpError(ErrorCode.InvalidParams, "Missing 'query' argument for 'search_nodes' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.searchNodes(agent_id, args.query as string);
-                    break;
-                case 'open_nodes':
-                    if (!args.names) throw new McpError(ErrorCode.InvalidParams, "Missing 'names' argument for 'open_nodes' operation.");
-                    kgResult = await memoryManager.knowledgeGraphManager.openNodes(agent_id, args.names as string[]);
-                    break;
-                default:
-                    throw new McpError(
-                        ErrorCode.MethodNotFound, // Changed from InvalidParams for better semantics
-                        `Unknown knowledge_graph_memory operation: ${operation}. Supported operations are: create_entities, create_relations, add_observations, delete_entities, delete_observations, delete_relations, read_graph, search_nodes, open_nodes.`
-                    );
+            try {
+                switch (operation) {
+                    case 'create_entities':
+                        if (!args.entities) throw new McpError(ErrorCode.InvalidParams, "Missing 'entities' argument for 'create_entities' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.createEntities(agent_id, args.entities as Array<{ name: string; entityType: string; observations: string[] }>);
+                        break;
+                    case 'create_relations':
+                        if (!args.relations) throw new McpError(ErrorCode.InvalidParams, "Missing 'relations' argument for 'create_relations' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.createRelations(agent_id, args.relations as Array<{ from: string; to: string; relationType: string }>);
+                        break;
+                    case 'add_observations':
+                        if (!args.observations) throw new McpError(ErrorCode.InvalidParams, "Missing 'observations' argument for 'add_observations' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.addObservations(agent_id, args.observations as Array<{ entityName: string; contents: string[] }>);
+                        break;
+                    case 'delete_entities':
+                        if (!args.entityNames) throw new McpError(ErrorCode.InvalidParams, "Missing 'entityNames' argument for 'delete_entities' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.deleteEntities(agent_id, args.entityNames as string[]);
+                        break;
+                    case 'delete_observations':
+                        if (!args.deletions) throw new McpError(ErrorCode.InvalidParams, "Missing 'deletions' argument for 'delete_observations' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.deleteObservations(agent_id, args.deletions as Array<{ entityName: string; observations: string[] }>);
+                        break;
+                    case 'delete_relations':
+                        if (!args.relations) throw new McpError(ErrorCode.InvalidParams, "Missing 'relations' argument for 'delete_relations' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.deleteRelations(agent_id, args.relations as Array<{ from: string; to: string; relationType: string }>);
+                        break;
+                    case 'read_graph':
+                        resultData = await memoryManager.knowledgeGraphManager.readGraph(agent_id);
+                        title = `Knowledge Graph for Agent: ${agent_id}`;
+                        break;
+                    case 'search_nodes':
+                        if (!args.query) throw new McpError(ErrorCode.InvalidParams, "Missing 'query' argument for 'search_nodes' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.searchNodes(agent_id, args.query as string);
+                        title = `Knowledge Graph Node Search (Query: "${args.query}")`;
+                        break;
+                    case 'open_nodes':
+                        if (!args.names) throw new McpError(ErrorCode.InvalidParams, "Missing 'names' argument for 'open_nodes' operation.");
+                        resultData = await memoryManager.knowledgeGraphManager.openNodes(agent_id, args.names as string[]);
+                        title = `Knowledge Graph Nodes (Names: ${args.names.join(', ')})`;
+                        break;
+                    default:
+                        throw new McpError(
+                            ErrorCode.MethodNotFound,
+                            `Unknown knowledge_graph_memory operation: ${operation}.`
+                        );
+                }
+                // For operations that return a message and details structure
+                if (resultData && typeof resultData.message === 'string' && resultData.details) {
+                     kgResult = `## ${title}\n\n**Status:** ${resultData.message}\n\n**Details:**\n${formatJsonToMarkdownCodeBlock(resultData.details)}\n`;
+                } else { // For read_graph, search_nodes, open_nodes
+                     kgResult = `## ${title}\n\n${formatJsonToMarkdownCodeBlock(resultData)}\n`;
+                }
+
+            } catch (error: any) {
+                 console.error(`Error in knowledge_graph_memory tool (operation: ${operation}):`, error);
+                 if (error instanceof McpError) throw error; // Re-throw McpError
+                 throw new McpError(ErrorCode.InternalError, `Knowledge graph operation '${operation}' failed: ${error.message}`);
             }
-            return { content: [{ type: 'text', text: JSON.stringify(kgResult, null, 2) }] };
+            return { content: [{ type: 'text', text: kgResult }] };
         },
     };
 }
