@@ -2,8 +2,9 @@ import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
 import { formatObjectToMarkdown, formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
+import { InternalToolDefinition } from './index.js'; // Assuming this is correctly exported
 
-export const contextToolDefinitions = [
+export const contextToolDefinitions: InternalToolDefinition[] = [
     {
         name: 'store_context',
         description: 'Stores dynamic contextual data for an AI agent. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
@@ -12,7 +13,7 @@ export const contextToolDefinitions = [
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
                 context_type: { type: 'string', description: 'Category of context (e.g., agent_state, user_preference, task_parameters).' },
-                context_data: { type: 'object', description: 'JSON object containing the structured context data.' },
+                context_data: { type: 'object', description: 'JSON object containing the structured context data.' }, // context_data is expected to be an object
                 parent_context_id: { type: 'string', description: 'Self-referencing foreign key for hierarchical context.', nullable: true },
             },
             required: ['agent_id', 'context_type', 'context_data'],
@@ -124,8 +125,11 @@ function createMissingContextResponseMd(agent_id: string, context_type: string):
 
 export function getContextToolHandlers(memoryManager: MemoryManager) {
     return {
-        'store_context': async (args: any, agent_id: string) => {
-            const validationResult = validate('contextInformation', args);
+        'store_context': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for store_context");
+
+            const validationResult = validate('contextInformation', args); // schema expects agent_id in args
             if (!validationResult.valid) {
                 throw new McpError(
                     ErrorCode.InvalidParams,
@@ -133,52 +137,79 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 );
             }
             const contextId = await memoryManager.storeContext(
-                agent_id,
+                agent_id_to_use, // Use the validated or server-provided agent_id
                 args.context_type as string,
-                args.context_data,
+                args.context_data, // context_data is expected to be an object by the schema
                 args.parent_context_id as string | null
             );
             return { content: [{ type: 'text', text: formatSimpleMessage(`Context stored with ID: \`${contextId}\``, "Context Stored") }] };
         },
-        'get_context': async (args: any, agent_id: string) => {
+        'get_context': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for get_context");
+
             const context = await memoryManager.getContext(
-                agent_id,
+                agent_id_to_use,
                 args.context_type as string,
                 args.version as number | null,
                 args.snippet_index as number | null
             );
             if (!context) {
-                return { content: [{ type: 'text', text: createMissingContextResponseMd(agent_id, args.context_type) }] };
+                return { content: [{ type: 'text', text: createMissingContextResponseMd(agent_id_to_use, args.context_type) }] };
             }
-            // If context is a simple string (e.g. a single snippet was returned)
-            if (typeof context === 'string') {
-                 return { content: [{ type: 'text', text: `### Context Snippet for \`${args.context_type}\`\n\n${formatJsonToMarkdownCodeBlock(context, 'text')}`}] };
-            }
-            // For full context object
-            let md = `## Context Details for Agent: \`${agent_id}\`\n`;
+
+            let md = `## Context Details for Agent: \`${agent_id_to_use}\`\n`;
             md += `### Type: \`${args.context_type}\`\n`;
             if (args.version) md += `Version: ${args.version}\n`;
             if (args.snippet_index !== null && typeof args.snippet_index !== 'undefined') md += `Snippet Index: ${args.snippet_index}\n`;
-            md += formatObjectToMarkdown(context, 1);
+
+            // If context is a simple string (e.g., a single snippet was returned due to snippet_index)
+            if (typeof context === 'string') {
+                 md += `\n**Content:**\n${formatJsonToMarkdownCodeBlock(context, 'text')}\n`; // Format as text block
+            } else if (context && typeof context === 'object') {
+                // For full context object, specifically format context_data (or context_data_parsed) as JSON
+                const dataToFormat = context.context_data_parsed || context.context_data;
+                if (dataToFormat) {
+                    md += `\n**Context Data:**\n${formatJsonToMarkdownCodeBlock(dataToFormat)}\n`;
+                }
+                // Add other metadata fields from the context object if needed, using formatObjectToMarkdown for the rest
+                const { context_data, context_data_parsed, ...otherMetadata } = context;
+                if (Object.keys(otherMetadata).length > 0) {
+                    md += `\n**Other Metadata:**\n${formatObjectToMarkdown(otherMetadata, 1)}\n`;
+                }
+            } else {
+                 md += `\n**Content:**\n${formatObjectToMarkdown(context, 1)}\n`; // Fallback for other types
+            }
             return { content: [{ type: 'text', text: md }] };
         },
-        'get_all_contexts': async (args: any, agent_id: string) => {
-            const allContexts = await memoryManager.getAllContexts(agent_id);
+        'get_all_contexts': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for get_all_contexts");
+
+            const allContexts = await memoryManager.getAllContexts(agent_id_to_use);
             if (!allContexts || allContexts.length === 0) {
-                return { content: [{ type: 'text', text: formatSimpleMessage(`No contexts found for agent ID: \`${agent_id}\``, "All Contexts") }] };
+                return { content: [{ type: 'text', text: formatSimpleMessage(`No contexts found for agent ID: \`${agent_id_to_use}\``, "All Contexts") }] };
             }
-            let md = `## All Contexts for Agent: \`${agent_id}\`\n\n`;
+            let md = `## All Contexts for Agent: \`${agent_id_to_use}\`\n\n`;
             allContexts.forEach((context: any) => {
                 md += `### Context ID: \`${context.context_id}\`\n`;
                 md += `- **Type:** \`${context.context_type}\`\n`;
                 md += `- **Version:** ${context.version}\n`;
                 md += `- **Timestamp:** ${new Date(context.timestamp).toLocaleString()}\n`;
                 if (context.parent_context_id) md += `- **Parent ID:** \`${context.parent_context_id}\`\n`;
-                md += `- **Data:**\n${formatJsonToMarkdownCodeBlock(context.context_data_parsed || context.context_data)}\n\n---\n\n`;
+                
+                const dataToFormat = context.context_data_parsed || context.context_data;
+                if (dataToFormat) {
+                    md += `- **Data:**\n${formatJsonToMarkdownCodeBlock(dataToFormat)}\n`;
+                }
+                md += "\n---\n\n";
             });
             return { content: [{ type: 'text', text: md }] };
         },
-        'search_context_by_keywords': async (args: any, agent_id: string) => {
+        'search_context_by_keywords': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for search_context_by_keywords");
+
             const validationResult = validate('searchContextByKeywords', args);
             if (!validationResult.valid) {
                 throw new McpError(
@@ -187,22 +218,26 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 );
             }
             const searchResults = await memoryManager.searchContextByKeywords(
-                agent_id,
+                agent_id_to_use,
                 args.context_type as string,
                 args.keywords as string
             );
             if (!searchResults || searchResults.length === 0) {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`No results found for keywords: "${args.keywords}" in context type: \`${args.context_type}\``, "Context Search") }] };
             }
-            let md = `## Context Search Results for Agent: \`${agent_id}\`\n`;
+            let md = `## Context Search Results for Agent: \`${agent_id_to_use}\`\n`;
             md += `### Type: \`${args.context_type}\`, Keywords: "${args.keywords}"\n\n`;
-            searchResults.forEach((result: any, index: number) => { // Assuming result is the snippet itself
+            searchResults.forEach((result: any, index: number) => {
                 md += `### Result ${index + 1}\n`;
-                md += formatObjectToMarkdown(result,1) + "\n---\n\n";
+                // Assuming each 'result' is a snippet object that should be formatted as JSON
+                md += `${formatJsonToMarkdownCodeBlock(result)}\n---\n\n`;
             });
             return { content: [{ type: 'text', text: md }] };
         },
-        'prune_old_context': async (args: any, agent_id: string) => {
+        'prune_old_context': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for prune_old_context");
+
             const validationResult = validate('pruneOldContext', args);
             if (!validationResult.valid) {
                 throw new McpError(
@@ -211,13 +246,16 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                 );
             }
             const deletedCount = await memoryManager.pruneOldContext(
-                agent_id,
+                agent_id_to_use,
                 args.max_age_ms as number,
                 args.context_type as string | null
             );
             return { content: [{ type: 'text', text: formatSimpleMessage(`Deleted ${deletedCount} old context entries.`, "Context Pruned") }] };
         },
-        'summarize_context': async (args: any, agent_id: string) => {
+        'summarize_context': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for summarize_context");
+
             const validationResult = validate('summarizeContext', args);
             if (!validationResult.valid) {
                 throw new McpError(
@@ -225,19 +263,20 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                     `Validation failed for tool summarize_context: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
-            const summary = await memoryManager.summarizeContext(
-                agent_id,
+            const summary = await memoryManager.summarizeContext( // This now calls memoryManager.geminiIntegrationService.summarizeContext
+                agent_id_to_use,
                 args.context_type as string,
                 args.version as number | null
             );
-            // The summary from GeminiIntegrationService is already a string, potentially Markdown.
-            // We ensure it's presented clearly.
-            let md = `## Context Summary for Agent: \`${agent_id}\`\n`;
+            let md = `## Context Summary for Agent: \`${agent_id_to_use}\`\n`;
             md += `### Type: \`${args.context_type}\`${args.version ? `, Version: ${args.version}` : ''}\n\n`;
-            md += `${summary}\n`; // Assuming summary is already well-formatted or plain text
+            md += `${summary}\n`;
             return { content: [{ type: 'text', text: md }] };
         },
-        'extract_entities': async (args: any, agent_id: string) => {
+        'extract_entities': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for extract_entities");
+
             const validationResult = validate('extractEntities', args);
             if (!validationResult.valid) {
                 throw new McpError(
@@ -245,15 +284,15 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                     `Validation failed for tool extract_entities: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
-            const extractedData = await memoryManager.extractEntities(
-                agent_id,
+            const extractedData = await memoryManager.extractEntities( // This now calls memoryManager.geminiIntegrationService.extractEntities
+                agent_id_to_use,
                 args.context_type as string,
                 args.version as number | null
             );
             if (!extractedData || (!extractedData.entities && !extractedData.keywords)) {
                  return { content: [{ type: 'text', text: formatSimpleMessage(`No entities or keywords found for context type: \`${args.context_type}\``, "Entity Extraction") }] };
             }
-            let md = `## Extracted Entities & Keywords for Agent: \`${agent_id}\`\n`;
+            let md = `## Extracted Entities & Keywords for Agent: \`${agent_id_to_use}\`\n`;
             md += `### Type: \`${args.context_type}\`${args.version ? `, Version: ${args.version}` : ''}\n\n`;
             if (extractedData.entities && extractedData.entities.length > 0) {
                 md += `**Entities:**\n${formatJsonToMarkdownCodeBlock(extractedData.entities)}\n`;
@@ -268,7 +307,10 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
             if(extractedData.message) md += `\n*${extractedData.message}*\n`;
             return { content: [{ type: 'text', text: md }] };
         },
-        'semantic_search_context': async (args: any, agent_id: string) => {
+        'semantic_search_context': async (args: any, agent_id_from_server?: string) => {
+            const agent_id_to_use = args.agent_id || agent_id_from_server;
+            if (!agent_id_to_use) throw new McpError(ErrorCode.InvalidParams, "agent_id is required for semantic_search_context");
+
             const validationResult = validate('semanticSearchContext', args);
             if (!validationResult.valid) {
                 throw new McpError(
@@ -276,8 +318,8 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
                     `Validation failed for tool semantic_search_context: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
                 );
             }
-            const semanticResults = await memoryManager.semanticSearchContext(
-                agent_id,
+            const semanticResults = await memoryManager.semanticSearchContext( // This now calls memoryManager.geminiIntegrationService.semanticSearchContext
+                agent_id_to_use,
                 args.context_type as string,
                 args.query_text as string,
                 args.top_k as number
@@ -285,11 +327,12 @@ export function getContextToolHandlers(memoryManager: MemoryManager) {
             if (!semanticResults || !semanticResults.results || semanticResults.results.length === 0) {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`No semantic search results found for query: "${args.query_text}" in context type: \`${args.context_type}\``, "Semantic Search") }] };
             }
-            let md = `## Semantic Search Results for Agent: \`${agent_id}\`\n`;
+            let md = `## Semantic Search Results for Agent: \`${agent_id_to_use}\`\n`;
             md += `### Type: \`${args.context_type}\`, Query: "${args.query_text}" (Top ${args.top_k || 5})\n\n`;
             semanticResults.results.forEach((result: { score: number; snippet: any; }, index: number) => {
                 md += `### Result ${index + 1} (Score: ${result.score.toFixed(4)})\n`;
-                md += `${formatObjectToMarkdown(result.snippet, 1)}\n---\n\n`;
+                // Assuming snippet is an object that should be formatted as JSON
+                md += `${formatJsonToMarkdownCodeBlock(result.snippet)}\n---\n\n`;
             });
              if(semanticResults.message) md += `\n*${semanticResults.message}*\n`;
             return { content: [{ type: 'text', text: md }] };

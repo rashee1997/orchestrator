@@ -191,6 +191,18 @@ export const gitToolDefinitions = [
             required: ['dir', 'name'],
         },
     },
+    {
+        name: 'git_reset_soft',
+        description: 'Resets the current HEAD to the specified state, keeping changes in the working directory and staging area. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                ref: { type: 'string', description: 'The commit hash or reference to reset to (e.g., "HEAD~1" for the previous commit).' },
+            },
+            required: ['dir', 'ref'],
+        },
+    },
 ];
 
 export function getGitToolHandlers() {
@@ -397,6 +409,15 @@ export function getGitToolHandlers() {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`Removed remote \`${args.name}\` in \`${args.dir}\``, "Git Remote Remove") }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Git remote remove failed: ${error.message}`);
+            }
+        },
+        git_reset_soft: async (args: { dir: string; ref: string }) => {
+            try {
+                const git = gitP(args.dir);
+                await git.reset(['--soft', args.ref]);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Successfully reset HEAD to \`${args.ref}\` (soft reset) in \`${args.dir}\``, "Git Reset Soft") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git soft reset failed: ${error.message}`);
             }
         },
     };
