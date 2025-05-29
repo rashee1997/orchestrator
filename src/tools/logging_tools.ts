@@ -6,7 +6,7 @@ import {
     formatToolExecutionLogToMarkdown,
     formatTaskProgressLogToMarkdown,
     formatErrorLogToMarkdown,
-    formatCorrectionLogToMarkdown // Assuming you might add a get_correction_log_by_id
+    formatCorrectionLogToMarkdown
 } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 

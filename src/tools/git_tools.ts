@@ -143,6 +143,54 @@ export const gitToolDefinitions = [
             required: ['dir'],
         },
     },
+    {
+        name: 'git_stash_save',
+        description: 'Stashes changes in a dirty working directory. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                message: { type: ['string', 'null'], description: 'Optional: The message to use when stashing.' },
+            },
+            required: ['dir'],
+        },
+    },
+    {
+        name: 'git_stash_pop',
+        description: 'Pops the most recently created stash. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+            },
+            required: ['dir'],
+        },
+    },
+    {
+        name: 'git_remote_add',
+        description: 'Adds a new remote. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                name: { type: 'string', description: 'The name of the remote.' },
+                url: { type: 'string', description: 'The URL of the remote.' },
+            },
+            required: ['dir', 'name', 'url'],
+        },
+    },
+    {
+        name: 'git_remote_remove',
+        description: 'Removes a remote. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                name: { type: 'string', description: 'The name of the remote to remove.' },
+            },
+            required: ['dir', 'name'],
+        },
+    },
 ];
 
 export function getGitToolHandlers() {
@@ -313,6 +361,42 @@ export function getGitToolHandlers() {
                 return { content: [{ type: 'text', text: `${title}\n\n${formatJsonToMarkdownCodeBlock(diffSummary, 'diff')}` }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Git diff failed: ${error.message}`);
+            }
+        },
+        git_stash_save: async (args: { dir: string; message?: string }) => {
+            try {
+                const git = gitP(args.dir);
+                await git.stash(['save', args.message || '']);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Stashed changes in \`${args.dir}\`${args.message ? ` with message: ${args.message}` : ''}`, "Git Stash Save") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git stash save failed: ${error.message}`);
+            }
+        },
+        git_stash_pop: async (args: { dir: string }) => {
+            try {
+                const git = gitP(args.dir);
+                await git.stash(['pop']);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Popped the most recent stash in \`${args.dir}\``, "Git Stash Pop") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git stash pop failed: ${error.message}`);
+            }
+        },
+        git_remote_add: async (args: { dir: string; name: string; url: string }) => {
+            try {
+                const git = gitP(args.dir);
+                await git.remote(['add', args.name, args.url]);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Added remote \`${args.name}\` with URL \`${args.url}\` in \`${args.dir}\``, "Git Remote Add") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git remote add failed: ${error.message}`);
+            }
+        },
+        git_remote_remove: async (args: { dir: string; name: string }) => {
+            try {
+                const git = gitP(args.dir);
+                await git.remote(['remove', args.name]);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Removed remote \`${args.name}\` in \`${args.dir}\``, "Git Remote Remove") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git remote remove failed: ${error.message}`);
             }
         },
     };
