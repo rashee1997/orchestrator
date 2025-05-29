@@ -5,6 +5,16 @@ The **Orchestrator** is a robust Model Context Protocol (MCP) server designed to
 
 This server empowers your AI agents to learn, remember, and operate with greater intelligence and consistency across sessions.
 
+## Contents
+*   [✨ Key Features](#-key-features)
+*   [🚀 Installation & Setup](#-installation--setup)
+*   [🧭 Core Concepts](#-core-concepts)
+*   [🛠️ Available Tools](#%EF%B8%8F-available-tools)
+*   [📂 Project Structure](#-project-structure)
+*   [📄 Rules and Protocols](#-rules-and-protocols)
+*   [💻 Development](#-development)
+*   [📜 License](#-license)
+
 ## ✨ Key Features
 
 * 💾 **Persistent SQLite Backend:** All agent memory is reliably stored, ensuring data integrity and availability.
@@ -28,6 +38,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
         * Context Summarization
         * Entity & Keyword Extraction
         * Semantic Search (Vector Embeddings)
+        * Code Analysis (`analyze_code_file_with_gemini`)
 * 🛠️ **Data Utilities:**
     * Backup and restore the entire memory database.
     * Export table data to CSV.
@@ -119,11 +130,12 @@ The Orchestrator provides a comprehensive set of tools for AI agents to manage m
 ### External Integrations & LLM Capabilities
 *   **Web Search:** Integrates with Tavily for advanced web searches.
 *   **Gemini AI:** Leverages Google Gemini for direct queries (`ask_gemini`), refining user prompts, and advanced context analysis (summarization, entity extraction, semantic search).
+*   **Code Analysis:** Provides the `analyze_code_file_with_gemini` tool for detailed line-by-line code analysis using Gemini, focusing on specified aspects.
 
 ### System & Utility
 *   **Mode Management:** Tools for defining, retrieving, updating, and deleting mode-specific instructions for AI agents.
 *   **Database Utilities:** Tools for exporting database tables to CSV, backing up the entire SQLite database, and restoring from a backup.
-*   **Git Operations:** A suite of tools for interacting with Git repositories, including cloning, pulling, pushing, committing, checking status, adding files, managing branches, viewing logs, and diffing changes.
+*   **Git Operations:** A comprehensive suite of tools for interacting with Git repositories, including cloning, pulling, pushing, committing, checking status, adding files, managing branches, viewing logs, diffing changes, stashing changes (`git_stash_save`, `git_stash_pop`), remote management (`git_remote_add`, `git_remote_remove`), and soft resetting (`git_reset_soft`).
 
 ## 📂 Project Structure
 
