@@ -149,7 +149,9 @@ memory-mcp-server/
 
 ## 📄 Rules and Protocols
 
-The Orchestrator adheres to strict operational rules and protocols defined in **workflow.md**. This file outlines the agent's roles, goals, and mandatory modes of operation, ensuring accurate, safe, and high-quality task execution.modify as your wish to ai agent work for . warning: its a static rules so Ai will follow for every task.this can be added in ai agents rules files. AI may not follow the full rules some times.
+The Orchestrator adheres to **strict operational rules and protocols** defined in **`workflow.md`**. This file **critically outlines** the agent's roles, goals, and mandatory modes of operation, ensuring accurate, safe, and high-quality task execution.
+
+***IMPORTANT: These rules are static and directly influence the AI agent's behavior for every task. While designed to be followed, please be aware that AI agents may not always adhere to them fully. These rules can be added to AI agents' rule files.***
 
 ## 💻 Development
 
