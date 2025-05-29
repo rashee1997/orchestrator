@@ -102,6 +102,48 @@ export const knowledgeGraphToolDefinitions = [
             required: ['agent_id', 'operation'],
         },
     },
+    {
+        name: 'kg_nl_query',
+        description: `A tool that allows agents to query the knowledge graph using natural language (e.g., "Who is the author of the 'Orchestrator' project?"), which would then be translated into structured graph queries internally (possibly using Gemini).`,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                query: { type: 'string', description: 'The natural language query for the knowledge graph.' },
+            },
+            required: ['agent_id', 'query'],
+        },
+    },
+    {
+        name: 'kg_infer_relations',
+        description: `A tool that uses an LLM (like Gemini) to infer new relationships between existing entities based on their observations or other stored context, and then proposes these new relations to be added to the graph.`,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                entity_names: { 
+                    type: 'array', 
+                    items: { type: 'string' }, 
+                    description: 'Optional: A list of entity names to focus the inference on. If not provided, inference may be broader.' 
+                },
+                context: { type: 'string', description: 'Optional: Additional context to aid in relation inference.' },
+            },
+            required: ['agent_id'],
+        },
+    },
+    {
+        name: 'kg_visualize',
+        description: `A tool that generates a Mermaid diagram or other visual representation of a subset of the knowledge graph based on a query, to help agents (or users) understand complex relationships.`,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                query: { type: 'string', description: 'Optional: A query to filter the knowledge graph for visualization (e.g., entity name, relation type).' },
+                format: { type: 'string', enum: ['mermaid'], default: 'mermaid', description: 'The desired output format for the visualization.' },
+            },
+            required: ['agent_id'],
+        },
+    },
 ];
 
 export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
@@ -171,6 +213,36 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                  throw new McpError(ErrorCode.InternalError, `Knowledge graph operation '${operation}' failed: ${error.message}`);
             }
             return { content: [{ type: 'text', text: kgResult }] };
+        },
+        'kg_nl_query': async (args: any, agent_id: string) => {
+            try {
+                const result = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
+                return { content: [{ type: 'text', text: `Natural Language Query Result:\n${result}` }] };
+            } catch (error: any) {
+                console.error(`Error in kg_nl_query tool:`, error);
+                if (error instanceof McpError) throw error;
+                throw new McpError(ErrorCode.InternalError, `Natural language query failed: ${error.message}`);
+            }
+        },
+        'kg_infer_relations': async (args: any, agent_id: string) => {
+            try {
+                const result = await memoryManager.knowledgeGraphManager.inferRelations(agent_id, args.entity_names, args.context);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Inferred Relations:\n${JSON.stringify(result, null, 2)}`) }] };
+            } catch (error: any) {
+                console.error(`Error in kg_infer_relations tool:`, error);
+                if (error instanceof McpError) throw error;
+                throw new McpError(ErrorCode.InternalError, `Relation inference failed: ${error.message}`);
+            }
+        },
+        'kg_visualize': async (args: any, agent_id: string) => {
+            try {
+                const mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(agent_id, args.query);
+                return { content: [{ type: 'text', text: `Mermaid Graph Visualization:\n\`\`\`mermaid\n${mermaidGraph}\n\`\`\`` }] };
+            } catch (error: any) {
+                console.error(`Error in kg_visualize tool:`, error);
+                if (error instanceof McpError) throw error;
+                throw new McpError(ErrorCode.InternalError, `Knowledge graph visualization failed: ${error.message}`);
+            }
         },
     };
 }

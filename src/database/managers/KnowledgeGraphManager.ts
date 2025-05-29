@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
+import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 // fs, fsp, and path are not used in this manager based on current code, can be removed if not planned for future use.
 // import fs from 'fs';
 // import fsp from 'fs/promises';
@@ -14,9 +16,11 @@ interface KnowledgeGraph { // This interface is not used locally in this manager
 
 export class KnowledgeGraphManager {
     private dbService: DatabaseService;
+    private geminiService: GeminiIntegrationService;
 
-    constructor(dbService: DatabaseService) {
+    constructor(dbService: DatabaseService, geminiService: GeminiIntegrationService) {
         this.dbService = dbService;
+        this.geminiService = geminiService;
     }
 
     // private async loadKnowledgeGraph(): Promise<KnowledgeGraph> { // Not used
@@ -330,5 +334,283 @@ export class KnowledgeGraphManager {
                 observations: observations
             };
         });
+    }
+
+    async queryNaturalLanguage(agent_id: string, naturalLanguageQuery: string): Promise<string> {
+        try {
+            // Step 1: Get the current knowledge graph for context
+            const currentGraph = await this.readGraph(agent_id);
+            const graphRepresentation = JSON.stringify(currentGraph, null, 2);
+
+            // Step 2: Use Gemini to translate the natural language query into a structured query
+            const prompt = `Given the following knowledge graph structure and a natural language query, translate the natural language query into a structured query that can be executed against this graph. The structured query should be a JSON object with 'operation' and 'args' properties, mirroring the 'knowledge_graph_memory' tool's input schema.
+
+Knowledge Graph Structure:
+${graphRepresentation}
+
+Natural Language Query: "${naturalLanguageQuery}"
+
+If the query implies traversing the graph, use the 'graph_traversal' operation with 'start_node' (the name of the starting entity), 'relation_types' (an array of relation types to follow), and 'traversal_depth' (a number indicating how many levels deep to traverse).
+
+Provide only the JSON object for the structured query.`;
+
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash-latest');
+            const geminiResponse = geminiResponseObject.content[0].text;
+            
+            let structuredQuery;
+            try {
+                const cleanedResponse = geminiResponse.replace(/```json\n|```/g, '').trim();
+                structuredQuery = JSON.parse(cleanedResponse);
+            } catch (parseError) {
+                throw new McpError(ErrorCode.InternalError, `Failed to parse Gemini's structured query response: ${(parseError as Error).message}. Response: ${geminiResponse}`);
+            }
+
+            // Step 3: Execute the structured query using the existing knowledge_graph_memory logic
+            // This part would ideally call the internal logic of knowledge_graph_memory handler
+            // For now, we'll simulate by directly calling the manager's methods based on the parsed structuredQuery
+            const operation = structuredQuery.operation;
+            const args = structuredQuery.args;
+
+            if (!operation) {
+                throw new McpError(ErrorCode.InvalidParams, "Gemini did not provide a valid 'operation' in the structured query.");
+            }
+
+            let resultData: any;
+            switch (operation) {
+                case 'read_graph':
+                    resultData = await this.readGraph(agent_id);
+                    break;
+                case 'search_nodes':
+                    if (!args || !args.query) throw new McpError(ErrorCode.InvalidParams, "Missing 'query' argument in structured query for 'search_nodes'.");
+                    resultData = await this.searchNodes(agent_id, args.query);
+                    break;
+                case 'open_nodes':
+                    if (!args || !args.names) throw new McpError(ErrorCode.InvalidParams, "Missing 'names' argument in structured query for 'open_nodes'.");
+                    resultData = await this.openNodes(agent_id, args.names);
+                    break;
+                case 'graph_traversal':
+                    if (!args || !args.start_node || !args.relation_types || typeof args.traversal_depth === 'undefined') {
+                        throw new McpError(ErrorCode.InvalidParams, "Missing required arguments for 'graph_traversal'.");
+                    }
+                    resultData = await this.traverseGraph(agent_id, args.start_node, args.relation_types, args.traversal_depth);
+                    break;
+                default:
+                    throw new McpError(ErrorCode.MethodNotFound, `Unsupported operation inferred by Gemini: ${operation}`);
+            }
+
+            return JSON.stringify(resultData, null, 2);
+
+        } catch (error: any) {
+            console.error(`Error in queryNaturalLanguage:`, error);
+            if (error instanceof McpError) throw error;
+            throw new McpError(ErrorCode.InternalError, `Failed to process natural language query: ${error.message}`);
+        }
+    }
+
+    async inferRelations(agent_id: string, entityNames?: string[], context?: string): Promise<{ message: string; details: any[] }> {
+        try {
+            let relevantGraphData: any;
+            if (entityNames && entityNames.length > 0) {
+                relevantGraphData = await this.openNodes(agent_id, entityNames);
+            } else {
+                relevantGraphData = await this.readGraph(agent_id);
+            }
+
+            const graphRepresentation = JSON.stringify(relevantGraphData, null, 2);
+
+            const prompt = `Given the following knowledge graph data and additional context, identify and propose new relationships between existing entities. Focus on relationships that are not explicitly stated but can be logically inferred.
+
+Knowledge Graph Data:
+${graphRepresentation}
+
+Additional Context:
+${context || 'No additional context provided.'}
+
+Propose new relationships as a JSON array of objects, where each object has 'from', 'to', and 'relationType' properties. Only include relationships that are highly probable and not already present. If no new relations can be inferred, return an empty array.
+
+Example:
+[
+  { "from": "EntityA", "to": "EntityB", "relationType": "is_related_to" }
+]`;
+
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash-latest');
+            const geminiResponse = geminiResponseObject.content[0].text;
+            
+            let inferredRelations: Array<{ from: string; to: string; relationType: string }>;
+            try {
+                const cleanedResponse = geminiResponse.replace(/```json\n|```/g, '').trim();
+                inferredRelations = JSON.parse(cleanedResponse);
+                if (!Array.isArray(inferredRelations)) {
+                    throw new Error("Gemini response is not a JSON array.");
+                }
+            } catch (parseError) {
+                throw new McpError(ErrorCode.InternalError, `Failed to parse Gemini's inferred relations response: ${(parseError as Error).message}. Response: ${geminiResponse}`);
+            }
+
+            // Filter out relations that already exist to avoid duplicates
+            const existingRelations = (await this.readGraph(agent_id)).relations;
+            const newRelationsToAdd = inferredRelations.filter(newRel => 
+                !existingRelations.some(existingRel => 
+                    existingRel.from === newRel.from && 
+                    existingRel.to === newRel.to && 
+                    existingRel.relationType === newRel.relationType
+                )
+            );
+
+            if (newRelationsToAdd.length > 0) {
+                const creationResult = await this.createRelations(agent_id, newRelationsToAdd);
+                return { message: `Inferred and added ${creationResult.details.length} new relations.`, details: creationResult.details };
+            } else {
+                return { message: "No new relations inferred or all inferred relations already exist.", details: [] };
+            }
+
+        } catch (error: any) {
+            console.error(`Error in inferRelations:`, error);
+            if (error instanceof McpError) throw error;
+            throw new McpError(ErrorCode.InternalError, `Failed to infer relations: ${error.message}`);
+        }
+    }
+
+    async traverseGraph(agent_id: string, startNodeName: string, relationTypes: string[], depth: number): Promise<any> {
+        const db = this.dbService.getDb();
+        const visitedNodes = new Set<string>();
+        const resultNodes: any[] = [];
+        const resultRelations: any[] = [];
+        const queue: { nodeId: string; currentDepth: number }[] = [];
+
+        const startNode = await db.get(`SELECT node_id, name, entity_type, observations FROM knowledge_graph_nodes WHERE agent_id = ? AND name = ?`, agent_id, startNodeName);
+
+        if (!startNode) {
+            throw new McpError(ErrorCode.InternalError, `Start node '${startNodeName}' not found.`);
+        }
+
+        queue.push({ nodeId: startNode.node_id, currentDepth: 0 });
+        visitedNodes.add(startNode.node_id);
+        resultNodes.push({
+            node_id: startNode.node_id,
+            name: startNode.name,
+            entityType: startNode.entity_type,
+            observations: JSON.parse(startNode.observations || '[]')
+        });
+
+        while (queue.length > 0) {
+            const { nodeId, currentDepth } = queue.shift()!;
+
+            if (currentDepth >= depth) {
+                continue;
+            }
+
+            const placeholders = relationTypes.map(() => '?').join(',');
+            const outgoingRelations = await db.all(
+                `SELECT r.relation_id, r.relation_type, n1.name AS from_name, n2.name AS to_name, n2.node_id AS to_node_id
+                 FROM knowledge_graph_relations r 
+                 JOIN knowledge_graph_nodes n1 ON r.from_node_id = n1.node_id 
+                 JOIN knowledge_graph_nodes n2 ON r.to_node_id = n2.node_id 
+                 WHERE r.agent_id = ? AND r.from_node_id = ? AND r.relation_type IN (${placeholders})`,
+                agent_id, nodeId, ...relationTypes
+            );
+
+            for (const rel of outgoingRelations) {
+                resultRelations.push({
+                    relation_id: rel.relation_id,
+                    from: rel.from_name,
+                    to: rel.to_name,
+                    relationType: rel.relation_type
+                });
+
+                if (!visitedNodes.has(rel.to_node_id)) {
+                    visitedNodes.add(rel.to_node_id);
+                    const targetNode = await db.get(`SELECT node_id, name, entity_type, observations FROM knowledge_graph_nodes WHERE node_id = ?`, rel.to_node_id);
+                    if (targetNode) {
+                        resultNodes.push({
+                            node_id: targetNode.node_id,
+                            name: targetNode.name,
+                            entityType: targetNode.entity_type,
+                            observations: JSON.parse(targetNode.observations || '[]')
+                        });
+                        queue.push({ nodeId: targetNode.node_id, currentDepth: currentDepth + 1 });
+                    }
+                }
+            }
+        }
+
+        return { nodes: resultNodes, relations: resultRelations };
+    }
+
+    async generateMermaidGraph(agent_id: string, query?: string): Promise<string> {
+        try {
+            let nodes: any[] = [];
+            let relations: any[] = [];
+
+            if (query) {
+                // If a query is provided, search for relevant nodes and their direct relations
+                const queriedNodes = await this.searchNodes(agent_id, query);
+                const nodeIds = queriedNodes.map(node => node.node_id);
+
+                if (nodeIds.length === 0) {
+                    return "graph TD\n    A[No nodes found for the given query.]";
+                }
+
+                nodes = queriedNodes;
+
+                // Fetch relations involving these nodes
+                const directRelations = await this.dbService.getDb().all(
+                    `SELECT r.relation_id, r.relation_type, n1.name AS from_name, n2.name AS to_name 
+                     FROM knowledge_graph_relations r 
+                     JOIN knowledge_graph_nodes n1 ON r.from_node_id = n1.node_id 
+                     JOIN knowledge_graph_nodes n2 ON r.to_node_id = n2.node_id 
+                     WHERE r.agent_id = ? AND (r.from_node_id IN (${nodeIds.map(() => '?').join(',')}) OR r.to_node_id IN (${nodeIds.map(() => '?').join(',')}))`,
+                    agent_id, ...nodeIds, ...nodeIds
+                );
+                relations = directRelations.map((rel: any) => ({
+                    relation_id: rel.relation_id,
+                    from: rel.from_name,
+                    to: rel.to_name,
+                    relationType: rel.relation_type
+                }));
+
+                // Ensure all nodes involved in these relations are included, even if not directly matched by searchNodes
+                const allRelatedNodeNames = new Set<string>();
+                relations.forEach(rel => {
+                    allRelatedNodeNames.add(rel.from);
+                    allRelatedNodeNames.add(rel.to);
+                });
+
+                const additionalNodes = await this.openNodes(agent_id, Array.from(allRelatedNodeNames).filter(name => !nodes.some(n => n.name === name)));
+                nodes = [...nodes, ...additionalNodes];
+
+            } else {
+                // If no query, visualize the entire graph
+                const fullGraph = await this.readGraph(agent_id);
+                nodes = fullGraph.nodes;
+                relations = fullGraph.relations;
+            }
+
+            if (nodes.length === 0) {
+                return "graph TD\n    A[Knowledge graph is empty.]";
+            }
+
+            let mermaidGraph = "graph TD\n";
+
+            // Add nodes
+            nodes.forEach(node => {
+                const nodeLabel = node.name.replace(/[^a-zA-Z0-9_]/g, '_'); // Sanitize for Mermaid ID
+                mermaidGraph += `    ${nodeLabel}["${node.name} (${node.entityType})"]\n`; // Enclose label in double quotes
+            });
+
+            // Add relations
+            relations.forEach(rel => {
+                const fromLabel = rel.from.replace(/[^a-zA-Z0-9_]/g, '_');
+                const toLabel = rel.to.replace(/[^a-zA-Z0-9_]/g, '_');
+                mermaidGraph += `    ${fromLabel} -- "${rel.relationType}" --> ${toLabel}\n`;
+            });
+
+            return mermaidGraph;
+
+        } catch (error: any) {
+            console.error(`Error in generateMermaidGraph:`, error);
+            if (error instanceof McpError) throw error;
+            throw new McpError(ErrorCode.InternalError, `Failed to generate Mermaid graph: ${error.message}`);
+        }
     }
 }

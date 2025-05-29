@@ -72,7 +72,7 @@ export class MemoryManager {
         this.successMetricsManager = new SuccessMetricsManager(this.dbService);
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
-        this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService);
+this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService, this.geminiIntegrationService);
         this.modeInstructionManager = new ModeInstructionManager(this.dbService);
         this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
         this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
