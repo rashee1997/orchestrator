@@ -50,7 +50,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
     git clone <your-repository-url> orchestrator
     cd orchestrator
     ```
-    (If you've already downloaded it, navigate to the `C:\Users\user\PC\Documents\Cline\MCP\orchestrator` directory)
+    (If you've already downloaded it, navigate to the `orchestrator` directory)
 
 2.  **Install Dependencies:**
     ```bash
@@ -63,23 +63,14 @@ This server empowers your AI agents to learn, remember, and operate with greater
     npm run build
     ```
 
-4.  **Configure Environment Variables:**
-    The server requires API keys for some of its integrated services. Create a `.env` file in the root of the `orchestrator` directory (e.g., `C:\Users\user\Dropbox\PC\Documents\Cline\MCP\orchestrator\.env`) with the following content:
-
-    ```env
-    TAVILY_API_KEY="your_tavily_api_key"
-    GEMINI_API_KEY="your_google_gemini_api_key"
-    # TAVILY_MOCK_MODE=true # Uncomment to use mock Tavily results without an API key
-    ```
-    Replace `"your_tavily_api_key"` and `"your_google_gemini_api_key"` with your actual API keys.
-    * Get a Tavily API key from [Tavily AI](https://tavily.com/).
-    * Get a Google Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+4.  **Configure API Keys:**
+    The server requires API keys for some of its integrated services. These should be configured directly within your MCP client's settings, as shown in the next step.
 
 5.  **MCP Client Configuration (Example for VS Code Claude Dev Extension):**
-    Add or update the server configuration in your MCP client's settings file. For the VS Code Claude Dev Extension, this is typically located at:
-    * Windows: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-    * macOS: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-    * Linux: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+    Add or update the server configuration in your MCP client's settings file. For the VS code cline extension Claude Dev Extension, this is typically located at:
+    *   **Windows:** `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+    *   **macOS:** `~/Library/Application Support/Code/User/globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+    *   **Linux:** `~/.config/Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
 
     Add the following entry:
     ```json
@@ -91,7 +82,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
         "transportType": "stdio",
         "command": "node",
         "args": [
-          "C:/Users/user/Dropbox/PC/Documents/Cline/MCP/orchestrator/build/index.js"
+          "path/to/your/orchestrator/build/index.js"
         ],
         "env": {
           "TAVILY_API_KEY": "your_tavily_api_key",
@@ -100,7 +91,7 @@ This server empowers your AI agents to learn, remember, and operate with greater
       }
     }
     ```
-    **Note:** Ensure the path in `args` is the correct absolute path to the `build/index.js` file on your system. Also, ensure that `TAVILY_API_KEY` and `GEMINI_API_KEY` are correctly set in the `env` section if you are not using a global `.env` file for the MCP server.
+    **Note:** Ensure the path in `args` is the correct absolute path to the `build/index.js` file on your system. Replace `path/to/your/orchestrator/` with the actual absolute path where you cloned the repository. Ensure that `TAVILY_API_KEY` and `GEMINI_API_KEY` are correctly set in the `env` section within this configuration.
 
 ## 🧭 Core Concepts
 
@@ -113,342 +104,47 @@ The Orchestrator is designed around the concept of the concept of providing a pe
 
 ## 🛠️ Available Tools
 
-The server exposes a rich set of tools for memory management and external service interaction. Here's a high-level overview (refer to `docs/api_documentation.md` for detailed schemas and parameters):
+The Orchestrator provides a comprehensive set of tools for AI agents to manage memory, interact with external services, and facilitate complex workflows. For detailed schemas and parameters of each tool, please refer to `docs/api_documentation.md`.
 
-### 💬 Conversation & Context
-* `store_conversation_message`, `get_conversation_history`
-* `store_context`, `get_context`, `get_all_contexts`
-* `search_context_by_keywords`
-* `prune_old_context`
+### Core Memory Management
+*   **Conversation & Context:** Tools for storing and retrieving conversation history, dynamic contextual data (with versioning), and performing keyword/semantic searches on context. Includes tools for pruning old context and summarizing/extracting entities from context using Gemini.
+*   **Knowledge & Attribution:** Tools for managing reference keys to external sources, logging the origin of information, and attributing web search results.
+*   **Learning & Performance:** Tools for logging and retrieving correction instances, summarizing past corrections, and tracking quantitative/qualitative success metrics.
+*   **Knowledge Graph:** A powerful tool (`knowledge_graph_memory`) for creating, updating, querying, and deleting entities, relationships, and observations within a structured knowledge graph.
 
-### 🧠 Knowledge & Attribution
-* `add_reference_key`, `get_reference_keys`
-* `log_source_attribution`, `get_source_attributions`
-* `log_search_attribution` (specifically for Tavily search results)
+### Workflow & Task Management
+*   **Plan & Task Management:** Comprehensive tools for creating, retrieving, listing, updating, and deleting multi-step task plans, individual tasks, and subtasks.
+*   **Review & Logging:** Detailed logging for task reviews, tool executions, task progress, and errors. Includes tools for creating, retrieving, updating, and deleting review logs, as well as managing tool execution, task progress, and error logs.
 
-### 📊 Learning & Performance
-* `log_correction`, `get_correction_logs`
-* `log_success_metric`, `get_success_metrics`
+### External Integrations & LLM Capabilities
+*   **Web Search:** Integrates with Tavily for advanced web searches.
+*   **Gemini AI:** Leverages Google Gemini for direct queries (`ask_gemini`), refining user prompts, and advanced context analysis (summarization, entity extraction, semantic search).
 
-### 🕸️ Knowledge Graph
-* `knowledge_graph_memory` (with operations like `create_entities`, `create_relations`, `add_observations`, `read_graph`, `search_nodes`, `open_nodes`, `delete_entities`, `delete_observations`, `delete_relations`, etc.)
-
-### 🗺️ Plan & Task Management
-* `create_task_plan`
-* `get_task_plan_details` (Outputs Markdown)
-* `list_task_plans` (Outputs Markdown table)
-* `get_plan_tasks` (Outputs Markdown table)
-* `update_task_plan_status`
-* `update_plan_task_status`
-* `delete_task_plan`
-
-### 🌐 External Integrations & LLM Tools
-* `tavily_web_search`
-* `refine_user_prompt`
-* `get_refined_prompt`
-* `summarize_context` (Uses Gemini)
-* `extract_entities` (Uses Gemini)
-* `semantic_search_context` (Uses Gemini for embeddings)
-
-### 🗄️ Database Utilities
-* `export_data_to_csv`
-* `backup_database`
-* `restore_database`
-
-## 💡 Example Usage
-
-Here are a few examples of how an AI agent might use the Memory MCP Server:
-
-**1. Refine a User Prompt:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>refine_user_prompt</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "raw_user_prompt": "I need to implement a new user registration flow with email verification.",
-      "target_ai_persona": "Senior Backend Developer"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-*(The MCP client would receive the structured 'Refined Prompt for AI' JSON object)*
-
-**2. Get a Refined Prompt by ID:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>get_refined_prompt</tool_name>
-  <arguments>
-    {
-      "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**3. Store Current Task Context:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>store_context</tool_name>
-  <arguments>
-    {
-      "agent_id": "coder-agent-007",
-      "context_type": "current_coding_task",
-      "context_data": {
-        "task_id": "feat-123",
-        "description": "Implement user authentication module",
-        "status": "in_progress",
-        "files_involved": ["auth.service.ts", "user.model.ts"],
-        "blockers": null
-      }
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**4. Create a Development Plan:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>create_task_plan</tool_name>
-  <arguments>
-    {
-      "agent_id": "project-manager-agent",
-      "planData": {
-        "title": "Alpha Release Feature Set",
-        "overall_goal": "Complete all features required for the alpha release of Project Phoenix.",
-        "status": "DRAFT",
-        "metadata": { "project_code": "PHX-ALPHA" }
-      },
-      "tasksData": [
-        {
-          "task_number": 1,
-          "title": "Setup Database Schema",
-          "description": "Define and implement the initial database schema for core entities.",
-          "status": "PLANNED",
-          "estimated_effort_hours": 8
-        },
-        {
-          "task_number": 2,
-          "title": "Develop User Authentication API",
-          "description": "Create endpoints for user registration, login, and session management.",
-          "status": "PLANNED",
-          "dependencies_task_ids": ["<ID_OF_TASK_1_ONCE_CREATED>"],
-          "tools_required_list": ["code_editor", "api_tester"]
-        }
-      ]
-    }
-  </arguments>
-</use_mcp_tool>
-```
-*(The MCP client would receive `{ "plan_id": "...", "task_ids": ["...", "..."] }`)*
-
-**5. Perform a Web Search with Tavily and Log Attribution:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>tavily_web_search</tool_name>
-  <arguments>
-    {
-      "query": "latest advancements in quantum computing for AI",
-      "search_depth": "advanced",
-      "max_results": 3
-    }
-  </arguments>
-</use_mcp_tool>
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>log_search_attribution</tool_name>
-  <arguments>
-    {
-      "agent_id": "research-assistant-01",
-      "query": "latest advancements in quantum computing for AI",
-      "search_results_summary": "Found three relevant papers on recent breakthroughs in quantum machine learning algorithms.",
-      "retrieval_timestamp": 1748004848354,
-      "full_content_json": "[... full JSON of Tavily results ...]"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**6. Summarize Context:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>summarize_context</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "context_type": "project_documentation_v1",
-      "version": 1
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**7. Extract Entities from Context:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>extract_entities</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "context_type": "meeting_notes_v1"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**8. Perform Semantic Search on Context:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>semantic_search_context</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "context_type": "technical_specifications_v1",
-      "query_text": "how to integrate with external APIs",
-      "top_k": 3
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**9. Export Data to CSV:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>export_data_to_csv</tool_name>
-  <arguments>
-    {
-      "tableName": "conversation_history",
-      "filePath": "C:/Users/user/Desktop/conversation_history.csv"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**10. Backup Database:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>backup_database</tool_name>
-  <arguments>
-    {
-      "backupFilePath": "C:/Users/user/Desktop/memory_backup_20250523.db"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**11. Restore Database:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>restore_database</tool_name>
-  <arguments>
-    {
-      "backupFilePath": "C:/Users/user/Desktop/memory_backup_20250523.db"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**12. Search Context by Keywords:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>search_context_by_keywords</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "context_type": "project_documentation_v1",
-      "keywords": "installation steps"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**13. Prune Old Context:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>prune_old_context</tool_name>
-  <arguments>
-    {
-      "agent_id": "my-ai-agent-001",
-      "max_age_ms": 2592000000,
-      "context_type": "temporary_logs"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**14. Read the Knowledge Graph:**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>knowledge_graph_memory</tool_name>
-  <arguments>
-    {
-      "agent_id": "knowledge-explorer-agent",
-      "operation": "read_graph"
-    }
-  </arguments>
-</use_mcp_tool>
-```
-
-**15. Get Plan Details (receives Markdown):**
-```xml
-<use_mcp_tool>
-  <server_name>memory-mcp-server</server_name>
-  <tool_name>get_task_plan_details</tool_name>
-  <arguments>
-    {
-      "agent_id": "project-manager-agent",
-      "plan_id": "c6c5a4e9-6258-48a6-a751-a521caf806ce"
-    }
-  </arguments>
-</use_mcp_tool>
-```
+### System & Utility
+*   **Mode Management:** Tools for defining, retrieving, updating, and deleting mode-specific instructions for AI agents.
+*   **Database Utilities:** Tools for exporting database tables to CSV, backing up the entire SQLite database, and restoring from a backup.
+*   **Git Operations:** A suite of tools for interacting with Git repositories, including cloning, pulling, pushing, committing, checking status, adding files, managing branches, viewing logs, and diffing changes.
 
 ## 📂 Project Structure
 
 ```
 memory-mcp-server/
-├── build/                    # Compiled JavaScript output from src/
-│   ├── database/
-│   │   └── schema.sql        # Copied database schema
-│   └── index.js              # Main server entry point (compiled)
-│   └── ...                   # Other compiled files
-├── docs/                     # Detailed documentation for various aspects
-│   ├── api_documentation.md
-│   ├── correction_logs.md
-│   ├── implementation_notes.md
-│   ├── README.md             # (This file, or a more detailed version)
-│   ├── source_attribution.md
-│   └── success_metrics.md
+├── build/                    # Compiled JavaScript output
+├── docs/                     # Project documentation
 ├── src/                      # TypeScript source code
-│   ├── database/
-│   │   ├── db.ts             # Database initialization & connection
-│   │   ├── memory_manager.ts # Core CRUD & logic for memory types
-│   │   └── schema.sql        # SQLite database schema definition
-│   ├── integrations/
-│   │   └── tavily.ts         # Tavily search integration
-│   ├── utils/
-│   │   └── validation.ts     # JSON schema validation utility
-│   └── index.ts              # Main MCP server implementation, tool exposure
-├── .env                      # (Create this for API keys)
-├── memory.db                 # SQLite database file (generated at runtime)
-├── package.json
-├── tsconfig.json
-├── jest.config.js
-└── ...                       # Other configuration files
+│   ├── database/             # Database management and schema
+│   ├── integrations/         # External service integrations (e.g., Tavily)
+│   ├── tests/                # Unit and integration tests
+│   ├── tools/                # MCP tool implementations
+│   ├── types/                # TypeScript type definitions
+│   └── utils/                # Utility functions
+├── .gitignore                # Git ignore file
+├── jest.config.js            # Jest test configuration
+├── LICENSE.md                # Project license
+├── package.json              # Node.js project metadata
+├── README.md                 # This README file
+├── tsconfig.json             # TypeScript configuration
+└── ...                       # Other configuration and generated files
 ```
 
 ## 💻 Development
@@ -483,19 +179,6 @@ npm run inspector
 ```
 This will provide a URL to access debugging tools in your browser.
 
-## 🔭 Future Considerations
-
-* **Advanced Authentication/Authorization:** Implement robust security for production environments.
-* **Data Retention Policies:** Introduce automated cleanup or archival mechanisms.
-* **Scalability Enhancements:** For very high-load scenarios, explore alternative database backends.
-* **MCP Resource Exposure:** Consider exposing read-only memory views as MCP resources.
-* **Database Migration System:** Implement a more formal system for schema migrations.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or improvements.
-(Add more specific contribution guidelines if desired).
-
 ## 📜 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details (assuming you add one).
+This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details.
