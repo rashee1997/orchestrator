@@ -9,6 +9,7 @@ import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './knowledge_graph_tools.js';
 import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from './mode_instruction_tools.js';
+import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 
 import { 
@@ -90,7 +91,8 @@ export async function getAllToolDefinitions(): Promise<Tool[]> {
         ...modeInstructionToolDefinitions,
         ...reviewLogToolDefinitions,
         // getLoggingToolDefinitions returns Tool[] (name, desc, schema), compatible
-        ...(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]), 
+        ...(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
+        ...geminiToolDefinitions,
     ];
     
     // Map to the MCP-expected Tool interface (stripping func)
@@ -121,6 +123,7 @@ export function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getKnowledgeGraphToolHandlers(memoryManager),
         ...getModeInstructionToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
+        ...getGeminiToolHandlers(memoryManager),
 
         log_tool_execution: log_tool_execution(memoryManager).call,
         get_tool_execution_logs: get_tool_execution_logs(memoryManager).call,

@@ -1,4 +1,4 @@
-import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content } from "@google/genai"; // Using GoogleGenAI as per user's old code
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content } from "@google/genai";
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { ContextInformationManager } from '../managers/ContextInformationManager.js';
@@ -254,12 +254,44 @@ export class GeminiIntegrationService {
         return dotProduct / (magnitudeA * magnitudeB);
     }
 
+    async askGemini(query: string, modelName: string = "gemini-2.5-flash-preview-05-20", systemInstruction?: string): Promise<{ content: { type: string; text: string }[] }> {
+        this.checkApiInitialized();
+        try {
+            const generateContentArgs: {
+                model: string;
+                contents: Content[];
+                safetySettings: { category: HarmCategory; threshold: HarmBlockThreshold; }[];
+                generationConfig: GenerationConfig;
+                config?: {
+                    systemInstruction?: string;
+                };
+            } = {
+                model: modelName,
+                contents: [{ role: "user", parts: [{ text: query }] }],
+                safetySettings: this.safetySettings,
+                generationConfig: this.generationConfig,
+            };
+
+            if (systemInstruction) {
+                generateContentArgs.config = {
+                    systemInstruction: systemInstruction
+                };
+            }
+
+            const result = await this.genAI!.models.generateContent(generateContentArgs);
+            return { content: [{ type: 'text', text: result.text ?? 'No response from Gemini.' }] };
+        } catch (error: any) {
+            console.error(`Error calling Gemini API for query:`, error);
+            throw new Error(`Failed to get response from Gemini: ${error.message}`);
+        }
+    }
+
     async processAndRefinePrompt(
         agent_id: string,
         raw_user_prompt: string,
         target_ai_persona: string | null = null,
         conversation_context_ids: string[] | null = null
-    ): Promise<any> { 
+    ): Promise<any> {
         this.checkApiInitialized();
 
         const modelName = "gemini-2.5-flash-preview-05-20"; // Or "gemini-2.0-flash"
