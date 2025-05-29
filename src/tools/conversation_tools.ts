@@ -36,6 +36,33 @@ export const conversationToolDefinitions = [
             required: ['agent_id'],
         },
     },
+    {
+        name: 'search_conversation_by_keywords',
+        description: 'Searches conversation history for specific keywords. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                keywords: { type: 'string', description: 'Keywords to search for within conversation messages (case-insensitive).' },
+                limit: { type: 'number', description: 'Maximum number of messages to retrieve.', default: 100 },
+                offset: { type: 'number', description: 'Offset for pagination.', default: 0 },
+            },
+            required: ['agent_id', 'keywords'],
+        },
+    },
+    {
+        name: 'summarize_conversation',
+        description: 'Generates a summary of conversation history using Gemini. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+                conversation_id: { type: 'string', description: 'Optional unique identifier for a specific conversation to summarize.', nullable: true },
+                limit: { type: 'number', description: 'Maximum number of messages to retrieve for summarization.', default: 100 },
+            },
+            required: ['agent_id'],
+        },
+    },
 ];
 
 export function getConversationToolHandlers(memoryManager: MemoryManager) {
@@ -94,6 +121,36 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
                 md += "\n---\n\n";
             });
             return { content: [{ type: 'text', text: md }] };
+        },
+        'search_conversation_by_keywords': async (args: any, agent_id: string) => {
+            const history = await memoryManager.searchConversationByKeywords(
+                agent_id,
+                args.keywords as string,
+                args.limit as number,
+                args.offset as number
+            );
+            if (!history || history.length === 0) {
+                return { content: [{ type: 'text', text: formatSimpleMessage("No conversations found matching the keywords.", "Search Results") }] };
+            }
+            let md = `## Conversation Search Results for Agent: \`${agent_id}\`\n`;
+            md += `### Search Keywords: \`${args.keywords}\`\n\n`;
+            history.forEach((msg: any) => {
+                md += `**[${new Date(msg.timestamp).toLocaleString()}] ${msg.sender}:**\n`;
+                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n`;
+                if (msg.message_type !== 'text') {
+                    md += `  - *Type:* ${msg.message_type}\n`;
+                }
+                md += "\n---\n\n";
+            });
+            return { content: [{ type: 'text', text: md }] };
+        },
+        'summarize_conversation': async (args: any, agent_id: string) => {
+            const summary = await memoryManager.summarizeConversation(
+                args.agent_id,
+                args.conversation_id as string | null,
+                args.limit as number
+            );
+            return { content: [{ type: 'text', text: `## Conversation Summary\n\n${summary}` }] };
         },
     };
 }

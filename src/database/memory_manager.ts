@@ -58,9 +58,14 @@ export class MemoryManager {
     private async init() {
         this.dbService = await DatabaseService.create();
 
-        // Initialize managers with DatabaseService dependency
-        this.conversationHistoryManager = new ConversationHistoryManager(this.dbService);
+        // Initialize GeminiIntegrationService first since other services may depend on it
+        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+        const genAIInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : undefined;
+        this.geminiIntegrationService = new GeminiIntegrationService(this.dbService, this.contextInformationManager, genAIInstance);
+
+        // Initialize managers with their dependencies
         this.contextInformationManager = new ContextInformationManager(this.dbService);
+        this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, this.geminiIntegrationService);
         this.referenceKeyManager = new ReferenceKeyManager(this.dbService);
         this.sourceAttributionManager = new SourceAttributionManager(this.dbService);
         this.correctionLogManager = new CorrectionLogManager(this.dbService);
@@ -74,11 +79,6 @@ export class MemoryManager {
         this.errorLogManager = new ErrorLogManager(this.dbService);
         this.taskReviewLogManager = new (await import('./managers/TaskReviewLogManager.js')).TaskReviewLogManager(this.dbService);
         this.finalPlanReviewLogManager = new (await import('./managers/TaskReviewLogManager.js')).FinalPlanReviewLogManager(this.dbService);
-
-        // Initialize GeminiIntegrationService with DatabaseService and ContextInformationManager
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-        const genAIInstance = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : undefined;
-        this.geminiIntegrationService = new GeminiIntegrationService(this.dbService, this.contextInformationManager, genAIInstance);
 
         this.databaseUtilityService = new DatabaseUtilityService(this.dbService);
     }
@@ -153,6 +153,14 @@ export class MemoryManager {
 
     async getConversationHistory(...args: Parameters<ConversationHistoryManager['getConversationHistory']>) {
         return this.conversationHistoryManager.getConversationHistory(...args);
+    }
+
+    async searchConversationByKeywords(...args: Parameters<ConversationHistoryManager['searchConversationByKeywords']>) {
+        return this.conversationHistoryManager.searchConversationByKeywords(...args);
+    }
+
+    async summarizeConversation(...args: Parameters<ConversationHistoryManager['summarizeConversation']>) {
+        return this.conversationHistoryManager.summarizeConversation(...args);
     }
 
     // --- Context Information (Delegated) ---

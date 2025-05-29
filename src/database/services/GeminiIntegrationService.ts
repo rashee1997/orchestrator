@@ -551,4 +551,45 @@ Please provide the JSON object only.
             throw error; // Re-throw GeminiApiNotInitializedError
         }
     }
+
+    async summarizeConversation(
+        agent_id: string,
+        conversationMessages: string,
+        modelName: string = "gemini-2.5-flash-preview-05-20"
+    ): Promise<string> {
+        this.checkApiInitialized();
+
+        const prompt = `
+Summarize the following conversation involving agent_id "${agent_id}".
+Focus on:
+- Key topics discussed
+- Main actions taken
+- Important decisions made
+- Next steps identified
+- Any unresolved issues
+        
+Conversation Messages:
+${conversationMessages}
+
+Provide a concise yet comprehensive summary structured as:
+1. Overview
+2. Key Points
+3. Action Items
+4. Open Questions`;
+
+        try {
+            const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+            const result = await this.genAI!.models.generateContent({
+                model: modelName,
+                contents: contents,
+                // safetySettings and generationConfig may need to be passed differently
+                // based on the actual GoogleGenAI SDK implementation
+            });
+
+            return result.text ?? 'Conversation summary could not be generated.';
+        } catch (error: any) {
+            console.error(`Error summarizing conversation for agent ${agent_id}:`, error);
+            throw new Error(`Failed to summarize conversation: ${error.message}`);
+        }
+    }
 }

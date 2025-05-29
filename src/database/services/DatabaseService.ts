@@ -12,16 +12,6 @@ import { SubtaskManager } from '../managers/SubtaskManager.js';
 
 export class DatabaseService {
     private db!: Database;
-    public conversationHistoryManager!: ConversationHistoryManager;
-    public contextInformationManager!: ContextInformationManager;
-    public referenceKeyManager!: ReferenceKeyManager;
-    public sourceAttributionManager!: SourceAttributionManager;
-    public correctionLogManager!: CorrectionLogManager;
-    public successMetricsManager!: SuccessMetricsManager;
-    public knowledgeGraphManager!: KnowledgeGraphManager;
-    public planTaskManager!: PlanTaskManager;
-    public subtaskManager!: SubtaskManager;
-
     constructor() {
         // Private constructor to enforce async factory
     }
@@ -34,15 +24,7 @@ export class DatabaseService {
 
     private async init() {
         this.db = await initializeDatabase();
-        this.conversationHistoryManager = new ConversationHistoryManager(this);
-        this.contextInformationManager = new ContextInformationManager(this);
-        this.referenceKeyManager = new ReferenceKeyManager(this);
-        this.sourceAttributionManager = new SourceAttributionManager(this);
-        this.correctionLogManager = new CorrectionLogManager(this);
-        this.successMetricsManager = new SuccessMetricsManager(this);
-        this.knowledgeGraphManager = new KnowledgeGraphManager(this);
-        this.planTaskManager = new PlanTaskManager(this);
-        this.subtaskManager = new SubtaskManager(this);
+        // Managers are now initialized and managed by MemoryManager, not DatabaseService
     }
 
     public getDb(): Database {

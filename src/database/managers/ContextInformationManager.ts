@@ -95,28 +95,26 @@ export class ContextInformationManager {
         context_type: string,
         keywords: string
     ) {
-        const db = this.dbService.getDb();
-        // Retrieve the latest version of the context for the given agent and context_type
         const contextResult = await this.getContext(agent_id, context_type);
 
-        if (!contextResult || !contextResult.context_data || !contextResult.context_data.documentation_snippets || !Array.isArray(contextResult.context_data.documentation_snippets)) {
-            return []; // Return empty array if context or snippets not found
+        if (!contextResult || !contextResult.context_data) {
+            return []; // Return empty array if context not found
         }
 
+        // Convert the entire context_data object to a string for broad keyword search
+        const contextDataString = JSON.stringify(contextResult.context_data).toLowerCase();
         const searchKeywords = keywords.toLowerCase().split(/\s+/).filter(k => k.length > 0);
-        const filteredSnippets = contextResult.context_data.documentation_snippets.filter((snippet: any) => {
-            const title = (snippet.TITLE || '').toLowerCase();
-            const description = (snippet.DESCRIPTION || '').toLowerCase();
-            const code = (snippet.CODE || '').toLowerCase(); // Also search in code
 
-            return searchKeywords.some(keyword =>
-                title.includes(keyword) ||
-                description.includes(keyword) ||
-                code.includes(keyword)
-            );
-        });
+        const found = searchKeywords.every(keyword => contextDataString.includes(keyword));
 
-        return filteredSnippets;
+        if (found) {
+            // If keywords are found, return the entire context object as a result
+            // This might need refinement if only specific "snippets" are desired,
+            // but for "search irrespective of data format", returning the whole context is appropriate.
+            return [contextResult.context_data];
+        } else {
+            return [];
+        }
     }
 
     async pruneOldContext(
