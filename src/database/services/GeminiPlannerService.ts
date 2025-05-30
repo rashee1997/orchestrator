@@ -5,22 +5,13 @@ import { randomUUID } from 'crypto';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
-    plan_title: string;
-    overall_plan_goal: string;
+    plan_title?: string; // Optional for backward compatibility
     estimated_duration_days: number;
     target_start_date: string;
     target_end_date: string;
     plan_risks_and_mitigations: Array<{
         risk_description: string;
         mitigation_strategy: string;
-    }>;
-    tasks: Array<{
-        task_title: string;
-        task_description: string;
-        task_purpose: string;
-        estimated_effort_hours: number;
-        task_risks: string[];
-        micro_steps: string[];
     }>;
 }
 
@@ -93,10 +84,11 @@ export class GeminiPlannerService {
         let systemInstruction: string;
         let userQuery: string;
         let refinedPromptIdForPlan: string | null = null;
+        let refinedPromptDetails: any; // Declare it here
 
         // Referencing prompts from gemini_plan_generation_prompts_v2
         if (isRefinedPromptId) {
-            let refinedPromptDetails = directRefinedPromptDetails;
+            refinedPromptDetails = directRefinedPromptDetails; // Assign here
             if (!refinedPromptDetails) {
                 refinedPromptDetails = await this.memoryManager.getRefinedPrompt(agentId, identifier);
                 if (!refinedPromptDetails) {
@@ -105,38 +97,46 @@ export class GeminiPlannerService {
             }
             refinedPromptIdForPlan = identifier;
 
-            systemInstruction = "You are an expert project planning assistant. You will be given a structured 'Refined Prompt Object' that details a user's request. Your task is to transform this into a detailed project plan. The plan should include an overall goal (from the refined prompt), estimated duration, placeholder start/end dates, potential risks and their mitigations for the overall plan. Also, generate a list of 3-5 actionable high-level tasks. Derive the plan title from the refined prompt's overall goal. Each task should have a title (based on refined prompt's decomposed tasks/entities), description, purpose, estimated effort in hours, potential risks specific to the task, and a few micro-steps. The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.";
-            userQuery = `Analyze the following 'Refined Prompt Object' and generate a detailed project plan structure.
+            systemInstruction = "You are an expert project planning assistant. You will be given a structured 'Refined Prompt Object' that details a user's request. Your task is to generate a complete project plan including a concise title, estimated duration, placeholder start/end dates, and potential risks and their mitigations for the overall plan. The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.";
+            // Create a copy of refinedPromptDetails and remove context_options before sending to Gemini
+            // context_options are for retrieval during refinement, not for plan generation content.
+            // Only send the essential fields to Gemini to avoid confusion
+            const planGenerationRefinedPromptDetails = {
+                original_prompt_text: refinedPromptDetails.original_prompt_text,
+                overall_goal: refinedPromptDetails.overall_goal,
+                decomposed_tasks: refinedPromptDetails.decomposed_tasks_parsed || refinedPromptDetails.decomposed_tasks,
+                key_entities_identified: refinedPromptDetails.key_entities_identified_parsed || refinedPromptDetails.key_entities_identified,
+                implicit_assumptions_made_by_refiner: refinedPromptDetails.implicit_assumptions_made_by_refiner_parsed || refinedPromptDetails.implicit_assumptions_made_by_refiner,
+                explicit_constraints_from_prompt: refinedPromptDetails.explicit_constraints_from_prompt_parsed || refinedPromptDetails.explicit_constraints_from_prompt,
+                suggested_ai_role_for_agent: refinedPromptDetails.suggested_ai_role_for_agent,
+                suggested_reasoning_strategy_for_agent: refinedPromptDetails.suggested_reasoning_strategy_for_agent,
+                desired_output_characteristics_inferred: refinedPromptDetails.desired_output_characteristics_inferred_parsed || refinedPromptDetails.desired_output_characteristics_inferred
+            };
+
+            // Debug logging
+            console.log('[DEBUG] Sending to Gemini for plan generation:', JSON.stringify(planGenerationRefinedPromptDetails, null, 2));
+            
+            userQuery = `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
 
 Refined Prompt Object:
 \`\`\`json
-${JSON.stringify(refinedPromptDetails, null, 2)}
+${JSON.stringify(planGenerationRefinedPromptDetails, null, 2)}
 \`\`\`
 
 Based on this refined prompt, provide:
-1.  A concise \`plan_title\` derived from the \`overall_goal\` in the refined prompt (max 10 words).
-2.  The \`overall_plan_goal\` directly from the refined prompt's \`overall_goal\` field.
-3.  An \`estimated_duration_days\` for the entire plan (integer).
-4.  A \`target_start_date\` (string, "YYYY-MM-DD", use "YYYY-MM-DD (placeholder)" if not inferable).
-5.  A \`target_end_date\` (string, "YYYY-MM-DD", use "YYYY-MM-DD (placeholder)" if not inferable).
-6.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
-7.  A list of 3-5 high-level \`tasks\`. Each task should have:
-    * \`task_title\`: A short, descriptive title, ideally based on or combining elements from \`decomposed_tasks\` or \`key_entities_identified\` from the refined prompt.
-    * \`task_description\`: A brief explanation of what the task involves, expanding on the \`task_title\` using context from the refined prompt.
-    * \`task_purpose\`: The reason this task is necessary, linking back to the \`overall_plan_goal\`.
-    * \`estimated_effort_hours\`: Estimated effort for the task in hours (integer).
-    * \`task_risks\`: A list of potential risks specific to this task (array of strings).
-    * \`micro_steps\`: A list of 3-5 granular sub-actions or steps for completing the task (array of strings).
+1.  A concise \`plan_title\` that accurately describes the project (max 10 words).
+2.  An \`estimated_duration_days\` for the entire plan (integer).
+3.  A \`target_start_date\` (string, "YYYY-MM-DD" format, use today's date: ${new Date().toISOString().split('T')[0]}).
+4.  A \`target_end_date\` (string, "YYYY-MM-DD" format, calculate based on start date + estimated_duration_days).
+5.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
 
 Output the result as a single JSON object with the following structure:
 {
   "plan_title": "string",
-  "overall_plan_goal": "string",
   "estimated_duration_days": "integer",
   "target_start_date": "string",
   "target_end_date": "string",
-  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ],
-  "tasks": [ { "task_title": "string", "task_description": "string", "task_purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"] } ]
+  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ]
 }`;
         } else { // Identifier is a high-level goal description
             systemInstruction = "You are an expert project planning assistant. Your task is to take a user's high-level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY-MM-DD if specific dates are not inferable from the goal, but indicate they are placeholders), potential risks and their mitigations for the overall plan. Also, generate a list of 3-5 actionable high-level tasks. Each task should include a title, description, purpose, estimated effort in hours, potential risks specific to the task, and a few micro-steps (sub-actions). The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.";
@@ -149,8 +149,8 @@ Based on this goal, provide:
 1.  A concise \`plan_title\` (max 10 words).
 2.  An \`overall_plan_goal\` that rephrases or clarifies the user's goal for the project plan (1-2 sentences).
 3.  An \`estimated_duration_days\` for the entire plan (integer).
-4.  A \`target_start_date\` (string, "YYYY-MM-DD", use "YYYY-MM-DD (placeholder)" if not inferable).
-5.  A \`target_end_date\` (string, "YYYY-MM-DD", use "YYYY-MM-DD (placeholder)" if not inferable).
+4.  A \`target_start_date\` (string, "YYYY-MM-DD" format, use today's date: ${new Date().toISOString().split('T')[0]}).
+5.  A \`target_end_date\` (string, "YYYY-MM-DD" format, calculate based on start date + estimated_duration_days).
 6.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
 7.  A list of 3-5 high-level \`tasks\`. Each task should have:
     * \`task_title\`: A short, descriptive title (max 10 words).
@@ -174,11 +174,14 @@ Output the result as a single JSON object with the following structure:
 
         let geminiResponseText: string;
         try {
+            console.log('[DEBUG] Calling Gemini with system instruction:', systemInstruction);
+            console.log('[DEBUG] User query length:', userQuery.length);
             const geminiResult = await this.geminiIntegrationService.askGemini(userQuery, this.geminiModel, systemInstruction);
             if (!geminiResult || !geminiResult.content || geminiResult.content.length === 0 || !geminiResult.content[0]?.text) {
                 throw new Error("Gemini returned no content or an unexpected format for plan generation.");
             }
             geminiResponseText = geminiResult.content[0].text;
+            console.log('[DEBUG] Gemini response:', geminiResponseText);
         } catch (error) {
             if (error instanceof GeminiApiNotInitializedError) {
                 throw error;
@@ -190,16 +193,26 @@ Output the result as a single JSON object with the following structure:
         let parsedResponse: GeminiDetailedPlanGenerationResponse;
         try {
             let jsonToParse = geminiResponseText;
-            const jsonMatch = geminiResponseText.match(/```json\n([\s\S]*?)\n```/);
-            if (jsonMatch && jsonMatch[1]) {
-                jsonToParse = jsonMatch[1].trim();
+            // More robust JSON extraction: find the first '{' and the last '}'
+            const firstBrace = jsonToParse.indexOf('{');
+            const lastBrace = jsonToParse.lastIndexOf('}');
+
+            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                jsonToParse = jsonToParse.substring(firstBrace, lastBrace + 1);
             } else {
-                // If no markdown block, assume the entire trimmed response is JSON
-                jsonToParse = geminiResponseText.trim();
+                // Fallback to original logic if braces not found or malformed
+                const jsonMatch = geminiResponseText.match(/```json\n([\s\S]*?)\n```/);
+                if (jsonMatch && jsonMatch[1]) {
+                    jsonToParse = jsonMatch[1].trim();
+                } else {
+                    jsonToParse = geminiResponseText.trim();
+                }
             }
 
             // Remove trailing commas before parsing
             jsonToParse = jsonToParse.replace(/,(\s*[\]}])/g, '$1');
+            // Remove comments (single line // and multi-line /* */)
+            jsonToParse = jsonToParse.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '');
 
             parsedResponse = JSON.parse(jsonToParse);
         } catch (error) {
@@ -209,8 +222,8 @@ Output the result as a single JSON object with the following structure:
 
         // Transform Gemini response to InitialDetailedPlanAndTasks structure
         const planData: InitialDetailedPlanAndTasks['planData'] = {
-            title: parsedResponse.plan_title,
-            overall_goal: parsedResponse.overall_plan_goal,
+            title: parsedResponse.plan_title || refinedPromptDetails.overall_goal, // Use Gemini's title or fallback to overall_goal
+            overall_goal: refinedPromptDetails.overall_goal, // Keep overall_goal from refined prompt
             status: PLAN_STATUS_DRAFT,
             version: 1,
             refined_prompt_id_associated: refinedPromptIdForPlan,
@@ -222,24 +235,48 @@ Output the result as a single JSON object with the following structure:
             }
         };
 
-        const tasksData: InitialDetailedPlanAndTasks['tasksData'] = parsedResponse.tasks.map((task, index) => {
-            const notes: TaskNotes = {}; // Use the specific TaskNotes interface
-            if (task.task_risks && task.task_risks.length > 0) {
-                notes.task_risks = task.task_risks;
+        // Parse the decomposed tasks to extract only the main tasks (not phases or sub-items)
+        const decomposedTasks = refinedPromptDetails.decomposed_tasks_parsed || [];
+        const mainTasks: any[] = [];
+        
+        // Filter out phase headers, plan rules, and extract only numbered tasks with bold titles
+        decomposedTasks.forEach((taskString: string) => {
+            // Match patterns like "1.1. **Task Title**" or "2.1. **Task Title**"
+            const mainTaskMatch = taskString.match(/^(\d+\.\d+\.)\s*\*\*(.*?)\*\*(.*)$/);
+            if (mainTaskMatch) {
+                const taskNumber = mainTaskMatch[1];
+                const title = mainTaskMatch[2].trim();
+                const remainingDescription = mainTaskMatch[3].trim();
+                
+                // Skip sub-items (a., b., c., etc.)
+                if (!taskString.match(/^\s*[a-z]\./)) {
+                    mainTasks.push({
+                        taskNumber,
+                        title,
+                        description: taskString.trim(),
+                        remainingDescription
+                    });
+                }
             }
-            if (task.micro_steps && task.micro_steps.length > 0) {
-                notes.micro_steps = task.micro_steps;
-            }
+        });
+
+        const tasksData: InitialDetailedPlanAndTasks['tasksData'] = mainTasks.map((task, index) => {
+            const purpose = `To ${task.title.toLowerCase()} as part of extending the Git tool functionality.`;
+            const estimated_effort_hours = 8; // Default to 8 hours
+            const task_risks: string[] = []; // Not provided in decomposed_tasks
+            const micro_steps: string[] = []; // Not provided in decomposed_tasks
+
+            const notes: TaskNotes = {};
 
             return {
                 task_number: index + 1,
-                title: task.task_title,
-                description: task.task_description,
-                purpose: task.task_purpose,
+                title: task.title,
+                description: task.description,
+                purpose: purpose,
                 status: TASK_STATUS_PLANNED,
-                estimated_effort_hours: task.estimated_effort_hours,
-                task_risks: task.task_risks, // Directly assign task_risks
-                micro_steps: task.micro_steps, // Directly assign micro_steps
+                estimated_effort_hours: estimated_effort_hours,
+                task_risks: task_risks,
+                micro_steps: micro_steps,
                 ...(Object.keys(notes).length > 0 && { notes_json: JSON.stringify(notes) }),
             };
         });

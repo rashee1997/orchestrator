@@ -1,202 +1,587 @@
-# 🧠 Orchestrator: Your Agent's Persistent Brain 🧠
+# 🧠 Memory MCP Server - Orchestrator
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-The **Orchestrator** is a robust Model Context Protocol (MCP) server designed to provide AI agents with a powerful and persistent memory system. Built with TypeScript and leveraging SQLite, it offers a comprehensive suite of tools for managing various forms of agent knowledge, from conversation histories and contextual data to complex task plans and a structured knowledge graph.
+<div align="center">
 
-This server empowers your AI agents to learn, remember, and operate with greater intelligence and consistency across sessions.
+![Memory MCP Server](https://img.shields.io/badge/Memory%20MCP%20Server-Orchestrator-blue?style=for-the-badge&logo=brain&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green?style=for-the-badge&logo=node.js)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-blue?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 
-## Contents
-*   [✨ Key Features](#-key-features)
-*   [🚀 Installation & Setup](#-installation--setup)
-*   [🧭 Core Concepts](#-core-concepts)
-*   [🛠️ Available Tools](#%EF%B8%8F-available-tools)
-*   [📂 Project Structure](#-project-structure)
-*   [📄 Rules and Protocols](#-rules-and-protocols)
-*   [💻 Development](#-development)
-*   [📜 License](#-license)
+**🚀 Your AI Agent's Persistent Brain - A Comprehensive Memory & Task Management System**
 
-## ✨ Key Features
+[Features](#-features) • [Installation](#-installation) • [Configuration](#️-configuration) • [Workflow](#-the-ai-driver-understanding-workflowmd) • [Tools](#️-available-tools) • [Architecture](#️-architecture) • [Development](#-development)
 
-* 💾 **Persistent SQLite Backend:** All agent memory is reliably stored, ensuring data integrity and availability.
-* 📚 **Comprehensive Memory Types:**
-    * **Conversation History:** Track multi-turn dialogues.
-    * **Contextual Information:** Store dynamic data like agent state, user preferences, and task parameters with versioning.
-    * **Reference Keys:** Link to external documents or internal memory entries.
-    * **Source Attribution:** Log the origin of information for transparency and traceability.
-    * **Correction Logs:** Record instances of corrections for learning and auditing.
-    * **Success Metrics:** Track quantitative and qualitative performance indicators.
-    * **Refined Prompts:** Store structured versions of user prompts for consistent AI processing.
-* 🕸️ **Knowledge Graph Management:** Create, update, and query a structured knowledge graph of entities and their relationships.
-* 📝 **Advanced Plan & Task Management:**
-    * Define complex plans with overall goals and statuses.
-    * Break down plans into individual, manageable tasks with dependencies, descriptions, and assigned tools.
-    * Track progress and update statuses for both plans and tasks.
-* 🌐 **External Integrations:**
-    * **Tavily AI:** Perform advanced web searches.
-    * **Google Gemini:** Leverage powerful LLM capabilities for:
-        * Prompt Refinement
-        * Context Summarization
-        * Entity & Keyword Extraction
-        * Semantic Search (Vector Embeddings)
-        * Code Analysis (`analyze_code_file_with_gemini`)
-* 🛠️ **Data Utilities:**
-    * Backup and restore the entire memory database.
-    * Export table data to CSV.
-    * Prune old context entries based on age.
-* 🛡️ **Data Validation:** Ensures integrity of incoming data using JSON schemas.
-* ⚙️ **MCP Compliant:** Seamlessly integrates with MCP-compatible clients.
-* 📄 **Structured Output:** Provides human-readable Markdown for plan and task details.
+</div>
 
-## 🚀 Installation & Setup
+---
+
+> ### 🚨 **CRITICAL: This MCP Server requires `workflow.md` to function properly!**
+> 
+> The `workflow.md` file is not optional - it's the **AI Driver** that transforms this collection of tools into an intelligent system. Without it, your AI agent will have tools but no structured way to use them effectively.
+> 
+> **Before using this server:**
+> 1. ✅ Install and configure the MCP server
+> 2. ✅ **Load `workflow.md` into your AI agent's system prompt**
+> 3. ✅ Ensure your agent follows the 6-mode operational structure
+> 
+> 📖 [Jump to workflow.md documentation](#-the-ai-driver-understanding-workflowmd)
+
+---
+
+## 📋 Table of Contents
+
+- [🌟 Overview](#-overview)
+- [✨ Features](#-features)
+- [🚀 Installation](#-installation)
+- [⚙️ Configuration](#️-configuration)
+- [🎮 The AI Driver: Understanding workflow.md](#-the-ai-driver-understanding-workflowmd)
+- [🛠️ Available Tools](#️-available-tools)
+- [🏗️ Architecture](#️-architecture)
+- [💻 Development](#-development)
+- [📚 Documentation](#-documentation)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+
+---
+
+## 🌟 Overview
+
+The **Memory MCP Server (Orchestrator)** is a powerful Model Context Protocol (MCP) server that provides AI agents with persistent memory, advanced task planning, and comprehensive knowledge management capabilities. Built with TypeScript and SQLite, it transforms your AI agents from stateless assistants into intelligent systems with long-term memory and structured workflows.
+
+### 🚨 Critical Component: The AI Driver (workflow.md)
+
+**The `workflow.md` file is the brain of this system!** It contains the operational protocols and behavioral rules that transform a collection of tools into an intelligent, coordinated system. Think of it as the "AI Driver" that:
+
+- 🎯 **Defines 6 Operational Modes**: From prompt refinement to task execution
+- 🛡️ **Enforces Safety Protocols**: Prevents unauthorized actions and overager behavior
+- 📋 **Structures Workflows**: Ensures systematic approach to every task
+- 🔄 **Manages State Transitions**: Controls how the AI moves between different modes
+- ✅ **Validates Actions**: Requires user approval before executing changes
+
+**Without `workflow.md`, this is just a toolbox. With it, it becomes an intelligent agent system.**
+
+### 🎯 Key Benefits
+
+- **🧠 Persistent Memory**: Never lose context between sessions
+- **📊 Structured Planning**: Break complex tasks into manageable steps
+- **🔍 Knowledge Graph**: Build and query relationships between entities
+- **🤖 AI-Enhanced**: Leverage Gemini AI for intelligent task suggestions
+- **📈 Performance Tracking**: Monitor success metrics and learn from corrections
+- **🔗 External Integrations**: Connect with web search and AI services
+
+---
+
+## ✨ Features
+
+### 💾 Memory Management
+- **Conversation History**: Track multi-turn dialogues with full context
+- **Dynamic Context Storage**: Version-controlled storage for agent state, preferences, and parameters
+- **Knowledge Graph**: Create, query, and manage entity relationships
+- **Vector Embeddings**: Semantic search capabilities for code and documentation
+
+### 📝 Task & Planning System
+- **AI-Powered Planning**: Generate comprehensive plans from refined prompts
+- **Hierarchical Tasks**: Support for tasks, subtasks, and dependencies
+- **Progress Tracking**: Real-time monitoring of task execution
+- **Review System**: Built-in task and plan review mechanisms
+
+### 🤖 AI Integration
+- **Google Gemini Integration**:
+  - Prompt refinement and structuring
+  - Context summarization
+  - Entity extraction
+  - Code analysis
+  - Task suggestions
+- **Tavily Web Search**: Advanced web search capabilities
+- **Semantic Search**: Vector-based content retrieval
+
+### 🛡️ Reliability & Compliance
+- **Data Validation**: JSON schema validation for all inputs
+- **Comprehensive Logging**: Track all operations and errors
+- **Backup & Restore**: Full database backup capabilities
+- **MCP Compliant**: Seamless integration with MCP-compatible clients
+
+---
+
+## 🚀 Installation
 
 ### Prerequisites
 
-* [Node.js](https://nodejs.org/) (version 18.x or higher recommended)
-* [npm](https://www.npmjs.com/) (usually comes with Node.js)
+<div align="center">
 
-### Steps
+| Requirement | Version | Required |
+|------------|---------|----------|
+| Node.js | 18.x or higher | ✅ |
+| npm | Latest | ✅ |
+| Git | Any | ✅ |
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/rashee1997/orchestrator orchestrator
-    cd orchestrator
-    ```
-    (If you've already downloaded it, navigate to the `orchestrator` directory)
+</div>
 
-2.  **Install Dependencies:**
-    ```bash
-    npm install
-    ```
+### Step-by-Step Installation
 
-3.  **Build the Server:**
-    This command compiles the TypeScript code and copies necessary files (like `schema.sql`) to the `build` directory.
-    ```bash
-    npm run build
-    ```
+```bash
+# 1. Clone the repository
+git clone https://github.com/yourusername/memory-mcp-server.git
+cd memory-mcp-server
 
-4.  **Configure API Keys:**
-    The server requires API keys for some of its integrated services. These should be configured directly within your MCP client's settings, as shown in the next step.
+# 2. Install dependencies
+npm install
 
-5.  **MCP Client Configuration (Example for VS Code cline Dev Extension):**
-    Add or update the server configuration in your MCP client's settings file. For the VS code cline extension Claude Dev Extension, this is typically located at:
-    *   **Windows:** `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-    *   **macOS:** `~/Library/Application Support/Code/User/globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-    *   **Linux:** `~/.config/Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+# 3. Build the project
+npm run build
 
-    Add the following entry:
-    ```json
-    {
-      "orchestrator": {
-        "disabled": false,
-        "autoApprove": [], 
-        "timeout": 120,    
-        "transportType": "stdio",
-        "command": "node",
-        "args": [
-          "path/to/your/orchestrator/build/index.js"
-        ],
-        "env": {
-          "TAVILY_API_KEY": "your_tavily_api_key",
-          "GEMINI_API_KEY": "your_google_gemini_api_key"
-        }
-      }
+# 4. Verify installation
+npm run test
+```
+
+### 🎯 Quick Start for AI Agents
+
+```bash
+# CRITICAL STEP: Load the AI Driver
+# Your AI agent MUST load the workflow.md file as part of its system prompt
+# This file contains the operational protocols that make the system work
+
+# Example for loading in your AI agent:
+# 1. Read the workflow.md file
+# 2. Include it in your system prompt or rules
+# 3. Follow the 6-mode operational structure
+```
+
+### 🐳 Docker Installation (Alternative)
+
+```dockerfile
+# Coming soon - Docker support planned
+```
+
+---
+
+## ⚙️ Configuration
+
+### 🔑 API Keys Setup
+
+The server requires API keys for external services. These should be configured in your MCP client settings.
+
+<div align="center">
+
+| Service | Environment Variable | Required | Get API Key |
+|---------|---------------------|----------|-------------|
+| Google Gemini | `GEMINI_API_KEY` | ✅ | [Get Key](https://makersuite.google.com/app/apikey) |
+| Tavily Search | `TAVILY_API_KEY` | ✅ | [Get Key](https://tavily.com/) |
+
+</div>
+
+### 📝 MCP Client Configuration
+
+#### For VS Code Cline Extension
+
+1. **Locate the settings file**:
+   - **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+   - **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+   - **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+
+2. **Add the server configuration**:
+
+```json
+{
+  "memory-mcp-server": {
+    "disabled": false,
+    "autoApprove": [],
+    "timeout": 120,
+    "transportType": "stdio",
+    "command": "node",
+    "args": [
+      "/absolute/path/to/memory-mcp-server/build/index.js"
+    ],
+    "env": {
+      "GEMINI_API_KEY": "your-gemini-api-key-here",
+      "TAVILY_API_KEY": "your-tavily-api-key-here"
     }
-    ```
-    **Note:** Ensure the path in `args` is the correct absolute path to the `build/index.js` file on your system. Replace `path/to/your/orchestrator/` with the actual absolute path where you cloned the repository. Ensure that `TAVILY_API_KEY` and `GEMINI_API_KEY` are correctly set in the `env` section within this configuration.
+  }
+}
+```
 
-## 🧭 Core Concepts
+> ⚠️ **Important**: Replace `/absolute/path/to/memory-mcp-server/` with the actual path where you cloned the repository.
 
-The Orchestrator is designed around the concept of the concept of providing a persistent, structured memory for AI agents. Key ideas include:
+#### For Other MCP Clients
 
-* **Agent-Centric Storage:** Most memory entries are associated with an `agent_id`, allowing multiple agents to use the same server without interference.
-* **Typed Memory:** Different types of information (conversations, context, plans) are stored in dedicated, appropriately indexed SQLite tables for efficient querying.
-* **Contextual Awareness:** Memory entries can be linked to specific contexts or other entries, enabling rich relationships between pieces of information.
-* **Actionable Memory:** The server doesn't just store data; it provides tools to actively use and manage this memory, including planning, task execution tracking, and knowledge retrieval.
+Adapt the configuration format according to your client's requirements. The key parameters are:
+- **Command**: `node`
+- **Arguments**: `["path/to/build/index.js"]`
+- **Transport**: `stdio`
+- **Environment**: API keys
+
+---
+
+## 🎮 The AI Driver: Understanding workflow.md
+
+The `workflow.md` file is **THE MOST IMPORTANT COMPONENT** of this system. It's not just documentation - it's the operational manual that AI agents must follow to use this server effectively.
+
+### 📋 The 6 Operational Modes
+
+<div align="center">
+
+| Mode | Purpose | Key Responsibility |
+|------|---------|-------------------|
+| **MODE 0: PROMPT_REFINE** | 🎯 Entry point for ALL tasks | Disambiguates requests, checks past errors, creates structured goals |
+| **MODE 1: THINK** | 🧠 Analysis & Strategy | Builds mental model, gathers information, forms strategy |
+| **MODE 2: CODE_ANALYSIS** | 🔍 Deep Code Examination | Analyzes code structure, dependencies, quality |
+| **MODE 3: INNOVATE** | 💡 Creative Problem Solving | Generates novel solutions, breaks through impasses |
+| **MODE 4: PLAN** | 📋 Detailed Planning | Creates step-by-step execution plans with AI assistance |
+| **MODE 5: EXECUTE** | ⚡ Controlled Action | Implements approved plans with comprehensive logging |
+| **MODE 6: REVIEW** | ✅ Validation & Learning | Validates outcomes, synthesizes lessons learned |
+
+</div>
+
+### 🔄 Workflow State Machine
+
+```mermaid
+graph TD
+    A[User Request] -->|MANDATORY| B[MODE 0: PROMPT_REFINE]
+    B -->|Auto transition| C[MODE 1: THINK]
+    C -->|Need analysis| D[MODE 2: CODE_ANALYSIS]
+    C -->|Need creativity| E[MODE 3: INNOVATE]
+    C -->|Ready to plan| F[MODE 4: PLAN]
+    D --> C
+    E --> C
+    F -->|User approval required| G[MODE 5: EXECUTE]
+    G -->|Completion| H[MODE 6: REVIEW]
+    G -->|Error/Halt| I[HALTED STATE]
+    I -->|User instruction| F
+    H --> J[Await Next Request]
+```
+
+### 🛡️ Critical Safety Rules
+
+1. **No Unauthorized Actions**: The agent CANNOT modify files or execute commands without an approved plan
+2. **Mandatory Mode Declaration**: Every response MUST start with `[MODE: MODE_NAME]`
+3. **Tool-Centric Operations**: All significant actions MUST use official tools
+4. **No Post-Task Solicitation**: Agent must NOT ask "what's next?" after completing tasks
+
+### 🚀 How to Use workflow.md
+
+**For AI Agents:**
+1. Load `workflow.md` into your system prompt or rules
+2. Follow the mode progression strictly
+3. Use only the tools allowed in each mode
+4. Respect user authorization requirements
+
+**For Developers:**
+1. Review `workflow.md` to understand the intended agent behavior
+2. Ensure your prompts align with the workflow structure
+3. Monitor agent compliance with the protocols
+
+> ⚠️ **Warning**: AI agents may not always follow these rules perfectly. The workflow.md provides guidelines, not guarantees. Monitor agent behavior and provide corrections as needed.
+
+---
 
 ## 🛠️ Available Tools
 
-The Orchestrator provides a comprehensive set of tools for AI agents to manage memory, interact with external services, and facilitate complex workflows. For detailed schemas and parameters of each tool, please refer to `docs/api_documentation.md`.
+The server provides **65+ tools** organized into categories:
 
-### Core Memory Management
-*   **Conversation & Context:** Tools for storing and retrieving conversation history, dynamic contextual data (with versioning), and performing keyword/semantic searches on context. Includes tools for pruning old context and summarizing/extracting entities from context using Gemini.
-*   **Knowledge & Attribution:** Tools for managing reference keys to external sources, logging the origin of information, and attributing web search results.
-*   **Learning & Performance:** Tools for logging and retrieving correction instances, summarizing past corrections, and tracking quantitative/qualitative success metrics.
-*   **Knowledge Graph:** A powerful tool (`knowledge_graph_memory`) for creating, updating, querying, and deleting entities, relationships, and observations within a structured knowledge graph.
+### 📚 Memory & Context Tools
 
-### Workflow & Task Management
-*   **Plan & Task Management:** Comprehensive tools for creating, retrieving, listing, updating, and deleting multi-step task plans, individual tasks, and subtasks.
-*   **Review & Logging:** Detailed logging for task reviews, tool executions, task progress, and errors. Includes tools for creating, retrieving, updating, and deleting review logs, as well as managing tool execution, task progress, and error logs.
+<details>
+<summary><b>Conversation Management (4 tools)</b></summary>
 
-### External Integrations & LLM Capabilities
-*   **Web Search:** Integrates with Tavily for advanced web searches.
-*   **Gemini AI:** Leverages Google Gemini for direct queries (`ask_gemini`), refining user prompts, and advanced context analysis (summarization, entity extraction, semantic search).
-*   **Code Analysis:** Provides the `analyze_code_file_with_gemini` tool for detailed line-by-line code analysis using Gemini, focusing on specified aspects.
+- `store_conversation_message` - Store messages in conversation history
+- `get_conversation_history` - Retrieve past conversations
+- `search_conversation_by_keywords` - Search conversations by keywords
+- `summarize_conversation` - AI-powered conversation summarization
 
-### System & Utility
-*   **Mode Management:** Tools for defining, retrieving, updating, and deleting mode-specific instructions for AI agents.
-*   **Database Utilities:** Tools for exporting database tables to CSV, backing up the entire SQLite database, and restoring from a backup.
-*   **Git Operations:** A comprehensive suite of tools for interacting with Git repositories, including cloning, pulling, pushing, committing, checking status, adding files, managing branches, viewing logs, diffing changes, stashing changes (`git_stash_save`, `git_stash_pop`), remote management (`git_remote_add`, `git_remote_remove`), and soft resetting (`git_reset_soft`).
+</details>
 
-## 📂 Project Structure
+<details>
+<summary><b>Context Management (9 tools)</b></summary>
+
+- `store_context` - Store dynamic contextual data
+- `get_context` - Retrieve stored context
+- `get_all_contexts` - Get all contexts for an agent
+- `search_context_by_keywords` - Keyword search in contexts
+- `prune_old_context` - Clean up old context entries
+- `summarize_context` - AI summarization of context
+- `extract_entities` - Extract entities from context
+- `semantic_search_context` - Vector-based semantic search
+
+</details>
+
+### 📋 Planning & Task Tools
+
+<details>
+<summary><b>Plan Management (15 tools)</b></summary>
+
+- `create_task_plan` - Create plans (manual or AI-generated)
+- `get_task_plan_details` - Get detailed plan information
+- `list_task_plans` - List all plans
+- `update_task_plan_status` - Update plan status
+- `delete_task_plan` - Remove plans
+- `ai_analyze_plan` - AI analysis of plan quality
+- `ai_suggest_subtasks` - AI-generated subtask suggestions
+- `ai_suggest_task_details` - AI-enhanced task details
+- `ai_summarize_task_progress` - AI progress summaries
+
+</details>
+
+### 🔍 Knowledge & Attribution Tools
+
+<details>
+<summary><b>Knowledge Graph (9 operations)</b></summary>
+
+- `knowledge_graph_memory` - Comprehensive KG operations
+  - Create/read/update/delete entities
+  - Manage relationships
+  - Add observations
+  - Natural language queries
+  - Infer relationships
+  - Generate visualizations
+
+</details>
+
+### 📊 Logging & Performance Tools
+
+<details>
+<summary><b>Comprehensive Logging (23 tools)</b></summary>
+
+- Tool execution logging
+- Task progress tracking
+- Error logging and management
+- Correction tracking
+- Success metrics
+- Review logs (task and plan level)
+
+</details>
+
+### 🔧 Utility & Integration Tools
+
+<details>
+<summary><b>Git Operations (16 tools)</b></summary>
+
+- Complete Git workflow support
+- Clone, pull, push, commit
+- Branch management
+- Stash operations
+- Remote management
+
+</details>
+
+<details>
+<summary><b>External Services (5 tools)</b></summary>
+
+- `tavily_web_search` - Advanced web search
+- `ask_gemini` - Direct Gemini AI queries
+- `analyze_code_file_with_gemini` - AI code analysis
+- `refine_user_prompt` - AI prompt enhancement
+- `ingest_codebase_embeddings` - Vector embedding generation
+
+</details>
+
+---
+
+## 🏗️ Architecture
+
+### 📁 Project Structure
 
 ```
 memory-mcp-server/
-├── build/                    # Compiled JavaScript output
-├── docs/                     # Project documentation
-├── src/                      # TypeScript source code
-│   ├── database/             # Database management and schema
-│   ├── integrations/         # External service integrations (e.g., Tavily)
-│   ├── tests/                # Unit and integration tests
-│   ├── tools/                # MCP tool implementations
-│   ├── types/                # TypeScript type definitions
-│   └── utils/                # Utility functions
-├── .gitignore                # Git ignore file
-├── jest.config.js            # Jest test configuration
-├── LICENSE.md                # Project license
-├── package.json              # Node.js project metadata
-├── README.md                 # This README file
-├── tsconfig.json             # TypeScript configuration
-└── ...                       # Other configuration and generated files
+├── 📂 src/
+│   ├── 📂 database/          # Database schemas and managers
+│   │   ├── 📂 managers/      # Entity-specific managers
+│   │   ├── 📂 services/      # Business logic services
+│   │   ├── schema.sql        # Main database schema
+│   │   └── vector_store_schema.sql
+│   ├── 📂 tools/             # MCP tool implementations
+│   │   ├── conversation_tools.ts
+│   │   ├── plan_management_tools.ts
+│   │   ├── ai_task_enhancement_tools.ts
+│   │   └── ... (60+ tool files)
+│   ├── 📂 utils/             # Utility functions
+│   ├── 📂 types/             # TypeScript definitions
+│   └── index.ts              # Main entry point
+├── 📂 docs/                  # Documentation
+├── 📄 workflow.md            # Agent workflow rules
+├── 📄 package.json           # Dependencies
+└── 📄 README.md              # This file
 ```
 
-## 📄 Rules and Protocols
+### 🗄️ Database Schema
 
-The Orchestrator adheres to **strict operational rules and protocols** defined in **`workflow.md`**. This file **critically outlines** the agent's roles, goals, and mandatory modes of operation, ensuring accurate, safe, and high-quality task execution.
+The server uses two SQLite databases:
 
-***IMPORTANT: These rules are static and directly influence the AI agent's behavior for every task. While designed to be followed, please be aware that AI agents may not always adhere to them fully. These rules can be added to AI agents' rule files.***
+1. **Main Database** (`memory.db`):
+   - Conversation history
+   - Context information
+   - Task plans and progress
+   - Knowledge graph
+   - Logs and metrics
+
+2. **Vector Store** (`vector_store.db`):
+   - Code embeddings
+   - Semantic search indices
+
+### 🔄 Data Flow
+
+```mermaid
+graph LR
+    A[AI Agent] -->|MCP Protocol| B[Memory MCP Server]
+    B --> C[SQLite Databases]
+    B --> D[External Services]
+    D --> E[Gemini AI]
+    D --> F[Tavily Search]
+    B --> G[Knowledge Graph]
+    B --> H[Task Planner]
+```
+
+---
 
 ## 💻 Development
 
-* **Run Locally (for development, after `npm install` and `npm run build`):**
-    ```bash
-    npm run start
-    ```
-    Or, for auto-rebuild on changes:
-    ```bash
-    npm run watch
-    ```
-    (This will typically start `tsc --watch`. You'll need to run `npm run start` in another terminal to execute the compiled code.)
+### 🛠️ Development Setup
 
-* **Testing:**
-    The project uses Jest for testing.
-    ```bash
-    npm run test
-    ```
-    Tests for plan and task management are in `src/tests/plan_task_manager.test.ts`.
-
-* **Building:**
-    To compile TypeScript to JavaScript:
-    ```bash
-    npm run build
-    ```
-
-### Debugging MCP Communication
-Since MCP servers communicate over stdio, direct debugging can be tricky. Consider using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 ```bash
+# Install dependencies
+npm install
+
+# Run in development mode with auto-rebuild
+npm run watch
+
+# Run tests
+npm test
+
+# Start the MCP Inspector for debugging
 npm run inspector
 ```
-This will provide a URL to access debugging tools in your browser.
 
-## 📜 License
+### 🧪 Testing
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details.
+The project uses Jest for testing:
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm test -- --watch
+
+# Run tests with coverage
+npm test -- --coverage
+```
+
+### 🐛 Debugging
+
+Since MCP servers communicate over stdio, use the MCP Inspector:
+
+```bash
+npm run inspector
+# Opens a browser-based debugging interface
+```
+
+### 📝 Code Style
+
+- **Language**: TypeScript 5.3+
+- **Style**: ESLint configuration included
+- **Format**: Prettier compatible
+
+---
+
+## 📚 Documentation
+
+### 📖 Key Documents
+
+- **🚨 [Workflow Rules](workflow.md)** - **CRITICAL: The AI Driver that makes everything work!**
+  - Defines the 6 operational modes
+  - Enforces safety protocols
+  - Structures agent behavior
+  - **MUST be loaded into AI agent's system prompt**
+- **[API Documentation](docs/api_documentation.md)** - Detailed tool schemas and parameters
+- **[Implementation Notes](docs/implementation_notes.md)** - Technical details
+- **[Future Implementations](docs/future_implementations.md)** - Roadmap
+
+### 🎯 Quick Start Examples
+
+<details>
+<summary><b>Example 1: Creating an AI-Generated Plan</b></summary>
+
+```typescript
+// 1. Refine the user prompt
+const refinedPrompt = await refine_user_prompt({
+  agent_id: "my-agent",
+  raw_user_prompt: "Build a REST API for user management"
+});
+
+// 2. Create a plan from the refined prompt
+const plan = await create_task_plan({
+  agent_id: "my-agent",
+  refined_prompt_id: refinedPrompt.refined_prompt_id
+});
+
+// 3. Get AI suggestions for subtasks
+const subtasks = await ai_suggest_subtasks({
+  agent_id: "my-agent",
+  plan_id: plan.plan_id,
+  parent_task_id: plan.task_ids[0]
+});
+```
+
+</details>
+
+<details>
+<summary><b>Example 2: Knowledge Graph Operations</b></summary>
+
+```typescript
+// Create entities
+await knowledge_graph_memory({
+  agent_id: "my-agent",
+  operation: "create_entities",
+  entities: [
+    {
+      name: "UserController",
+      entityType: "class",
+      observations: ["Handles user CRUD operations"]
+    }
+  ]
+});
+
+// Query with natural language
+const results = await kg_nl_query({
+  agent_id: "my-agent",
+  query: "What classes handle user operations?"
+});
+```
+
+</details>
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+
+### 🐛 Reporting Issues
+
+1. Check existing issues first
+2. Use issue templates
+3. Provide reproduction steps
+4. Include error logs
+
+### 🔧 Pull Requests
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new features
+4. Ensure all tests pass
+5. Submit PR with clear description
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) file for details.
+
+---
+
+<div align="center">
+
+**Built with ❤️ for AI Agents**
+
+[⬆ Back to Top](#-memory-mcp-server---orchestrator)
+
+</div>

@@ -99,12 +99,19 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
             }
 
             console.log('[DEBUG] refine_user_prompt args:', JSON.stringify(args, null, 2));
+            // Enhance context options for richer context if not provided
+            const enhancedContextOptions = {
+                topKEmbeddings: args.context_options?.topKEmbeddings || 20,
+                topKKgResults: args.context_options?.topKKgResults || 10,
+                embeddingScoreThreshold: args.context_options?.embeddingScoreThreshold || 0.2,
+                ...(args.context_options || {})
+            };
             const refinedPromptObject = await memoryManager.processAndRefinePrompt(
                 effective_agent_id,
                 args.raw_user_prompt as string,
                 args.target_ai_persona as string | undefined,
                 args.conversation_context_ids as string[] | undefined,
-                args.context_options as any
+                enhancedContextOptions
             );
             // The refinedPromptObject itself is the full structured data.
             return { content: [{ type: 'text', text: formatRefinedPromptToMarkdown(refinedPromptObject, effective_agent_id) }] };

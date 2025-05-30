@@ -498,8 +498,9 @@ Please provide the JSON object only.
             parsedResponse.refinement_timestamp = new Date().toISOString();
             parsedResponse.agent_id = agent_id;
 
-            if (!parsedResponse.overall_goal) {
-                console.warn("Refined prompt from Gemini is missing 'overall_goal'. Using raw prompt as fallback.");
+            console.log('[DEBUG] Gemini refined prompt raw overall_goal:', parsedResponse.overall_goal);
+            if (!parsedResponse.overall_goal || parsedResponse.overall_goal.trim() === '') {
+                console.warn("Refined prompt from Gemini is missing or has empty 'overall_goal'. Using raw prompt as fallback.");
                 parsedResponse.overall_goal = raw_user_prompt; 
             }
             

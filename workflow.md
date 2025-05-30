@@ -152,6 +152,12 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
 **MODE 4: PLAN (Detailed Plan Construction)**
 * **Purpose:** To convert the strategy from `THINK` mode into a detailed, sequential, and machine-readable plan. This plan is the definitive blueprint for `EXECUTE` mode.
 * **Methodology:** The agent MUST retrieve its specific instructions for PLAN mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'PLAN_MODE'`. The agent must then act as per the retrieved instructions.
+* **Enhanced Planning Workflow with AI Assistance:**
+    1. Create initial plan using `create_task_plan` (can use `refined_prompt_id` for AI-generated plans)
+    2. Use `ai_analyze_plan` to get AI analysis of plan coherence and completeness
+    3. For each task, use `ai_suggest_task_details` to enrich task descriptions
+    4. For complex tasks, use `ai_suggest_subtasks` to break them down further
+    5. Review and refine the plan based on AI suggestions
 * **Sample Tool Usage:**
     ```xml
     <use_mcp_tool>
@@ -185,6 +191,20 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
     </use_mcp_tool>
     ```
     ```xml
+    <!-- Option 1: Create plan from refined prompt (AI-generated) -->
+    <use_mcp_tool>
+      <server_name>orchestrator</server_name>
+      <tool_name>create_task_plan</tool_name>
+      <arguments>
+        {
+          "agent_id": "[AGENT_ID]",
+          "refined_prompt_id": "[REFINED_PROMPT_ID]"
+        }
+      </arguments>
+    </use_mcp_tool>
+    ```
+    ```xml
+    <!-- Option 2: Create plan manually -->
     <use_mcp_tool>
       <server_name>orchestrator</server_name>
       <tool_name>create_task_plan</tool_name>
@@ -204,6 +224,52 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
               "status": "PLANNED"
             }
           ]
+        }
+      </arguments>
+    </use_mcp_tool>
+    ```
+    ```xml
+    <!-- Analyze the created plan -->
+    <use_mcp_tool>
+      <server_name>orchestrator</server_name>
+      <tool_name>ai_analyze_plan</tool_name>
+      <arguments>
+        {
+          "agent_id": "[AGENT_ID]",
+          "plan_id": "[PLAN_ID]",
+          "analysis_focus_areas": ["risk_assessment", "task_dependencies", "completeness"],
+          "codebase_context_summary": "[Optional: Summary of relevant codebase context]"
+        }
+      </arguments>
+    </use_mcp_tool>
+    ```
+    ```xml
+    <!-- Get AI suggestions for task details -->
+    <use_mcp_tool>
+      <server_name>orchestrator</server_name>
+      <tool_name>ai_suggest_task_details</tool_name>
+      <arguments>
+        {
+          "agent_id": "[AGENT_ID]",
+          "plan_id": "[PLAN_ID]",
+          "task_id": "[TASK_ID]",
+          "codebase_context_summary": "[Optional: Summary of relevant codebase context]"
+        }
+      </arguments>
+    </use_mcp_tool>
+    ```
+    ```xml
+    <!-- Get AI suggestions for subtasks -->
+    <use_mcp_tool>
+      <server_name>orchestrator</server_name>
+      <tool_name>ai_suggest_subtasks</tool_name>
+      <arguments>
+        {
+          "agent_id": "[AGENT_ID]",
+          "plan_id": "[PLAN_ID]",
+          "parent_task_id": "[PARENT_TASK_ID]",
+          "max_suggestions": 5,
+          "codebase_context_summary": "[Optional: Summary of relevant codebase context]"
         }
       </arguments>
     </use_mcp_tool>
@@ -237,13 +303,14 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
       </arguments>
     </use_mcp_tool>
     ```
-* **Allowed Tools:** `create_task_plan`, `add_task_to_plan`, `add_subtask_to_plan`, `update_task_plan_status`, `update_plan_task_status`, `update_subtask_status`, `get_task_plan_details`, `get_plan_tasks`, `get_subtasks`, `log_tool_execution`, `update_tool_execution_log_status`, `log_task_progress`, `update_task_progress_log_status`, `log_error`, `log_correction`, `update_error_log_status`, `update_correction_log_status`, `read_file`, `list_files`, `search_files`, `use_mcp_tool`, `ask_followup_question`.
+* **Allowed Tools:** `create_task_plan`, `add_task_to_plan`, `add_subtask_to_plan`, `update_task_plan_status`, `update_plan_task_status`, `update_subtask_status`, `get_task_plan_details`, `get_plan_tasks`, `get_subtasks`, `ai_suggest_subtasks`, `ai_suggest_task_details`, `ai_analyze_plan`, `log_tool_execution`, `update_tool_execution_log_status`, `log_task_progress`, `update_task_progress_log_status`, `log_error`, `log_correction`, `update_error_log_status`, `update_correction_log_status`, `read_file`, `list_files`, `search_files`, `use_mcp_tool`, `ask_followup_question`.
 * **Forbidden Tools:** `write_to_file`, `replace_in_file`, `execute_command`, `browser_action`, `attempt_completion`.
 * **Exit:** Presents the final `plan` block and `IMPLEMENTATION CHECKLIST` and requires the explicit user command: `"APPROVE PLAN AND ENTER EXECUTE MODE"`.
 
 **MODE 5: EXECUTE (Controlled Action & Rigorous Logging)**
 * **Purpose:** To implement the approved plan precisely, one step at a time, with comprehensive logging of every action.
 * **Methodology:** The agent MUST retrieve its specific instructions for EXECUTE mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'EXECUTE_MODE'`. The agent must then act as per the retrieved instructions.
+* **Progress Monitoring:** During execution, use `ai_summarize_task_progress` periodically to get AI-generated summaries of progress and identify blockers.
 * **Sample Tool Usage (Logging Sequence):**
     ```xml
     <use_mcp_tool>
@@ -486,7 +553,89 @@ The following tools are part of the protocol but require external integration. T
 * `semantic_search_context`
 
 ---
-### **PART 4: WORKFLOW DIAGRAM**
+### **PART 4: ENHANCED AI-ASSISTED PLANNING WORKFLOW EXAMPLE**
+---
+
+**Example: Creating a plan for extending Git tools**
+
+1. **Refine the prompt (MODE 0):**
+   ```xml
+   <use_mcp_tool>
+     <server_name>orchestrator</server_name>
+     <tool_name>refine_user_prompt</tool_name>
+     <arguments>
+       {
+         "agent_id": "cline",
+         "raw_user_prompt": "I want to add more git tools in the existing git tool"
+       }
+     </arguments>
+   </use_mcp_tool>
+   ```
+   Result: `refined_prompt_id: "7b785636-4fcf-47d9-a3b7-4e4878b78ee1"`
+
+2. **Create AI-generated plan (MODE 4):**
+   ```xml
+   <use_mcp_tool>
+     <server_name>orchestrator</server_name>
+     <tool_name>create_task_plan</tool_name>
+     <arguments>
+       {
+         "agent_id": "cline",
+         "refined_prompt_id": "7b785636-4fcf-47d9-a3b7-4e4878b78ee1"
+       }
+     </arguments>
+   </use_mcp_tool>
+   ```
+   Result: Plan created with proper dates, tasks, and risk analysis
+
+3. **Analyze the plan for completeness:**
+   ```xml
+   <use_mcp_tool>
+     <server_name>orchestrator</server_name>
+     <tool_name>ai_analyze_plan</tool_name>
+     <arguments>
+       {
+         "agent_id": "cline",
+         "plan_id": "[PLAN_ID]",
+         "analysis_focus_areas": ["completeness", "task_dependencies", "risk_assessment"]
+       }
+     </arguments>
+   </use_mcp_tool>
+   ```
+
+4. **Get AI suggestions for subtasks with codebase context:**
+   ```xml
+   <use_mcp_tool>
+     <server_name>orchestrator</server_name>
+     <tool_name>ai_suggest_subtasks</tool_name>
+     <arguments>
+       {
+         "agent_id": "cline",
+         "plan_id": "[PLAN_ID]",
+         "parent_task_id": "[TASK_ID]",
+         "codebase_context_summary": "The existing Git tools are implemented in src/tools/git_tools.ts file..."
+       }
+     </arguments>
+   </use_mcp_tool>
+   ```
+
+5. **Monitor progress during execution (MODE 5):**
+   ```xml
+   <use_mcp_tool>
+     <server_name>orchestrator</server_name>
+     <tool_name>ai_summarize_task_progress</tool_name>
+     <arguments>
+       {
+         "agent_id": "cline",
+         "plan_id": "[PLAN_ID]",
+         "max_logs_to_consider": 50
+       }
+     </arguments>
+   </use_mcp_tool>
+   ```
+
+---
+### **PART 5: WORKFLOW DIAGRAM**
 ---
 ```mermaid
 graph TD
@@ -497,17 +646,27 @@ graph TD
     C -->|Need creative solution| E[MODE 3 INNOVATE]
     E -->|Innovative solution| C
     C -->|Strategy Formed| F[MODE 4 PLAN]
+    F -->|AI Enhancement| AI{AI Tools}
+    AI -->|ai_analyze_plan| F1[Plan Analysis]
+    AI -->|ai_suggest_subtasks| F2[Subtask Suggestions]
+    AI -->|ai_suggest_task_details| F3[Task Details]
+    F1 --> F
+    F2 --> F
+    F3 --> F
     F -->|User Approval| G[MODE 5 EXECUTE]
+    G -->|ai_summarize_task_progress| G1[Progress Summary]
+    G1 --> G
     G --Halt/Error--> H[HALTED]
     H -->|User Instructs| F
     G --All Steps Done--> I[MODE 6 REVIEW]
     I --> J[End of Task Awaiting New Request]
 ```
 
-PART 5: MASTER TOOL MANIFEST
+---
+### **PART 6: MASTER TOOL MANIFEST**
 ---
 
-CATEGORY: CONVERSATION & CONTEXT MANAGEMENT
+**CATEGORY: CONVERSATION & CONTEXT MANAGEMENT**
 
 1. store_conversation_message: Stores a message in the conversation history.
 2. get_conversation_history: Retrieves conversation history for a given agent and optional conversation ID.
@@ -522,9 +681,9 @@ CATEGORY: CONVERSATION & CONTEXT MANAGEMENT
 11. refine_user_prompt: Analyzes a raw user prompt using an LLM and returns a structured, refined version.
 12. get_refined_prompt: Retrieves a previously stored refined prompt by its ID.
 
-CATEGORY: PLANNING & TASK MANAGEMENT
+**CATEGORY: PLANNING & TASK MANAGEMENT**
 
-13. create_task_plan: Creates a new task plan with its initial set of tasks.
+13. create_task_plan: Creates a new task plan. Can either accept full plan and task data, or generate them using AI based on a goal description or refined prompt ID.
 14. get_task_plan_details: Retrieves details for a specific task plan.
 15. list_task_plans: Lists task plans for an agent, optionally filtered by status.
 16. get_plan_tasks: Retrieves tasks for a specific plan, optionally filtered by status.
@@ -536,52 +695,56 @@ CATEGORY: PLANNING & TASK MANAGEMENT
 22. get_subtasks: Retrieves subtasks for a given plan or parent task, optionally filtered by status.
 23. update_subtask_status: Updates the status of a specific subtask.
 24. delete_subtask: Deletes a subtask.
+25. ai_suggest_subtasks: Given a parent task's ID and details, uses an AI model (Gemini) to suggest a list of actionable subtasks. Considers existing codebase context if available.
+26. ai_suggest_task_details: Given a task ID, uses an AI model (Gemini) to suggest comprehensive details for that task (e.g., detailed description, purpose, success criteria, files involved, tools required).
+27. ai_analyze_plan: Analyzes a given task plan for coherence, completeness, potential risks, and areas for improvement using an AI model (Gemini).
+28. ai_summarize_task_progress: Retrieves task progress logs for a given plan and uses an AI model (Gemini) to generate a concise summary of progress, blockers, and overall status.
 
-CATEGORY: LOGGING, AUDITING & LEARNING
+**CATEGORY: LOGGING, AUDITING & LEARNING**
 
-25. log_tool_execution: Logs the initiation or completion details of a specific tool execution attempt. Called before and after a tool runs.
-26. get_tool_execution_logs: Retrieves historical tool execution logs for review, debugging, or learning.
-27. update_tool_execution_log_status: Updates the status or outcome of a previously logged tool execution entry.
-28. log_task_progress: Records a summary of the agent's progress after completing a significant step within a planned task.
-29. get_task_progress_logs: Retrieves historical task progress logs to review how tasks were executed.
-30. update_task_progress_log_status: Updates the status or outcome of a previously logged task progress entry.
-31. log_error: Logs an error encountered by the agent during its operation.
-32. get_error_logs: Retrieves historical error logs for debugging and analysis.
-33. update_error_log_status: Updates the status of a previously logged error (e.g., "RESOLVED", "INVESTIGATING").
-34. log_correction: Records instances where the agent's output or internal state was corrected (by user or self).
-35. get_correction_logs: Retrieves correction logs to review past errors and fixes.
-36. update_correction_log_status: Updates the status of a previously logged correction entry.
-37. summarize_correction_logs: Summarizes recent correction logs using Gemini to provide a concise list of past mistakes and instructions.
-38. log_success_metric: Logs quantitative and qualitative metrics related to agent performance.
-39. get_success_metrics: Retrieves success metrics for performance analysis.
-40. create_task_review_log: Creates a new task review log entry (linked to plan_id and task_id).
-41. get_task_review_logs: Retrieves task review logs.
-42. update_task_review_log: Updates a task review log entry.
-43. delete_task_review_log: Deletes a task review log entry.
-44. create_final_plan_review_log: Creates a new final plan review log entry (linked to plan_id only).
-45. get_final_plan_review_logs: Retrieves final plan review logs.
-46. update_final_plan_review_log: Updates a final plan review log entry.
-47. delete_final_plan_review_log: Deletes a final plan review log entry.
+29. log_tool_execution: Logs the initiation or completion details of a specific tool execution attempt. Called before and after a tool runs.
+30. get_tool_execution_logs: Retrieves historical tool execution logs for review, debugging, or learning.
+31. update_tool_execution_log_status: Updates the status or outcome of a previously logged tool execution entry.
+32. log_task_progress: Records a summary of the agent's progress after completing a significant step within a planned task.
+33. get_task_progress_logs: Retrieves historical task progress logs to review how tasks were executed.
+34. update_task_progress_log_status: Updates the status or outcome of a previously logged task progress entry.
+35. log_error: Logs an error encountered by the agent during its operation.
+36. get_error_logs: Retrieves historical error logs for debugging and analysis.
+37. update_error_log_status: Updates the status of a previously logged error (e.g., "RESOLVED", "INVESTIGATING").
+38. log_correction: Records instances where the agent's output or internal state was corrected (by user or self).
+39. get_correction_logs: Retrieves correction logs to review past errors and fixes.
+40. update_correction_log_status: Updates the status of a previously logged correction entry.
+41. summarize_correction_logs: Summarizes recent correction logs using Gemini to provide a concise list of past mistakes and instructions.
+42. log_success_metric: Logs quantitative and qualitative metrics related to agent performance.
+43. get_success_metrics: Retrieves success metrics for performance analysis.
+44. create_task_review_log: Creates a new task review log entry (linked to plan_id and task_id).
+45. get_task_review_logs: Retrieves task review logs.
+46. update_task_review_log: Updates a task review log entry.
+47. delete_task_review_log: Deletes a task review log entry.
+48. create_final_plan_review_log: Creates a new final plan review log entry (linked to plan_id only).
+49. get_final_plan_review_logs: Retrieves final plan review logs.
+50. update_final_plan_review_log: Updates a final plan review log entry.
+51. delete_final_plan_review_log: Deletes a final plan review log entry.
 
-CATEGORY: KNOWLEDGE, ATTRIBUTION & WEB ACCESS
+**CATEGORY: KNOWLEDGE, ATTRIBUTION & WEB ACCESS**
 
-48. knowledge_graph_memory: Interacts with the knowledge graph memory (create/read/search/delete entities and relations).
-49. add_reference_key: Adds a reference key to an external knowledge source or internal memory entry.
-50. get_reference_keys: Retrieves reference keys.
-51. log_source_attribution: Logs the origin of information used or generated by the agent.
-52. get_source_attributions: Retrieves source attributions.
-53. tavily_web_search: Performs a Tavily web search. Source attribution must be logged separately using log_search_attribution.
-54. log_search_attribution: Logs the attribution details for a completed web search.
+52. knowledge_graph_memory: Interacts with the knowledge graph memory (create/read/search/delete entities and relations).
+53. add_reference_key: Adds a reference key to an external knowledge source or internal memory entry.
+54. get_reference_keys: Retrieves reference keys.
+55. log_source_attribution: Logs the origin of information used or generated by the agent.
+56. get_source_attributions: Retrieves source attributions.
+57. tavily_web_search: Performs a Tavily web search. Source attribution must be logged separately using log_search_attribution.
+58. log_search_attribution: Logs the attribution details for a completed web search.
 
-CATEGORY: MODE & AGENT BEHAVIOR MANAGEMENT
+**CATEGORY: MODE & AGENT BEHAVIOR MANAGEMENT**
 
-55. add_mode: Stores a mode-specific instruction for an AI agent.
-56. get_mode: Retrieves a mode-specific instruction.
-57. delete_mode: Deletes a mode-specific instruction.
-58. update_mode: Updates an existing mode-specific instruction.
+59. add_mode: Stores a mode-specific instruction for an AI agent.
+60. get_mode: Retrieves a mode-specific instruction.
+61. delete_mode: Deletes a mode-specific instruction.
+62. update_mode: Updates an existing mode-specific instruction.
 
-CATEGORY: DATA & DATABASE MANAGEMENT
+**CATEGORY: DATA & DATABASE MANAGEMENT**
 
-59. export_data_to_csv: Exports data from a specified database table to a CSV file.
-60. backup_database: Creates a backup copy of the SQLite database file.
-61. restore_database: Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database.
+63. export_data_to_csv: Exports data from a specified database table to a CSV file.
+64. backup_database: Creates a backup copy of the SQLite database file.
+65. restore_database: Restores the SQLite database from a specified backup file. WARNING: This will overwrite the current database.

@@ -131,6 +131,7 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
 
     const planTaskManager: PlanTaskManager = memoryManager.planTaskManager;
     const geminiService: GeminiIntegrationService = memoryManager.getGeminiIntegrationService();
+    const codebaseContextRetriever: CodebaseContextRetrieverService = memoryManager.getCodebaseContextRetrieverService();
 
     if (!parent_task_title || !parent_task_description) {
         const parentTask = await planTaskManager.getTask(agent_id, parent_task_id);
@@ -140,48 +141,83 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         parent_task_title = parent_task_title || (parentTask as any).title;
         parent_task_description = parent_task_description || (parentTask as any).description;
     }
-     if (!parent_task_title) {
-         throw new McpError(ErrorCode.InvalidParams, `Parent task title for task ID '${parent_task_id}' could not be determined and is required for subtask suggestion.`);
+    if (!parent_task_title) {
+        throw new McpError(ErrorCode.InvalidParams, `Parent task title for task ID '${parent_task_id}' could not be determined and is required for subtask suggestion.`);
     }
 
-    let prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.
-For each subtask, provide a concise title, a brief description, an estimated effort in hours (integer), and optionally, a short rationale for why it's needed and potential tools to use.
+    // Retrieve live code chunks for all files associated with the parent task (if any)
+    let liveCodeContext = '';
+    let filesToQuery: string[] = [];
+    // Try to get files from parent task metadata, or fallback to plan-level context
+    const parentTask = await planTaskManager.getTask(agent_id, parent_task_id);
+    if (parentTask && (parentTask as any).suggested_files_involved && Array.isArray((parentTask as any).suggested_files_involved)) {
+        filesToQuery = (parentTask as any).suggested_files_involved;
+    } else if (plan_id) {
+        // Optionally, get all files from all tasks in the plan
+        const planTasks = await planTaskManager.getPlanTasks(agent_id, plan_id);
+        planTasks.forEach((task: any) => {
+            if ((task as any).suggested_files_involved && Array.isArray((task as any).suggested_files_involved)) {
+                filesToQuery.push(...(task as any).suggested_files_involved);
+            }
+        });
+        filesToQuery = Array.from(new Set(filesToQuery));
+    }
+    // If no files found, fallback to codebase_context_summary
+    if (filesToQuery.length > 0) {
+        // Retrieve code chunks for all files
+        const codeChunks: string[] = [];
+        for (const filePath of filesToQuery) {
+            try {
+                const retrievedChunks = await codebaseContextRetriever.retrieveContextForPrompt(agent_id, `Relevant code for subtask suggestion: ${parent_task_title}`, { targetFilePaths: [filePath], topKEmbeddings: 3 });
+                retrievedChunks.forEach(chunk => {
+                    codeChunks.push(`File: \`${filePath}\`
+---
+${chunk.content || ''}
+---`);
+                });
+            } catch (e) {
+                // Ignore errors for missing files
+            }
+        }
+        if (codeChunks.length > 0) {
+            liveCodeContext = codeChunks.join('\n\n');
+        }
+    }
 
-Parent Task Title: "${parent_task_title}"
-Parent Task Description: "${parent_task_description || 'No detailed description provided.'}"
-Number of subtasks to suggest: ${max_suggestions}
-`;
+    let prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.\n` +
+        `For each subtask, provide a concise title, a brief description, an estimated effort in hours (integer), and optionally, a short rationale for why it's needed and potential tools to use.\n\n` +
+        `Parent Task Title: "${parent_task_title}"\n` +
+        `Parent Task Description: "${parent_task_description || 'No detailed description provided.'}"\n` +
+        `Number of subtasks to suggest: ${max_suggestions}\n`;
 
-    if (codebase_context_summary) {
+    if (liveCodeContext) {
+        prompt += `\nConsider the following live code context from the codebase when suggesting subtasks:\n${liveCodeContext}\n`;
+    } else if (codebase_context_summary) {
         prompt += `\nConsider the following codebase context when suggesting subtasks:\n${codebase_context_summary}\n`;
     }
 
-    prompt += `
-Please format your response as a JSON array of objects. Each object should represent a subtask and have the following fields:
-- "suggested_title": string (concise and actionable)
-- "suggested_description": string (optional, 1-2 sentences explaining the subtask)
-- "rationale": string (optional, brief reason for this subtask)
-- "estimated_effort_hours": number (integer, e.g., 1, 2, 4)
-- "potential_tools": array of strings (optional, e.g., ["file_editor", "git_commit"])
-
-Example JSON output:
-[
-  {
-    "suggested_title": "Define data structures for X",
-    "suggested_description": "Create TypeScript interfaces or classes for the primary data entities involved.",
-    "rationale": "Ensures type safety and clear data contracts before implementation.",
-    "estimated_effort_hours": 2,
-    "potential_tools": ["file_editor"]
-  },
-  {
-    "suggested_title": "Implement core logic for Y",
-    "suggested_description": "Write the main function/method that performs the Y operation.",
-    "estimated_effort_hours": 4
-  }
-]
-
-Provide only the JSON array.
-`;
+    prompt += `\nPlease format your response as a JSON array of objects. Each object should represent a subtask and have the following fields:\n` +
+        `- "suggested_title": string (concise and actionable)\n` +
+        `- "suggested_description": string (optional, 1-2 sentences explaining the subtask)\n` +
+        `- "rationale": string (optional, brief reason for this subtask)\n` +
+        `- "estimated_effort_hours": number (integer, e.g., 1, 2, 4)\n` +
+        `- "potential_tools": array of strings (optional, e.g., ["file_editor", "git_commit"])\n\n` +
+        `Example JSON output:\n` +
+        `[` +
+        `  {` +
+        `    "suggested_title": "Define data structures for X",` +
+        `    "suggested_description": "Create TypeScript interfaces or classes for the primary data entities involved.",` +
+        `    "rationale": "Ensures type safety and clear data contracts before implementation.",` +
+        `    "estimated_effort_hours": 2,` +
+        `    "potential_tools": ["file_editor"]` +
+        `  },` +
+        `  {` +
+        `    "suggested_title": "Implement core logic for Y",` +
+        `    "suggested_description": "Write the main function/method that performs the Y operation.",` +
+        `    "estimated_effort_hours": 4` +
+        `  }` +
+        `]\n\n` +
+        `Provide only the JSON array.\n`;
 
     let suggestedSubtasks: AiSuggestedSubtask[] = [];
     try {
