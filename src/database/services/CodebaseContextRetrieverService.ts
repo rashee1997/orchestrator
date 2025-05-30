@@ -112,7 +112,7 @@ export class CodebaseContextRetrieverService {
 
         // 1. Extract keywords/entities from prompt (placeholder - can use Gemini or simpler NLP)
         const keywords = this.extractKeywordsFromPrompt(prompt); // Placeholder
-        console.log(`Extracted keywords: ${keywords.join(', ')}`);
+        console.log('[DEBUG] Extracted keywords:', keywords);
 
         // 2. Perform semantic search using CodebaseEmbeddingService
         if (keywords.length > 0 && this.embeddingService) {
@@ -225,7 +225,7 @@ export class CodebaseContextRetrieverService {
         // Deduplicate results (simple deduplication based on content and sourcePath for now)
         const uniqueContexts = Array.from(new Map(retrievedContexts.map(item => [`${item.sourcePath}#${item.entityName || ''}#${item.content.substring(0,100)}`, item])).values());
 
-        console.log(`Returning ${uniqueContexts.length} unique context items.`);
+        console.log('[DEBUG] Returning', uniqueContexts.length, 'unique context items.');
         return uniqueContexts.slice(0, (options?.topKEmbeddings ?? 5) + (options?.topKKgResults ?? 5)); // Limit total results
     }
 

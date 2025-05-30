@@ -98,11 +98,13 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
                  throw new McpError(ErrorCode.InvalidParams, `agent_id is strictly required for refine_user_prompt.`);
             }
 
+            console.log('[DEBUG] refine_user_prompt args:', JSON.stringify(args, null, 2));
             const refinedPromptObject = await memoryManager.processAndRefinePrompt(
                 effective_agent_id,
                 args.raw_user_prompt as string,
                 args.target_ai_persona as string | undefined,
-                args.conversation_context_ids as string[] | undefined
+                args.conversation_context_ids as string[] | undefined,
+                args.context_options as any
             );
             // The refinedPromptObject itself is the full structured data.
             return { content: [{ type: 'text', text: formatRefinedPromptToMarkdown(refinedPromptObject, effective_agent_id) }] };

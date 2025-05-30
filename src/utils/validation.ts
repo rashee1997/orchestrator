@@ -459,10 +459,20 @@ export const schemas = {
               items: { type: 'string' },
               description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
               default: null
+            },
+            context_options: {
+                type: 'object',
+                properties: {
+                    topKEmbeddings: { type: 'number', default: 3 },
+                    topKKgResults: { type: 'number', default: 3 },
+                    embeddingScoreThreshold: { type: 'number', default: 0.5 }
+                },
+                additionalProperties: false,
+                nullable: true
             }
-          },
-          required: ['agent_id', 'raw_user_prompt'],
-          additionalProperties: false,
+        },
+        required: ['agent_id', 'raw_user_prompt'],
+        additionalProperties: false,
     },
     addSubtaskToPlan: {
         type: 'object',

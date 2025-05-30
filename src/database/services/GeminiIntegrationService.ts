@@ -331,18 +331,20 @@ export class GeminiIntegrationService {
         agent_id: string,
         raw_user_prompt: string,
         target_ai_persona: string | null = null,
-        conversation_context_ids: string[] | null = null 
+        conversation_context_ids: string[] | null = null,
+        context_options?: ContextRetrievalOptions
     ): Promise<any> {
         this.checkApiInitialized();
         const modelToUse = this.refinementModelName;
 
         let retrievedCodeContextString = "No codebase context was actively retrieved for this refinement iteration.";
         try {
-            const retrievalOptions: ContextRetrievalOptions = {
+            const retrievalOptions: ContextRetrievalOptions = context_options || {
                 topKEmbeddings: 3, 
                 topKKgResults: 2,    
                 embeddingScoreThreshold: 0.5 
             };
+            console.log('[DEBUG] processAndRefinePrompt retrievalOptions:', retrievalOptions);
             const codeContexts = await this.codebaseContextRetrieverService.retrieveContextForPrompt(
                 agent_id,
                 raw_user_prompt,
@@ -356,6 +358,12 @@ export class GeminiIntegrationService {
         
         const metaPrompt = `
 You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it thoroughly, consider the provided codebase context, and transform it into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request with precision.
+
+If the user prompt is about adding, extending, or modifying tools or features (e.g., "add more git tools", "implement a new database manager", "extend the logging system"), you MUST:
+- List all existing code implementations related to the feature (e.g., all git tool functions/classes/files) found in the codebase context.
+- Summarize their purpose and how they are structured.
+- Suggest concrete, actionable steps for adding new tools/features, referencing the current codebase structure and patterns.
+- If possible, provide code snippets or templates based on the retrieved context.
 
 Critically analyze the "Retrieved Codebase Context" section. This context provides snippets and information about existing code.
 You MUST use this codebase context to:
