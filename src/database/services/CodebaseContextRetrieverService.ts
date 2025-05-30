@@ -1,7 +1,7 @@
 // src/services/CodebaseContextRetrieverService.ts
 import { MemoryManager } from '../memory_manager.js';
 import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
-import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
+import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Potentially import other necessary types or services
 
@@ -64,7 +64,7 @@ interface KGNode {
 export class CodebaseContextRetrieverService {
     private memoryManager: MemoryManager;
     private embeddingService: CodebaseEmbeddingService;
-    private kgManager: KnowledgeGraphManager;
+    private kgManager: IKnowledgeGraphManager;
     private geminiService?: GeminiIntegrationService; // Optional, for advanced processing
 
     constructor(memoryManager: MemoryManager) {

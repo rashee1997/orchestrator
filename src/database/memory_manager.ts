@@ -9,7 +9,7 @@ import { CorrectionLogManager } from './managers/CorrectionLogManager.js';
 import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
-import { KnowledgeGraphManager } from './managers/KnowledgeGraphManager.js';
+import { KnowledgeGraphFactory, IKnowledgeGraphManager } from './factories/KnowledgeGraphFactory.js';
 import { ModeInstructionManager } from './managers/ModeInstructionManager.js';
 import { ToolExecutionLogManager } from './managers/ToolExecutionLogManager.js';
 import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
@@ -34,7 +34,7 @@ export class MemoryManager {
     public successMetricsManager!: SuccessMetricsManager;
     public planTaskManager!: PlanTaskManager;
     public subtaskManager!: SubtaskManager;
-    public knowledgeGraphManager!: KnowledgeGraphManager;
+    public knowledgeGraphManager!: IKnowledgeGraphManager;
     public modeInstructionManager!: ModeInstructionManager;
     public toolExecutionLogManager!: ToolExecutionLogManager;
     public taskProgressLogManager!: TaskProgressLogManager;
@@ -110,7 +110,7 @@ export class MemoryManager {
         this.successMetricsManager = new SuccessMetricsManager(this.dbService);
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
-        this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService, null as any); // Temporarily null
+        // Knowledge graph manager will be created later after GeminiIntegrationService is ready
         this.modeInstructionManager = new ModeInstructionManager(this.dbService);
         this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
         this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
@@ -129,7 +129,9 @@ export class MemoryManager {
         
         // Update managers that need GeminiIntegrationService
         this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, this.geminiIntegrationService);
-        this.knowledgeGraphManager = new KnowledgeGraphManager(this.dbService, this.geminiIntegrationService);
+        
+        // Create Knowledge Graph Manager using factory
+        this.knowledgeGraphManager = await KnowledgeGraphFactory.create(this.dbService, this.geminiIntegrationService);
         
         // Create GeminiPlannerService
         this.geminiPlannerService = new GeminiPlannerService(this.geminiIntegrationService, this);
@@ -300,40 +302,40 @@ export class MemoryManager {
     }
 
     // --- Knowledge Graph ---
-    async createEntities(...args: Parameters<KnowledgeGraphManager['createEntities']>) {
+    async createEntities(...args: Parameters<IKnowledgeGraphManager['createEntities']>) {
         return this.knowledgeGraphManager.createEntities(...args);
     }
-    async createRelations(...args: Parameters<KnowledgeGraphManager['createRelations']>) {
+    async createRelations(...args: Parameters<IKnowledgeGraphManager['createRelations']>) {
         return this.knowledgeGraphManager.createRelations(...args);
     }
-    async addObservations(...args: Parameters<KnowledgeGraphManager['addObservations']>) {
+    async addObservations(...args: Parameters<IKnowledgeGraphManager['addObservations']>) {
         return this.knowledgeGraphManager.addObservations(...args);
     }
-    async deleteEntities(...args: Parameters<KnowledgeGraphManager['deleteEntities']>) {
+    async deleteEntities(...args: Parameters<IKnowledgeGraphManager['deleteEntities']>) {
         return this.knowledgeGraphManager.deleteEntities(...args);
     }
-    async deleteObservations(...args: Parameters<KnowledgeGraphManager['deleteObservations']>) {
+    async deleteObservations(...args: Parameters<IKnowledgeGraphManager['deleteObservations']>) {
         return this.knowledgeGraphManager.deleteObservations(...args);
     }
-    async deleteRelations(...args: Parameters<KnowledgeGraphManager['deleteRelations']>) {
+    async deleteRelations(...args: Parameters<IKnowledgeGraphManager['deleteRelations']>) {
         return this.knowledgeGraphManager.deleteRelations(...args);
     }
-    async readGraph(...args: Parameters<KnowledgeGraphManager['readGraph']>) {
+    async readGraph(...args: Parameters<IKnowledgeGraphManager['readGraph']>) {
         return this.knowledgeGraphManager.readGraph(...args);
     }
-    async searchNodes(...args: Parameters<KnowledgeGraphManager['searchNodes']>) {
+    async searchNodes(...args: Parameters<IKnowledgeGraphManager['searchNodes']>) {
         return this.knowledgeGraphManager.searchNodes(...args);
     }
-    async openNodes(...args: Parameters<KnowledgeGraphManager['openNodes']>) {
+    async openNodes(...args: Parameters<IKnowledgeGraphManager['openNodes']>) {
         return this.knowledgeGraphManager.openNodes(...args);
     }
-    async queryNaturalLanguage(...args: Parameters<KnowledgeGraphManager['queryNaturalLanguage']>) {
+    async queryNaturalLanguage(...args: Parameters<IKnowledgeGraphManager['queryNaturalLanguage']>) {
         return this.knowledgeGraphManager.queryNaturalLanguage(...args);
     }
-    async inferRelations(...args: Parameters<KnowledgeGraphManager['inferRelations']>) {
+    async inferRelations(...args: Parameters<IKnowledgeGraphManager['inferRelations']>) {
         return this.knowledgeGraphManager.inferRelations(...args);
     }
-     async generateMermaidGraph(...args: Parameters<KnowledgeGraphManager['generateMermaidGraph']>) {
+     async generateMermaidGraph(...args: Parameters<IKnowledgeGraphManager['generateMermaidGraph']>) {
         return this.knowledgeGraphManager.generateMermaidGraph(...args);
     }
 

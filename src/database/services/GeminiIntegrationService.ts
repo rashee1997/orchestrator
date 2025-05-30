@@ -73,6 +73,12 @@ export class GeminiIntegrationService {
         return this._codebaseContextRetrieverService;
     }
 
+    async generateStructuredQueryFromNaturalLanguage(naturalLanguageQuery: string): Promise<any> {
+        // Use NLPQueryProcessor internally to generate structured query
+        const nlpProcessor = new (await import('../ai/NLPQueryProcessor.js')).NLPQueryProcessor();
+        return nlpProcessor.generateStructuredQuery(naturalLanguageQuery);
+    }
+
     private checkApiInitialized() {
         if (!this.genAI) {
             throw new GeminiApiNotInitializedError("Gemini API not initialized. Ensure GEMINI_API_KEY is set.");

@@ -279,7 +279,7 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
 
                 if (entitiesToCreate.length > 0) {
                     const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreate);
-                    nodesCreatedCount += creationResult.details.filter((d: any) => d.success).length;
+                    nodesCreatedCount += creationResult.length;
                 }
 
                 if (parse_imports) {
@@ -327,8 +327,8 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                                         // Check if module node already exists to avoid duplicate creation attempts or use createEntities which handles it
                                         const existingModule = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [toNodeName]);
                                         if (!existingModule || existingModule.length === 0) {
-                                           const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [moduleEntity]);
-                                           if (creationResult.details.some((d:any) => d.success)) nodesCreatedCount++;
+                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [moduleEntity]);
+                    if (creationResult.length > 0) nodesCreatedCount++;
                                         }
                                     } catch (e) { console.warn(`Could not ensure module node ${toNodeName}: ${e}`); }
                                 }
@@ -345,7 +345,7 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
 
                 if (relationsToCreate.length > 0) {
                     const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, relationsToCreate);
-                    relationsCreatedCount += relationResult.details.filter((d: any) => d.success).length;
+                    relationsCreatedCount += relationResult.length;
                 }
 
                 return {
@@ -461,11 +461,11 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
 
                 if (entitiesToCreateKG.length > 0) {
                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateKG);
-                   entitiesCreatedCount += creationResult.details.filter((d:any) => d.success).length;
+                   entitiesCreatedCount += creationResult.length;
                 }
                 if (relationsToCreateKG.length > 0) {
                     const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, relationsToCreateKG);
-                    relationsCreatedCount += relationResult.details.filter((d:any) => d.success).length;
+                    relationsCreatedCount += relationResult.length;
                 }
 
                 return {
