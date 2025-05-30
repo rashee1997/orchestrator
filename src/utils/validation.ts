@@ -1,16 +1,118 @@
+// src/utils/validation.ts
 import Ajv from 'ajv';
-import { reviewLogToolDefinitions } from '../tools/review_log_tools.js';
 
-const ajv = new Ajv.default({ allErrors: true });
-
-// Define common schemas for data validation
-const jsonSchema = {
-    type: 'object',
-    properties: {},
-    additionalProperties: true, // Allow additional properties by default
-};
+const ajv = new Ajv.default({ allErrors: true, useDefaults: true });
 
 export const schemas = {
+    aiSuggestTaskDetails: { // New schema for ai_suggest_task_details
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            plan_id: { type: 'string', description: 'ID of the plan the task belongs to.' },
+            task_id: { type: 'string', description: 'The ID of the task for which details are being suggested.' },
+            task_title: { type: 'string', description: 'Optional: Current title of the task (provides more context to AI). If not provided, it will be fetched.', nullable: true },
+            task_description: { type: 'string', description: 'Optional: Current description of the task. If not provided, it will be fetched.', nullable: true },
+            codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context (e.g., related file names, function signatures, class definitions).', nullable: true },
+        },
+        required: ['agent_id', 'plan_id', 'task_id'],
+        additionalProperties: false,
+    },
+    aiSuggestSubtasks: { 
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            plan_id: { type: 'string', description: 'ID of the plan the parent task belongs to.' },
+            parent_task_id: { type: 'string', description: 'The ID of the parent task for which subtasks are being suggested.' },
+            parent_task_title: { type: 'string', description: 'Optional: Title of the parent task (provides more context to AI). If not provided, it will be fetched.', nullable: true},
+            parent_task_description: { type: 'string', description: 'Optional: Description of the parent task. If not provided, it will be fetched.', nullable: true },
+            max_suggestions: { type: 'number', default: 5, minimum: 1, maximum: 10, description: 'Maximum number of subtasks to suggest.' },
+            codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context (e.g., related file names, function signatures).', nullable: true },
+        },
+        required: ['agent_id', 'plan_id', 'parent_task_id'],
+        additionalProperties: false,
+    },
+    aiAnalyzePlan: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            plan_id: { type: 'string', description: 'The ID of the plan to analyze.' },
+            analysis_focus_areas: { 
+                type: 'array', 
+                items: { type: 'string' }, 
+                nullable: true,
+                description: 'Optional: Specific areas to focus the analysis on (e.g., "risk_assessment", "task_dependencies", "resource_allocation", "goal_alignment").' 
+            },
+            codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context to consider during plan analysis.', nullable: true },
+        },
+        required: ['agent_id', 'plan_id'],
+        additionalProperties: false,
+    },
+    aiSummarizeTaskProgress: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            plan_id: { type: 'string', description: 'The ID of the plan for which progress is being summarized.' },
+            task_id: { type: 'string', description: 'Optional: The ID of a specific task within the plan to focus the summary on. If omitted, summarizes progress for all tasks in the plan.', nullable: true },
+            max_logs_to_consider: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Maximum number of recent progress logs to consider for the summary.' },
+        },
+        required: ['agent_id', 'plan_id'],
+        additionalProperties: false,
+    },
+    queryCodebaseEmbeddings: { 
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Agent ID associated with the embeddings." },
+            query_text: { type: 'string', description: "The text to find similar code chunks for." },
+            top_k: { type: 'number', default: 5, minimum: 1, description: "Number of top results to return." },
+            target_file_paths: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of relative file paths to restrict the search to."
+            }
+        },
+        required: ['agent_id', 'query_text'],
+        additionalProperties: false,
+    },
+    ingestCodebaseEmbeddings: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Agent ID to associate the embeddings with." },
+            path_to_embed: { type: 'string', description: "The absolute path to the file or directory to embed." },
+            project_root_path: {type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings."},
+            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory, false if it's a single file."},
+            chunking_strategy: {
+                type: 'string',
+                enum: ['file', 'function', 'class', 'auto'],
+                default: 'auto',
+                description: "Strategy for chunking code before embedding ('file', 'function', 'class', or 'auto')."
+            }
+        },
+        required: ['agent_id', 'path_to_embed', 'project_root_path'],
+        additionalProperties: false,
+    },
+    ingestFileCodeEntities: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Agent ID to associate the KG data with." },
+            file_path: { type: 'string', description: "The absolute path to the code file to parse." },
+            project_root_path: {type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths for entities) relative and canonical. If not provided, file_path's directory might be used or behavior might be less predictable for relative naming."},
+            language: { type: 'string', nullable: true, description: "Optional: Programming language of the file (e.g., 'typescript', 'python'). Helps select the correct parser and can be auto-detected if not provided." }
+        },
+        required: ['agent_id', 'file_path'],
+        additionalProperties: false,
+    },
+    ingestCodebaseStructure: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Agent ID to associate the KG data with." },
+            directory_path: { type: 'string', description: "The root path of the codebase directory to scan." },
+            project_root_path: {type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths) relative and canonical. If not provided, directory_path might be used as the base for relative naming."},
+            parse_imports: { type: 'boolean', default: true, description: "Whether to attempt to parse import statements from supported files." }
+        },
+        required: ['agent_id', 'directory_path'],
+        additionalProperties: false,
+    },
     conversationMessage: {
         type: 'object',
         properties: {
@@ -19,7 +121,7 @@ export const schemas = {
             sender: { type: 'string' },
             message_content: { type: 'string' },
             message_type: { type: 'string', default: 'text' },
-            tool_info: { type: ['string', 'null'] },
+            tool_info: { type: ['string', 'object', 'null'] }, 
             context_snapshot_id: { type: ['string', 'null'] },
             source_attribution_id: { type: ['string', 'null'] },
         },
@@ -33,8 +135,6 @@ export const schemas = {
             mode_name: { type: 'string', description: 'The name of the operational mode.' },
             instruction_content: { type: 'string', description: 'The detailed instruction content for the specified mode.' },
             instruction_version: { type: ['number', 'null'], description: 'Optional: Version of the instruction.' },
-            creation_timestamp: { type: ['number', 'null'], description: 'Optional: Unix timestamp of creation.' },
-            last_updated_timestamp: { type: ['number', 'null'], description: 'Optional: Unix timestamp of last update.' }
         },
         required: ['agent_id', 'mode_name', 'instruction_content'],
         additionalProperties: false,
@@ -44,7 +144,7 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string' },
             context_type: { type: 'string' },
-            context_data: { type: 'object' }, // Assuming context_data is always a JSON object
+            context_data: { type: 'object' }, 
             parent_context_id: { type: ['string', 'null'] },
         },
         required: ['agent_id', 'context_type', 'context_data'],
@@ -71,7 +171,7 @@ export const schemas = {
             retrieval_timestamp: { type: 'number' },
             content_summary: { type: ['string', 'null'] },
             full_content_hash: { type: ['string', 'null'] },
-            full_content_json: { type: ['string', 'null'] }, // New property
+            full_content_json: { type: ['string', 'object', 'null'] },
         },
         required: ['agent_id', 'source_type', 'retrieval_timestamp'],
         additionalProperties: false,
@@ -85,14 +185,13 @@ export const schemas = {
             original_value: { type: ['object', 'null'] },
             corrected_value: { type: ['object', 'null'] },
             reason: { type: ['string', 'null'] },
-            applied_automatically: { type: 'boolean' },
             correction_summary: { type: ['string', 'null'] },
-            status: { type: ['string', 'null'] }
+            applied_automatically: { type: 'boolean' },
+            status: { type: 'string', default: 'LOGGED' },
         },
         required: ['agent_id', 'correction_type', 'applied_automatically'],
         additionalProperties: false,
     },
-
     successMetric: {
         type: 'object',
         properties: {
@@ -110,8 +209,8 @@ export const schemas = {
         type: 'object',
         properties: {
             query: { type: 'string' },
-            search_depth: { type: 'string', enum: ['basic', 'advanced'] },
-            max_results: { type: 'number' },
+            search_depth: { type: 'string', enum: ['basic', 'advanced'], default: 'basic' },
+            max_results: { type: 'number', default: 5 },
         },
         required: ['query'],
         additionalProperties: false,
@@ -162,7 +261,7 @@ export const schemas = {
             agent_id: { type: 'string' },
             context_type: { type: 'string' },
             query_text: { type: 'string' },
-            top_k: { type: 'number', minimum: 1 }
+            top_k: { type: 'number', default: 5, minimum: 1 }
         },
         required: ['agent_id', 'context_type', 'query_text'],
         additionalProperties: false,
@@ -207,49 +306,48 @@ export const schemas = {
         type: 'object',
         properties: {
             agent_id: { type: 'string' },
+            goal_description: { type: ['string', 'null'], description: "A natural language description of the overall goal for AI plan generation." },
+            refined_prompt_id: { type: ['string', 'null'], description: "The ID of a pre-existing refined prompt to use for AI plan generation." },
             planData: {
-                type: 'object',
+                type: ['object', 'null'],
                 properties: {
                     title: { type: 'string' },
                     overall_goal: { type: ['string', 'null'] },
-                    status: { type: 'string' },
-                    version: { type: 'number' },
+                    status: { type: 'string', default: 'DRAFT' },
+                    version: { type: 'number', default: 1 },
                     refined_prompt_id_associated: { type: ['string', 'null'] },
                     analysis_report_id_referenced: { type: ['string', 'null'] },
                     metadata: { type: ['object', 'null'] }
                 },
-                required: ['title'],
-                additionalProperties: false
+                additionalProperties: true,
             },
             tasksData: {
-                type: 'array',
+                type: ['array', 'null'],
                 items: {
                     type: 'object',
                     properties: {
                         task_number: { type: 'number' },
                         title: { type: 'string' },
                         description: { type: ['string', 'null'] },
-                        status: { type: 'string' },
+                        status: { type: 'string', default: 'PLANNED' },
                         purpose: { type: ['string', 'null'] },
                         action_description: { type: ['string', 'null'] },
-                        files_involved: { type: ['array', 'null'], items: { type: 'string' } },
-                        dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
-                        tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+                        files_involved_json: { type: ['string', 'null'] }, 
+                        dependencies_task_ids_json: { type: ['string', 'null'] }, 
+                        tools_required_list_json: { type: ['string', 'null'] }, 
                         inputs_summary: { type: ['string', 'null'] },
                         outputs_summary: { type: ['string', 'null'] },
                         success_criteria_text: { type: ['string', 'null'] },
                         estimated_effort_hours: { type: ['number', 'null'] },
                         assigned_to: { type: ['string', 'null'] },
                         verification_method: { type: ['string', 'null'] },
-                        notes: { type: ['object', 'null'] }
+                        notes_json: { type: ['string', 'null'] } 
                     },
-                    required: ['task_number', 'title'],
-                    additionalProperties: false
+                    additionalProperties: true, 
                 },
-                minItems: 1
             }
         },
-        required: ['agent_id', 'planData', 'tasksData'],
+        required: ['agent_id'],
         additionalProperties: false,
     },
     getTaskPlanDetails: {
@@ -266,8 +364,8 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string' },
             status_filter: { type: ['string', 'null'] },
-            limit: { type: 'number' },
-            offset: { type: 'number' }
+            limit: { type: 'number', default: 100 },
+            offset: { type: 'number', default: 0 }
         },
         required: ['agent_id'],
         additionalProperties: false,
@@ -278,8 +376,8 @@ export const schemas = {
             agent_id: { type: 'string' },
             plan_id: { type: 'string' },
             status_filter: { type: ['string', 'null'] },
-            limit: { type: 'number' },
-            offset: { type: 'number' }
+            limit: { type: 'number', default: 100 },
+            offset: { type: 'number', default: 0 }
         },
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
@@ -325,7 +423,7 @@ export const schemas = {
                     task_number: { type: 'number' },
                     title: { type: 'string' },
                     description: { type: ['string', 'null'] },
-                    status: { type: 'string' },
+                    status: { type: 'string', default: 'PLANNED' },
                     purpose: { type: ['string', 'null'] },
                     action_description: { type: ['string', 'null'] },
                     files_involved: { type: ['array', 'null'], items: { type: 'string' } },
@@ -340,20 +438,20 @@ export const schemas = {
                     notes: { type: ['object', 'null'] }
                 },
                 required: ['task_number', 'title'],
-                additionalProperties: false
+                additionalProperties: true, 
             }
         },
         required: ['agent_id', 'plan_id', 'taskData'],
         additionalProperties: false,
     },
-    refineUserPrompt: { // New schema name
+    refineUserPrompt: {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
             raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
             target_ai_persona: {
               type: ['string', 'null'],
-              description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). This helps the refiner tailor the output.",
+              description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer').",
               default: null
             },
             conversation_context_ids: {
@@ -363,7 +461,8 @@ export const schemas = {
               default: null
             }
           },
-          required: ['agent_id', 'raw_user_prompt']
+          required: ['agent_id', 'raw_user_prompt'],
+          additionalProperties: false,
     },
     addSubtaskToPlan: {
         type: 'object',
@@ -376,11 +475,11 @@ export const schemas = {
                 properties: {
                     title: { type: 'string' },
                     description: { type: ['string', 'null'] },
-                    status: { type: 'string' },
-                    notes: { type: ['object', 'null'] }
+                    status: { type: 'string', default: 'PLANNED' },
+                    notes: { type: ['object', 'null'] } 
                 },
                 required: ['title'],
-                additionalProperties: false
+                additionalProperties: false 
             }
         },
         required: ['agent_id', 'plan_id', 'subtaskData'],
@@ -393,13 +492,9 @@ export const schemas = {
             plan_id: { type: ['string', 'null'] },
             parent_task_id: { type: ['string', 'null'] },
             status_filter: { type: ['string', 'null'] },
-            limit: { type: 'number' },
-            offset: { type: 'number' }
+            limit: { type: 'number', default: 100 },
+            offset: { type: 'number', default: 0 }
         },
-        oneOf: [
-            { required: ['plan_id'] },
-            { required: ['parent_task_id'] }
-        ],
         required: ['agent_id'],
         additionalProperties: false
     },
@@ -429,11 +524,11 @@ export const schemas = {
             agent_id: { type: 'string' },
             plan_id: { type: 'string' },
             task_id: { type: 'string' },
-            reviewer: { type: 'string' },
-            review_status: { type: 'string' },
-            review_notes_md: { type: 'string' },
-            issues_found_json: { type: 'string' },
-            resolution_notes_md: { type: 'string' }
+            reviewer: { type: ['string', 'null'] },
+            review_status: { type: 'string' }, 
+            review_notes_md: { type: ['string', 'null'] },
+            issues_found_json: { type: ['string', 'null'] }, 
+            resolution_notes_md: { type: ['string', 'null'] }
         },
         required: ['agent_id', 'plan_id', 'task_id', 'review_status'],
         additionalProperties: false
@@ -441,18 +536,21 @@ export const schemas = {
     get_task_review_logs: {
         type: 'object',
         properties: {
-            agent_id: { type: 'string' },
-            plan_id: { type: 'string' },
-            task_id: { type: 'string' },
-            review_status: { type: 'string' }
+            agent_id: { type: ['string', 'null'] },
+            plan_id: { type: ['string', 'null'] },
+            task_id: { type: ['string', 'null'] },
+            review_status: { type: ['string', 'null'] }
         },
-        additionalProperties: false
+        additionalProperties: false 
     },
     update_task_review_log: {
         type: 'object',
         properties: {
             review_log_id: { type: 'string' },
-            updates: { type: 'object' }
+            updates: { 
+                type: 'object',
+                additionalProperties: true 
+            }
         },
         required: ['review_log_id', 'updates'],
         additionalProperties: false
@@ -470,11 +568,11 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string' },
             plan_id: { type: 'string' },
-            reviewer: { type: 'string' },
+            reviewer: { type: ['string', 'null'] },
             review_status: { type: 'string' },
-            review_notes_md: { type: 'string' },
-            issues_found_json: { type: 'string' },
-            resolution_notes_md: { type: 'string' }
+            review_notes_md: { type: ['string', 'null'] },
+            issues_found_json: { type: ['string', 'null'] },
+            resolution_notes_md: { type: ['string', 'null'] }
         },
         required: ['agent_id', 'plan_id', 'review_status'],
         additionalProperties: false
@@ -482,9 +580,9 @@ export const schemas = {
     get_final_plan_review_logs: {
         type: 'object',
         properties: {
-            agent_id: { type: 'string' },
-            plan_id: { type: 'string' },
-            review_status: { type: 'string' }
+            agent_id: { type: ['string', 'null'] },
+            plan_id: { type: ['string', 'null'] },
+            review_status: { type: ['string', 'null'] }
         },
         additionalProperties: false
     },
@@ -492,7 +590,10 @@ export const schemas = {
         type: 'object',
         properties: {
             final_review_log_id: { type: 'string' },
-            updates: { type: 'object' }
+            updates: { 
+                type: 'object',
+                additionalProperties: true 
+            }
         },
         required: ['final_review_log_id', 'updates'],
         additionalProperties: false
@@ -510,15 +611,16 @@ export const schemas = {
 // Compile schemas
 for (const key in schemas) {
     if (Object.prototype.hasOwnProperty.call(schemas, key)) {
-        ajv.addSchema((schemas as any)[key], key);
+        if (!ajv.getSchema(key)) { 
+            ajv.addSchema((schemas as any)[key], key);
+        }
     }
 }
-
-// Removed redundant schema registration loop to prevent duplicate schema errors
 
 export function validate(schemaName: string, data: any) {
     const validateFn = ajv.getSchema(schemaName);
     if (!validateFn) {
+        console.error(`Schema "${schemaName}" not found during validation lookup. Available schemas:`, Object.keys(ajv.schemas));
         throw new Error(`Schema "${schemaName}" not found.`);
     }
     const valid = validateFn(data);

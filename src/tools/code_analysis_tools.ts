@@ -90,7 +90,7 @@ export const analyzeCodeFileToolDefinition: InternalToolDefinition = {
             throw new McpError(ErrorCode.InternalError, "Gemini API key (GEMINI_API_KEY) is not set in environment variables.");
         }
 
-        const geminiService = new GeminiIntegrationService(dbService, contextManager);
+        const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
 
         try {
             fileContent = await fs.readFile(filepath, 'utf-8');

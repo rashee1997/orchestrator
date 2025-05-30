@@ -1,3 +1,4 @@
+// src/tools/index.ts
 import { conversationToolDefinitions, getConversationToolHandlers } from './conversation_tools.js';
 import { contextToolDefinitions, getContextToolHandlers } from './context_tools.js';
 import { referenceToolDefinitions, getReferenceToolHandlers } from './reference_tools.js';
@@ -13,6 +14,8 @@ import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js'
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 import { gitToolDefinitions, getGitToolHandlers } from './git_tools.js';
 import { codeAnalysisToolDefinitions, getCodeAnalysisToolHandlers } from './code_analysis_tools.js';
+import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
+import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 
 import {
     getLoggingToolDefinitions,
@@ -21,11 +24,7 @@ import {
 
 import { MemoryManager } from '../database/memory_manager.js';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
-import { DatabaseService } from '../database/services/DatabaseService.js';
-import { ContextInformationManager } from '../database/managers/ContextInformationManager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { formatSimpleMessage } from '../utils/formatters.js';
-
 
 export interface Tool {
     name: string;
@@ -51,18 +50,11 @@ export const geminiCorrectionSummarizerToolDefinition: InternalToolDefinition = 
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required for summarize_correction_logs");
 
-        const dbService = memoryManagerInstance.getDbService();
-        const contextManager = memoryManagerInstance.getContextInformationManager();
-
-        if (!dbService || !contextManager) {
-            throw new McpError(ErrorCode.InternalError, "dbService or contextInformationManager not available via MemoryManager for GeminiIntegrationService");
+        const geminiService = memoryManagerInstance.getGeminiIntegrationService();
+        if (!geminiService) {
+             throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available via MemoryManager.");
         }
 
-        if (!process.env.GEMINI_API_KEY) {
-            throw new McpError(ErrorCode.InternalError, "Gemini API key (GEMINI_API_KEY) is not set.");
-        }
-
-        const geminiService = new GeminiIntegrationService(dbService, contextManager);
         try {
             const summary = await geminiService.summarizeCorrectionLogs(args.agent_id, args.maxLogs || 10);
             let md = `## Correction Log Summary for Agent: \`${args.agent_id}\`\n\n`;
@@ -74,7 +66,6 @@ export const geminiCorrectionSummarizerToolDefinition: InternalToolDefinition = 
     }
 };
 
-// Helper: format usage from inputSchema
 function formatUsage(inputSchema: any): string {
     if (!inputSchema || !inputSchema.properties) return '';
     const props = inputSchema.properties;
@@ -83,7 +74,7 @@ function formatUsage(inputSchema: any): string {
     for (const key of Object.keys(props)) {
         const prop = props[key];
         const isRequired = required.includes(key);
-        usage += `- \`${key}\` (${prop.type}${isRequired ? ', required' : ', optional'})\n`;
+        usage += `- \`${key}\` (${prop.type}${isRequired ? ', required' : prop.default !== undefined ? `, optional (default: ${prop.default})` : ', optional'})${prop.description ? `: ${prop.description}` : ''}\n`;
     }
     return usage;
 }
@@ -98,13 +89,17 @@ export const listToolsToolDefinition: InternalToolDefinition = {
     },
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required for list_tools");
-        const allDefs = await getAllToolDefinitions(memoryManagerInstance);
+        const allDefs = await getAllToolDefinitions(memoryManagerInstance); 
         let md = '## Available Tools\n\n';
         for (const tool of allDefs) {
             md += `### \`${tool.name}\`\n`;
             md += `${tool.description}\n\n`;
-            md += `**Usage:**\n`;
-            md += formatUsage(tool.inputSchema);
+            if (tool.inputSchema && Object.keys(tool.inputSchema.properties || {}).length > 0) {
+                md += `**Parameters:**\n`;
+                md += formatUsage(tool.inputSchema);
+            } else {
+                md += `*This tool takes no parameters.*\n`
+            }
             md += '\n---\n\n';
         }
         return { content: [{ type: 'text', text: md }] };
@@ -112,33 +107,31 @@ export const listToolsToolDefinition: InternalToolDefinition = {
 };
 
 export async function getAllToolDefinitions(memoryManager: MemoryManager): Promise<Tool[]> {
-    function stripToolFields(defArray: any[]): Tool[] {
-        return defArray.map(d => ({
-            name: d.name,
-            description: d.description,
-            inputSchema: d.inputSchema,
-        }));
+    function stripFuncFromDefs(defArray: InternalToolDefinition[]): Tool[] {
+        return defArray.map(({ func, ...tool }) => tool);
     }
 
     const allDefs: Tool[] = [
-        ...stripToolFields(conversationToolDefinitions),
-        ...stripToolFields(contextToolDefinitions),
-        ...stripToolFields(referenceToolDefinitions),
-        ...stripToolFields(sourceAttributionToolDefinitions),
-        ...stripToolFields(correctionToolDefinitions),
-        ...stripToolFields([geminiCorrectionSummarizerToolDefinition]),
-        ...stripToolFields(successMetricsToolDefinitions),
-        ...stripToolFields(databaseManagementToolDefinitions),
-        ...stripToolFields(planManagementToolDefinitions),
-        ...stripToolFields(promptRefinementToolDefinitions),
-        ...stripToolFields(knowledgeGraphToolDefinitions),
-        ...stripToolFields(modeInstructionToolDefinitions),
-        ...stripToolFields(reviewLogToolDefinitions),
-        ...stripToolFields(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
-        ...stripToolFields(geminiToolDefinitions),
-        ...stripToolFields(gitToolDefinitions),
-        ...stripToolFields(codeAnalysisToolDefinitions),
-        listToolsToolDefinition
+        ...stripFuncFromDefs(conversationToolDefinitions),
+        ...stripFuncFromDefs(contextToolDefinitions),
+        ...stripFuncFromDefs(referenceToolDefinitions),
+        ...stripFuncFromDefs(sourceAttributionToolDefinitions),
+        ...stripFuncFromDefs(correctionToolDefinitions),
+        ...stripFuncFromDefs([geminiCorrectionSummarizerToolDefinition]),
+        ...stripFuncFromDefs(successMetricsToolDefinitions),
+        ...stripFuncFromDefs(databaseManagementToolDefinitions),
+        ...stripFuncFromDefs(planManagementToolDefinitions),
+        ...stripFuncFromDefs(promptRefinementToolDefinitions),
+        ...stripFuncFromDefs(knowledgeGraphToolDefinitions),
+        ...stripFuncFromDefs(modeInstructionToolDefinitions),
+        ...stripFuncFromDefs(reviewLogToolDefinitions),
+        ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
+        ...stripFuncFromDefs(geminiToolDefinitions),
+        ...stripFuncFromDefs(gitToolDefinitions),
+        ...stripFuncFromDefs(codeAnalysisToolDefinitions),
+        ...stripFuncFromDefs(embeddingToolDefinitions), 
+        ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions), 
+        stripFuncFromDefs([listToolsToolDefinition])[0] 
     ];
 
     return allDefs;
@@ -155,18 +148,21 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         return listToolsToolDefinition.func(args, memoryManager);
     };
 
+    const summarizeCorrectionLogsHandler = async (args: any) => {
+        if (!geminiCorrectionSummarizerToolDefinition.func) {
+            throw new McpError(ErrorCode.InternalError, 'summarize_correction_logs handler not implemented');
+        }
+        return geminiCorrectionSummarizerToolDefinition.func(args, memoryManager);
+    };
+
+
     return {
         ...getConversationToolHandlers(memoryManager),
         ...getContextToolHandlers(memoryManager),
         ...getReferenceToolHandlers(memoryManager),
         ...getSourceAttributionToolHandlers(memoryManager),
         ...getCorrectionToolHandlers(memoryManager),
-        'summarize_correction_logs': (args: any) => {
-            if (!geminiCorrectionSummarizerToolDefinition.func) {
-                throw new McpError(ErrorCode.InternalError, 'summarize_correction_logs handler not implemented');
-            }
-            return geminiCorrectionSummarizerToolDefinition.func(args, memoryManager);
-        },
+        'summarize_correction_logs': summarizeCorrectionLogsHandler,
         'list_tools': listToolsHandler,
         ...getSuccessMetricsToolHandlers(memoryManager),
         ...getDatabaseManagementToolHandlers(memoryManager),
@@ -176,8 +172,10 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getModeInstructionToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
-        ...getGitToolHandlers(),
+        ...getGitToolHandlers(), 
         ...getCodeAnalysisToolHandlers(memoryManager),
+        ...getEmbeddingToolHandlers(memoryManager), 
+        ...getAiTaskEnhancementToolHandlers(memoryManager), 
         ...loggingHandlers,
     };
 }

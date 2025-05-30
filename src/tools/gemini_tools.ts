@@ -45,19 +45,19 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             throw new McpError(ErrorCode.InternalError, errorMsg); // Or InternalError if preferred
         }
 
-        const geminiService = new GeminiIntegrationService(dbService, contextManager); // genAIInstance will be created internally if API key exists
+        const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance); // genAIInstance will be created internally if API key exists
         try {
             const response = await geminiService.askGemini(args.query, args.model, args.systemInstruction);
-            // Assuming response.content[0].text is the direct text from Gemini
-            // We will format this as a Markdown quote or code block depending on content
+            const geminiText = response.content?.[0]?.text ?? ''; // Safely access text, default to empty string
+            
             let markdownOutput = `## Gemini Response for Query:\n`;
             markdownOutput += `> "${args.query}"\n\n`;
             markdownOutput += `### AI Answer:\n`;
-            // If the response is likely code or structured data, use a code block
-            if (response.content[0].text.includes('\n') || response.content[0].text.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
-                 markdownOutput += formatJsonToMarkdownCodeBlock(response.content[0].text, 'text') + '\n';
+            
+            if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
+                 markdownOutput += formatJsonToMarkdownCodeBlock(geminiText, 'text') + '\n';
             } else {
-                 markdownOutput += `> ${response.content[0].text.replace(/\n/g, '\n> ')}\n`;
+                 markdownOutput += `> ${geminiText.replace(/\n/g, '\n> ')}\n`;
             }
             return { content: [{ type: 'text', text: markdownOutput }] };
         } catch (error: any) {
