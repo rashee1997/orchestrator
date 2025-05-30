@@ -8,3 +8,11 @@ memory.db
 memory.db-shm
 memory.db-wal
 package-lock.json
+.clinerules/
+test/
+knowledge_graphs/
+.qodo/
+vector_store.db
+vector_store.db-shm
+vector_store.db-wal
+.blackboxrules

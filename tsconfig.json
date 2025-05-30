@@ -12,6 +12,6 @@
     "forceConsistentCasingInFileNames": true,
     "typeRoots": ["./node_modules/@types"]
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "test/PythonParser.ts"],
   "exclude": ["node_modules"]
 }

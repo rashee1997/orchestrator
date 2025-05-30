@@ -6,7 +6,7 @@ import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Import all language parsers
 import { TypeScriptParser } from '../parsers/TypeScriptParser.js';
-import { PythonParser } from '../parsers/PythonParser.js';
+import { PythonParser } from '../../../test/PythonParser.js';
 import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
 import { PHPParser } from '../parsers/PHPParser.js';
