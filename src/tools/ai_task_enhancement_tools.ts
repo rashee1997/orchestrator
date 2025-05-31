@@ -16,6 +16,7 @@ interface AiSuggestedSubtask {
     rationale?: string;
     estimated_effort_hours?: number;
     potential_tools?: string[];
+    suggested_dependencies_subtask_titles?: string[]; // Added suggested dependencies
 }
 
 interface AiSuggestedTaskDetails {
@@ -182,9 +183,28 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         });
         filesToQuery = Array.from(new Set(filesToQuery));
     }
-    // If no files found, fallback to codebase_context_summary
+
+    // Perform semantic search on codebase embeddings using task title/description
+    let semanticSearchContext = '';
+    const semanticSearchQuery = `${parent_task_title} ${parent_task_description || ''}`;
+    try {
+        const searchResults = await codebaseContextRetriever.retrieveContextForPrompt(agent_id, semanticSearchQuery, { topKEmbeddings: 5, embeddingScoreThreshold: 0.6 }); // Adjust topK and threshold as needed
+        if (searchResults && searchResults.length > 0) {
+            semanticSearchContext = "Relevant Codebase Context (Semantic Search):\n";
+            searchResults.forEach(result => {
+                 semanticSearchContext += `File: \`${result.sourcePath}\` (Score: ${result.relevanceScore?.toFixed(4)})\n`;
+                 if (result.entityName) semanticSearchContext += `Entity: ${result.entityName} (${result.type})\n`;
+                 if (result.metadata?.startLine && result.metadata?.endLine) semanticSearchContext += `Lines: ${result.metadata.startLine}-${result.metadata.endLine}\n`;
+                 semanticSearchContext += `Content:\n\`\`\`${result.metadata?.language || 'text'}\n${result.content}\n\`\`\`\n---\n`;
+            });
+        }
+    } catch (e) {
+        console.warn(`Could not perform semantic search for subtask suggestion: ${e}`);
+    }
+
+
+    // If files found, retrieve code chunks for those files
     if (filesToQuery.length > 0) {
-        // Retrieve code chunks for all files
         const codeChunks: string[] = [];
         for (const filePath of filesToQuery) {
             try {
@@ -200,9 +220,10 @@ ${chunk.content || ''}
             }
         }
         if (codeChunks.length > 0) {
-            liveCodeContext = codeChunks.join('\n\n');
+            liveCodeContext = "Relevant Code Context (Associated Files):\n" + codeChunks.join('\n\n');
         }
     }
+
 
     let prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable, and *modular* subtasks.\n` +
         `Focus on creating subtasks that represent distinct, logical steps and avoid suggesting redundant foundational work if it should be part of a shared service (e.g., a single file extraction service).\n` +
@@ -217,10 +238,15 @@ ${chunk.content || ''}
     }
 
     if (liveCodeContext) {
-        prompt += `\nConsider the following live code context from the codebase when suggesting subtasks:\n${liveCodeContext}\n`;
-    } else if (codebase_context_summary) {
-        prompt += `\nConsider the following codebase context when suggesting subtasks:\n${codebase_context_summary}\n`;
+        prompt += `\nConsider the following code context from associated files when suggesting subtasks:\n${liveCodeContext}\n`;
     }
+
+    if (semanticSearchContext) {
+         prompt += `\nConsider the following relevant codebase context from semantic search when suggesting subtasks:\n${semanticSearchContext}\n`;
+    } else if (codebase_context_summary) {
+        prompt += `\nConsider the following general codebase context when suggesting subtasks:\n${codebase_context_summary}\n`;
+    }
+
 
     prompt += `\nPlease format your response as a JSON array of objects. Each object should represent a subtask and have the following fields:\n` +
         `- "suggested_title": string (concise and actionable)\n` +
@@ -717,8 +743,6 @@ Provide only the JSON object.
     if (progressSummary.estimated_completion_percentage !== undefined) markdownOutput += `**Estimated Completion:** ${progressSummary.estimated_completion_percentage}%\n`;
     if (progressSummary.confidence_in_current_timeline) markdownOutput += `**Timeline Confidence:** ${progressSummary.confidence_in_current_timeline}\n\n`;
 
-    markdownOutput += `### Detailed Summary:\n${progressSummary.detailed_summary_text || 'No detailed summary provided.'}\n\n`;
-
     if (progressSummary.key_accomplishments && progressSummary.key_accomplishments.length > 0) {
         markdownOutput += "### Key Accomplishments:\n";
         progressSummary.key_accomplishments.forEach(s => markdownOutput += `- ${s}\n`);
@@ -752,3 +776,4 @@ export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
         'ai_summarize_task_progress': (args: any) => aiSummarizeTaskProgressHandler(args, memoryManager), // Added
     };
 }
+
