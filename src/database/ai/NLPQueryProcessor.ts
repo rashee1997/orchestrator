@@ -206,8 +206,19 @@ export class NLPQueryProcessor {
         }
 
         // If we couldn't determine a specific structure, return unstructured
-        if (structuredQuery.type === 'unknown' && !structuredQuery.entities && !structuredQuery.relationTypes) {
-            return { type: 'unstructured', originalQuery: query };
+        if (structuredQuery.type === 'unknown') {
+            if (structuredQuery.entities && structuredQuery.entities.length > 0) {
+                // Default to a search operation if we have at least one entity
+                return {
+                    type: 'search',
+                    entities: structuredQuery.entities,
+                    entityTypes: structuredQuery.entityTypes,
+                    originalQuery: query
+                };
+            }
+            if (!structuredQuery.entities && !structuredQuery.relationTypes) {
+                return { type: 'unstructured', originalQuery: query };
+            }
         }
 
         return structuredQuery;

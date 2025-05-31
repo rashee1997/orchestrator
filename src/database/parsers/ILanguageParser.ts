@@ -2,6 +2,8 @@ import path from 'path';
 // Base interface for all language parsers
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
 
+export type { ExtractedImport, ExtractedCodeEntity };
+
 export interface ILanguageParser {
     /**
      * Parse a file for import statements

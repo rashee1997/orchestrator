@@ -29,8 +29,11 @@ export class IndexManager {
         }
 
         // Write indexes
-        await fsp.writeFile(path.join(this.jsonlStorage['rootPath'], agentId, 'indexes', 'name_index.json'), JSON.stringify(nameIndex, null, 2), 'utf8');
-        await fsp.writeFile(path.join(this.jsonlStorage['rootPath'], agentId, 'indexes', 'type_index.json'), JSON.stringify(typeIndex, null, 2), 'utf8');
+        const indexPath = path.join(this.jsonlStorage['rootPath'], agentId, 'indexes');
+        await fsp.mkdir(indexPath, { recursive: true });
+
+        await fsp.writeFile(path.join(indexPath, 'name_index.json'), JSON.stringify(nameIndex, null, 2), 'utf8');
+        await fsp.writeFile(path.join(indexPath, 'type_index.json'), JSON.stringify(typeIndex, null, 2), 'utf8');
     }
 
     /**

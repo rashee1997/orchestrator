@@ -265,7 +265,7 @@ export class CodebaseEmbeddingService {
         for (const item of scannedItems) {
             if (item.type === 'file') {
                 const language = item.language || await (this.introspectionService as any).detectLanguage(agentId, item.path, path.basename(item.path));
-                if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
+                if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
                      try {
                         totalEmbeddingsCreated += await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
                     } catch (fileError) {

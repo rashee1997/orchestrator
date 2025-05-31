@@ -176,7 +176,9 @@ Output the result as a single JSON object with the following structure:
         try {
             console.log('[DEBUG] Calling Gemini with system instruction:', systemInstruction);
             console.log('[DEBUG] User query length:', userQuery.length);
-            const geminiResult = await this.geminiIntegrationService.askGemini(userQuery, this.geminiModel, systemInstruction);
+            // Include systemInstruction as part of the prompt text instead of separate parameter
+            const promptWithInstruction = systemInstruction + "\n\n" + userQuery;
+            const geminiResult = await this.geminiIntegrationService.askGemini(promptWithInstruction, this.geminiModel);
             if (!geminiResult || !geminiResult.content || geminiResult.content.length === 0 || !geminiResult.content[0]?.text) {
                 throw new Error("Gemini returned no content or an unexpected format for plan generation.");
             }
@@ -235,30 +237,44 @@ Output the result as a single JSON object with the following structure:
             }
         };
 
-        // Parse the decomposed tasks to extract only the main tasks (not phases or sub-items)
-        const decomposedTasks = refinedPromptDetails.decomposed_tasks_parsed || [];
+        const decomposedTasks = refinedPromptDetails.decomposed_tasks_parsed || refinedPromptDetails.decomposed_tasks || [];
         const mainTasks: any[] = [];
-        
-        // Filter out phase headers, plan rules, and extract only numbered tasks with bold titles
-        decomposedTasks.forEach((taskString: string) => {
-            // Match patterns like "1.1. **Task Title**" or "2.1. **Task Title**"
-            const mainTaskMatch = taskString.match(/^(\d+\.\d+\.)\s*\*\*(.*?)\*\*(.*)$/);
-            if (mainTaskMatch) {
-                const taskNumber = mainTaskMatch[1];
-                const title = mainTaskMatch[2].trim();
-                const remainingDescription = mainTaskMatch[3].trim();
-                
-                // Skip sub-items (a., b., c., etc.)
-                if (!taskString.match(/^\s*[a-z]\./)) {
-                    mainTasks.push({
-                        taskNumber,
-                        title,
-                        description: taskString.trim(),
-                        remainingDescription
-                    });
+
+        // More flexible task extraction: accept numbered tasks with or without bold titles, and also simple numbered tasks
+        if (Array.isArray(decomposedTasks)) {
+            decomposedTasks.forEach((taskString: string) => {
+                // Try to match numbered tasks with optional bold titles or plain titles
+                // Examples: "1.1. **Task Title**", "1.1 Task Title", "1. Task Title"
+                const mainTaskMatch = taskString.match(/^(\d+(\.\d+)*)(?:\.\s*|\s+)(?:\*\*(.*?)\*\*|(.*?))(?:$|\s+-\s+)(.*)?$/);
+                if (mainTaskMatch) {
+                    const taskNumber = mainTaskMatch[1];
+                    const title = (mainTaskMatch[3] || mainTaskMatch[4] || '').trim();
+                    const remainingDescription = (mainTaskMatch[5] || '').trim();
+
+                    // Skip sub-items (a., b., c., etc.)
+                    if (!taskString.match(/^\s*[a-z]\./)) {
+                        mainTasks.push({
+                            taskNumber,
+                            title,
+                            description: taskString.trim(),
+                            remainingDescription
+                        });
+                    }
                 }
-            }
-        });
+            });
+        }
+
+        // Fallback: if no tasks matched above, treat each decomposed task string as a task title and description
+        if (mainTasks.length === 0 && Array.isArray(decomposedTasks)) {
+            decomposedTasks.forEach((taskString: string, index: number) => {
+                mainTasks.push({
+                    taskNumber: (index + 1).toString(),
+                    title: taskString.trim(),
+                    description: taskString.trim(),
+                    remainingDescription: ''
+                });
+            });
+        }
 
         const tasksData: InitialDetailedPlanAndTasks['tasksData'] = mainTasks.map((task, index) => {
             const purpose = `To ${task.title.toLowerCase()} as part of extending the Git tool functionality.`;

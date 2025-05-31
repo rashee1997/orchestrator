@@ -6,10 +6,11 @@ import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Import all language parsers
 import { TypeScriptParser } from '../parsers/TypeScriptParser.js';
-import { PythonParser } from '../../../test/PythonParser.js';
+import { PythonParser } from '../parsers/PythonParser.js';
 import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
 import { PHPParser } from '../parsers/PHPParser.js';
+import { JSONLParser } from '../parsers/JSONLParser.js';
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
 
 // ... (ScannedItem, ExtractedImport, ExtractedCodeEntity interfaces remain unchanged)
@@ -31,7 +32,7 @@ export interface ExtractedImport {
     endLine: number;
 }
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias';
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export';
     name: string;
     fullName: string;
     signature?: string;
@@ -60,18 +61,22 @@ export class CodebaseIntrospectionService {
         this.projectRootPath = projectRootPath || process.cwd();
         // Register all language parsers
         this.languageParsers = new Map();
-        const parsers: BaseLanguageParser[] = [
+        const parsers: Array<ILanguageParser | BaseLanguageParser> = [
             new TypeScriptParser(this.projectRootPath),
             new PythonParser(this.projectRootPath),
             new HTMLParser(this.projectRootPath),
             new CSSParser(this.projectRootPath),
-            new PHPParser(this.projectRootPath)
+            new PHPParser(this.projectRootPath),
+            new JSONLParser(this)
         ];
         for (const parser of parsers) {
-            for (const ext of parser.getSupportedExtensions()) {
+            // Handle both BaseLanguageParser and ILanguageParser
+            const extensions = parser.getSupportedExtensions();
+            for (const ext of extensions) {
                 this.languageParsers.set(ext, parser);
             }
-            this.languageParsers.set(parser.getLanguageName(), parser);
+            const langName = parser.getLanguageName();
+            this.languageParsers.set(langName, parser);
         }
     }
 
@@ -160,6 +165,13 @@ export class CodebaseIntrospectionService {
                 case '.scss':
                 case '.less':
                     lang = 'css';
+                    break;
+                case '.jsonl':
+                case '.ndjson':
+                    lang = 'jsonl';
+                    break;
+                case '.json':
+                    lang = 'json';
                     break;
             }
         }

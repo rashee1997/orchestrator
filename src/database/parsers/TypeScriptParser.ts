@@ -1,6 +1,6 @@
 // TypeScript/JavaScript parser module
 import { parse } from '@typescript-eslint/typescript-estree';
-import { TSESTree, AST_NODE_TYPES } from '@typescript-eslint/types';
+import { AST_NODE_TYPES, TSESTree } from '@typescript-eslint/types';
 import { BaseLanguageParser } from './ILanguageParser.js';
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
 import path from 'path';
@@ -149,10 +149,227 @@ export class TypeScriptParser extends BaseLanguageParser {
                 comment: true,
                 attachComment: true,
             });
-            // ... (copy the code entity extraction logic from the original service here)
-            // For brevity, you can copy the logic from the original CodebaseIntrospectionService
-            // and adapt it to use fileContent and relativeFilePath as needed.
-            // (Omitted here for space, but should be included in the actual implementation.)
+            const traverseNode = (node: any, parent?: any): void => {
+                switch (node.type) {
+                    case AST_NODE_TYPES.ClassDeclaration:
+                        entities.push({
+                            type: 'class',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.FunctionDeclaration:
+                        entities.push({
+                            type: 'function',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSInterfaceDeclaration:
+                        entities.push({
+                            type: 'interface',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.MethodDefinition:
+                        entities.push({
+                            type: 'method',
+                            name: node.key.name,
+                            fullName: relativeFilePath + '::' + node.key.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.VariableDeclaration:
+                        node.declarations.forEach((declaration: any) => {
+                            if (declaration.id.type === AST_NODE_TYPES.Identifier) {
+                                entities.push({
+                                    type: 'variable',
+                                    name: declaration.id.name,
+                                    fullName: relativeFilePath + '::' + declaration.id.name,
+                                    startLine: node.loc!.start.line,
+                                    endLine: node.loc!.end.line,
+                                    filePath: filePath,
+                                    isExported: node.exported, // Assuming variable declarations are not directly exported
+                                });
+                            }
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSPropertySignature:
+                        entities.push({
+                            type: 'property',
+                            name: node.key.name,
+                            fullName: relativeFilePath + '::' + node.key.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported, // Assuming property signatures are not directly exported
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSMethodSignature:
+                        entities.push({
+                            type: 'method',
+                            name: node.key.name,
+                            fullName: relativeFilePath + '::' + node.key.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported, // Assuming method signatures are not directly exported
+                        });
+                        break;
+                    case 'TSPropertyDeclaration':
+                        entities.push({
+                            type: 'property',
+                            name: node.key.name,
+                            fullName: relativeFilePath + '::' + node.key.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported, // Assuming property declarations are not directly exported
+                        });
+                        break;
+                    // Add more cases for other code entity types (e.g., methods, variables, etc.)
+                    case AST_NODE_TYPES.TSEnumDeclaration:
+                        entities.push({
+                            type: 'enum',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSTypeAliasDeclaration:
+                        entities.push({
+                            type: 'type_alias',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSModuleDeclaration:
+                        entities.push({
+                            type: 'module',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSCallSignatureDeclaration:
+                        entities.push({
+                            type: 'call_signature',
+                            name: '', // call signatures may not have a name
+                            fullName: relativeFilePath + '::call_signature',
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: false,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSConstructSignatureDeclaration:
+                        entities.push({
+                            type: 'construct_signature',
+                            name: '', // construct signatures may not have a name
+                            fullName: relativeFilePath + '::construct_signature',
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: false,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSIndexSignature:
+                        entities.push({
+                            type: 'index_signature',
+                            name: '', // index signatures may not have a name
+                            fullName: relativeFilePath + '::index_signature',
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: false,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSParameterProperty:
+                        entities.push({
+                            type: 'parameter_property',
+                            name: node.parameter.name || '',
+                            fullName: relativeFilePath + '::' + (node.parameter.name || ''),
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: false,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSAbstractMethodDefinition:
+                        entities.push({
+                            type: 'abstract_method',
+                            name: node.key.name,
+                            fullName: relativeFilePath + '::' + node.key.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSDeclareFunction:
+                        entities.push({
+                            type: 'declare_function',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                    case AST_NODE_TYPES.TSNamespaceExportDeclaration:
+                        entities.push({
+                            type: 'namespace_export',
+                            name: node.id.name,
+                            fullName: relativeFilePath + '::' + node.id.name,
+                            startLine: node.loc!.start.line,
+                            endLine: node.loc!.end.line,
+                            filePath: filePath,
+                            isExported: node.exported,
+                        });
+                        break;
+                }
+                for (const key in node) {
+                    if (node[key] && typeof node[key] === 'object') {
+                        if (Array.isArray(node[key])) {
+                            node[key].forEach((child: any) => {
+                                if (child && typeof child === 'object' && child.type) {
+                                    traverseNode(child, node);
+                                }
+                            });
+                        } else if (node[key].type) {
+                            traverseNode(node[key], node);
+                        }
+                    }
+                }
+            };
+            traverseNode(ast);
         } catch (error) {
             console.error(`Error parsing code entities in ${filePath}:`, error);
         }

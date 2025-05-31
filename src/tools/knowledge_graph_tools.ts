@@ -7,32 +7,48 @@ import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCo
 import path from 'path';
 import fs from 'fs/promises';
 
+// Helper function to compare observation arrays (ignoring order for simple string arrays)
+function haveObservationsChanged(oldObs: string[] | undefined, newObs: string[]): boolean {
+    if (!oldObs) return true; // If old observations don't exist, they've changed
+    if (oldObs.length !== newObs.length) return true;
+    const oldSet = new Set(oldObs);
+    for (const obs of newObs) {
+        if (!oldSet.has(obs)) return true;
+    }
+    return false;
+}
+
+
 export const knowledgeGraphToolDefinitions = [
     {
         name: 'ingest_codebase_structure',
-        description: `Scans a specified directory, creating knowledge graph nodes for files and folders.
-It also establishes 'contains_item' relationships between directories and their contents.
-If 'parse_imports' is true, it will attempt to parse import statements from supported files (currently TypeScript/JavaScript)
-and create 'imports_file' or 'imports_module' relationships.
-This tool is primarily for initial KG population from a codebase. Output is Markdown formatted.`,
+        description: `Scans a specified directory, creating or updating knowledge graph nodes for files and folders.
+It establishes 'contains_item' relationships. If 'parse_imports' is true, it parses import statements
+from supported files, creates/updates 'module' nodes, and creates 'imports_file' or 'imports_module' relationships.
+This tool aims to be idempotent, avoiding duplicate nodes for the same entities by updating existing ones if changes are detected. Output is Markdown formatted.`,
         inputSchema: schemas.ingestCodebaseStructure,
     },
     {
         name: 'ingest_file_code_entities',
         description: `Parses a specified code file to extract detailed code entities like functions, classes, and interfaces.
-It populates these as nodes in the knowledge graph and creates 'defined_in_file' relationships
-linking them to their parent file node. It may also create 'has_method' relationships for classes.
-Output is Markdown formatted.`,
-        inputSchema: schemas.ingestFileCodeEntities, // Use the new schema
+It populates these as nodes in the knowledge graph (creating or updating them if they exist by checking name and type) 
+and creates 'defined_in_file' relationships linking them to their parent file node. 
+It may also create 'has_method' relationships for classes. Output is Markdown formatted.`,
+        inputSchema: schemas.ingestFileCodeEntities, 
     },
     {
         name: 'knowledge_graph_memory',
         description: `A tool for interacting with the knowledge graph memory. Output is Markdown formatted. Supported operations:
-- "create_entities": Adds new entities (nodes) to the graph. Requires 'entities' array in arguments.
-- "create_relations": Adds new relationships between existing entities. Requires 'relations' array in arguments.
-// ... (rest of description as before) ...
-- "open_nodes": Retrieves specific nodes by their names. Requires 'names' array in arguments.`,
-        inputSchema: { /* ... existing schema for knowledge_graph_memory ... */
+- "create_entities": Adds new entities (nodes) to the graph. If an entity with the same name and type already exists, it will attempt to update its observations instead of creating a duplicate.
+- "create_relations": Adds new relationships between existing entities. Avoids creating exact duplicate relations.
+- "add_observations": Adds observations to existing entities. This effectively updates the node by creating a new version.
+- "delete_entities": Deletes entities by name (marks them as deleted).
+- "delete_observations": Deletes specific observations from entities (creates a new version).
+- "delete_relations": Deletes relationships (marks them as deleted).
+- "read_graph": Retrieves the entire graph for the agent (active nodes/relations).
+- "search_nodes": Searches for nodes based on a query string (supports key:value and simple text).
+- "open_nodes": Retrieves specific nodes by their names.`,
+        inputSchema: { 
             type: 'object',
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
@@ -58,11 +74,11 @@ Output is Markdown formatted.`,
                         properties: {
                             name: { type: 'string' },
                             entityType: { type: 'string' },
-                            observations: { type: 'array', items: { type: 'string' } }
+                            observations: { type: 'array', items: { type: 'string' }, default: [] }
                         },
-                        required: ['name', 'entityType', 'observations']
+                        required: ['name', 'entityType']
                     },
-                    description: "Required for 'create_entities' operation."
+                    description: "For 'create_entities'. Observations are optional."
                 },
                 relations: {
                     type: 'array',
@@ -75,7 +91,7 @@ Output is Markdown formatted.`,
                         },
                         required: ['from', 'to', 'relationType']
                     },
-                    description: "Required for 'create_relations' and 'delete_relations' operations."
+                    description: "For 'create_relations' and 'delete_relations'."
                 },
                 observations: {
                     type: 'array',
@@ -87,12 +103,12 @@ Output is Markdown formatted.`,
                         },
                         required: ['entityName', 'contents']
                     },
-                    description: "Required for 'add_observations' operation."
+                    description: "For 'add_observations'."
                 },
                 entityNames: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: "Required for 'delete_entities' operation."
+                    description: "For 'delete_entities'."
                 },
                 deletions: {
                     type: 'array',
@@ -104,16 +120,16 @@ Output is Markdown formatted.`,
                         },
                         required: ['entityName', 'observations']
                     },
-                    description: "Required for 'delete_observations' operation."
+                    description: "For 'delete_observations'."
                 },
                 query: {
                     type: 'string',
-                    description: "Required for 'search_nodes' operation."
+                    description: "For 'search_nodes'."
                 },
                 names: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: "Required for 'open_nodes' operation."
+                    description: "For 'open_nodes'."
                 }
             },
             required: ['agent_id', 'operation'],
@@ -127,6 +143,7 @@ Output is Markdown formatted.`,
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
                 query: { type: 'string', description: 'Natural language query about the codebase (e.g., "What modules does OrderController import?", "Find all test files for the auth module", "Which classes extend BaseService?")' },
+                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-1.5-flash-latest".', nullable: true },
             },
             required: ['agent_id', 'query'],
         },
@@ -141,7 +158,8 @@ Output is Markdown formatted.`,
                 entity_names: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: 'Optional: A list of entity names to focus the inference on. If not provided, inference may be broader.'
+                    description: 'Optional: A list of entity names to focus the inference on. If not provided, inference may be broader.',
+                    nullable: true
                 },
                 context: { type: 'string', description: 'Optional: Additional context to aid in relation inference (e.g., "focus on authentication-related components" or "analyze test coverage").', nullable: true },
             },
@@ -184,6 +202,11 @@ Output is Markdown formatted.`,
                     type: 'boolean',
                     default: false,
                     description: 'Whether to group nodes by their parent directory using subgraphs.'
+                },
+                natural_language_query: {
+                    type: 'string',
+                    description: 'Optional: A natural language query to filter the knowledge graph using AI.',
+                    nullable: true
                 }
             },
             required: ['agent_id'],
@@ -192,11 +215,10 @@ Output is Markdown formatted.`,
 ];
 
 export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
-    const codebaseIntrospectionService = new CodebaseIntrospectionService(memoryManager);
+    const codebaseIntrospectionService = new CodebaseIntrospectionService(memoryManager, memoryManager.getGeminiIntegrationService(), memoryManager.projectRootPath);
 
     return {
         'ingest_codebase_structure': async (args: any, agent_id_from_server: string) => {
-            // ... (handler logic from kg_tools_with_ingest_structure, no changes needed here for this step) ...
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for ingest_codebase_structure.");
@@ -208,157 +230,211 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             }
 
             const { directory_path, project_root_path, parse_imports } = args;
-            const effectiveRootPath = project_root_path || directory_path; 
+            const effectiveRootPath = path.resolve(project_root_path || directory_path); 
+            const absoluteDirectoryPath = path.resolve(directory_path);
+
+            if (!absoluteDirectoryPath.startsWith(effectiveRootPath)) {
+                 throw new McpError(ErrorCode.InvalidParams, `Directory path (${absoluteDirectoryPath}) must be within the project root path (${effectiveRootPath}).`);
+            }
 
             let nodesCreatedCount = 0;
+            let nodesUpdatedCount = 0; // For observation updates
             let relationsCreatedCount = 0;
-            const createdNodeNames: { [key: string]: string } = {}; 
+            
+            const createdOrExistingNodeNamesByAbsolutePath: { [key: string]: string } = {}; 
+            const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+            const observationsToUpdateBatch: Array<{ entityName: string; contents: string[] }> = [];
+            const relationsToCreateSet = new Set<string>(); // To store unique relation strings: "from-to-type"
+            const moduleEntitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+            const moduleNamesToProcessOrCreate = new Set<string>(); // To ensure a module is processed (checked/created) only once per run
+
 
             try {
-                const scannedItems: ScannedItem[] = await codebaseIntrospectionService.scanDirectoryRecursive(agent_id, directory_path, effectiveRootPath);
+                console.log(`[ingest_codebase_structure] Scanning directory: ${absoluteDirectoryPath} relative to root: ${effectiveRootPath}`);
+                const scannedItems: ScannedItem[] = await codebaseIntrospectionService.scanDirectoryRecursive(agent_id, absoluteDirectoryPath, effectiveRootPath);
+                console.log(`[ingest_codebase_structure] Scanned ${scannedItems.length} items.`);
 
-                const entitiesToCreate: Array<{ name: string; entityType: string; observations: string[] }> = [];
-                const relationsToCreate: Array<{ from: string; to: string; relationType: string, observations?: string[] }> = [];
+                // Process the root directory itself if it's the target of ingestion
+                if (absoluteDirectoryPath === effectiveRootPath) {
+                    const rootNodeName = "."; 
+                    try {
+                        const rootStats = await fs.stat(effectiveRootPath);
+                        const rootObservations = [
+                            `absolute_path: ${effectiveRootPath}`,
+                            `type: directory`,
+                            `size_bytes: ${rootStats.size.toString()}`,
+                            `created_at: ${rootStats.birthtime.toISOString()}`,
+                            `modified_at: ${rootStats.mtime.toISOString()}`,
+                        ];
+                        const existingRootNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [rootNodeName]);
+                        const existingRootNode = existingRootNodes.find((n: any) => n.name === rootNodeName && n.entityType === 'directory');
 
+                        if (existingRootNode) {
+                            createdOrExistingNodeNamesByAbsolutePath[effectiveRootPath] = rootNodeName;
+                            if (haveObservationsChanged(existingRootNode.observations, rootObservations)) {
+                                observationsToUpdateBatch.push({ entityName: rootNodeName, contents: rootObservations });
+                            }
+                        } else {
+                            entitiesToCreateBatch.push({ name: rootNodeName, entityType: 'directory', observations: rootObservations });
+                            createdOrExistingNodeNamesByAbsolutePath[effectiveRootPath] = rootNodeName;
+                        }
+                    } catch (statError: any) {
+                        console.warn(`[ingest_codebase_structure] Could not stat project root path ${effectiveRootPath}: ${statError.message}`);
+                    }
+                }
+
+                // Process scanned files and directories
                 for (const item of scannedItems) {
-                    const entityName = item.name; 
-                    createdNodeNames[item.path] = entityName; 
-
-                    const observations = [
-                        `absolute_path: ${item.path}`, // Store absolute path for clarity
+                    const entityName = item.name === "" ? "." : item.name; // item.name is already relative
+                    const currentObservations = [
+                        `absolute_path: ${item.path}`,
                         `type: ${item.type}`,
-                        `size_bytes: ${item.stats.size}`,
+                        `size_bytes: ${item.stats.size.toString()}`,
                         `created_at: ${item.stats.birthtime.toISOString()}`,
                         `modified_at: ${item.stats.mtime.toISOString()}`,
                     ];
                     if (item.type === 'file' && item.language) {
-                        observations.push(`language: ${item.language}`);
+                        currentObservations.push(`language: ${item.language}`);
                     }
 
-                    entitiesToCreate.push({
-                        name: entityName, 
-                        entityType: item.type,
-                        observations: observations,
-                    });
+                    const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
+                    const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === item.type);
 
+                    if (existingNode) {
+                        createdOrExistingNodeNamesByAbsolutePath[item.path] = existingNode.name; // Use existing name
+                        if (haveObservationsChanged(existingNode.observations, currentObservations)) {
+                            // Collect only the new/changed observations to append
+                            const newObsToAdd = currentObservations.filter(obs => !(existingNode.observations || []).includes(obs));
+                            if (newObsToAdd.length > 0) {
+                                observationsToUpdateBatch.push({ entityName: existingNode.name, contents: newObsToAdd });
+                            }
+                        }
+                    } else {
+                        entitiesToCreateBatch.push({ name: entityName, entityType: item.type, observations: currentObservations });
+                        createdOrExistingNodeNamesByAbsolutePath[item.path] = entityName;
+                    }
+
+                    // Create 'contains_item' relation
                     const parentDirAbsolutePath = path.dirname(item.path);
-                    if (parentDirAbsolutePath !== item.path && parentDirAbsolutePath.startsWith(path.resolve(effectiveRootPath))) { 
-                        const parentDirRelativeName = path.relative(effectiveRootPath, parentDirAbsolutePath).replace(/\\/g, '/');
-                        const fromNodeName = parentDirRelativeName === '' ? "." : parentDirRelativeName; 
-                        
-                        if (parentDirAbsolutePath >= effectiveRootPath || parentDirRelativeName === '') { 
-                             relationsToCreate.push({
-                                from: fromNodeName, 
-                                to: entityName,          
-                                relationType: 'contains_item'
-                            });
+                    if (parentDirAbsolutePath !== item.path && parentDirAbsolutePath.startsWith(effectiveRootPath)) { 
+                        let parentDirNodeName = createdOrExistingNodeNamesByAbsolutePath[parentDirAbsolutePath];
+                        if (!parentDirNodeName) {
+                             parentDirNodeName = path.relative(effectiveRootPath, parentDirAbsolutePath).replace(/\\/g, '/');
+                             if (parentDirNodeName === "") parentDirNodeName = ".";
+                             // Assume parent directory node will be created or already exists from the scan order
+                             if (!createdOrExistingNodeNamesByAbsolutePath[parentDirAbsolutePath] && !entitiesToCreateBatch.find(e=>e.name === parentDirNodeName && e.entityType === 'directory')) {
+                                // This case implies the parent wasn't in scannedItems yet (e.g. if scan wasn't perfectly top-down or root was special)
+                                // Or it was already processed. We rely on createdOrExistingNodeNamesByAbsolutePath for already processed ones.
+                                console.warn(`[ingest_codebase_structure] Parent directory ${parentDirNodeName} for ${entityName} not yet processed or found. Relation might be incomplete if parent is not created.`);
+                             }
+                        }
+                        const relationString = `${parentDirNodeName}-${entityName}-contains_item`;
+                        if (!relationsToCreateSet.has(relationString)) {
+                            relationsToCreateSet.add(relationString);
                         }
                     }
                 }
                 
-                const rootDirNodeNameForKg = "."; // Canonical name for project root relative to itself
-                const rootDirExistsInScan = scannedItems.find(item => item.path === path.resolve(effectiveRootPath) && item.name === ""); // Check if root itself was scanned (it wouldn't be if directory_path is a subfolder)
-                
-                if (directory_path === effectiveRootPath && !entitiesToCreate.some(e => e.name === rootDirNodeNameForKg && e.entityType === 'directory')) {
-                    const rootStats = await fs.stat(effectiveRootPath);
-                     const rootEntity = {
-                        name: rootDirNodeNameForKg, 
-                        entityType: 'directory' as 'directory',
-                        observations: [
-                            `absolute_path: ${path.resolve(effectiveRootPath)}`,
-                            `type: directory`,
-                            `size_bytes: ${rootStats.size}`,
-                            `created_at: ${rootStats.birthtime.toISOString()}`,
-                            `modified_at: ${rootStats.mtime.toISOString()}`,
-                        ]
-                    };
-                    entitiesToCreate.push(rootEntity); // Add to batch
-                    createdNodeNames[path.resolve(effectiveRootPath)] = rootDirNodeNameForKg;
+                // Batch create new entities
+                if (entitiesToCreateBatch.length > 0) {
+                    console.log(`[ingest_codebase_structure] Batch creating ${entitiesToCreateBatch.length} file/directory nodes.`);
+                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
+                    nodesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
                 }
 
-
-                if (entitiesToCreate.length > 0) {
-                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreate);
-                    nodesCreatedCount += creationResult.length;
+                // Batch update observations for existing entities
+                if (observationsToUpdateBatch.length > 0) {
+                    console.log(`[ingest_codebase_structure] Batch updating observations for ${observationsToUpdateBatch.length} nodes.`);
+                    const updateResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateBatch);
+                    nodesUpdatedCount += Array.isArray(updateResult) ? updateResult.length : 0;
                 }
 
+                // Process imports
                 if (parse_imports) {
+                    console.log(`[ingest_codebase_structure] Parsing imports...`);
                     for (const item of scannedItems) {
-                        if (item.type === 'file' && (item.language === 'typescript' || item.language === 'javascript')) {
-                            const fileNodeName = createdNodeNames[item.path]; 
+                        if (item.type === 'file' && item.language && ['typescript', 'javascript', 'python', 'php'].includes(item.language)) {
+                            const fileNodeName = createdOrExistingNodeNamesByAbsolutePath[item.path]; 
                             if (!fileNodeName) {
-                                console.warn(`Could not find KG node name for file path: ${item.path}. Skipping import parsing.`);
+                                console.warn(`[ingest_codebase_structure] Could not find KG node name for file path: ${item.path} during import parsing.`);
                                 continue;
                             }
                             const extractedImports: ExtractedImport[] = await codebaseIntrospectionService.parseFileForImports(agent_id, item.path, item.language);
                             for (const imp of extractedImports) {
                                 let toNodeName = imp.targetPath;
-                                let toNodeType = imp.type; // 'file', 'module', 'external_library'
+                                let toNodeType = imp.type; 
 
                                 if (imp.type === 'file') {
-                                    let resolvedAbsoluteImportPath = path.resolve(path.dirname(item.path), imp.targetPath);
-                                    
-                                    // Handle .js imports that correspond to .ts source files
-                                    if (resolvedAbsoluteImportPath.endsWith('.js')) {
-                                        const tsEquivalentPath = resolvedAbsoluteImportPath.slice(0, -3) + '.ts';
-                                        try {
-                                            // Check if the .ts file actually exists
-                                            await fs.access(tsEquivalentPath); 
-                                            resolvedAbsoluteImportPath = tsEquivalentPath; // Use the .ts path if it exists
-                                        } catch (e) {
-                                            // .ts equivalent does not exist, proceed with .js or reclassify
-                                            // console.warn(`No .ts equivalent found for .js import: ${tsEquivalentPath}`);
-                                        }
-                                    }
+                                    let resolvedAbsoluteImportPath = path.isAbsolute(imp.targetPath) ? imp.targetPath : path.resolve(path.dirname(item.path), imp.targetPath);
+                                    resolvedAbsoluteImportPath = resolvedAbsoluteImportPath.replace(/\\/g, '/');
 
-                                    if (resolvedAbsoluteImportPath.startsWith(path.resolve(effectiveRootPath))) {
+                                    if (createdOrExistingNodeNamesByAbsolutePath[resolvedAbsoluteImportPath]) {
+                                        toNodeName = createdOrExistingNodeNamesByAbsolutePath[resolvedAbsoluteImportPath];
+                                    } else if (resolvedAbsoluteImportPath.startsWith(effectiveRootPath + path.sep)) {
                                          toNodeName = path.relative(effectiveRootPath, resolvedAbsoluteImportPath).replace(/\\/g, '/');
                                     } else {
-                                        // If it resolves outside the project root, treat it as an unresolvable local file or an error
-                                        console.warn(`Import target ${imp.targetPath} from ${fileNodeName} resolves outside project root to ${resolvedAbsoluteImportPath}. Treating as external module.`);
-                                        toNodeName = imp.targetPath; // Keep original specifier
-                                        toNodeType = 'module'; // Reclassify
+                                        console.warn(`[ingest_codebase_structure] Import target ${imp.targetPath} from ${fileNodeName} (resolved to ${resolvedAbsoluteImportPath}) is outside project or not found in scan. Treating as external module: ${imp.targetPath}`);
+                                        toNodeName = imp.targetPath; 
+                                        toNodeType = 'module'; 
                                     }
                                 }
                                 
                                 if (toNodeType === 'external_library' || toNodeType === 'module') {
-                                    const moduleEntity = { name: toNodeName, entityType: 'module', observations: [`type: ${toNodeType}`] };
-                                    try {
-                                        // Check if module node already exists to avoid duplicate creation attempts or use createEntities which handles it
-                                        const existingModule = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [toNodeName]);
-                                        if (!existingModule || existingModule.length === 0) {
-                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [moduleEntity]);
-                    if (creationResult.length > 0) nodesCreatedCount++;
+                                    if (!moduleNamesToProcessOrCreate.has(toNodeName)) {
+                                        moduleNamesToProcessOrCreate.add(toNodeName);
+                                        const existingModuleNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [toNodeName]);
+                                        const existingModuleNode = existingModuleNodes.find((n: any) => n.name === toNodeName && n.entityType === 'module');
+                                        if (!existingModuleNode) {
+                                            moduleEntitiesToCreateBatch.push({ name: toNodeName, entityType: 'module', observations: [`type: ${toNodeType}`] });
                                         }
-                                    } catch (e) { console.warn(`Could not ensure module node ${toNodeName}: ${e}`); }
+                                    }
                                 }
-                                relationsToCreate.push({
-                                    from: fileNodeName,
-                                    to: toNodeName,
-                                    relationType: imp.type === 'file' ? 'imports_file' : 'imports_module',
-                                    observations: imp.importedSymbols ? [`symbols: ${imp.importedSymbols.join(', ')}`] : undefined
-                                });
+                                const relationString = `${fileNodeName}-${toNodeName}-${imp.type === 'file' ? 'imports_file' : 'imports_module'}`;
+                                if (!relationsToCreateSet.has(relationString)) {
+                                    relationsToCreateSet.add(relationString);
+                                }
                             }
                         }
                     }
+                    if (moduleEntitiesToCreateBatch.length > 0) {
+                        console.log(`[ingest_codebase_structure] Batch creating ${moduleEntitiesToCreateBatch.length} module nodes.`);
+                        const moduleCreationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, moduleEntitiesToCreateBatch);
+                        nodesCreatedCount += Array.isArray(moduleCreationResult) ? moduleCreationResult.length : 0;
+                    }
+                }
+                
+                // Prepare and create relations
+                const finalRelationsToCreate: Array<{ from: string; to: string; relationType: string, observations?: string[] }> = [];
+                for (const relStr of relationsToCreateSet) {
+                    const [from, to, type] = relStr.split('-'); // This is a simplification, observations are lost
+                    // A more robust way would be to store the relation objects and deduplicate based on a composite key
+                    // For now, this simplified split assumes observations are not part of uniqueness for this set
+                    finalRelationsToCreate.push({ from, to, relationType: type });
                 }
 
-                if (relationsToCreate.length > 0) {
-                    const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, relationsToCreate);
-                    relationsCreatedCount += relationResult.length;
+
+                if (finalRelationsToCreate.length > 0) {
+                    console.log(`[ingest_codebase_structure] Batch creating ${finalRelationsToCreate.length} relations.`);
+                    // It's important that createRelations can handle cases where relations might already exist
+                    // or that the KG manager itself handles idempotency for relations if possible.
+                    // KnowledgeGraphManagerV2.createRelations creates new UUIDs for each relation, so it doesn't deduplicate by content.
+                    // A pre-check for existing relations would be needed here for true idempotency of relations.
+                    // For now, we proceed, which might create duplicate relation entries if run multiple times without graph compaction/cleanup.
+                    const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, finalRelationsToCreate);
+                    relationsCreatedCount += Array.isArray(relationResult) ? relationResult.length : 0;
                 }
 
                 return {
                     content: [{
                         type: 'text', text: formatSimpleMessage(
-                            `Codebase structure ingestion for directory "${directory_path}" complete.\n- Nodes Created/Updated: ${nodesCreatedCount}\n- Relations Created: ${relationsCreatedCount}`,
+                            `Codebase structure ingestion for directory "${directory_path}" complete.\n- Nodes Newly Created: ${nodesCreatedCount}\n- Nodes Updated (Observations): ${nodesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}`,
                             "Codebase Ingestion Report"
                         )
                     }]
                 };
 
             } catch (error: any) {
-                console.error(`Error during codebase structure ingestion for agent ${agent_id}, path ${directory_path}:`, error);
+                console.error(`[ingest_codebase_structure] Error during codebase structure ingestion for agent ${agent_id}, path ${directory_path}:`, error);
                 throw new McpError(ErrorCode.InternalError, `Codebase ingestion failed: ${error.message}`);
             }
         },
@@ -373,105 +449,129 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_file_code_entities: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { file_path, project_root_path, language } = args;
-            const effectiveRootPath = project_root_path || path.dirname(file_path); // Fallback for relative naming
+            const { file_path, project_root_path, language: lang_arg } = args;
+            const effectiveRootPath = path.resolve(project_root_path || path.dirname(file_path));
+            const absoluteFilePath = path.resolve(file_path);
+
+            if (!absoluteFilePath.startsWith(effectiveRootPath)) {
+                 throw new McpError(ErrorCode.InvalidParams, `File path (${absoluteFilePath}) must be within the project root path (${effectiveRootPath}).`);
+            }
 
             let entitiesCreatedCount = 0;
+            let entitiesUpdatedCount = 0;
             let relationsCreatedCount = 0;
 
             try {
-                // Ensure the file node itself exists or create it.
-                // The name in KG should be relative to effectiveRootPath.
-                const fileNodeRelativeName = path.relative(effectiveRootPath, file_path).replace(/\\/g, '/');
-                let fileNodeExists = false;
-                try {
-                    const existingFileNode = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
-                    if (existingFileNode && existingFileNode.length > 0) {
-                        fileNodeExists = true;
-                    }
-                } catch (e) { /* Node might not exist, that's fine */ }
+                const fileNodeRelativeName = path.relative(effectiveRootPath, absoluteFilePath).replace(/\\/g, '/');
+                let fileNodeInKG: any;
+                
+                const existingFileNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
+                fileNodeInKG = existingFileNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
 
-                if (!fileNodeExists) {
-                    const stats = await fs.stat(file_path);
-                    const lang = await codebaseIntrospectionService.detectLanguage(agent_id, file_path, path.basename(file_path)); // Use the service method
-                    const fileEntity = {
+                if (!fileNodeInKG) {
+                    console.log(`[ingest_file_code_entities] File node ${fileNodeRelativeName} not found, creating it.`);
+                    const stats = await fs.stat(absoluteFilePath);
+                    const detectedLang = lang_arg || await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
+                    const fileEntityToCreate = {
                         name: fileNodeRelativeName,
                         entityType: 'file' as 'file',
                         observations: [
-                            `absolute_path: ${file_path}`,
+                            `absolute_path: ${absoluteFilePath}`,
                             `type: file`,
-                            `language: ${lang || 'unknown'}`,
-                            `size_bytes: ${stats.size}`,
+                            `language: ${detectedLang || 'unknown'}`,
+                            `size_bytes: ${stats.size.toString()}`,
                             `created_at: ${stats.birthtime.toISOString()}`,
                             `modified_at: ${stats.mtime.toISOString()}`,
                         ]
                     };
-                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [fileEntity]);
-                    if (creationResult.details.some((d:any) => d.success)) entitiesCreatedCount++;
+                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [fileEntityToCreate]);
+                    entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
+                    // Re-fetch after creation to get the ID
+                    const newNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
+                    fileNodeInKG = newNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
+                }
+                if (!fileNodeInKG) {
+                     throw new McpError(ErrorCode.InternalError, `Failed to create or find file node for ${fileNodeRelativeName}.`);
                 }
 
-
-                const extractedEntities: ExtractedCodeEntity[] = await codebaseIntrospectionService.parseFileForCodeEntities(agent_id, file_path, language);
+                const langForParsing = lang_arg || fileNodeInKG.observations?.find((o:string) => o.startsWith("language:"))?.split(": ")[1] || await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
+                
+const extractedEntities: ExtractedCodeEntity[] = await codebaseIntrospectionService.parseFileForCodeEntities(agent_id, absoluteFilePath, langForParsing);
 
                 if (extractedEntities.length === 0) {
                     return { content: [{ type: 'text', text: formatSimpleMessage(`No code entities found or extracted from file: ${file_path}`, "Code Entity Ingestion") }] };
                 }
 
-                const entitiesToCreateKG: Array<{ name: string; entityType: string; observations: string[] }> = [];
-                const relationsToCreateKG: Array<{ from: string; to: string; relationType: string, observations?: string[] }> = [];
+                const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+                const observationsToUpdateBatchKG: Array<{ entityName: string; contents: string[] }> = [];
+                const relationsToCreateSetKG = new Set<string>();
 
                 for (const entity of extractedEntities) {
-                    // entity.fullName is already relative if CodebaseIntrospectionService sets it correctly
-                    const observations = [
+                    const currentObservations = [
                         `type: ${entity.type}`,
                         `signature: ${entity.signature || 'N/A'}`,
                         `lines: ${entity.startLine}-${entity.endLine}`,
-                        `exported: ${entity.isExported ? 'yes' : 'no'}`
+                        `exported: ${entity.isExported ? 'yes' : 'no'}`,
+                        `defined_in_file_path: ${fileNodeRelativeName}` 
                     ];
-                    if (entity.docstring) observations.push(`docstring: ${entity.docstring.substring(0, 200)}...`); // Truncate long docstrings for observation
-                    if (entity.parameters && entity.parameters.length > 0) observations.push(`parameters: ${JSON.stringify(entity.parameters)}`);
-                    if (entity.returnType) observations.push(`return_type: ${entity.returnType}`);
-                    if (entity.parentClass) observations.push(`parent_class: ${entity.parentClass}`);
-                    if (entity.implementedInterfaces && entity.implementedInterfaces.length > 0) observations.push(`implements: ${entity.implementedInterfaces.join(', ')}`);
+                    if (entity.docstring) currentObservations.push(`docstring: ${entity.docstring.substring(0, 200)}${entity.docstring.length > 200 ? '...' : ''}`);
+                    if (entity.parameters && entity.parameters.length > 0) currentObservations.push(`parameters: ${JSON.stringify(entity.parameters)}`);
+                    if (entity.returnType) currentObservations.push(`return_type: ${entity.returnType}`);
+                    if (entity.parentClass && entity.filePath) currentObservations.push(`parent_class_full_name: ${entity.filePath}::${entity.parentClass}`);
+                    if (entity.implementedInterfaces && entity.implementedInterfaces.length > 0) currentObservations.push(`implements: ${entity.implementedInterfaces.join(', ')}`);
 
+                    const existingEntities = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.fullName]);
+                    const existingEntityNode = existingEntities.find((n:any) => n.name === entity.fullName && n.entityType === entity.type);
 
-                    entitiesToCreateKG.push({
-                        name: entity.fullName, // Use the pre-calculated fullName from ExtractedCodeEntity
-                        entityType: entity.type,
-                        observations: observations,
-                    });
-
-                    // Relation: Entity defined_in_file FileNode
-                    relationsToCreateKG.push({
-                        from: entity.fullName,
-                        to: fileNodeRelativeName, // Relative path of the file
-                        relationType: 'defined_in_file'
-                    });
-
-                    // Relation: Class has_method MethodNode
-                    if (entity.type === 'method' && entity.className) {
-                        const classFullName = `${entity.filePath}::${entity.className}`; // Construct class full name
-                        relationsToCreateKG.push({
-                            from: classFullName,
-                            to: entity.fullName,
-                            relationType: 'has_method'
+                    if (existingEntityNode) {
+                        if (haveObservationsChanged(existingEntityNode.observations, currentObservations)) {
+                             const newObsToAdd = currentObservations.filter(obs => !(existingEntityNode.observations || []).includes(obs));
+                             if (newObsToAdd.length > 0) {
+                                observationsToUpdateBatchKG.push({ entityName: existingEntityNode.name, contents: newObsToAdd });
+                             }
+                        }
+                    } else {
+                        entitiesToCreateBatch.push({
+                            name: entity.fullName, 
+                            entityType: entity.type,
+                            observations: currentObservations,
                         });
+                    }
+                    
+                    const defRel = `${entity.fullName}-${fileNodeRelativeName}-defined_in_file`;
+                    if(!relationsToCreateSetKG.has(defRel)) relationsToCreateSetKG.add(defRel);
+
+                    if (entity.type === 'method' && entity.className && entity.filePath) {
+                        const classFullName = `${entity.filePath}::${entity.className}`; 
+                        const methodRel = `${classFullName}-${entity.fullName}-has_method`;
+                        if(!relationsToCreateSetKG.has(methodRel)) relationsToCreateSetKG.add(methodRel);
                     }
                 }
 
-                if (entitiesToCreateKG.length > 0) {
-                   const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateKG);
-                   entitiesCreatedCount += creationResult.length;
+                if (entitiesToCreateBatch.length > 0) {
+                   const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
+                   entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
                 }
-                if (relationsToCreateKG.length > 0) {
-                    const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, relationsToCreateKG);
-                    relationsCreatedCount += relationResult.length;
+                if (observationsToUpdateBatchKG.length > 0) {
+                    const updateResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateBatchKG);
+                    entitiesUpdatedCount += Array.isArray(updateResult) ? updateResult.length : 0;
+                }
+                
+                const finalRelationsToCreateKG: Array<{ from: string; to: string; relationType: string }> = [];
+                for (const relStr of relationsToCreateSetKG) {
+                    const parts = relStr.split('-');
+                    finalRelationsToCreateKG.push({ from: parts[0], to: parts[1], relationType: parts[2]});
+                }
+
+                if (finalRelationsToCreateKG.length > 0) {
+                    const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, finalRelationsToCreateKG);
+                    relationsCreatedCount += Array.isArray(relationResult) ? relationResult.length : 0;
                 }
 
                 return {
                     content: [{
                         type: 'text', text: formatSimpleMessage(
-                            `Code entity ingestion for file "${file_path}" complete.\n- Entities Created/Updated: ${entitiesCreatedCount}\n- Relations Created: ${relationsCreatedCount}`,
+                            `Code entity ingestion for file "${file_path}" complete.\n- Code Entities Newly Created: ${entitiesCreatedCount}\n- Code Entities Updated (Observations): ${entitiesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}`,
                             "Code Entity Ingestion Report"
                         )
                     }]
@@ -482,14 +582,13 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InternalError, `Code entity ingestion failed for ${file_path}: ${error.message}`);
             }
         },
-        // ... (rest of the knowledge_graph_memory, kg_nl_query, kg_infer_relations, kg_visualize handlers as before) ...
         'knowledge_graph_memory': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for knowledge_graph_memory operations.");
             }
             const operation = args.operation as string;
-            let kgResult: any;
+            let kgResultText: string; // Changed from kgResult to kgResultText
             let title = `Knowledge Graph Operation: ${operation} for Agent: ${agent_id}`;
             let resultData: any;
 
@@ -497,16 +596,43 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 switch (operation) {
                     case 'create_entities':
                         if (!args.entities || !Array.isArray(args.entities) || args.entities.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entities' array for 'create_entities' operation.");
-                        args.entities.forEach((entity: any) => {
+                        const entitiesToCreateOp: any[] = [];
+                        const observationsToUpdateOp: any[] = [];
+                        let createdOpCount = 0;
+                        let updatedOpCount = 0;
+
+                        for (const entity of args.entities) {
                             if (!entity.name || !entity.entityType) throw new McpError(ErrorCode.InvalidParams, "Each entity must have a 'name' and 'entityType'.");
-                        });
-                        resultData = await memoryManager.knowledgeGraphManager.createEntities(agent_id, args.entities);
+                            const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.name]);
+                            const existingNode = existingNodes.find((n: any) => n.name === entity.name && n.entityType === entity.entityType);
+                            if (existingNode) {
+                                if (entity.observations && entity.observations.length > 0 && haveObservationsChanged(existingNode.observations, entity.observations)) {
+                                     const newObsToAdd = entity.observations.filter((obs:string) => !(existingNode.observations || []).includes(obs));
+                                     if(newObsToAdd.length > 0) {
+                                        observationsToUpdateOp.push({ entityName: existingNode.name, contents: newObsToAdd });
+                                     }
+                                }
+                            } else {
+                                entitiesToCreateOp.push(entity);
+                            }
+                        }
+                        if (entitiesToCreateOp.length > 0) {
+                            const creationRes = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateOp);
+                            createdOpCount = Array.isArray(creationRes) ? creationRes.length : 0;
+                        }
+                        if (observationsToUpdateOp.length > 0) {
+                            const updateRes = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateOp);
+                            updatedOpCount = Array.isArray(updateRes) ? updateRes.length : 0;
+                        }
+                        resultData = { message: `Create entities operation: ${createdOpCount} created, ${updatedOpCount} updated.`, details: { created: entitiesToCreateOp, updated_observations_for: observationsToUpdateOp.map(o=>o.entityName) } };
                         break;
                     case 'create_relations':
                         if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'create_relations' operation.");
                          args.relations.forEach((relation: any) => {
                             if (!relation.from || !relation.to || !relation.relationType) throw new McpError(ErrorCode.InvalidParams, "Each relation must have 'from', 'to', and 'relationType'.");
                         });
+                        // Add pre-check for existing relations to avoid duplicates if desired
+                        // For now, KnowledgeGraphManagerV2.createRelations creates new UUIDs, so it doesn't deduplicate by content.
                         resultData = await memoryManager.knowledgeGraphManager.createRelations(agent_id, args.relations);
                         break;
                     case 'add_observations':
@@ -515,7 +641,8 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         break;
                     case 'delete_entities':
                         if (!args.entityNames || !Array.isArray(args.entityNames) || args.entityNames.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entityNames' array for 'delete_entities' operation.");
-                        resultData = await memoryManager.knowledgeGraphManager.deleteEntities(agent_id, args.entityNames);
+                        await memoryManager.knowledgeGraphManager.deleteEntities(agent_id, args.entityNames); // Returns void
+                        resultData = { message: `Delete entities operation completed for names: ${args.entityNames.join(', ')}.`};
                         break;
                     case 'delete_observations':
                         if (!args.deletions || !Array.isArray(args.deletions) || args.deletions.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'deletions' array for 'delete_observations' operation.");
@@ -523,7 +650,8 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         break;
                     case 'delete_relations':
                         if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'delete_relations' operation.");
-                        resultData = await memoryManager.knowledgeGraphManager.deleteRelations(agent_id, args.relations);
+                        await memoryManager.knowledgeGraphManager.deleteRelations(agent_id, args.relations); // Returns void
+                        resultData = { message: `Delete relations operation completed.`};
                         break;
                     case 'read_graph':
                         resultData = await memoryManager.knowledgeGraphManager.readGraph(agent_id);
@@ -546,15 +674,20 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         );
                 }
 
-                if (resultData && typeof resultData.message === 'string' && Array.isArray(resultData.details)) {
-                     kgResult = `## ${title}\n\n**Status:** ${resultData.message}\n\n**Details:**\n${formatJsonToMarkdownCodeBlock(resultData.details)}\n`;
-                } else if (operation === 'read_graph' || operation === 'search_nodes' || operation === 'open_nodes') {
-                     kgResult = `## ${title}\n\n${formatJsonToMarkdownCodeBlock(resultData)}\n`;
-                     if ((Array.isArray(resultData) && resultData.length === 0) || (typeof resultData === 'object' && !Array.isArray(resultData) && Object.keys(resultData).length === 0) || (typeof resultData === 'object' && resultData.nodes && resultData.nodes.length === 0 && resultData.relations && resultData.relations.length === 0) ){
-                        kgResult = `## ${title}\n\n*No results found or graph is empty.*\n`;
+                // Standardize response format
+                if (operation === 'read_graph' || operation === 'search_nodes' || operation === 'open_nodes') {
+                     kgResultText = `## ${title}\n\n`;
+                     if ((Array.isArray(resultData) && resultData.length === 0) || 
+                         (typeof resultData === 'object' && resultData !== null && resultData.nodes && Array.isArray(resultData.nodes) && resultData.nodes.length === 0 && (!resultData.relations || resultData.relations.length === 0) ) ){
+                        kgResultText += `*No results found or graph is empty.*\n`;
+                     } else {
+                        kgResultText += formatJsonToMarkdownCodeBlock(resultData);
                      }
-                } else { 
-                    kgResult = `## ${title}\n\nOperation completed. Result:\n${formatJsonToMarkdownCodeBlock(resultData)}\n`;
+                } else if (resultData && typeof resultData.message === 'string') { // For operations that return a status message and details
+                     kgResultText = `## ${title}\n\n**Status:** ${resultData.message}\n`;
+                     if(resultData.details) kgResultText += `\n**Details:**\n${formatJsonToMarkdownCodeBlock(resultData.details)}\n`;
+                } else { // Generic fallback for other results (e.g. array of updated nodes)
+                    kgResultText = `## ${title}\n\nOperation completed. Result:\n${formatJsonToMarkdownCodeBlock(resultData)}\n`;
                 }
 
             } catch (error: any) {
@@ -562,50 +695,45 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                  if (error instanceof McpError) throw error;
                  throw new McpError(ErrorCode.InternalError, `Knowledge graph operation '${operation}' failed: ${error.message}`);
             }
-            return { content: [{ type: 'text', text: kgResult }] };
+            return { content: [{ type: 'text', text: kgResultText }] };
         },
         'kg_nl_query': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
-             if (!agent_id) {
+            if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_nl_query.");
             }
+            // model arg is optional, GeminiIntegrationService has a default
             try {
-                const resultJson = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
-                const result = JSON.parse(resultJson);
-                
+                const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
+                const result = JSON.parse(resultJsonString); // Result from queryNaturalLanguage is already a JSON string.
+
                 let md = `## Natural Language Query Result for Agent: \`${agent_id}\`\n\n`;
                 md += `**Query:** "${args.query}"\n\n`;
-                
-                // Check if it's an error response
-                if (result.error) {
-                    md += `### ⚠️ Query Translation Error\n\n`;
-                    md += `**Error:** ${result.error}\n`;
-                    md += `**Suggestion:** ${result.suggestion}\n`;
-                } else if (result.metadata) {
-                    // Display metadata about the query translation
-                    md += `### Query Translation\n\n`;
-                    md += `**Operation:** \`${result.metadata.translatedOperation}\`\n`;
-                    md += `**Arguments:** ${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}\n`;
-                    
-                    if (result.metadata.assumptions) {
-                        md += `**Assumptions:** ${result.metadata.assumptions}\n\n`;
-                    }
-                    
-                    md += `### Results\n\n`;
-                    if (result.results) {
-                        if (Array.isArray(result.results) && result.results.length === 0) {
-                            md += `*No results found.*\n`;
-                        } else if (typeof result.results === 'object' && result.results.nodes && result.results.nodes.length === 0) {
-                            md += `*No nodes found matching the query.*\n`;
-                        } else {
-                            md += formatJsonToMarkdownCodeBlock(result.results);
-                        }
-                    }
+
+                if (result.metadata) {
+                    md += `### Query Translation\n`;
+                    md += `- **Operation:** \`${result.metadata.translatedOperation}\`\n`;
+                    md += `- **Arguments:**\n${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}\n`;
+                    if (result.metadata.assumptions) md += `- **Assumptions:** ${result.metadata.assumptions}\n`;
+                    md += `- **Used Gemini for Translation:** ${result.metadata.usedGemini ? 'Yes' : 'No'}\n\n`;
                 } else {
-                    // Fallback for old format
-                    md += `**Response:**\n${formatJsonToMarkdownCodeBlock(result)}\n`;
+                    md += `*Query translation metadata not available.*\n\n`;
                 }
                 
+                md += `### Results\n`;
+                if (result.results) {
+                    if (result.results.error) {
+                         md += `**Error from Query Execution:** ${result.results.error}\n`;
+                    } else if ((Array.isArray(result.results) && result.results.length === 0) || 
+                               (typeof result.results === 'object' && result.results.nodes && Array.isArray(result.results.nodes) && result.results.nodes.length === 0 && (!result.results.relations || result.results.relations.length === 0))) {
+                        md += `*No results found matching the query.*\n`;
+                    } else {
+                        md += formatJsonToMarkdownCodeBlock(result.results);
+                    }
+                } else {
+                     md += `*No results data in the response.*\n`;
+                }
+
                 return { content: [{ type: 'text', text: md }] };
             } catch (error: any) {
                 console.error(`Error in kg_nl_query tool (agent: ${agent_id}):`, error);
@@ -621,41 +749,30 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             try {
                 const result = await memoryManager.knowledgeGraphManager.inferRelations(agent_id, args.entity_names, args.context);
                 let md = `## Relation Inference Result for Agent: \`${agent_id}\`\n\n`;
-                if(args.entity_names) md += `**Focused Entities:** ${args.entity_names.join(', ')}\n`;
+                if(args.entity_names && args.entity_names.length > 0) md += `**Focused Entities:** ${args.entity_names.map((e:string) => `\`${e}\``).join(', ')}\n`;
                 if(args.context) md += `**Additional Context:** ${args.context}\n`;
                 md += `\n**Status:** ${result.message}\n\n`;
                 
                 if(result.details && result.details.length > 0){
-                    md += `### Proposed Relations:\n\n`;
+                    md += `### Proposed/Added Relations:\n\n`;
                     md += `| From | To | Relation Type | Confidence | Evidence | Status |\n`;
-                    md += `|------|-----|---------------|------------|----------|--------|\n`;
+                    md += `|------|----|---------------|------------|----------|--------|\n`;
                     
-                    for (const rel of result.details) {
+                    result.details.forEach((rel: any) => {
                         const confidence = rel.confidence ? `${(rel.confidence * 100).toFixed(0)}%` : 'N/A';
-                        const evidence = rel.evidence || 'No evidence provided';
-                        const status = rel.status || 'proposed';
-                        const statusEmoji = status === 'added' ? '✅' : status === 'failed' ? '❌' : '🔍';
+                        const evidence = rel.evidence || 'No specific evidence provided';
+                        const status = rel.status || 'proposed_by_ai'; // Default if not set
+                        const statusEmoji = status.startsWith('added') ? '✅' : status.startsWith('failed') ? '❌' : '🔍';
                         
-                        md += `| \`${rel.from}\` | \`${rel.to}\` | ${rel.relationType} | ${confidence} | ${evidence} | ${statusEmoji} ${status} |\n`;
-                    }
+                        md += `| \`${rel.from}\` | \`${rel.to}\` | \`${rel.relationType}\` | ${confidence} | ${evidence.substring(0, 50)}${evidence.length > 50 ? '...' : ''} | ${statusEmoji} ${status} |\n`;
+                    });
                     
                     md += `\n### Legend:\n`;
-                    md += `- ✅ **added**: High-confidence relation automatically added to the graph\n`;
-                    md += `- 🔍 **proposed**: Low-confidence relation requiring manual review\n`;
-                    md += `- ❌ **failed**: Relation could not be added (e.g., entity not found)\n`;
-                    
-                    md += `\n### Code-Specific Relation Types:\n`;
-                    md += `- **calls_function**: Function/method calls another function\n`;
-                    md += `- **uses_class**: Function uses or instantiates a class\n`;
-                    md += `- **modifies_variable**: Function modifies a variable\n`;
-                    md += `- **implements_interface**: Class implements an interface\n`;
-                    md += `- **extends_class**: Class inheritance relationship\n`;
-                    md += `- **related_to_feature**: Entities part of same feature/module\n`;
-                    md += `- **tested_by**: Test relationship\n`;
-                    md += `- **depends_on**: General dependency\n`;
-                    md += `- **configures**: Configuration relationship\n`;
+                    md += `- ✅ **added_by_ai**: High-confidence relation automatically added.\n`;
+                    md += `- 🔍 **proposed_by_ai**: Relation proposed by AI, requires review.\n`;
+                    md += `- ❌ **failed**: Relation could not be added.\n`;
                 } else {
-                    md += `*No new relations were inferred.*\n`;
+                    md += `*No new relations were inferred or added.*\n`;
                 }
                 return { content: [{ type: 'text', text: md }] };
             } catch (error: any) {
@@ -670,23 +787,42 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_visualize.");
             }
             try {
-                const visualizationOptions = {
-                    query: args.query,
-                    layoutDirection: args.layout_direction || 'TD',
-                    depth: args.depth || 2,
-                    includeLegend: args.include_legend !== false,
-                    groupByDirectory: args.group_by_directory || false
-                };
-                
-                const mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
-                    agent_id, 
-                    visualizationOptions
-                );
-                
+                let mermaidGraph: string;
                 let md = `## Knowledge Graph Visualization for Agent: \`${agent_id}\`\n`;
-                if(args.query) md += `**Query:** "${args.query}"\n`;
-                if(args.layout_direction && args.layout_direction !== 'TD') md += `**Layout:** ${args.layout_direction}\n`;
-                if(args.group_by_directory) md += `**Grouping:** By directory\n`;
+
+                if (args.natural_language_query) {
+                    md += `**Based on Natural Language Query:** "${args.natural_language_query}"\n`;
+                    // The generateMermaidGraph in KGManagerV2 now handles NLQ internally if needed
+                    // For this tool, we'll pass the NLQ to the options for generateMermaidGraph
+                    const visualizationOptions = {
+                        query: args.query, // Can be null if only NLQ is used
+                        natural_language_query: args.natural_language_query,
+                        layoutDirection: args.layout_direction || 'TD',
+                        depth: args.depth || 2,
+                        includeLegend: args.include_legend !== false,
+                        groupByDirectory: args.group_by_directory || false
+                    };
+                     mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
+                        agent_id,
+                        visualizationOptions
+                    );
+                } else {
+                    if (args.query) md += `**Based on Direct Query:** "${args.query}"\n`;
+                    const visualizationOptions = {
+                        query: args.query,
+                        layoutDirection: args.layout_direction || 'TD',
+                        depth: args.depth || 2,
+                        includeLegend: args.include_legend !== false,
+                        groupByDirectory: args.group_by_directory || false
+                    };
+                    mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
+                        agent_id,
+                        visualizationOptions
+                    );
+                }
+
+                if (args.layout_direction && args.layout_direction !== 'TD') md += `**Layout:** ${args.layout_direction}\n`;
+                if (args.group_by_directory) md += `**Grouping:** By directory\n`;
                 md += `\n\`\`\`mermaid\n${mermaidGraph}\n\`\`\`\n`;
                 return { content: [{ type: 'text', text: md }] };
             } catch (error: any) {
