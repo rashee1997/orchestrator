@@ -127,6 +127,14 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         codebase_context_summary,
     } = args;
 
+    const subtaskManager: SubtaskManager = memoryManager.subtaskManager;
+
+    // Check if subtasks already exist for this parent task
+    const existingSubtasksCheck = await subtaskManager.getSubtasksByParentTask(agent_id, parent_task_id);
+    if (existingSubtasksCheck && existingSubtasksCheck.length > 0) {
+        return { content: [{ type: 'text', text: formatSimpleMessage(`Subtasks have already been created for this parent task (Task ID: \`${parent_task_id}\`).`, "AI Subtask Suggestions") }] };
+    }
+
     let { parent_task_title, parent_task_description } = args;
 
     const planTaskManager: PlanTaskManager = memoryManager.planTaskManager;
@@ -144,6 +152,18 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
     if (!parent_task_title) {
         throw new McpError(ErrorCode.InvalidParams, `Parent task title for task ID '${parent_task_id}' could not be determined and is required for subtask suggestion.`);
     }
+
+    // Fetch existing subtasks for this parent task
+    const existingSubtasks = await memoryManager.subtaskManager.getSubtasksByParentTask(agent_id, parent_task_id);
+    let existingSubtasksContext = "";
+    if (existingSubtasks && existingSubtasks.length > 0) {
+        existingSubtasksContext = "Existing Subtasks for this Parent Task:\n";
+        existingSubtasks.forEach((subtask: any, index: number) => {
+            existingSubtasksContext += `- ${subtask.title}${subtask.description ? ': ' + subtask.description : ''}\n`;
+        });
+        existingSubtasksContext += "\nAvoid suggesting subtasks that are already listed above.\n\n";
+    }
+
 
     // Retrieve live code chunks for all files associated with the parent task (if any)
     let liveCodeContext = '';
@@ -184,11 +204,17 @@ ${chunk.content || ''}
         }
     }
 
-    let prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.\n` +
+    let prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable, and *modular* subtasks.\n` +
+        `Focus on creating subtasks that represent distinct, logical steps and avoid suggesting redundant foundational work if it should be part of a shared service (e.g., a single file extraction service).\n` +
+        `Consider potential dependencies between the subtasks you suggest.\n\n` +
         `For each subtask, provide a concise title, a brief description, an estimated effort in hours (integer), and optionally, a short rationale for why it's needed and potential tools to use.\n\n` +
         `Parent Task Title: "${parent_task_title}"\n` +
         `Parent Task Description: "${parent_task_description || 'No detailed description provided.'}"\n` +
         `Number of subtasks to suggest: ${max_suggestions}\n`;
+
+    if (existingSubtasksContext) {
+        prompt += `\n${existingSubtasksContext}`;
+    }
 
     if (liveCodeContext) {
         prompt += `\nConsider the following live code context from the codebase when suggesting subtasks:\n${liveCodeContext}\n`;
@@ -201,7 +227,8 @@ ${chunk.content || ''}
         `- "suggested_description": string (optional, 1-2 sentences explaining the subtask)\n` +
         `- "rationale": string (optional, brief reason for this subtask)\n` +
         `- "estimated_effort_hours": number (integer, e.g., 1, 2, 4)\n` +
-        `- "potential_tools": array of strings (optional, e.g., ["file_editor", "git_commit"])\n\n` +
+        `- "potential_tools": array of strings (optional, e.g., ["file_editor", "git_commit"])\n` +
+        `- "suggested_dependencies_subtask_titles": array of strings (optional, titles of other suggested subtasks that this one depends on)\n\n` + // Added suggested dependencies
         `Example JSON output:\n` +
         `[` +
         `  {` +
@@ -214,7 +241,8 @@ ${chunk.content || ''}
         `  {` +
         `    "suggested_title": "Implement core logic for Y",` +
         `    "suggested_description": "Write the main function/method that performs the Y operation.",` +
-        `    "estimated_effort_hours": 4` +
+        `    "estimated_effort_hours": 4,` +
+        `    "suggested_dependencies_subtask_titles": ["Define data structures for X"]` + // Example dependency
         `  }` +
         `]\n\n` +
         `Provide only the JSON array.\n`;
@@ -266,6 +294,9 @@ ${chunk.content || ''}
         }
         if (subtask.potential_tools && subtask.potential_tools.length > 0) {
             markdownOutput += `- **Potential Tools:** ${subtask.potential_tools.map(t => `\`${t}\``).join(', ')}\n`;
+        }
+        if ((subtask as any).suggested_dependencies_subtask_titles && (subtask as any).suggested_dependencies_subtask_titles.length > 0) {
+             markdownOutput += `- **Suggested Dependencies (Subtask Titles):** ${(subtask as any).suggested_dependencies_subtask_titles.map((t: string) => `"${t}"`).join(', ')}\n`;
         }
         markdownOutput += "\n";
     });

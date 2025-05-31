@@ -481,15 +481,33 @@ export const schemas = {
             plan_id: { type: 'string' },
             parent_task_id: { type: ['string', 'null'] },
             subtaskData: {
-                type: 'object',
-                properties: {
-                    title: { type: 'string' },
-                    description: { type: ['string', 'null'] },
-                    status: { type: 'string', default: 'PLANNED' },
-                    notes: { type: ['object', 'null'] } 
-                },
-                required: ['title'],
-                additionalProperties: false 
+                anyOf: [
+                    {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            description: { type: ['string', 'null'] },
+                            status: { type: 'string' },
+                            notes: { type: ['object', 'null'] }
+                        },
+                        required: ['title'],
+                        additionalProperties: false
+                    },
+                    {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                title: { type: 'string' },
+                                description: { type: ['string', 'null'] },
+                                status: { type: 'string' },
+                                notes: { type: ['object', 'null'] }
+                            },
+                            required: ['title'],
+                            additionalProperties: false
+                        }
+                    }
+                ]
             }
         },
         required: ['agent_id', 'plan_id', 'subtaskData'],

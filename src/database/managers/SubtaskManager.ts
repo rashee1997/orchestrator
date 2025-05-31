@@ -66,6 +66,69 @@ export class SubtaskManager {
         }
     }
 
+    async createSubtasks(
+        agent_id: string,
+        plan_id: string,
+        subtasksData: { title: string; parent_task_id?: string; description?: string; status?: string; notes?: any }[]
+    ): Promise<string[]> {
+        const db = this.dbService.getDb();
+        const timestamp = Date.now();
+        const createdSubtaskIds: string[] = [];
+
+        try {
+            await db.run('BEGIN TRANSACTION');
+
+            const plan = await db.get(`SELECT plan_id FROM plans WHERE plan_id = ? AND agent_id = ?`, plan_id, agent_id);
+            if (!plan) {
+                throw new Error(`Plan with ID ${plan_id} not found for agent ${agent_id}.`);
+            }
+
+            for (const subtaskData of subtasksData) {
+                if (subtaskData.parent_task_id) {
+                    const parentTask = await db.get(
+                        `SELECT task_id FROM plan_tasks WHERE task_id = ? AND plan_id = ? AND agent_id = ?`,
+                        subtaskData.parent_task_id, plan_id, agent_id
+                    );
+                    if (!parentTask) {
+                        throw new Error(`Parent task with ID ${subtaskData.parent_task_id} not found in plan ${plan_id} for agent ${agent_id}.`);
+                    }
+                }
+
+                const subtask_id = randomUUID();
+
+                await db.run(
+                    `INSERT INTO subtasks (
+                        subtask_id, plan_id, parent_task_id, agent_id, title, description, status,
+                        creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, completion_timestamp_unix, completion_timestamp_iso, notes_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    subtask_id,
+                    plan_id,
+                    (subtaskData.parent_task_id === undefined || subtaskData.parent_task_id === '') ? null : subtaskData.parent_task_id,
+                    agent_id,
+                    subtaskData.title,
+                    subtaskData.description || null,
+                    subtaskData.status || 'PLANNED',
+                    timestamp,
+                    new Date(timestamp).toISOString(),
+                    timestamp,
+                    new Date(timestamp).toISOString(),
+                    subtaskData.status === 'COMPLETED' || subtaskData.status === 'FAILED' ? timestamp : null,
+                    subtaskData.status === 'COMPLETED' || subtaskData.status === 'FAILED' ? new Date(timestamp).toISOString() : null,
+                    subtaskData.notes ? JSON.stringify(subtaskData.notes) : null
+                );
+
+                createdSubtaskIds.push(subtask_id);
+            }
+
+            await db.run('COMMIT');
+            return createdSubtaskIds;
+        } catch (error) {
+            await db.run('ROLLBACK');
+            console.error('Error creating subtasks, transaction rolled back:', error);
+            throw error;
+        }
+    }
+
     async getSubtask(agent_id: string, subtask_id: string): Promise<object | null> {
         const db = this.dbService.getDb();
         const subtask = await db.get(

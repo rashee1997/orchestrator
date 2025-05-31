@@ -55,7 +55,7 @@ export const planManagementToolDefinitions = [
     },
     {
         name: 'add_subtask_to_plan',
-        description: 'Adds a new subtask to an existing plan, optionally linked to a parent task. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        description: 'Adds a new subtask to an existing plan, optionally linked to a parent task. Supports uploading batch files to add multiple subtasks at once. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
         inputSchema: schemas.addSubtaskToPlan,
     },
     {
@@ -272,10 +272,23 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const subtask_id = await memoryManager.subtaskManager.createSubtask(agent_id, args.plan_id, { ...args.subtaskData, parent_task_id: args.parent_task_id });
-            let message = `Subtask added to plan \`${args.plan_id}\` with ID: \`${subtask_id}\`.`;
-            if (args.parent_task_id) message += ` Parent task ID: \`${args.parent_task_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Subtask Added") }] };
+            if (Array.isArray(args.subtaskData) && args.subtaskData.length > 0) { // Check for singular subtaskData being an array
+                // Batch add multiple subtasks
+                const subtasksWithParent = args.subtaskData.map((subtask: any) => ({
+                    ...subtask,
+                    parent_task_id: args.parent_task_id || subtask.parent_task_id
+                }));
+                const subtask_ids = await memoryManager.subtaskManager.createSubtasks(agent_id, args.plan_id, subtasksWithParent);
+                let message = `Added ${subtask_ids.length} subtasks to plan \`${args.plan_id}\`. IDs: ${subtask_ids.map((id: string) => `\`${id}\``).join(', ')}.`;
+                if (args.parent_task_id) message += ` Parent task ID: \`${args.parent_task_id}\`.`;
+                return { content: [{ type: 'text', text: formatSimpleMessage(message, "Subtasks Added") }] };
+            } else {
+                // Single subtask fallback
+                const subtask_id = await memoryManager.subtaskManager.createSubtask(agent_id, args.plan_id, { ...args.subtaskData, parent_task_id: args.parent_task_id });
+                let message = `Subtask added to plan \`${args.plan_id}\` with ID: \`${subtask_id}\`.`;
+                if (args.parent_task_id) message += ` Parent task ID: \`${args.parent_task_id}\`.`;
+                return { content: [{ type: 'text', text: formatSimpleMessage(message, "Subtask Added") }] };
+            }
         },
         'get_subtasks': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
