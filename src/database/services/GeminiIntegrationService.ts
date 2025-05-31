@@ -564,10 +564,9 @@ Please provide the JSON object only.
                 implicit_assumptions_made_by_refiner, explicit_constraints_from_prompt,
                 suggested_ai_role_for_agent, suggested_reasoning_strategy_for_agent,
                 desired_output_characteristics_inferred, suggested_context_analysis_for_agent,
+                codebase_context_summary_by_ai, relevant_code_elements_analyzed,
                 confidence_in_refinement_score, refinement_error_message
-                -- Add new fields here if schema is extended for them, e.g., codebase_context_summary_by_ai, relevant_code_elements_analyzed
-                -- For now, assuming they are part of the main JSON and not separate columns.
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             refinedPrompt.refined_prompt_id,
             refinedPrompt.agent_id,
             refinedPrompt.original_prompt_text,
@@ -582,10 +581,10 @@ Please provide the JSON object only.
             refinedPrompt.suggested_reasoning_strategy_for_agent || null,
             refinedPrompt.desired_output_characteristics_inferred ? JSON.stringify(refinedPrompt.desired_output_characteristics_inferred) : null,
             refinedPrompt.suggested_context_analysis_for_agent ? JSON.stringify(refinedPrompt.suggested_context_analysis_for_agent) : null,
+            refinedPrompt.codebase_context_summary_by_ai || null,
+            refinedPrompt.relevant_code_elements_analyzed ? JSON.stringify(refinedPrompt.relevant_code_elements_analyzed) : null,
             refinedPrompt.confidence_in_refinement_score || null,
             refinedPrompt.refinement_error_message || null
-            // If new fields like 'codebase_context_summary_by_ai' were added as separate DB columns, they'd be here.
-            // If they are part of the main JSON, no change to INSERT statement needed, just ensure `refinedPrompt` object contains them before stringification if applicable.
         );
         return refined_prompt_id;
     }

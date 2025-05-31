@@ -225,6 +225,8 @@ CREATE TABLE IF NOT EXISTS refined_prompts (
     suggested_reasoning_strategy_for_agent TEXT,
     desired_output_characteristics_inferred TEXT, -- JSON object
     suggested_context_analysis_for_agent TEXT, -- JSON array of objects
+    codebase_context_summary_by_ai TEXT, -- New field for AI-generated codebase context summary
+    relevant_code_elements_analyzed TEXT, -- New field for relevant code elements analyzed
     confidence_in_refinement_score TEXT,
     refinement_error_message TEXT,
     FOREIGN KEY (agent_id) REFERENCES agents(agent_id) -- Assuming an 'agents' table exists or will exist

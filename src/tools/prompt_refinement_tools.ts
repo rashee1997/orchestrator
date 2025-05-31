@@ -34,6 +34,7 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
     md += `- **Refinement Engine:** \`${prompt.refinement_engine_model}\`\n`;
     md += `- **Timestamp:** ${new Date(prompt.refinement_timestamp).toLocaleString()}\n`;
     md += `- **Overall Goal:** ${prompt.overall_goal || '*Not specified*'}\n`;
+    md += `\n> Next step is feed the refined prompt id to create_task_plan tool to create plan\n`;
 
     if (prompt.decomposed_tasks_parsed && prompt.decomposed_tasks_parsed.length > 0) {
         md += "\n**Decomposed Tasks:**\n";
@@ -70,6 +71,16 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
     if (prompt.suggested_context_analysis_for_agent_parsed && prompt.suggested_context_analysis_for_agent_parsed.length > 0) {
         md += "\n**Suggested Context Analysis:**\n";
         md += formatJsonToMarkdownCodeBlock(prompt.suggested_context_analysis_for_agent_parsed) + "\n";
+    }
+
+    if (prompt.codebase_context_summary_by_ai) {
+        md += `\n**Codebase Context Summary by AI:**\n`;
+        md += `> ${prompt.codebase_context_summary_by_ai.replace(/\n/g, '\n> ')}\n`;
+    }
+
+    if (prompt.relevant_code_elements_analyzed_parsed && prompt.relevant_code_elements_analyzed_parsed.length > 0) {
+        md += `\n**Relevant Code Elements Analyzed:**\n`;
+        md += formatJsonToMarkdownCodeBlock(prompt.relevant_code_elements_analyzed_parsed) + "\n";
     }
     
     if (prompt.confidence_in_refinement_score) {
