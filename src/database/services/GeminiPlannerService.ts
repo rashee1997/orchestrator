@@ -49,6 +49,7 @@ export interface InitialDetailedPlanAndTasks {
         micro_steps?: string[]; // Add this
         notes_json?: string | null; // For storing additional task details as a JSON string
     }>;
+    suggested_next_steps_for_agent?: string; // Add this for suggested next steps
 }
 
 // Constants for status and model names
@@ -297,6 +298,27 @@ Output the result as a single JSON object with the following structure:
             };
         });
 
-        return { planData, tasksData };
+        const taskIds = tasksData.map(task => task.task_number);
+        const suggestedNextSteps = `### Next Suggested Steps for Agent:
+
+For each task ID created above (e.g., ${taskIds.map(id => `\`[task_id_${id}]\``).join(', ')}):
+1.  Consider using the \`ai_suggest_subtasks\` tool to get a more granular breakdown.
+    * **Input for \`ai_suggest_subtasks\`**:
+        * \`agent_id\`: Your agent ID (\`[agent_id]\`) - **Replace \`[agent_id]\` with the actual agent ID.**
+        * \`plan_id\`: The Plan ID created above (\`[plan_id]\`) - **Replace \`[plan_id]\` with the actual Plan ID.**
+        * \`parent_task_id\`: The specific Task ID you are breaking down.
+        * \`parent_task_title\` (optional): The title of the parent task.
+        * \`parent_task_description\` (optional): The description of the parent task.
+        * \`codebase_context_summary\` (optional but recommended): If this plan was generated from a refined prompt that included a \`codebase_context_summary_by_ai\` or \`relevant_code_elements_analyzed\`, provide that summary here to make the subtask suggestions code-aware. Alternatively, you can retrieve fresh context relevant to the parent task.
+2.  Review the subtasks suggested by \`ai_suggest_subtasks\`.
+3.  For each appropriate suggestion, use the \`add_subtask_to_plan\` tool to add it to the plan under the corresponding parent task.
+    * **Input for \`add_subtask_to_plan\`**:
+        * \`agent_id\`: Your agent ID (\`[agent_id]\`) - **Replace \`[agent_id]\` with the actual agent ID.**
+        * \`plan_id\`: The Plan ID (\`[plan_id]\`) - **Replace \`[plan_id]\` with the actual Plan ID.**
+        * \`parent_task_id\`: The specific Task ID.
+        * \`subtaskData\`: { "title": "Suggested Subtask Title", "description": "Suggested Subtask Description", ... }`;
+
+
+        return { planData, tasksData, suggested_next_steps_for_agent: suggestedNextSteps };
     }
 }

@@ -91,6 +91,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             let planDataToStore: any;
             let tasksDataToStore: any[];
             let refinedPromptIdForAssociation: string | null = null;
+            let aiGeneratedPlan: InitialDetailedPlanAndTasks | undefined = undefined; // Declare aiGeneratedPlan here
 
 
             if (args.goal_description || args.refined_prompt_id) {
@@ -103,7 +104,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
 
 
                 try {
-                    const aiGeneratedPlan: InitialDetailedPlanAndTasks = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
+                    aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
                         agent_id,
                         identifier,
                         isRefinedPromptId
@@ -152,6 +153,9 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             if (planDataToStore.metadata?.estimated_duration_days) md += `- **Est. Duration:** ${planDataToStore.metadata.estimated_duration_days} days\n`;
             if (refinedPromptIdForAssociation) md += `- **Based on Refined Prompt ID:** \`${refinedPromptIdForAssociation}\`\n`;
             md += `- **Task IDs Created:** ${planResult.task_ids.map(id => `\`${id}\``).join(', ')}\n`;
+            if (aiGeneratedPlan?.suggested_next_steps_for_agent) {
+                md += `\n${aiGeneratedPlan.suggested_next_steps_for_agent.replace(/\[agent_id\]/g, agent_id).replace(/\[plan_id\]/g, planResult.plan_id)}\n`;
+            }
             return { content: [{ type: 'text', text: md }] };
         },
         'get_task_plan_details': async (args: any, agent_id_from_server: string) => {
