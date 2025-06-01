@@ -66,7 +66,7 @@ interface AiTaskProgressSummary {
 
 const aiSuggestSubtasksToolDefinition = {
     name: 'ai_suggest_subtasks',
-    description: 'Given a parent task\'s ID and details, uses an AI model (Gemini) to suggest a list of actionable subtasks. Considers existing codebase context if available and relevant. Output is a list of suggested subtask titles and descriptions in Markdown format.',
+    description: 'Given a parent task\'s ID and details, uses an AI model (Gemini) to suggest a list of actionable subtasks. Considers existing codebase context if available and relevant. Output is a list of suggested subtask titles and descriptions in Markdown format. Note: The recommended limit for max_suggestions is 2-3 to reduce redundancy.',
     inputSchema: schemas.aiSuggestSubtasks,
 };
 
