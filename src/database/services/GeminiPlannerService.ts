@@ -13,6 +13,16 @@ interface GeminiDetailedPlanGenerationResponse {
         risk_description: string;
         mitigation_strategy: string;
     }>;
+    tasks?: Array<{ // Added tasks to the response interface
+        task_number: number;
+        title: string;
+        description: string;
+        purpose: string;
+        estimated_effort_hours?: number;
+        task_risks?: string[];
+        micro_steps?: string[];
+        suggested_files_involved?: string[]; // Added suggested_files_involved here
+    }>;
 }
 
 // Interface for additional task details that might be stored in notes_json
@@ -48,6 +58,7 @@ export interface InitialDetailedPlanAndTasks {
         task_risks?: string[]; // Add this
         micro_steps?: string[]; // Add this
         notes_json?: string | null; // For storing additional task details as a JSON string
+        suggested_files_involved?: string[]; // Added suggested_files_involved here
     }>;
     suggested_next_steps_for_agent?: string; // Add this for suggested next steps
 }
@@ -111,7 +122,8 @@ export class GeminiPlannerService {
                 explicit_constraints_from_prompt: refinedPromptDetails.explicit_constraints_from_prompt_parsed || refinedPromptDetails.explicit_constraints_from_prompt,
                 suggested_ai_role_for_agent: refinedPromptDetails.suggested_ai_role_for_agent,
                 suggested_reasoning_strategy_for_agent: refinedPromptDetails.suggested_reasoning_strategy_for_agent,
-                desired_output_characteristics_inferred: refinedPromptDetails.desired_output_characteristics_inferred_parsed || refinedPromptDetails.desired_output_characteristics_inferred
+                desired_output_characteristics_inferred: refinedPromptDetails.desired_output_characteristics_inferred_parsed || refinedPromptDetails.desired_output_characteristics_inferred,
+                codebase_context_summary_by_ai: refinedPromptDetails.codebase_context_summary_by_ai // Include codebase context
             };
 
             // Debug logging
@@ -124,12 +136,26 @@ Refined Prompt Object:
 ${JSON.stringify(planGenerationRefinedPromptDetails, null, 2)}
 \`\`\`
 
+Consider the following codebase context when generating the plan and tasks:
+\`\`\`
+${refinedPromptDetails.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
+\`\`\`
+
 Based on this refined prompt, provide:
 1.  A concise \`plan_title\` that accurately describes the project (max 10 words).
 2.  An \`estimated_duration_days\` for the entire plan (integer).
 3.  A \`target_start_date\` (string, "YYYY-MM-DD" format, use today's date: ${new Date().toISOString().split('T')[0]}).
 4.  A \`target_end_date\` (string, "YYYY-MM-DD" format, calculate based on start date + estimated_duration_days).
 5.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
+6.  A list of high-level \`tasks\`. Each task should have:
+    * \`task_number\`: A unique number for the task (integer).
+    * \`title\`: A short, descriptive title (max 10 words).
+    * \`description\`: A brief explanation of what the task involves (1-2 sentences).
+    * \`purpose\`: The reason this task is necessary for the overall plan goal (1 sentence).
+    * \`estimated_effort_hours\`: Estimated effort for the task in hours (integer).
+    * \`task_risks\`: A list of potential risks specific to this task (array of strings).
+    * \`micro_steps\`: A list of 3-5 granular sub-actions or steps for completing the task (array of strings).
+    * \`suggested_files_involved\`: An array of strings listing suggested file paths relevant to this task.
 
 Output the result as a single JSON object with the following structure:
 {
@@ -137,10 +163,11 @@ Output the result as a single JSON object with the following structure:
   "estimated_duration_days": "integer",
   "target_start_date": "string",
   "target_end_date": "string",
-  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ]
+  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ],
+  "tasks": [ { "task_number": "integer", "title": "string", "description": "string", "purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"], "suggested_files_involved": ["string"] } ]
 }`;
         } else { // Identifier is a high-level goal description
-            systemInstruction = "You are an expert project planning assistant. Your task is to take a user's high-level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY-MM-DD if specific dates are not inferable from the goal, but indicate they are placeholders), potential risks and their mitigations for the overall plan. Also, generate a list of 3-5 actionable high-level tasks. Each task should include a title, description, purpose, estimated effort in hours, potential risks specific to the task, and a few micro-steps (sub-actions). The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.";
+            systemInstruction = "You are an expert project planning assistant. Your task is to take a user's high-level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY-MM-DD if specific dates are not inferable from the goal, but indicate they are placeholders), potential risks and their mitigations for the overall plan. Also, generate a list of 3-5 actionable high-level tasks. Each task should include a title, description, purpose, estimated effort in hours, potential risks specific to the task, and a few micro-steps (sub-actions). The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.\n\nAdditionally, ensure the following enhancements to improve plan quality and execution:\n- Explicitly define task dependencies to ensure logical sequencing and prevent workflow blockages.\n- Include a dedicated task for code review and pull request submission after implementation and unit testing.\n- Add a task for integration or end-to-end testing to validate the tool's behavior within the larger system context.\n- Refine task descriptions to clearly state completion criteria (e.g., test coverage targets, documentation approval).\n- Specify roles or skill requirements for each task to aid resource allocation.\n- Prioritize performance profiling or benchmarking as a distinct task to proactively identify bottlenecks.\n- Consider adding a post-implementation monitoring plan task to address performance and stability in production.\n\n";
             userQuery = `Analyze the following user goal and generate a detailed project plan structure.
 
 User Goal:
@@ -160,6 +187,9 @@ Based on this goal, provide:
     * \`estimated_effort_hours\`: Estimated effort for the task in hours (integer).
     * \`task_risks\`: A list of potential risks specific to this task (array of strings).
     * \`micro_steps\`: A list of 3-5 granular sub-actions or steps for completing the task (array of strings).
+    * \`task_dependencies\`: Explicitly list task dependencies by task number or title (array of strings).
+    * \`roles_required\`: Specify the roles or skills required to complete the task (array of strings).
+    * \`completion_criteria\`: Define clear criteria for task completion (string).
 
 Output the result as a single JSON object with the following structure:
 {
@@ -169,7 +199,7 @@ Output the result as a single JSON object with the following structure:
   "target_start_date": "string",
   "target_end_date": "string",
   "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ],
-  "tasks": [ { "task_title": "string", "task_description": "string", "task_purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"] } ]
+  "tasks": [ { "task_title": "string", "task_description": "string", "task_purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"], "task_dependencies": ["string"], "roles_required": ["string"], "completion_criteria": "string" } ]
 }`;
         }
 
@@ -294,6 +324,7 @@ Output the result as a single JSON object with the following structure:
                 estimated_effort_hours: estimated_effort_hours,
                 task_risks: task_risks,
                 micro_steps: micro_steps,
+                suggested_files_involved: task.suggested_files_involved || [], // Include suggested_files_involved
                 ...(Object.keys(notes).length > 0 && { notes_json: JSON.stringify(notes) }),
             };
         });
@@ -316,8 +347,9 @@ For each task ID created above (e.g., ${taskIds.map(id => `\`[task_id_${id}]\``)
         * \`agent_id\`: Your agent ID (\`[agent_id]\`) - **Replace \`[agent_id]\` with the actual agent ID.**
         * \`plan_id\`: The Plan ID (\`[plan_id]\`) - **Replace \`[plan_id]\` with the actual Plan ID.**
         * \`parent_task_id\`: The specific Task ID.
-        * \`subtaskData\`: { "title": "Suggested Subtask Title", "description": "Suggested Subtask Description", ... }`;
+        * \`subtaskData\`: { "title": "Suggested Subtask Title", "description": "Suggested Subtask Description", ... }
 
+`
 
         return { planData, tasksData, suggested_next_steps_for_agent: suggestedNextSteps };
     }

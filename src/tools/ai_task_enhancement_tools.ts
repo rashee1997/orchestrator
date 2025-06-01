@@ -482,11 +482,45 @@ async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Pr
     let effectiveCodebaseContext = codebase_context_summary || "";
     if (!codebase_context_summary) { // If no summary provided, try to derive some context
         const planGoal = (plan as any).overall_goal || (plan as any).title || "";
-        if (planGoal) {
+        
+        // Collect all unique file paths from tasks' suggested_files_involved
+        const filesToQuery: string[] = [];
+        for (const task of tasks as any[]) {
+            if (task.suggested_files_involved && Array.isArray(task.suggested_files_involved)) {
+                filesToQuery.push(...task.suggested_files_involved);
+            }
+        }
+        const uniqueFilesToQuery = Array.from(new Set(filesToQuery));
+
+        if (uniqueFilesToQuery.length > 0) {
             try {
+                // Retrieve context based on the collected file paths
+                const retrievedContextItems = await contextRetriever.retrieveContextForPrompt(
+                    agent_id, 
+                    `Context for analyzing plan: ${planGoal}`, // Still include goal for broader context
+                    { 
+                        topKEmbeddings: 5, // Increased topK for more file context
+                        embeddingScoreThreshold: 0.5, // Adjusted threshold
+                        targetFilePaths: uniqueFilesToQuery // Target specific files
+                    }
+                );
+                if (retrievedContextItems.length > 0) {
+                    effectiveCodebaseContext = "Automatically Retrieved Codebase Context (Targeted Files):\n";
+                    retrievedContextItems.forEach(item => {
+                         effectiveCodebaseContext += `File: \`${item.sourcePath}\` (Score: ${item.relevanceScore?.toFixed(4)})\n`;
+                         if (item.entityName) effectiveCodebaseContext += `Entity: ${item.entityName} (${item.type})\n`;
+                         if (item.metadata?.startLine && item.metadata?.endLine) effectiveCodebaseContext += `Lines: ${item.metadata.startLine}-${item.metadata.endLine}\n`;
+                         effectiveCodebaseContext += `Content:\n\`\`\`${item.metadata?.language || 'text'}\n${item.content}\n\`\`\`\n---\n`;
+                    });
+                }
+            } catch (e) {
+                console.warn(`Could not auto-retrieve codebase context for plan analysis: ${e}`);
+            }
+        } else if (planGoal) { // Fallback to general context if no specific files are suggested
+             try {
                 const retrievedContextItems = await contextRetriever.retrieveContextForPrompt(agent_id, `Context for analyzing plan: ${planGoal}`, { topKEmbeddings: 2, topKKgResults: 1 });
                 if (retrievedContextItems.length > 0) {
-                    effectiveCodebaseContext = "Automatically Retrieved Codebase Context Hints:\n";
+                    effectiveCodebaseContext = "Automatically Retrieved Codebase Context Hints (General):\n";
                     retrievedContextItems.forEach(item => {
                         effectiveCodebaseContext += `- ${item.sourcePath}${item.entityName ? '::' + item.entityName : ''} (${item.type})\n`;
                     });
@@ -776,4 +810,3 @@ export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
         'ai_summarize_task_progress': (args: any) => aiSummarizeTaskProgressHandler(args, memoryManager), // Added
     };
 }
-

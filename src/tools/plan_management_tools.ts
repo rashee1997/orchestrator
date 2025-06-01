@@ -138,6 +138,24 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 planDataToStore.refined_prompt_id_associated = args.planData.refined_prompt_id_associated;
             }
 
+            // Ensure suggested_files_involved is present for each task, add if missing
+            if (tasksDataToStore) {
+                tasksDataToStore = tasksDataToStore.map(task => {
+                    if (task.files_involved_json) {
+                         try {
+                            task.suggested_files_involved = JSON.parse(task.files_involved_json);
+                            delete task.files_involved_json; // Remove old field if exists
+                         } catch (e) {
+                            console.warn(`Failed to parse files_involved_json for task ${task.task_number}: ${e}`);
+                            task.suggested_files_involved = task.suggested_files_involved || [];
+                         }
+                    } else {
+                        task.suggested_files_involved = task.suggested_files_involved || [];
+                    }
+                    return task;
+                });
+            }
+
 
             // Final check and default for title if AI generated and somehow missed
             if (!planDataToStore.title) {
