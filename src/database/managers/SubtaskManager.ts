@@ -281,11 +281,15 @@ export class SubtaskManager {
         return (result?.changes || 0) > 0;
     }
 
-    async deleteSubtask(agent_id: string, subtask_id: string): Promise<boolean> {
+    async deleteSubtasks(agent_id: string, subtask_ids: string[]): Promise<boolean> {
         const db = this.dbService.getDb();
+        if (subtask_ids.length === 0) {
+            return false;
+        }
+        const placeholders = subtask_ids.map(() => '?').join(',');
         const result = await db.run(
-            `DELETE FROM subtasks WHERE agent_id = ? AND subtask_id = ?`,
-            agent_id, subtask_id
+            `DELETE FROM subtasks WHERE agent_id = ? AND subtask_id IN (${placeholders})`,
+            agent_id, ...subtask_ids
         );
         return (result?.changes || 0) > 0;
     }

@@ -417,13 +417,22 @@ export const schemas = {
         required: ['agent_id', 'task_id'],
         additionalProperties: false,
     },
-    deleteTaskPlan: {
+    deleteTaskPlans: {
         type: 'object',
         properties: {
             agent_id: { type: 'string' },
-            plan_id: { type: 'string' }
+            plan_ids: { type: 'array', items: { type: 'string' } }
         },
-        required: ['agent_id', 'plan_id'],
+        required: ['agent_id', 'plan_ids'],
+        additionalProperties: false,
+    },
+    deleteTasks: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            task_ids: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['agent_id', 'task_ids'],
         additionalProperties: false,
     },
     addTaskToPlan: {
@@ -554,13 +563,13 @@ export const schemas = {
         required: ['agent_id', 'subtask_id'],
         additionalProperties: false
     },
-    deleteSubtask: {
+    deleteSubtasks: {
         type: 'object',
         properties: {
             agent_id: { type: 'string' },
-            subtask_id: { type: 'string' }
+            subtask_ids: { type: 'array', items: { type: 'string' } }
         },
-        required: ['agent_id', 'subtask_id'],
+        required: ['agent_id', 'subtask_ids'],
         additionalProperties: false
     },
     create_task_review_log: {

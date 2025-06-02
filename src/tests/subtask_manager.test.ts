@@ -178,7 +178,7 @@ describe('SubtaskManager', () => {
 
     it('should delete a subtask', async () => {
         const subtaskId = await subtaskManager.createSubtask(agentId, planId, { title: 'Subtask to Delete' });
-        const success = await subtaskManager.deleteSubtask(agentId, subtaskId);
+        const success = await subtaskManager.deleteSubtasks(agentId, [subtaskId]);
         expect(success).toBe(true);
 
         const deletedSubtask = await subtaskManager.getSubtask(agentId, subtaskId);

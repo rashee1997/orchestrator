@@ -44,9 +44,14 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.updateTaskDetails,
     },
     {
-        name: 'delete_task_plan',
-        description: 'Deletes a task plan and all its associated tasks. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.deleteTaskPlan,
+        name: 'delete_task_plans',
+        description: 'Deletes one or more task plans and all their associated tasks. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        inputSchema: schemas.deleteTaskPlans,
+    },
+    {
+        name: 'delete_tasks',
+        description: 'Deletes one or more tasks. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        inputSchema: schemas.deleteTasks,
     },
     {
         name: 'add_task_to_plan',
@@ -69,9 +74,9 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.updateSubtaskDetails,
     },
     {
-        name: 'delete_subtask',
-        description: 'Deletes a subtask. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.deleteSubtask,
+        name: 'delete_subtasks',
+        description: 'Deletes one or more subtasks. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        inputSchema: schemas.deleteSubtasks,
     },
 ];
 
@@ -269,18 +274,31 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             }
             return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Task Details") }] };
         },
-        'delete_task_plan': async (args: any, agent_id_from_server: string) => {
+        'delete_task_plans': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
-                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_task_plan.");
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_task_plans.");
             }
-            const validationResult = validate('deleteTaskPlan', args);
+            const validationResult = validate('deleteTaskPlans', args);
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const success = await memoryManager.deletePlan(agent_id, args.plan_id);
-            const message = success ? `Plan \`${args.plan_id}\` and its tasks/subtasks deleted.` : `Failed to delete plan \`${args.plan_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Delete Plan") }] };
+            const success = await memoryManager.deletePlans(agent_id, args.plan_ids);
+            const message = success ? `Plans \`${args.plan_ids.join(', ')}\` and their associated tasks/subtasks deleted.` : `Failed to delete plans \`${args.plan_ids.join(', ')}\`.`;
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Delete Plans") }] };
+        },
+        'delete_tasks': async (args: any, agent_id_from_server: string) => {
+            const agent_id = args.agent_id || agent_id_from_server;
+            if (!agent_id) {
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_tasks.");
+            }
+            const validationResult = validate('deleteTasks', args);
+            if (!validationResult.valid) {
+                throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
+            }
+            const success = await memoryManager.deleteTasks(agent_id, args.task_ids);
+            const message = success ? `Tasks \`${args.task_ids.join(', ')}\` and their associated subtasks deleted.` : `Failed to delete tasks \`${args.task_ids.join(', ')}\`.`;
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Delete Tasks") }] };
         },
         'add_task_to_plan': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
@@ -376,18 +394,18 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             }
             return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Subtask Details") }] };
         },
-        'delete_subtask': async (args: any, agent_id_from_server: string) => {
+        'delete_subtasks': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
-                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_subtask.");
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for delete_subtasks.");
             }
-            const validationResult = validate('deleteSubtask', args);
+            const validationResult = validate('deleteSubtasks', args);
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const success = await memoryManager.subtaskManager.deleteSubtask(agent_id, args.subtask_id);
-            const message = success ? `Subtask \`${args.subtask_id}\` deleted.` : `Failed to delete subtask \`${args.subtask_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Delete Subtask") }] };
+            const success = await memoryManager.subtaskManager.deleteSubtasks(agent_id, args.subtask_ids);
+            const message = success ? `Subtasks \`${args.subtask_ids.join(', ')}\` deleted.` : `Failed to delete subtasks \`${args.subtask_ids.join(', ')}\`.`;
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Delete Subtasks") }] };
         },
     };
 }

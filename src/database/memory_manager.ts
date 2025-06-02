@@ -291,8 +291,14 @@ export class MemoryManager {
     async updateTaskDetails(...args: Parameters<PlanTaskManager['updateTaskDetails']>) {
         return this.planTaskManager.updateTaskDetails(...args);
     }
-    async deletePlan(...args: Parameters<PlanTaskManager['deletePlan']>) {
-        return this.planTaskManager.deletePlan(...args);
+    async deletePlans(...args: Parameters<PlanTaskManager['deletePlans']>) {
+        return this.planTaskManager.deletePlans(...args);
+    }
+    async deleteTasks(...args: Parameters<PlanTaskManager['deleteTasks']>) {
+        return this.planTaskManager.deleteTasks(...args);
+    }
+    async deleteSubtasks(...args: Parameters<SubtaskManager['deleteSubtasks']>) {
+        return this.subtaskManager.deleteSubtasks(...args);
     }
     async getTask(...args: Parameters<PlanTaskManager['getTask']>) {
         return this.planTaskManager.getTask(...args);

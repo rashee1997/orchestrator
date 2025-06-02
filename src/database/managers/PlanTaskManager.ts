@@ -315,11 +315,28 @@ export class PlanTaskManager {
         return (result?.changes || 0) > 0;
     }
 
-    async deletePlan(agent_id: string, plan_id: string): Promise<boolean> {
+    async deletePlans(agent_id: string, plan_ids: string[]): Promise<boolean> {
         const db = this.dbService.getDb();
+        if (plan_ids.length === 0) {
+            return false;
+        }
+        const placeholders = plan_ids.map(() => '?').join(',');
         const result = await db.run(
-            `DELETE FROM plans WHERE agent_id = ? AND plan_id = ?`,
-            agent_id, plan_id
+            `DELETE FROM plans WHERE agent_id = ? AND plan_id IN (${placeholders})`,
+            agent_id, ...plan_ids
+        );
+        return (result?.changes || 0) > 0;
+    }
+
+    async deleteTasks(agent_id: string, task_ids: string[]): Promise<boolean> {
+        const db = this.dbService.getDb();
+        if (task_ids.length === 0) {
+            return false;
+        }
+        const placeholders = task_ids.map(() => '?').join(',');
+        const result = await db.run(
+            `DELETE FROM plan_tasks WHERE agent_id = ? AND task_id IN (${placeholders})`,
+            agent_id, ...task_ids
         );
         return (result?.changes || 0) > 0;
     }
