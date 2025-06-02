@@ -39,9 +39,9 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.updateTaskPlanStatus,
     },
     {
-        name: 'update_plan_task_status',
-        description: 'Updates the status of a specific task within a plan. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.updatePlanTaskStatus,
+        name: 'update_task_details',
+        description: 'Updates details of a specific task within a plan, including its status. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        inputSchema: schemas.updateTaskDetails,
     },
     {
         name: 'delete_task_plan',
@@ -64,9 +64,9 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.getSubtasks,
     },
     {
-        name: 'update_subtask_status',
-        description: 'Updates the status of a specific subtask. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.updateSubtaskStatus,
+        name: 'update_subtask_details',
+        description: 'Updates details of a specific subtask, including its status. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        inputSchema: schemas.updateSubtaskDetails,
     },
     {
         name: 'delete_subtask',
@@ -243,18 +243,31 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             const message = success ? `Plan \`${args.plan_id}\` status updated to \`${args.new_status}\`.` : `Failed to update status for plan \`${args.plan_id}\`.`;
             return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Plan Status") }] };
         },
-        'update_plan_task_status': async (args: any, agent_id_from_server: string) => {
+        'update_task_details': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
-                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for update_plan_task_status.");
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for update_task_details.");
             }
-            const validationResult = validate('updatePlanTaskStatus', args);
+            const validationResult = validate('updateTaskDetails', args);
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const success = await memoryManager.updateTaskStatus(agent_id, args.task_id, args.new_status, args.completion_timestamp);
-            const message = success ? `Task \`${args.task_id}\` status updated to \`${args.new_status}\`.` : `Failed to update status for task \`${args.task_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Task Status") }] };
+            const { task_id, completion_timestamp, ...updates } = args;
+            const success = await memoryManager.updateTaskDetails(agent_id, task_id, updates, completion_timestamp);
+            let message;
+            if (success) {
+                const updatedKeys = Object.keys(updates).filter(key => key !== 'completion_timestamp' && key !== 'task_id' && key !== 'agent_id');
+                if (updatedKeys.length === 1 && updatedKeys[0] === 'status') {
+                    message = `Task \`${task_id}\` status updated to \`${updates.status}\`.`;
+                } else if (updatedKeys.length > 0) {
+                    message = `Task \`${task_id}\` details (${updatedKeys.join(', ')}) updated.`;
+                } else {
+                    message = `Task \`${task_id}\` updated.`;
+                }
+            } else {
+                message = `Failed to update details for task \`${task_id}\`.`;
+            }
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Task Details") }] };
         },
         'delete_task_plan': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
@@ -337,18 +350,31 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             if (args.status_filter) title += ` (Status: ${args.status_filter})`;
             return { content: [{ type: 'text', text: `## ${title}\n\n${formatSubtasksListToMarkdownTable(subtasks as any[])}` }] };
         },
-        'update_subtask_status': async (args: any, agent_id_from_server: string) => {
+        'update_subtask_details': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
-                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for update_subtask_status.");
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for update_subtask_details.");
             }
-            const validationResult = validate('updateSubtaskStatus', args);
+            const validationResult = validate('updateSubtaskDetails', args);
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const success = await memoryManager.subtaskManager.updateSubtaskStatus(agent_id, args.subtask_id, args.new_status, args.completion_timestamp);
-            const message = success ? `Subtask \`${args.subtask_id}\` status updated to \`${args.new_status}\`.` : `Failed to update status for subtask \`${args.subtask_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Subtask Status") }] };
+            const { subtask_id, completion_timestamp, ...updates } = args;
+            const success = await memoryManager.subtaskManager.updateSubtaskDetails(agent_id, subtask_id, updates, completion_timestamp);
+            let message;
+            if (success) {
+                const updatedKeys = Object.keys(updates).filter(key => key !== 'completion_timestamp' && key !== 'subtask_id' && key !== 'agent_id');
+                if (updatedKeys.length === 1 && updatedKeys[0] === 'status') {
+                    message = `Subtask \`${subtask_id}\` status updated to \`${updates.status}\`.`;
+                } else if (updatedKeys.length > 0) {
+                    message = `Subtask \`${subtask_id}\` details (${updatedKeys.join(', ')}) updated.`;
+                } else {
+                    message = `Subtask \`${subtask_id}\` updated.`;
+                }
+            } else {
+                message = `Failed to update details for subtask \`${subtask_id}\`.`;
+            }
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Subtask Details") }] };
         },
         'delete_subtask': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;

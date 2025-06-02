@@ -168,7 +168,7 @@ describe('SubtaskManager', () => {
 
     it('should update subtask status', async () => {
         const subtaskId = await subtaskManager.createSubtask(agentId, planId, { title: 'Subtask to Update' });
-        const success = await subtaskManager.updateSubtaskStatus(agentId, subtaskId, 'COMPLETED');
+        const success = await subtaskManager.updateSubtaskDetails(agentId, subtaskId, { status: 'COMPLETED' });
         expect(success).toBe(true);
 
         const updatedSubtask: any = await subtaskManager.getSubtask(agentId, subtaskId);

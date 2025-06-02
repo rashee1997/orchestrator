@@ -288,8 +288,8 @@ export class MemoryManager {
     async updatePlanStatus(...args: Parameters<PlanTaskManager['updatePlanStatus']>) {
         return this.planTaskManager.updatePlanStatus(...args);
     }
-    async updateTaskStatus(...args: Parameters<PlanTaskManager['updateTaskStatus']>) {
-        return this.planTaskManager.updateTaskStatus(...args);
+    async updateTaskDetails(...args: Parameters<PlanTaskManager['updateTaskDetails']>) {
+        return this.planTaskManager.updateTaskDetails(...args);
     }
     async deletePlan(...args: Parameters<PlanTaskManager['deletePlan']>) {
         return this.planTaskManager.deletePlan(...args);

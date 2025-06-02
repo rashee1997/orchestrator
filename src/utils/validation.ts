@@ -392,15 +392,29 @@ export const schemas = {
         required: ['agent_id', 'plan_id', 'new_status'],
         additionalProperties: false,
     },
-    updatePlanTaskStatus: {
+    updateTaskDetails: {
         type: 'object',
         properties: {
             agent_id: { type: 'string' },
             task_id: { type: 'string' },
-            new_status: { type: 'string' },
+            title: { type: ['string', 'null'] },
+            description: { type: ['string', 'null'] },
+            status: { type: ['string', 'null'] }, // Renamed from new_status and made nullable
+            purpose: { type: ['string', 'null'] },
+            action_description: { type: ['string', 'null'] },
+            files_involved: { type: ['array', 'null'], items: { type: 'string' } },
+            dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
+            tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+            inputs_summary: { type: ['string', 'null'] },
+            outputs_summary: { type: ['string', 'null'] },
+            success_criteria_text: { type: ['string', 'null'] },
+            estimated_effort_hours: { type: ['number', 'null'] },
+            assigned_to: { type: ['string', 'null'] },
+            verification_method: { type: ['string', 'null'] },
+            notes: { type: ['object', 'null'] },
             completion_timestamp: { type: ['number', 'null'] }
         },
-        required: ['agent_id', 'task_id', 'new_status'],
+        required: ['agent_id', 'task_id'],
         additionalProperties: false,
     },
     deleteTaskPlan: {
@@ -526,15 +540,18 @@ export const schemas = {
         required: ['agent_id'],
         additionalProperties: false
     },
-    updateSubtaskStatus: {
+    updateSubtaskDetails: {
         type: 'object',
         properties: {
             agent_id: { type: 'string' },
             subtask_id: { type: 'string' },
-            new_status: { type: 'string' },
+            title: { type: ['string', 'null'] },
+            description: { type: ['string', 'null'] },
+            status: { type: ['string', 'null'] }, // Renamed from new_status and made nullable
+            notes: { type: ['object', 'null'] },
             completion_timestamp: { type: ['number', 'null'] }
         },
-        required: ['agent_id', 'subtask_id', 'new_status'],
+        required: ['agent_id', 'subtask_id'],
         additionalProperties: false
     },
     deleteSubtask: {

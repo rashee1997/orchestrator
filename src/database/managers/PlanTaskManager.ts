@@ -222,7 +222,28 @@ export class PlanTaskManager {
         return (result?.changes || 0) > 0;
     }
 
-    async updateTaskStatus(agent_id: string, task_id: string, new_status: string, completion_timestamp?: number): Promise<boolean> {
+    async updateTaskDetails(
+        agent_id: string,
+        task_id: string,
+        updates: {
+            title?: string;
+            description?: string;
+            status?: string;
+            purpose?: string;
+            action_description?: string;
+            files_involved?: string[];
+            dependencies_task_ids?: string[];
+            tools_required_list?: string[];
+            inputs_summary?: string;
+            outputs_summary?: string;
+            success_criteria_text?: string;
+            estimated_effort_hours?: number;
+            assigned_to?: string;
+            verification_method?: string;
+            notes?: any;
+        },
+        completion_timestamp?: number
+    ): Promise<boolean> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
 
@@ -238,10 +259,59 @@ export class PlanTaskManager {
             return false;
         }
 
-        const result = await db.run(
-            `UPDATE plan_tasks SET status = ?, last_updated_timestamp_unix = ?, last_updated_timestamp_iso = ?, completion_timestamp_unix = ?, completion_timestamp_iso = ? WHERE agent_id = ? AND task_id = ?`,
-            new_status, timestamp, new Date(timestamp).toISOString(), completion_timestamp || null, completion_timestamp ? new Date(timestamp).toISOString() : null, agent_id, task_id
-        );
+        let updateFields: string[] = [];
+        let updateValues: any[] = [];
+
+        if (updates.title !== undefined) { updateFields.push('title = ?'); updateValues.push(updates.title); }
+        if (updates.description !== undefined) { updateFields.push('description = ?'); updateValues.push(updates.description); }
+        if (updates.status !== undefined) { updateFields.push('status = ?'); updateValues.push(updates.status); }
+        if (updates.purpose !== undefined) { updateFields.push('purpose = ?'); updateValues.push(updates.purpose); }
+        if (updates.action_description !== undefined) { updateFields.push('action_description = ?'); updateValues.push(updates.action_description); }
+        if (updates.files_involved !== undefined) { updateFields.push('files_involved_json = ?'); updateValues.push(updates.files_involved ? JSON.stringify(updates.files_involved) : null); }
+        if (updates.dependencies_task_ids !== undefined) { updateFields.push('dependencies_task_ids_json = ?'); updateValues.push(updates.dependencies_task_ids ? JSON.stringify(updates.dependencies_task_ids) : null); }
+        if (updates.tools_required_list !== undefined) { updateFields.push('tools_required_list_json = ?'); updateValues.push(updates.tools_required_list ? JSON.stringify(updates.tools_required_list) : null); }
+        if (updates.inputs_summary !== undefined) { updateFields.push('inputs_summary = ?'); updateValues.push(updates.inputs_summary); }
+        if (updates.outputs_summary !== undefined) { updateFields.push('outputs_summary = ?'); updateValues.push(updates.outputs_summary); }
+        if (updates.success_criteria_text !== undefined) { updateFields.push('success_criteria_text = ?'); updateValues.push(updates.success_criteria_text); }
+        if (updates.estimated_effort_hours !== undefined) { updateFields.push('estimated_effort_hours = ?'); updateValues.push(updates.estimated_effort_hours); }
+        if (updates.assigned_to !== undefined) { updateFields.push('assigned_to = ?'); updateValues.push(updates.assigned_to); }
+        if (updates.verification_method !== undefined) { updateFields.push('verification_method = ?'); updateValues.push(updates.verification_method); }
+        if (updates.notes !== undefined) { updateFields.push('notes_json = ?'); updateValues.push(updates.notes ? JSON.stringify(updates.notes) : null); }
+
+        updateFields.push('last_updated_timestamp_unix = ?');
+        updateValues.push(timestamp);
+        updateFields.push('last_updated_timestamp_iso = ?');
+        updateValues.push(new Date(timestamp).toISOString());
+
+        if (completion_timestamp !== undefined) {
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(completion_timestamp || null);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(completion_timestamp ? new Date(completion_timestamp).toISOString() : null);
+        } else if (updates.status === 'COMPLETED' || updates.status === 'FAILED') {
+            // If status is set to completed/failed and no explicit completion_timestamp is provided, set it now
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(timestamp);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(new Date(timestamp).toISOString());
+        } else if (updates.status !== 'COMPLETED' && updates.status !== 'FAILED' && (task as any).completion_timestamp_unix) {
+            // If status is changed from completed/failed to something else, clear completion timestamp
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(null);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(null);
+        }
+
+
+        if (updateFields.length === 0) {
+            console.warn(`No fields provided for updateTaskDetails for task: ${task_id}`);
+            return false;
+        }
+
+        const query = `UPDATE plan_tasks SET ${updateFields.join(', ')} WHERE agent_id = ? AND task_id = ?`;
+        updateValues.push(agent_id, task_id);
+
+        const result = await db.run(query, ...updateValues);
         return (result?.changes || 0) > 0;
     }
 

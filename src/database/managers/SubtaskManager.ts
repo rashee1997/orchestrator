@@ -217,13 +217,67 @@ export class SubtaskManager {
         return results.map(row => this.parseNotes(row));
     }
 
-    async updateSubtaskStatus(agent_id: string, subtask_id: string, new_status: string, completion_timestamp?: number): Promise<boolean> {
+    async updateSubtaskDetails(
+        agent_id: string,
+        subtask_id: string,
+        updates: {
+            title?: string;
+            description?: string;
+            status?: string;
+            notes?: any;
+        },
+        completion_timestamp?: number
+    ): Promise<boolean> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
-        const result = await db.run(
-            `UPDATE subtasks SET status = ?, last_updated_timestamp_unix = ?, last_updated_timestamp_iso = ?, completion_timestamp_unix = ?, completion_timestamp_iso = ? WHERE agent_id = ? AND subtask_id = ?`,
-            new_status, timestamp, new Date(timestamp).toISOString(), completion_timestamp || null, completion_timestamp ? new Date(completion_timestamp).toISOString() : null, agent_id, subtask_id
-        );
+
+        const subtask = await this.getSubtask(agent_id, subtask_id);
+        if (!subtask) {
+            console.warn(`Attempted to update non-existent subtask: ${subtask_id} for agent: ${agent_id}`);
+            return false;
+        }
+
+        let updateFields: string[] = [];
+        let updateValues: any[] = [];
+
+        if (updates.title !== undefined) { updateFields.push('title = ?'); updateValues.push(updates.title); }
+        if (updates.description !== undefined) { updateFields.push('description = ?'); updateValues.push(updates.description); }
+        if (updates.status !== undefined) { updateFields.push('status = ?'); updateValues.push(updates.status); }
+        if (updates.notes !== undefined) { updateFields.push('notes_json = ?'); updateValues.push(updates.notes ? JSON.stringify(updates.notes) : null); }
+
+        updateFields.push('last_updated_timestamp_unix = ?');
+        updateValues.push(timestamp);
+        updateFields.push('last_updated_timestamp_iso = ?');
+        updateValues.push(new Date(timestamp).toISOString());
+
+        if (completion_timestamp !== undefined) {
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(completion_timestamp || null);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(completion_timestamp ? new Date(completion_timestamp).toISOString() : null);
+        } else if (updates.status === 'COMPLETED' || updates.status === 'FAILED') {
+            // If status is set to completed/failed and no explicit completion_timestamp is provided, set it now
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(timestamp);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(new Date(timestamp).toISOString());
+        } else if (updates.status !== 'COMPLETED' && updates.status !== 'FAILED' && (subtask as any).completion_timestamp_unix) {
+            // If status is changed from completed/failed to something else, clear completion timestamp
+            updateFields.push('completion_timestamp_unix = ?');
+            updateValues.push(null);
+            updateFields.push('completion_timestamp_iso = ?');
+            updateValues.push(null);
+        }
+
+        if (updateFields.length === 0) {
+            console.warn(`No fields provided for updateSubtaskDetails for subtask: ${subtask_id}`);
+            return false;
+        }
+
+        const query = `UPDATE subtasks SET ${updateFields.join(', ')} WHERE agent_id = ? AND subtask_id = ?`;
+        updateValues.push(agent_id, subtask_id);
+
+        const result = await db.run(query, ...updateValues);
         return (result?.changes || 0) > 0;
     }
 

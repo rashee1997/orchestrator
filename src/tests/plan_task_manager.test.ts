@@ -153,7 +153,7 @@ describe('MemoryManager Plan and Task Management', () => {
             taskId, planId, agentId, 1, 'Task to Update', 'PLANNED', ts, new Date(ts).toISOString(), ts, new Date(ts).toISOString());
 
         const completionTs = Date.now() + 1000; // Ensure this is later
-        const success = await memoryManager.updateTaskStatus(agentId, taskId, 'COMPLETED', completionTs);
+        const success = await memoryManager.updateTaskDetails(agentId, taskId, { status: 'COMPLETED' }, completionTs);
         expect(success).toBe(true);
 
         const updatedTask: any = await db.get(`SELECT status, last_updated_timestamp_unix, completion_timestamp_unix FROM plan_tasks WHERE task_id = ?`, taskId);
