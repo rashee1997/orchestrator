@@ -203,6 +203,48 @@ export const gitToolDefinitions = [
             required: ['dir', 'ref'],
         },
     },
+    {
+        name: 'git_revert',
+        description: 'Reverts existing commits by creating new commits that undo the changes. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                commit: { type: 'string', description: 'The commit hash to revert.' },
+                noCommit: { type: 'boolean', description: 'Optional: Do not automatically commit. Defaults to false.', default: false },
+            },
+            required: ['dir', 'commit'],
+        },
+    },
+    {
+        name: 'git_tag',
+        description: 'Creates, lists, deletes or verifies a tag object signed with GPG. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                name: { type: 'string', description: 'The name of the tag to create or delete.' },
+                commit: { type: ['string', 'null'], description: 'Optional: The commit hash to tag. Defaults to HEAD.' },
+                delete: { type: 'boolean', description: 'Optional: Delete the tag. Defaults to false.', default: false },
+                list: { type: 'boolean', description: 'Optional: List tags. Defaults to false.', default: false },
+            },
+            required: ['dir'],
+        },
+    },
+    {
+        name: 'git_merge',
+        description: 'Joins two or more development histories together. Output is Markdown formatted.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                dir: { type: 'string', description: 'The repository directory.' },
+                branch: { type: 'string', description: 'The name of the branch to merge into the current branch.' },
+                noFf: { type: 'boolean', description: 'Optional: Do not create a fast-forward merge. Defaults to false.', default: false },
+                squash: { type: 'boolean', description: 'Optional: Produce the working tree file and index state as if a real merge happened, but do not actually make a commit. Defaults to false.', default: false },
+            },
+            required: ['dir', 'branch'],
+        },
+    },
 ];
 
 export function getGitToolHandlers() {
@@ -418,6 +460,68 @@ export function getGitToolHandlers() {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`Successfully reset HEAD to \`${args.ref}\` (soft reset) in \`${args.dir}\``, "Git Reset Soft") }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Git soft reset failed: ${error.message}`);
+            }
+        },
+        git_revert: async (args: { dir: string; commit: string; noCommit?: boolean }) => {
+            try {
+                const git = gitP(args.dir);
+                const options = args.noCommit ? ['--no-commit'] : [];
+                await git.revert(args.commit, options);
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Successfully reverted commit \`${args.commit}\` in \`${args.dir}\``, "Git Revert") }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git revert failed: ${error.message}`);
+            }
+        },
+        git_tag: async (args: { dir: string; name: string; commit?: string; delete?: boolean; list?: boolean }) => {
+            try {
+                const git = gitP(args.dir);
+                if (args.list) {
+                    const tags = await git.tags();
+                    let md = `## Git Tags in \`${args.dir}\`\n`;
+                    if (tags.all.length === 0) {
+                        md += "*No tags found.*\n";
+                    } else {
+                        md += "**All Tags:**\n";
+                        tags.all.forEach(tag => {
+                            md += `- \`${tag}\`\n`;
+                        });
+                    }
+                    return { content: [{ type: 'text', text: md }] };
+                } else if (args.delete) {
+                    await git.tag(['-d', args.name]);
+                    return { content: [{ type: 'text', text: formatSimpleMessage(`Successfully deleted tag \`${args.name}\` in \`${args.dir}\``, "Git Tag Delete") }] };
+                } else {
+                    const tagArgs = [args.name];
+                    if (args.commit) {
+                        tagArgs.push(args.commit);
+                    }
+                    await git.tag(tagArgs);
+                    return { content: [{ type: 'text', text: formatSimpleMessage(`Successfully created tag \`${args.name}\` in \`${args.dir}\``, "Git Tag Create") }] };
+                }
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git tag failed: ${error.message}`);
+            }
+        },
+        git_merge: async (args: { dir: string; branch: string; noFf?: boolean; squash?: boolean }) => {
+            try {
+                const git = gitP(args.dir);
+                const options: string[] = [];
+                if (args.noFf) options.push('--no-ff');
+                if (args.squash) options.push('--squash');
+
+                const mergeSummary = await git.merge([args.branch, ...options]);
+                let md = `## Git Merge Summary for \`${args.dir}\`\n`;
+                md += `- **Merged Branch:** ${args.branch}\n`;
+                md += `- **Result:** ${mergeSummary.result}\n`;
+                if (mergeSummary.summary.changes) md += `- **Changes:** ${mergeSummary.summary.changes}\n`;
+                if (mergeSummary.summary.insertions) md += `- **Insertions:** ${mergeSummary.summary.insertions}\n`;
+                if (mergeSummary.summary.deletions) md += `- **Deletions:** ${mergeSummary.summary.deletions}\n`;
+                if (mergeSummary.files.length > 0) {
+                    md += `**Changed Files:**\n${formatJsonToMarkdownCodeBlock(mergeSummary.files)}\n`;
+                }
+                return { content: [{ type: 'text', text: md }] };
+            } catch (error: any) {
+                throw new McpError(ErrorCode.InternalError, `Git merge failed: ${error.message}`);
             }
         },
     };
