@@ -1,5 +1,6 @@
 // src/services/CodebaseContextRetrieverService.ts
 import { MemoryManager } from '../memory_manager.js';
+// All vector search and storage is now robust and VSS/vec-enabled via CodebaseEmbeddingService
 import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
@@ -110,8 +111,8 @@ export class CodebaseContextRetrieverService {
         console.log(`Retrieving context for prompt (agent: ${agentId}): "${prompt.substring(0, 100)}..."`);
         const retrievedContexts: RetrievedCodeContext[] = [];
 
-        // 1. Extract keywords/entities from prompt (placeholder - can use Gemini or simpler NLP)
-        const keywords = this.extractKeywordsFromPrompt(prompt); // Placeholder
+        // 1. Extract keywords/entities from prompt using Gemini or fallback to basic extraction
+        const keywords = await this._extractKeywordsAndEntitiesWithGemini(prompt);
         console.log('[DEBUG] Extracted keywords:', keywords);
 
         // 2. Perform semantic search using CodebaseEmbeddingService
@@ -168,46 +169,74 @@ export class CodebaseContextRetrieverService {
             }
         }
 
-        // 3. Perform Knowledge Graph searches
-        // Example: Search for KG nodes matching keywords (names or observations)
-        if (keywords.length > 0 && this.kgManager) {
+        // 3. Perform Knowledge Graph searches using natural language query
+        if (this.kgManager) {
             try {
-                const kgNodes = await this.kgManager.searchNodes(agentId, keywords.join(' ')); // Simple OR search for now
-                console.log(`Raw KG search results count: ${kgNodes.length}`);
-                console.log(`Raw KG search results:`, JSON.stringify(kgNodes, null, 2));
-                
-                kgNodes.slice(0, options?.topKKgResults ?? 5).forEach((node: KGNode) => {
-                    let nodeContent = `Entity Type: ${node.entityType}\nObservations:\n`;
-                    if (Array.isArray(node.observations)) {
-                        nodeContent += node.observations.map((obs: string) => `- ${obs}`).join('\n');
-                    } else {
-                        nodeContent += String(node.observations);
-                    }
+                // Use the original prompt for natural language KG query for better context
+                const rawKgQueryResults = await this.kgManager.queryNaturalLanguage(agentId, prompt);
+                console.log(`Raw KG natural language query results:`, JSON.stringify(rawKgQueryResults, null, 2));
 
-                    // Attempt to map KG entityType to RetrievedCodeContext['type']
-                    let contextType: RetrievedCodeContext['type'] = 'kg_node_info';
-                    if (node.entityType === 'file') contextType = 'file_snippet'; // Could be refined
-                    else if (node.entityType === 'function' || node.entityType === 'method') contextType = 'function_definition';
-                    else if (node.entityType === 'class') contextType = 'class_definition';
-                    // ... add more mappings
+                let kgQueryResults: any;
+                try {
+                    // Attempt to parse the string output from kg_nl_query
+                    kgQueryResults = JSON.parse(rawKgQueryResults);
+                } catch (parseError) {
+                    console.error(`Failed to parse KG natural language query results as JSON:`, parseError);
+                    console.warn(`KG natural language query returned non-JSON string: "${rawKgQueryResults.substring(0, 200)}..."`);
+                    // If it's not JSON, we can't process it further for structured results.
+                    // Consider logging this as an error or handling it more gracefully.
+                    return retrievedContexts; 
+                }
 
-                    const newContextItem = {
-                        type: contextType,
-                        sourcePath: node.name, // KG node name is often the relative path for files
-                        entityName: node.entityType !== 'file' ? node.name : undefined, // If it's not a file, the name is the entity name
-                        content: nodeContent,
-                        relevanceScore: 0.7, // Placeholder, KG results might not have a direct score like embeddings
-                        metadata: {
-                            kgNodeType: node.entityType,
-                            // Potentially extract language from observations if available
-                        },
-                    };
-                    retrievedContexts.push(newContextItem);
-                    console.log(`Added KG context item: ${newContextItem.sourcePath} - ${newContextItem.entityName || newContextItem.type}`);
-                });
-                 console.log(`Retrieved ${kgNodes.length} KG nodes matching keywords.`);
+                // Process the results from kg_nl_query. The structure might vary,
+                // so we'll need to adapt based on the actual output of kg_nl_query.
+                // Assuming kgQueryResults.results contains an array of nodes or similar.
+                if (kgQueryResults && kgQueryResults.results && Array.isArray(kgQueryResults.results)) {
+                    kgQueryResults.results.slice(0, options?.topKKgResults ?? 5).forEach((resultItem: any) => {
+                        // The structure of resultItem depends on kg_nl_query's output.
+                        // Assuming it returns nodes directly or in a structured way.
+                        const node = resultItem.node || resultItem; // Adjust based on actual structure
+
+                        if (node && node.name && node.entityType) {
+                            let nodeContent = `Entity Type: ${node.entityType}\nObservations:\n`;
+                            if (Array.isArray(node.observations)) {
+                                nodeContent += node.observations.map((obs: string) => `- ${obs}`).join('\n');
+                            } else if (node.observations) {
+                                nodeContent += String(node.observations);
+                            }
+
+                            let contextType: RetrievedCodeContext['type'] = 'kg_node_info';
+                            if (node.entityType === 'file') contextType = 'file_snippet';
+                            else if (node.entityType === 'function' || node.entityType === 'method') contextType = 'function_definition';
+                            else if (node.entityType === 'class') contextType = 'class_definition';
+
+                            // Calculate relevance score for KG results
+                            let kgRelevanceScore = resultItem.score || 0.7; // Default score if not provided by kg_nl_query
+                            if (keywords.includes(node.name) || (node.entityType !== 'file' && keywords.includes(node.name.split('::').pop()))) {
+                                kgRelevanceScore = 0.9; // Higher score if node name is a direct keyword match
+                            }
+
+                            retrievedContexts.push({
+                                type: contextType,
+                                sourcePath: node.name,
+                                entityName: node.entityType !== 'file' ? node.name : undefined,
+                                content: nodeContent,
+                                relevanceScore: kgRelevanceScore,
+                                metadata: {
+                                    kgNodeType: node.entityType,
+                                    kgQuery: prompt, // Store the original NL query for context
+                                    // Potentially extract language from observations if available
+                                },
+                            });
+                            console.log(`Added KG context item: ${node.name} - ${node.entityType} (Score: ${kgRelevanceScore})`);
+                        }
+                    });
+                    console.log(`Retrieved ${kgQueryResults.results.length} items from KG natural language query.`);
+                } else {
+                    console.warn("KG natural language query returned no results or unexpected format.");
+                }
             } catch (error) {
-                console.error(`Error during KG search for prompt context:`, error);
+                console.error(`Error during KG natural language search for prompt context:`, error);
             }
         }
 
@@ -230,13 +259,74 @@ export class CodebaseContextRetrieverService {
     }
 
     /**
-     * A simple keyword extraction method.
-     * In a real scenario, this might involve more sophisticated NLP or an LLM call.
+     * Extracts keywords and relevant code entities from a prompt using Gemini.
+     * @param prompt The natural language prompt.
+     * @returns A promise resolving to an array of extracted keywords and entity names.
+     */
+    private async _extractKeywordsAndEntitiesWithGemini(prompt: string): Promise<string[]> {
+        if (!this.geminiService) {
+            console.warn("GeminiIntegrationService not available, falling back to basic keyword extraction.");
+            return this._basicExtractKeywordsFromPrompt(prompt);
+        }
+
+        const extractionPrompt = `
+You are an expert code analysis assistant. Your task is to extract key technical keywords and specific code entity names (e.g., file paths, function names, class names, interface names, variable names) from the following user prompt. Focus on terms that directly relate to code elements or programming concepts.
+
+Provide the output as a JSON array of strings. Each string should be a distinct keyword or entity name. Do not include stop words or common conversational phrases.
+
+Example:
+User Prompt: "How do I use the 'processPayment' function in 'src/services/payment_service.ts' to handle different payment types?"
+Output: ["processPayment", "src/services/payment_service.ts", "payment types", "function"]
+
+User Prompt: "Implement a new authentication middleware for user login."
+Output: ["authentication middleware", "user login", "implement"]
+
+User Prompt: "Refactor the 'User' class to use a new 'IUser' interface."
+Output: ["Refactor", "User class", "IUser interface"]
+
+User Prompt: "${prompt}"
+Output:
+`;
+        try {
+            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-1.5-flash-latest");
+            const textResponse = result.content[0].text ?? '';
+            
+            try {
+                let jsonString = textResponse;
+                const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
+                if (jsonMatch && jsonMatch[1]) {
+                    jsonString = jsonMatch[1];
+                } else if (!(jsonString.startsWith("[") && jsonString.endsWith("]"))) {
+                    const firstBracket = jsonString.indexOf('[');
+                    const lastBracket = jsonString.lastIndexOf(']');
+                    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                        jsonString = jsonString.substring(firstBracket, lastBracket + 1);
+                    } else {
+                        throw new Error("Response from Gemini was not in a recognizable JSON array format.");
+                    }
+                }
+                const parsedResponse = JSON.parse(jsonString);
+                if (Array.isArray(parsedResponse) && parsedResponse.every(item => typeof item === 'string')) {
+                    return parsedResponse;
+                } else {
+                    throw new Error("Parsed JSON is not an array of strings.");
+                }
+            } catch (parseError: any) {
+                console.error(`Error parsing Gemini API JSON response for keyword extraction. Raw response: "${textResponse}". Parse error:`, parseError);
+                return this._basicExtractKeywordsFromPrompt(prompt); // Fallback
+            }
+        } catch (error: any) {
+            console.error(`Error calling Gemini API for keyword extraction:`, error);
+            return this._basicExtractKeywordsFromPrompt(prompt); // Fallback
+        }
+    }
+
+    /**
+     * A simple keyword extraction method (fallback).
      * @param prompt The prompt string.
      * @returns An array of keywords.
      */
-    private extractKeywordsFromPrompt(prompt: string): string[] {
-        // Reduced stop word list to allow more technical terms to pass through
+    private _basicExtractKeywordsFromPrompt(prompt: string): string[] {
         const stopWords = new Set([
             'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should',

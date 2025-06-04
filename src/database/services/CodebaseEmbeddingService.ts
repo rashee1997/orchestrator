@@ -7,6 +7,34 @@ import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { CodebaseIntrospectionService, ExtractedCodeEntity, ScannedItem } from './CodebaseIntrospectionService.js';
 import { Database } from 'sqlite';
+import {
+    storeVecEmbedding,
+    findSimilarVecEmbeddings
+} from '../vector_db.js';
+
+// Helper to insert metadata into any table
+async function insertEmbeddingMetadata(
+    db: Database,
+    table: string,
+    metadata: Record<string, any>
+) {
+    const columns = Object.keys(metadata);
+    const placeholders = columns.map(() => '?').join(',');
+    const sql = `INSERT OR REPLACE INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`;
+    await db.run(sql, ...columns.map(k => metadata[k]));
+}
+
+// Helper to fetch metadata for a set of embedding_ids
+async function fetchMetadataByIds(
+    db: Database,
+    table: string,
+    embeddingIds: string[]
+) {
+    if (embeddingIds.length === 0) return [];
+    const placeholders = embeddingIds.map(() => '?').join(',');
+    const sql = `SELECT * FROM ${table} WHERE embedding_id IN (${placeholders})`;
+    return db.all(sql, ...embeddingIds);
+}
 
 // Define the structure for storing embeddings if not already defined elsewhere
 interface CodebaseEmbeddingRecord {
@@ -155,11 +183,16 @@ export class CodebaseEmbeddingService {
         return chunks;
     }
 
+    /**
+     * Store embeddings in the specified vector and metadata tables.
+     */
     public async generateAndStoreEmbeddingsForFile(
         agentId: string,
         filePath: string,
         projectRootPath: string,
-        strategy: ChunkingStrategy = 'auto'
+        strategy: ChunkingStrategy = 'auto',
+        vectorTable: string = 'codebase_embeddings_vec',
+        metadataTable: string = 'codebase_embeddings'
     ): Promise<number> {
         let fileContent: string;
         try {
@@ -174,7 +207,7 @@ export class CodebaseEmbeddingService {
         }
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
-        const language = await (this.introspectionService as any).detectLanguage(agentId, filePath, path.basename(filePath)); // Cast to any if detectLanguage is private
+        const language = await (this.introspectionService as any).detectLanguage(agentId, filePath, path.basename(filePath));
 
         const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy);
         if (chunksData.length === 0) {
@@ -190,58 +223,30 @@ export class CodebaseEmbeddingService {
             return 0;
         }
 
-        const recordsToInsert: Omit<CodebaseEmbeddingRecord, 'embedding_id' | 'created_timestamp_unix'>[] = [];
+        let newEmbeddingsCount = 0;
         for (let i = 0; i < chunksData.length; i++) {
             const chunk = chunksData[i];
-            const { vector, dimensions } = embeddingResults[i];
-            const chunkHash = this.generateChunkHash(chunk.chunk_text);
-
-            recordsToInsert.push({
-                agent_id: agentId,
-                file_path_relative: relativeFilePath,
-                entity_name: chunk.entity_name || null,
-                chunk_text: chunk.chunk_text,
-                vector_blob: this.vectorToBuffer(vector),
-                vector_dimensions: dimensions,
-                model_name: DEFAULT_EMBEDDING_MODEL,
-                chunk_hash: chunkHash,
-                metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : undefined,
-            });
-        }
-
-        if (recordsToInsert.length === 0) return 0;
-
-        const stmt = await this.vectorDb.prepare( // Use this.vectorDb
-            `INSERT INTO codebase_embeddings (embedding_id, agent_id, file_path_relative, entity_name, chunk_text, vector_blob, vector_dimensions, model_name, chunk_hash, created_timestamp_unix, metadata_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        );
-        let newEmbeddingsCount = 0;
-        const now = Math.floor(Date.now() / 1000);
-        for (const record of recordsToInsert) {
+            const { vector } = embeddingResults[i];
+            const embedding_id = uuidv4();
             try {
-                await stmt.run(
-                    uuidv4(),
-                    record.agent_id,
-                    record.file_path_relative,
-                    record.entity_name,
-                    record.chunk_text,
-                    record.vector_blob,
-                    record.vector_dimensions,
-                    record.model_name,
-                    record.chunk_hash,
-                    now,
-                    record.metadata_json
-                );
+                await storeVecEmbedding(embedding_id, vector, vectorTable);
+                // Insert metadata
+                await insertEmbeddingMetadata(this.vectorDb, metadataTable, {
+                    embedding_id,
+                    agent_id: agentId,
+                    file_path_relative: relativeFilePath,
+                    entity_name: chunk.entity_name || null,
+                    chunk_text: chunk.chunk_text,
+                    model_name: DEFAULT_EMBEDDING_MODEL,
+                    chunk_hash: this.generateChunkHash(chunk.chunk_text),
+                    created_timestamp_unix: Math.floor(Date.now() / 1000),
+                    metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
+                });
                 newEmbeddingsCount++;
             } catch (insertError: any) {
-                if (insertError.message.includes('UNIQUE constraint failed: codebase_embeddings.chunk_hash')) {
-                    // console.log(`Chunk hash duplicate for ${record.file_path_relative}, entity: ${record.entity_name || 'file chunk'}. Likely already embedded.`);
-                } else {
-                    console.error(`Failed to insert embedding for ${record.file_path_relative}:`, insertError);
-                }
+                console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
             }
         }
-        await stmt.finalize();
         if (newEmbeddingsCount > 0) {
             console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
         }
@@ -285,11 +290,16 @@ export class CodebaseEmbeddingService {
         return totalEmbeddingsCreated;
     }
 
+    /**
+     * Retrieve similar code chunks from the specified vector and metadata tables.
+     */
     public async retrieveSimilarCodeChunks(
         agentId: string,
         queryText: string,
         topK: number = 5,
-        targetFilePaths?: string[] // Relative paths
+        targetFilePaths?: string[],
+        vectorTable: string = 'codebase_embeddings_vec',
+        metadataTable: string = 'codebase_embeddings'
     ): Promise<Array<{ chunk_text: string; file_path_relative: string; entity_name: string | null; score: number; metadata_json: string | null }>> {
         const embeddingResult = (await this.getEmbeddingsForChunks([queryText]))[0];
         if (!embeddingResult || !embeddingResult.vector) {
@@ -297,52 +307,22 @@ export class CodebaseEmbeddingService {
         }
         const queryEmbedding = embeddingResult.vector;
 
-        let sqlQuery = `SELECT embedding_id, file_path_relative, entity_name, chunk_text, vector_blob, metadata_json FROM codebase_embeddings WHERE agent_id = ?`;
-        const queryParams: any[] = [agentId];
-
-        if (targetFilePaths && targetFilePaths.length > 0) {
-            const placeholders = targetFilePaths.map(() => '?').join(',');
-            sqlQuery += ` AND file_path_relative IN (${placeholders})`;
-            queryParams.push(...targetFilePaths);
-        }
-        
-        const allDbEmbeddings: Array<any> = await this.vectorDb.all(sqlQuery, ...queryParams); // Use this.vectorDb
-
-        if (allDbEmbeddings.length === 0) return [];
-
-        const scoredChunks = allDbEmbeddings.map(row => {
-            const dbVector = this.bufferToVector(row.vector_blob); // Deserialize BLOB to vector
-            const score = this.cosineSimilarity(queryEmbedding, dbVector);
+        // Use sqlite-vec for similarity search
+        const vecResults = await findSimilarVecEmbeddings(queryEmbedding, topK, vectorTable);
+        const ids = vecResults.map(r => r.embedding_id);
+        const metadataRows = await fetchMetadataByIds(this.vectorDb, metadataTable, ids);
+        // Join similarity scores with metadata
+        return ids.map((id, i) => {
+            const meta = metadataRows.find(row => row.embedding_id === id) || {};
             return {
-                chunk_text: row.chunk_text,
-                file_path_relative: row.file_path_relative,
-                entity_name: row.entity_name,
-                score: score,
-                metadata_json: row.metadata_json
+                chunk_text: meta.chunk_text || '',
+                file_path_relative: meta.file_path_relative || '',
+                entity_name: meta.entity_name || null,
+                score: vecResults[i]?.similarity ?? 0,
+                metadata_json: meta.metadata_json || null
             };
         });
-
-        scoredChunks.sort((a, b) => b.score - a.score);
-        return scoredChunks.slice(0, topK);
     }
 
-    private cosineSimilarity(vecA: number[], vecB: number[]): number {
-        if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) {
-            return 0;
-        }
-        let dotProduct = 0;
-        let magnitudeA = 0;
-        let magnitudeB = 0;
-        for (let i = 0; i < vecA.length; i++) {
-            dotProduct += vecA[i] * vecB[i];
-            magnitudeA += vecA[i] * vecA[i];
-            magnitudeB += vecB[i] * vecB[i];
-        }
-        magnitudeA = Math.sqrt(magnitudeA);
-        magnitudeB = Math.sqrt(magnitudeB);
-        if (magnitudeA === 0 || magnitudeB === 0) {
-            return 0;
-        }
-        return dotProduct / (magnitudeA * magnitudeB);
-    }
+    // cosineSimilarity and bufferToVector/vectorToBuffer are no longer needed (handled by vector_db)
 }
