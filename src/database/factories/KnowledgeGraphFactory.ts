@@ -20,10 +20,11 @@ export interface IKnowledgeGraphManager {
     queryNaturalLanguage(agentId: string, naturalLanguageQuery: string): Promise<string>;
     inferRelations(agentId: string, entityNames?: string[], context?: string): Promise<{ message: string; details: any[] }>;
     generateMermaidGraph(agentId: string, options: any): Promise<string>;
+    getExistingRelation(agentId: string, fromNodeName: string, toNodeName: string, relationType: string): Promise<any | null>;
 }
 
 export class KnowledgeGraphFactory {
-    private static instance: IKnowledgeGraphManager | null = null;
+    private static instance: IKnowledgeGraphManager = null!;
     private static config = getKnowledgeGraphConfig();
 
     static async create(
@@ -66,6 +67,6 @@ export class KnowledgeGraphFactory {
     }
 
     static reset(): void {
-        this.instance = null;
+        this.instance = null!;
     }
 }

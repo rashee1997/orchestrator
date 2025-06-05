@@ -136,48 +136,29 @@ export class CodebaseIntrospectionService {
         useAIForUncertain: boolean = true
     ): Promise<string | undefined> {
         const extension = path.extname(fileName).toLowerCase();
-        let lang: string | undefined;
+
+        // Explicitly skip known non-code files or files that are handled by specific parsers
+        // but should not be passed to generic code parsers like TypeScriptParser if misidentified.
+        const nonCodeOrNonParsableExtensions = new Set([
+            '.md', '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
+            '.gitmodules', '.prettierrc', '.eslintrc', '.vscode', '.idea', '.env', '.sample',
+            '.example', '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
+            '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
+            '.sql', '.csv', '.xml'
+        ]);
+
+        // First, check if a specific parser is registered for the extension
         if (this.languageParsers.has(extension)) {
-            lang = this.languageParsers.get(extension)!.getLanguageName();
+            return this.languageParsers.get(extension)!.getLanguageName();
         }
-        // fallback to old logic for other languages
-        if (!lang) {
-            switch (extension) {
-                case '.ts':
-                case '.tsx':
-                    lang = 'typescript';
-                    break;
-                case '.js':
-                case '.jsx':
-                case '.mjs':
-                    lang = 'javascript';
-                    break;
-                case '.py':
-                    lang = 'python';
-                    break;
-                case '.php':
-                    lang = 'php';
-                    break;
-                case '.html':
-                    lang = 'html';
-                    break;
-                case '.css':
-                case '.scss':
-                case '.less':
-                    lang = 'css';
-                    break;
-                case '.jsonl':
-                case '.ndjson':
-                    lang = 'jsonl';
-                    break;
-                case '.json':
-                    lang = 'json';
-                    break;
-            }
+
+        // If no specific parser, check if it's a known non-code file
+        if (nonCodeOrNonParsableExtensions.has(extension) || fileName.startsWith('.')) {
+            return undefined; // Do not attempt to detect language for these
         }
-        if (lang) {
-            return lang;
-        }
+
+        // If still uncertain, try AI detection
         if (useAIForUncertain) {
             try {
                 const aiDetectedLang = await this.detectLanguageWithAI(agentId, filePath);

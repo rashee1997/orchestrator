@@ -775,6 +775,28 @@ If no new relations can be confidently inferred, return an empty array [].
         return { nodes: resultNodes, relations: resultRelations };
     }
 
+    /**
+     * Helper to find an existing relation by its properties.
+     * Note: This reads all relations and filters in memory. For very large graphs, a dedicated index/query might be needed.
+     */
+    public async getExistingRelation(agentId: string, fromNodeName: string, toNodeName: string, relationType: string): Promise<any | null> {
+        const { nodes, relations } = await this.readGraph(agentId);
+        const nameToIdMap = new Map(nodes.map((n:any) => [n.name, n.id]));
+
+        const fromNodeId = nameToIdMap.get(fromNodeName);
+        const toNodeId = nameToIdMap.get(toNodeName);
+
+        if (!fromNodeId || !toNodeId) {
+            return null; // One or both nodes don't exist, so the relation can't exist
+        }
+
+        return relations.find((r: any) => 
+            r.fromNodeId === fromNodeId && 
+            r.toNodeId === toNodeId && 
+            r.relationType === relationType
+        ) || null;
+    }
+
     async generateMermaidGraph(agentId: string, options: { query?: string; layoutDirection?: string; depth?: number; includeLegend?: boolean; groupByDirectory?: boolean, maxNodes?: number, maxEdges?: number }): Promise<string> {
         console.log(`[KGManagerV2.generateMermaidGraph] Agent: ${agentId}, Options:`, options);
         const { query, layoutDirection = 'TD', includeLegend = true, groupByDirectory = false, maxNodes = 100, maxEdges = 200 } = options;

@@ -23,6 +23,12 @@ export class KnowledgeGraphManager {
         this.geminiService = geminiService;
     }
 
+    public async getExistingRelation(agentId: string, fromNodeName: string, toNodeName: string, relationType: string): Promise<any | null> {
+        // This is a stub implementation to satisfy the interface.
+        // You may implement actual logic if needed.
+        return null;
+    }
+
     // private async loadKnowledgeGraph(): Promise<KnowledgeGraph> { // Not used
     //     // ... (original code)
     // }
