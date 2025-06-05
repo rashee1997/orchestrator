@@ -251,11 +251,83 @@ export class CodebaseContextRetrieverService {
             return a.sourcePath.localeCompare(b.sourcePath);
         });
         
+        // Filter out known non-target files like vector_db.ts to reduce false positives
+        // Replace hardcoded filtering with AI-based filtering
+        const aiFilteredContexts = await this.filterContextsWithAI(agentId, prompt, retrievedContexts);
+
         // Deduplicate results (simple deduplication based on content and sourcePath for now)
-        const uniqueContexts = Array.from(new Map(retrievedContexts.map(item => [`${item.sourcePath}#${item.entityName || ''}#${item.content.substring(0,100)}`, item])).values());
+        const uniqueContexts = Array.from(new Map(aiFilteredContexts.map(item => [`${item.sourcePath}#${item.entityName || ''}#${item.content.substring(0,100)}`, item])).values());
 
         console.log('[DEBUG] Returning', uniqueContexts.length, 'unique context items.');
         return uniqueContexts.slice(0, (options?.topKEmbeddings ?? 5) + (options?.topKKgResults ?? 5)); // Limit total results
+    }
+
+    /**
+     * Uses Gemini AI to filter retrieved codebase contexts based on relevance to the prompt.
+     * @param agentId The ID of the agent.
+     * @param prompt The original user prompt.
+     * @param contexts The array of retrieved code contexts.
+     * @returns Filtered array of contexts deemed relevant by AI.
+     */
+    private async filterContextsWithAI(agentId: string, prompt: string, contexts: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
+        if (!this.geminiService || contexts.length === 0) {
+            return contexts; // No AI filtering possible
+        }
+
+        // Prepare a prompt for Gemini to classify relevance of each context item
+        let aiPrompt = `You are an AI assistant that filters codebase context items for relevance to a user's development task.
+The user prompt is:
+"""
+${prompt}
+"""
+
+Below is a list of codebase context items. For each item, decide if it is relevant for understanding, analyzing, or modifying the code related to the user prompt.
+Return a JSON array of booleans corresponding to each item, where true means relevant and false means irrelevant.
+
+Context items:
+`;
+
+        contexts.forEach((ctx, idx) => {
+            aiPrompt += `Item ${idx + 1}:
+- Source Path: ${ctx.sourcePath}
+- Entity Name: ${ctx.entityName || 'N/A'}
+- Type: ${ctx.type}
+- Content Preview: ${ctx.content.substring(0, 100).replace(/\n/g, ' ')}
+\n`;
+        });
+
+        aiPrompt += `
+
+Respond ONLY with a JSON array of booleans, e.g. [true, false, true, ...].`;
+
+        try {
+            const response = await this.geminiService.askGemini(aiPrompt, "gemini-2.5-flash-preview-05-20");
+            const textResponse = response.content[0].text ?? '';
+            let jsonString = textResponse;
+            const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
+            if (jsonMatch && jsonMatch[1]) {
+                jsonString = jsonMatch[1];
+            } else if (!(jsonString.startsWith("[") && jsonString.endsWith("]"))) {
+                const firstBracket = jsonString.indexOf('[');
+                const lastBracket = jsonString.lastIndexOf(']');
+                if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                    jsonString = jsonString.substring(firstBracket, lastBracket + 1);
+                } else {
+                    throw new Error("Response from Gemini was not in a recognizable JSON array format.");
+                }
+            }
+            const relevanceArray: boolean[] = JSON.parse(jsonString);
+            if (!Array.isArray(relevanceArray) || relevanceArray.length !== contexts.length) {
+                console.warn("AI filtering response length mismatch or invalid format. Returning original contexts.");
+                return contexts;
+            }
+            const filteredContexts = contexts.filter((ctx, idx) => relevanceArray[idx]);
+            console.log(`[CodebaseContextRetrieverService] AI filtered contexts from ${contexts.length} to ${filteredContexts.length}`);
+            return filteredContexts;
+        } catch (error) {
+            console.error("Error during AI filtering of contexts:", error);
+            return contexts; // Fallback to original contexts on error
+        }
     }
 
     /**
@@ -288,7 +360,7 @@ User Prompt: "${prompt}"
 Output:
 `;
         try {
-            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-1.5-flash-latest");
+            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash-preview-05-20");
             const textResponse = result.content[0].text ?? '';
             
             try {
@@ -393,7 +465,7 @@ Output:
         ]);
 
         const words = prompt.toLowerCase().replace(/[^\w\s'-]|(?<=\w)-(?=\w)|(?<=')-(?=\w)|(?<=\w)-(?=')/g, "").split(/\s+/);
-        const significantWords = words.filter(word => word.length > 2 && !stopWords.has(word));
+        const significantWords = words.filter((word: string) => word.length > 2 && !stopWords.has(word));
         
         // Further refinement: identify potential entity names (e.g., CamelCase, snake_case, paths)
         const potentialEntities = prompt.match(/([A-Za-z0-9_]+\.[A-Za-z0-9_]+)|([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)*)|([a-z0-9_]+_[a-z0-9_]+)/g) || [];
@@ -447,10 +519,14 @@ Output:
         try {
             const kgNodes = await this.kgManager.openNodes(agentId, entityNames);
             kgNodes.forEach((node: KGNode) => {
+                if (!node) {
+                    console.warn("Skipping undefined KG node.");
+                    return;
+                }
                 let nodeContent = `Entity Type: ${node.entityType}\nObservations:\n`;
-                 if (Array.isArray(node.observations)) {
+                 if (node.observations && Array.isArray(node.observations)) {
                     nodeContent += node.observations.map((obs: string) => `- ${obs}`).join('\n');
-                } else {
+                } else if (node.observations) {
                     nodeContent += String(node.observations);
                 }
 
