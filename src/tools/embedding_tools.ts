@@ -74,18 +74,19 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Path not found or inaccessible: ${absolutePathToEmbed}`);
             }
 
-            let embeddingsCreatedCount = 0;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
+            let resultCounts: { newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; };
+
             if (is_directory) {
-                embeddingsCreatedCount = await embeddingService.generateAndStoreEmbeddingsForDirectory(
+                resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(
                     agent_id,
                     absolutePathToEmbed,
                     absoluteProjectRootPath, // Pass the validated absolute project root
                     chunking_strategy as ChunkingStrategy
                 );
             } else {
-                embeddingsCreatedCount = await embeddingService.generateAndStoreEmbeddingsForFile(
+                resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(
                     agent_id,
                     absolutePathToEmbed,
                     absoluteProjectRootPath, // Pass the validated absolute project root
@@ -96,7 +97,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text', text: formatSimpleMessage(
-                        `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/')}") complete.\n- New Embeddings Created: ${embeddingsCreatedCount}`,
+                        `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/')}") complete.\n- New Embeddings Created: ${resultCounts.newEmbeddingsCount}\n- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}`,
                         "Codebase Embedding Ingestion Report"
                     )
                 }]

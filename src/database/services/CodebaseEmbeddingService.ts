@@ -36,6 +36,27 @@ async function fetchMetadataByIds(
     return db.all(sql, ...embeddingIds);
 }
 
+// Helper to fetch all embeddings for a given file path
+async function getEmbeddingsForFile(
+    db: Database,
+    filePathRelative: string,
+    metadataTable: string
+): Promise<CodebaseEmbeddingRecord[]> {
+    const sql = `SELECT * FROM ${metadataTable} WHERE file_path_relative = ?`;
+    return db.all<CodebaseEmbeddingRecord[]>(sql, filePathRelative);
+}
+
+// Helper to delete an embedding by its ID from both vector and metadata tables
+async function deleteEmbedding(
+    db: Database,
+    embeddingId: string,
+    vectorTable: string,
+    metadataTable: string
+): Promise<void> {
+    await db.run(`DELETE FROM ${vectorTable} WHERE embedding_id = ?`, embeddingId);
+    await db.run(`DELETE FROM ${metadataTable} WHERE embedding_id = ?`, embeddingId);
+}
+
 // Define the structure for storing embeddings if not already defined elsewhere
 interface CodebaseEmbeddingRecord {
     embedding_id: string;
@@ -103,6 +124,13 @@ export class CodebaseEmbeddingService {
         return vector;
     }
 
+    /**
+     * Checks if an embedding with the given chunk hash already exists in the metadata table.
+     */
+    private async getExistingEmbeddingByHash(chunkHash: string, metadataTable: string): Promise<CodebaseEmbeddingRecord | null> {
+        const sql = `SELECT * FROM ${metadataTable} WHERE chunk_hash = ?`;
+        return (await this.vectorDb.get<CodebaseEmbeddingRecord>(sql, chunkHash)) || null;
+    }
 
     private async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<Array<{ vector: number[], dimensions: number }>> {
         if (texts.length === 0) return [];
@@ -193,26 +221,40 @@ export class CodebaseEmbeddingService {
         strategy: ChunkingStrategy = 'auto',
         vectorTable: string = 'codebase_embeddings_vec',
         metadataTable: string = 'codebase_embeddings'
-    ): Promise<number> {
+    ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
         let fileContent: string;
         try {
             fileContent = await fs.readFile(filePath, 'utf-8');
             if (!fileContent.trim()) {
                 console.log(`Skipping empty file: ${filePath}`);
-                return 0;
+                return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
             }
         } catch (e) {
             console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
-            return 0;
+            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
         }
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
         const language = await (this.introspectionService as any).detectLanguage(agentId, filePath, path.basename(filePath));
 
+        // 1. Retrieve existing embeddings for this file before processing new chunks
+        const existingEmbeddingsForFile = await getEmbeddingsForFile(this.vectorDb, relativeFilePath, metadataTable);
+        const existingHashesInDb = new Set(existingEmbeddingsForFile.map(e => e.chunk_hash));
+        const currentHashesInFile = new Set<string>();
+
         const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy);
         if (chunksData.length === 0) {
-            console.log(`No chunks generated for ${filePath}. Skipping embedding.`);
-            return 0;
+        console.log(`No chunks generated for ${filePath}. Skipping embedding.`);
+        // If no chunks are generated, and there were existing embeddings, delete them all
+        if (existingEmbeddingsForFile.length > 0) {
+            console.log(`File ${relativeFilePath} is now empty or has no valid chunks. Deleting ${existingEmbeddingsForFile.length} old embeddings.`);
+            for (const existingEmbedding of existingEmbeddingsForFile) {
+                if (existingEmbedding.embedding_id) {
+                    await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+                }
+            }
+        }
+        return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
         }
 
         const textsToEmbed = chunksData.map(c => c.chunk_text);
@@ -220,37 +262,74 @@ export class CodebaseEmbeddingService {
 
         if (embeddingResults.length !== chunksData.length) {
             console.error(`Mismatch between chunks and generated vectors for ${filePath}. Chunks: ${chunksData.length}, Vectors: ${embeddingResults.length}. Skipping.`);
-            return 0;
+            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
         }
 
         let newEmbeddingsCount = 0;
+        let reusedEmbeddingsCount = 0;
+
         for (let i = 0; i < chunksData.length; i++) {
             const chunk = chunksData[i];
-            const { vector } = embeddingResults[i];
-            const embedding_id = uuidv4();
-            try {
-                await storeVecEmbedding(embedding_id, vector, vectorTable);
-                // Insert metadata
-                await insertEmbeddingMetadata(this.vectorDb, metadataTable, {
-                    embedding_id,
-                    agent_id: agentId,
-                    file_path_relative: relativeFilePath,
-                    entity_name: chunk.entity_name || null,
-                    chunk_text: chunk.chunk_text,
-                    model_name: DEFAULT_EMBEDDING_MODEL,
-                    chunk_hash: this.generateChunkHash(chunk.chunk_text),
-                    created_timestamp_unix: Math.floor(Date.now() / 1000),
-                    metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
-                });
-                newEmbeddingsCount++;
-            } catch (insertError: any) {
-                console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
+            const chunkHash = this.generateChunkHash(chunk.chunk_text);
+            currentHashesInFile.add(chunkHash); // Track all hashes present in the current file content
+
+            // Check if an embedding with this chunk_hash already exists
+            const existingEmbedding = await this.getExistingEmbeddingByHash(chunkHash, metadataTable);
+
+            if (existingEmbedding) {
+                reusedEmbeddingsCount++;
+                // Optionally update timestamp if needed, but for deduplication, we just reuse.
+                // console.log(`Embedding for chunk (hash: ${chunkHash.substring(0, 8)}...) already exists for file ${relativeFilePath}. Reusing.`);
+            } else {
+                const { vector } = embeddingResults[i];
+                const embedding_id = uuidv4();
+
+                try {
+                    await storeVecEmbedding(embedding_id, vector, vectorTable);
+                    await insertEmbeddingMetadata(this.vectorDb, metadataTable, {
+                        embedding_id,
+                        agent_id: agentId,
+                        file_path_relative: relativeFilePath,
+                        entity_name: chunk.entity_name || null,
+                        chunk_text: chunk.chunk_text,
+                        model_name: DEFAULT_EMBEDDING_MODEL,
+                        chunk_hash: chunkHash,
+                        created_timestamp_unix: Math.floor(Date.now() / 1000),
+                        metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
+                    });
+                    newEmbeddingsCount++;
+                } catch (insertError: any) {
+                    console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
+                }
             }
         }
+
+        // 3. Identify and delete stale embeddings
+        let deletedEmbeddingsCount = 0;
+        for (const existingEmbedding of existingEmbeddingsForFile) {
+            if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
+                // This existing embedding's hash is no longer present in the current file's chunks
+                try {
+                    if (existingEmbedding.embedding_id) {
+                        await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+                        deletedEmbeddingsCount++;
+                    }
+                } catch (deleteError: any) {
+                    console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id} for file ${relativeFilePath}:`, deleteError);
+                }
+            }
+        }
+
         if (newEmbeddingsCount > 0) {
             console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
         }
-        return newEmbeddingsCount;
+        if (reusedEmbeddingsCount > 0) {
+            console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
+        }
+        if (deletedEmbeddingsCount > 0) {
+            console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
+        }
+        return { newEmbeddingsCount, reusedEmbeddingsCount, deletedEmbeddingsCount };
     }
 
     public async generateAndStoreEmbeddingsForDirectory(
@@ -258,7 +337,7 @@ export class CodebaseEmbeddingService {
         directoryPath: string,
         projectRootPath: string, // Crucial for consistent relative paths
         strategy: ChunkingStrategy = 'auto'
-    ): Promise<number> {
+    ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
         // Ensure projectRootPath is absolute for reliable relative path calculation
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const absoluteDirectoryPath = path.resolve(directoryPath);
@@ -272,14 +351,16 @@ export class CodebaseEmbeddingService {
                 const language = item.language || await (this.introspectionService as any).detectLanguage(agentId, item.path, path.basename(item.path));
                 if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
                      try {
-                        totalEmbeddingsCreated += await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
+                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
+                        totalEmbeddingsCreated += result.newEmbeddingsCount;
                     } catch (fileError) {
                         console.error(`Error processing file ${item.path} for embeddings:`, fileError);
                     }
                 } else if (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024) { // Embed small unknown files as plain text
                     console.log(`Attempting to embed file with unknown language (as plain text): ${item.path}`);
                      try {
-                        totalEmbeddingsCreated += await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, 'file');
+                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, 'file');
+                        totalEmbeddingsCreated += result.newEmbeddingsCount;
                     } catch (fileError) {
                          console.error(`Error processing plain text file ${item.path} for embeddings:`, fileError);
                     }
@@ -287,7 +368,54 @@ export class CodebaseEmbeddingService {
             }
         }
         console.log(`Total new embeddings created for directory ${directoryPath}: ${totalEmbeddingsCreated}`);
-        return totalEmbeddingsCreated;
+        // For directory, we'll aggregate counts from individual file processing
+        // This return type needs to be adjusted if we want to return all three counts for directory
+        // For now, let's return just the total new embeddings created, or we need to refactor how directory processing aggregates.
+        // Given the user's request is about showing "chunks already exist", we should aggregate all three.
+        // This will require a more complex aggregation logic.
+        // For simplicity and to address the immediate user feedback, I will return a placeholder for now
+        // and then update the embedding_tools.ts to handle the new return type from generateAndStoreEmbeddingsForFile.
+        // The generateAndStoreEmbeddingsForDirectory will need to sum up the results from each file.
+
+        // Re-thinking: generateAndStoreEmbeddingsForDirectory should sum up the results from each file.
+        let totalNewEmbeddings = 0;
+        let totalReusedEmbeddings = 0;
+        let totalDeletedEmbeddings = 0;
+
+        for (const item of scannedItems) {
+            if (item.type === 'file') {
+                const language = item.language || await (this.introspectionService as any).detectLanguage(agentId, item.path, path.basename(item.path));
+                if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
+                     try {
+                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
+                        totalNewEmbeddings += result.newEmbeddingsCount;
+                        totalReusedEmbeddings += result.reusedEmbeddingsCount;
+                        totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                    } catch (fileError) {
+                        console.error(`Error processing file ${item.path} for embeddings:`, fileError);
+                    }
+                } else if (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024) { // Embed small unknown files as plain text
+                    console.log(`Attempting to embed file with unknown language (as plain text): ${item.path}`);
+                     try {
+                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, 'file');
+                        totalNewEmbeddings += result.newEmbeddingsCount;
+                        totalReusedEmbeddings += result.reusedEmbeddingsCount;
+                        totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                    } catch (fileError) {
+                         console.error(`Error processing plain text file ${item.path} for embeddings:`, fileError);
+                    }
+                }
+            }
+        }
+        console.log(`Total new embeddings created for directory ${directoryPath}: ${totalNewEmbeddings}`);
+        console.log(`Total reused embeddings for directory ${directoryPath}: ${totalReusedEmbeddings}`);
+        console.log(`Total deleted embeddings for directory ${directoryPath}: ${totalDeletedEmbeddings}`);
+
+        return {
+            newEmbeddingsCount: totalNewEmbeddings,
+            reusedEmbeddingsCount: totalReusedEmbeddings,
+            deletedEmbeddingsCount: totalDeletedEmbeddings
+        };
     }
 
     /**
