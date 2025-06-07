@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-import { CodebaseIntrospectionService, ExtractedCodeEntity, ScannedItem } from './CodebaseIntrospectionService.js';
+import { CodebaseIntrospectionService, ExtractedCodeEntity, ScannedItem, ExtractedImport } from './CodebaseIntrospectionService.js';
 import { Database } from 'sqlite';
 import {
     storeVecEmbedding,
@@ -148,20 +148,24 @@ export class CodebaseEmbeddingService {
 
         // Use individual embedContent calls as batchEmbedContents might not be available or typed correctly
         for (const text of texts) {
-            const result = await genAIInstance.models.embedContent({ 
-                model: modelName,
-                contents: [{ role: "user", parts: [{ text }] }] 
-            });
-            const embeddingValues = result.embeddings?.[0]?.values; // Safely access embeddings
-            if (!embeddingValues) {
-                console.warn(`Failed to get embedding values for text: ${text.substring(0,50)}...`);
-                continue; // Skip this chunk if embedding failed
+            try {
+                const result = await genAIInstance.models.embedContent({ model: modelName, contents: [{ role: "user", parts: [{ text }] }] });
+                const embeddingValues = result.embeddings?.[0]?.values;
+                if (!embeddingValues) {
+                    console.warn(`Failed to get embedding values for text: ${text.substring(0,50)}...`);
+                    continue; // Skip this chunk if embedding failed
+                }
+                results.push({ vector: embeddingValues, dimensions: embeddingValues.length });
+            } catch (error) {
+                console.error(`Error embedding chunk: "${text.substring(0, 50)}..."`, error);
             }
-            results.push({ vector: embeddingValues, dimensions: embeddingValues.length });
         }
         return results;
     }
-
+    
+    /**
+     * Creates intelligent, context-aware chunks from file content.
+     */
     private async chunkFileContent(
         agentId: string,
         filePath: string,
@@ -172,47 +176,108 @@ export class CodebaseEmbeddingService {
     ): Promise<Array<{ chunk_text: string; entity_name?: string; metadata?: any }>> {
         const chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any }> = [];
 
-        if (strategy === 'file' || !language || !['typescript', 'javascript', 'python'].includes(language) ) { // Only attempt entity chunking for supported languages
-            chunks.push({ chunk_text: fileContent, metadata: { type: 'full_file' } });
+        // Always create a chunk for the full file content for general retrieval
+        chunks.push({ 
+            chunk_text: fileContent, 
+            metadata: { type: 'full_file', language } 
+        });
+
+        // Only perform advanced chunking for supported languages
+        if (!language || !['typescript', 'javascript', 'python', 'php'].includes(language) ) {
             return chunks;
         }
+        
+        // Get file-level context (imports) to prepend to entity chunks
+        const imports = await this.introspectionService.parseFileForImports(agentId, filePath, language);
+        const importContext = "/* Imports for context */\n" + imports.map(imp => imp.originalImportString).join('\n');
 
         const codeEntities = await this.introspectionService.parseFileForCodeEntities(agentId, filePath, language);
+        
+        // Create a map of function names to their code for recursive lookups within the same file
+        const functionCodeMap = new Map<string, string>();
+        codeEntities.forEach(entity => {
+            if (entity.type === 'function' || entity.type === 'method') {
+                 const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
+                 functionCodeMap.set(entity.name, entityCode);
+            }
+        });
 
         if ((strategy === 'function' || strategy === 'class' || strategy === 'auto') && codeEntities.length > 0) {
             for (const entity of codeEntities) {
+                // Process only the entity types relevant to the strategy
                 if ((strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
                     (strategy === 'class' && entity.type === 'class') ||
-                    (strategy === 'auto' && ['function', 'method', 'class', 'interface', 'enum', 'type_alias'].includes(entity.type))) {
+                    (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type))) {
                     
-                    const entityCodeLines = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine);
-                    const entityCode = entityCodeLines.join('\n');
+                    const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
                     
                     if (entityCode.trim()) { // Only add non-empty chunks
+                        
+                        // Get graph context (entity relationships)
+                        let graphContext = "/* Code structure context */\n";
+                        try {
+                             const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                             if (relations && relations.length > 0) {
+                                 const relatedNodes = relations.map((r: any) => r.name);
+                                 graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                             }
+                             if(entity.parentClass) {
+                                graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
+                             }
+                        } catch(e) {
+                            console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+                        }
+                        
+                        // Implement Recursive Chunking by finding internal function calls
+                        let recursiveContext = '/* Recursively included function calls */\n';
+                        if (entity.type === 'function' || entity.type === 'method') {
+                            for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                                if (funcName !== entity.name && entityCode.includes(funcName)) {
+                                    recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
+                                }
+                            }
+                        }
+
+                        // Combine all context with the actual code
+                        const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+                        
+                        // Create a chunk for the raw code with all its context
                         chunks.push({
-                            chunk_text: entityCode,
+                            chunk_text: codeWithFullContext,
                             entity_name: entity.name,
                             metadata: {
                                 type: entity.type,
                                 startLine: entity.startLine,
                                 endLine: entity.endLine,
                                 signature: entity.signature,
-                                fullName: entity.fullName
+                                fullName: entity.fullName,
+                                language: language
+                            }
+                        });
+
+                        // Create a separate chunk for the AI-generated summary
+                        const summary = await this.geminiService.summarizeCodeChunk(codeWithFullContext, entity.type, language);
+                        chunks.push({
+                            chunk_text: summary,
+                            entity_name: entity.name,
+                            metadata: {
+                                type: `${entity.type}_summary`,
+                                original_code_hash: this.generateChunkHash(entityCode),
+                                startLine: entity.startLine,
+                                endLine: entity.endLine,
+                                fullName: entity.fullName,
+                                language: 'en' // Summary is in English
                             }
                         });
                     }
                 }
             }
         }
-
-        if (chunks.length === 0 && fileContent.trim()) { // If no entity chunks were made, or strategy forced file, and file is not empty
-            chunks.push({ chunk_text: fileContent, metadata: { type: 'full_file_fallback' } });
-        }
         return chunks;
     }
 
     /**
-     * Store embeddings in the specified vector and metadata tables.
+     * Generates and stores embeddings for a single file, handling chunking, hashing, and stale data cleanup.
      */
     public async generateAndStoreEmbeddingsForFile(
         agentId: string,
@@ -235,33 +300,28 @@ export class CodebaseEmbeddingService {
         }
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
-        const language = await (this.introspectionService as any).detectLanguage(agentId, filePath, path.basename(filePath));
+        const language = await this.introspectionService.detectLanguage(agentId, filePath, path.basename(filePath));
 
-        // 1. Retrieve existing embeddings for this file before processing new chunks
         const existingEmbeddingsForFile = await getEmbeddingsForFile(this.vectorDb, relativeFilePath, metadataTable);
-        const existingHashesInDb = new Set(existingEmbeddingsForFile.map(e => e.chunk_hash));
         const currentHashesInFile = new Set<string>();
-
         const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy);
+        
         if (chunksData.length === 0) {
-        console.log(`No chunks generated for ${filePath}. Skipping embedding.`);
-        // If no chunks are generated, and there were existing embeddings, delete them all
-        if (existingEmbeddingsForFile.length > 0) {
-            console.log(`File ${relativeFilePath} is now empty or has no valid chunks. Deleting ${existingEmbeddingsForFile.length} old embeddings.`);
-            for (const existingEmbedding of existingEmbeddingsForFile) {
-                if (existingEmbedding.embedding_id) {
-                    await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+            if (existingEmbeddingsForFile.length > 0) {
+                for (const existingEmbedding of existingEmbeddingsForFile) {
+                    if (existingEmbedding.embedding_id) {
+                        await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+                    }
                 }
             }
-        }
-        return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
+            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: existingEmbeddingsForFile.length };
         }
 
         const textsToEmbed = chunksData.map(c => c.chunk_text);
         const embeddingResults = await this.getEmbeddingsForChunks(textsToEmbed);
 
         if (embeddingResults.length !== chunksData.length) {
-            console.error(`Mismatch between chunks and generated vectors for ${filePath}. Chunks: ${chunksData.length}, Vectors: ${embeddingResults.length}. Skipping.`);
+            console.error(`Mismatch between chunks and generated vectors for ${filePath}. Skipping.`);
             return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
         }
 
@@ -271,17 +331,15 @@ export class CodebaseEmbeddingService {
         for (let i = 0; i < chunksData.length; i++) {
             const chunk = chunksData[i];
             const chunkHash = this.generateChunkHash(chunk.chunk_text);
-            currentHashesInFile.add(chunkHash); // Track all hashes present in the current file content
+            currentHashesInFile.add(chunkHash);
 
-            // Check if an embedding with this chunk_hash already exists
             const existingEmbedding = await this.getExistingEmbeddingByHash(chunkHash, metadataTable);
 
             if (existingEmbedding) {
                 reusedEmbeddingsCount++;
-                // Optionally update timestamp if needed, but for deduplication, we just reuse.
-                // console.log(`Embedding for chunk (hash: ${chunkHash.substring(0, 8)}...) already exists for file ${relativeFilePath}. Reusing.`);
             } else {
                 const { vector } = embeddingResults[i];
+                if (!vector || vector.length === 0) continue;
                 const embedding_id = uuidv4();
 
                 try {
@@ -304,88 +362,46 @@ export class CodebaseEmbeddingService {
             }
         }
 
-        // 3. Identify and delete stale embeddings
         let deletedEmbeddingsCount = 0;
         for (const existingEmbedding of existingEmbeddingsForFile) {
             if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
-                // This existing embedding's hash is no longer present in the current file's chunks
                 try {
                     if (existingEmbedding.embedding_id) {
                         await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
                         deletedEmbeddingsCount++;
                     }
                 } catch (deleteError: any) {
-                    console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id} for file ${relativeFilePath}:`, deleteError);
+                    console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id}:`, deleteError);
                 }
             }
         }
 
-        if (newEmbeddingsCount > 0) {
-            console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
-        }
-        if (reusedEmbeddingsCount > 0) {
-            console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
-        }
-        if (deletedEmbeddingsCount > 0) {
-            console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
-        }
+        if (newEmbeddingsCount > 0) console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
+        if (reusedEmbeddingsCount > 0) console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
+        if (deletedEmbeddingsCount > 0) console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
+        
         return { newEmbeddingsCount, reusedEmbeddingsCount, deletedEmbeddingsCount };
     }
 
     public async generateAndStoreEmbeddingsForDirectory(
         agentId: string,
         directoryPath: string,
-        projectRootPath: string, // Crucial for consistent relative paths
+        projectRootPath: string,
         strategy: ChunkingStrategy = 'auto'
     ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
-        // Ensure projectRootPath is absolute for reliable relative path calculation
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const absoluteDirectoryPath = path.resolve(directoryPath);
 
-
         const scannedItems = await this.introspectionService.scanDirectoryRecursive(agentId, absoluteDirectoryPath, absoluteProjectRootPath);
-        let totalEmbeddingsCreated = 0;
-
-        for (const item of scannedItems) {
-            if (item.type === 'file') {
-                const language = item.language || await (this.introspectionService as any).detectLanguage(agentId, item.path, path.basename(item.path));
-                if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
-                     try {
-                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
-                        totalEmbeddingsCreated += result.newEmbeddingsCount;
-                    } catch (fileError) {
-                        console.error(`Error processing file ${item.path} for embeddings:`, fileError);
-                    }
-                } else if (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024) { // Embed small unknown files as plain text
-                    console.log(`Attempting to embed file with unknown language (as plain text): ${item.path}`);
-                     try {
-                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, 'file');
-                        totalEmbeddingsCreated += result.newEmbeddingsCount;
-                    } catch (fileError) {
-                         console.error(`Error processing plain text file ${item.path} for embeddings:`, fileError);
-                    }
-                }
-            }
-        }
-        console.log(`Total new embeddings created for directory ${directoryPath}: ${totalEmbeddingsCreated}`);
-        // For directory, we'll aggregate counts from individual file processing
-        // This return type needs to be adjusted if we want to return all three counts for directory
-        // For now, let's return just the total new embeddings created, or we need to refactor how directory processing aggregates.
-        // Given the user's request is about showing "chunks already exist", we should aggregate all three.
-        // This will require a more complex aggregation logic.
-        // For simplicity and to address the immediate user feedback, I will return a placeholder for now
-        // and then update the embedding_tools.ts to handle the new return type from generateAndStoreEmbeddingsForFile.
-        // The generateAndStoreEmbeddingsForDirectory will need to sum up the results from each file.
-
-        // Re-thinking: generateAndStoreEmbeddingsForDirectory should sum up the results from each file.
+        
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
         let totalDeletedEmbeddings = 0;
 
         for (const item of scannedItems) {
             if (item.type === 'file') {
-                const language = item.language || await (this.introspectionService as any).detectLanguage(agentId, item.path, path.basename(item.path));
-                if (language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) { // Expand supported types
+                const language = item.language || await this.introspectionService.detectLanguage(agentId, item.path, path.basename(item.path));
+                if ((language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) || (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024)) {
                      try {
                         const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
                         totalNewEmbeddings += result.newEmbeddingsCount;
@@ -393,16 +409,6 @@ export class CodebaseEmbeddingService {
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;
                     } catch (fileError) {
                         console.error(`Error processing file ${item.path} for embeddings:`, fileError);
-                    }
-                } else if (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024) { // Embed small unknown files as plain text
-                    console.log(`Attempting to embed file with unknown language (as plain text): ${item.path}`);
-                     try {
-                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, 'file');
-                        totalNewEmbeddings += result.newEmbeddingsCount;
-                        totalReusedEmbeddings += result.reusedEmbeddingsCount;
-                        totalDeletedEmbeddings += result.deletedEmbeddingsCount;
-                    } catch (fileError) {
-                         console.error(`Error processing plain text file ${item.path} for embeddings:`, fileError);
                     }
                 }
             }
@@ -418,9 +424,6 @@ export class CodebaseEmbeddingService {
         };
     }
 
-    /**
-     * Retrieve similar code chunks from the specified vector and metadata tables.
-     */
     public async retrieveSimilarCodeChunks(
         agentId: string,
         queryText: string,
@@ -435,11 +438,10 @@ export class CodebaseEmbeddingService {
         }
         const queryEmbedding = embeddingResult.vector;
 
-        // Use sqlite-vec for similarity search
         const vecResults = await findSimilarVecEmbeddings(queryEmbedding, topK, vectorTable);
         const ids = vecResults.map(r => r.embedding_id);
         const metadataRows = await fetchMetadataByIds(this.vectorDb, metadataTable, ids);
-        // Join similarity scores with metadata
+        
         return ids.map((id, i) => {
             const meta = metadataRows.find(row => row.embedding_id === id) || {};
             let parsedMetadata: Record<string, any> | null = null;
@@ -455,10 +457,8 @@ export class CodebaseEmbeddingService {
                 file_path_relative: meta.file_path_relative || '',
                 entity_name: meta.entity_name || null,
                 score: vecResults[i]?.similarity ?? 0,
-                metadata: parsedMetadata // Include parsed metadata object
+                metadata: parsedMetadata
             };
         });
     }
-
-    // cosineSimilarity and bufferToVector/vectorToBuffer are no longer needed (handled by vector_db)
 }

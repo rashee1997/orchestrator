@@ -93,23 +93,66 @@ export class GeminiIntegrationService {
         this.checkApiInitialized();
         const modelToUse = modelName || this.defaultAskModelName;
         try {
-            const request = {
+            const request: any = { // Use 'any' to dynamically add systemInstruction
                 model: modelToUse,
                 contents: [{ role: "user", parts: [{ text: query }] }],
                 safetySettings: this.safetySettings, 
                 generationConfig: this.generationConfig, 
             };
             
-            if (systemInstruction) { 
-                console.warn("System instruction provided to askGemini, but it's not directly supported by models.generateContent in this manner. Consider including it in the prompt.");
+            if (systemInstruction) {
+                // The correct way to add a system instruction
+                request.systemInstruction = {
+                    role: "system",
+                    parts: [{ text: systemInstruction }]
+                };
             }
 
             const result = await this.genAI!.models.generateContent(request);
-            return { content: [{ text: result.text ?? 'No response from Gemini.' }] };
+            // The response structure is different when using system instructions
+            // The type GenerateContentResponse does not have 'content' property, so cast to any
+            const responseText = (result as any).content?.[0]?.text ?? 'No response from Gemini.';
+            return { content: [{ text: responseText }] };
 
         } catch (error: any) {
             console.error(`Error calling Gemini API (${modelToUse}) for query:`, error);
             throw new Error(`Failed to get response from Gemini (${modelToUse}): ${error.message}`);
+        }
+    }
+    
+    /**
+     * MODIFICATION: New method to summarize a raw code chunk.
+     * @param codeChunk The string of code to summarize.
+     * @param entityType The type of the entity (e.g., 'function', 'class').
+     * @param language The programming language.
+     * @returns A promise resolving to a plain-English summary.
+     */
+    async summarizeCodeChunk(codeChunk: string, entityType: string, language: string): Promise<string> {
+        this.checkApiInitialized();
+        const modelToUse = this.summarizationModelName;
+        const prompt = `
+You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
+Do not describe the code line-by-line. Focus on the high-level goal and functionality.
+
+Language: ${language}
+Entity Type: ${entityType}
+Code Snippet:
+\`\`\`${language}
+${codeChunk}
+\`\`\`
+
+One-sentence summary:
+`;
+        try {
+            const result = await this.askGemini(prompt, modelToUse);
+            // Clean up the response to ensure it's a single, clean sentence.
+            let summary = result.content[0].text ?? 'Could not generate summary.';
+            summary = summary.replace(/[\r\n]+/g, ' ').replace(/`/g, '').trim();
+            return summary;
+        } catch (error: any) {
+            console.error(`Error calling Gemini API for code chunk summarization:`, error);
+            // Return a default message on error to avoid breaking the embedding process
+            return `Failed to generate summary: ${error.message}`;
         }
     }
 
@@ -216,11 +259,9 @@ export class GeminiIntegrationService {
     
     private async getEmbedding(text: string): Promise<number[]> {
         this.checkApiInitialized();
-        const response = await this.genAI!.models.embedContent({ 
-            model: this.embeddingModelName, 
-            contents: [{ role: "user", parts: [{ text }] }] 
-        });
-        const embeddingValues = response.embeddings?.[0]?.values; // Changed response.embedding to response.embeddings
+        // This is a simplified call; the actual API might require a different structure
+        const response = await this.genAI!.models.embedContent({ model: this.embeddingModelName, contents: [{ role: "user", parts: [{ text }] }] });
+        const embeddingValues = response.embeddings?.[0]?.values;
         if (!embeddingValues) {
             console.warn(`Failed to get embedding values for text: ${text.substring(0,50)}...`);
             return [];
@@ -346,9 +387,9 @@ export class GeminiIntegrationService {
         let retrievedCodeContextString = "No codebase context was actively retrieved for this refinement iteration.";
         try {
             const retrievalOptions: ContextRetrievalOptions = context_options || {
-                topKEmbeddings: 3, 
-                topKKgResults: 2,    
-                embeddingScoreThreshold: 0.5 
+                topKEmbeddings: 5, 
+                topKKgResults: 5,    
+                embeddingScoreThreshold: 0.6 
             };
             console.log('[DEBUG] processAndRefinePrompt retrievalOptions:', retrievalOptions);
             const codeContexts = await this.codebaseContextRetrieverService.retrieveContextForPrompt(
@@ -363,92 +404,52 @@ export class GeminiIntegrationService {
         }
         
         const metaPrompt = `
-You are an expert AI prompt engineer. Your task is to take a raw user prompt, analyze it thoroughly, consider the provided codebase context, and transform it into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to understand and execute the user's request with precision.
+You are an expert AI prompt engineer and senior software architect. Your task is to take a raw user prompt, perform a deep and mandatory analysis of the provided codebase context, and transform the prompt into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to execute the user's request with precision.
 
-If the user prompt is about adding, extending, or modifying tools or features (e.g., "add more git tools", "implement a new database manager", "extend the logging system"), you MUST:
-- List all existing code implementations related to the feature (e.g., all git tool functions/classes/files) found in the codebase context.
-- Summarize their purpose and how they are structured.
-- Suggest concrete, actionable steps for adding new tools/features, referencing the current codebase structure and patterns.
-- If possible, provide code snippets or templates based on the retrieved context.
+**CRITICAL INSTRUCTION: Your primary function is to analyze the "Retrieved Codebase Context". Do not ignore it. Your entire output must be based on how the user's request interacts with this existing code.**
 
-Critically analyze the "Retrieved Codebase Context" section. This context provides snippets and information about existing code.
-You MUST use this codebase context to:
-1.  More accurately interpret the "Raw User Prompt" and define the "overall_goal".
-2.  Identify if the user's request might involve modifying existing code elements found in the context, or if new elements need to be created alongside them.
-3.  Refine the "decomposed_tasks" to reflect interactions with existing code (e.g., "Modify function X in file Y.ts", "Integrate with Class Z").
-4.  Expand "key_entities_identified" to include relevant entities from the codebase context (files, functions, classes) that are pertinent to the prompt.
-5.  Ensure the "suggested_reasoning_strategy_for_agent" considers the existing codebase structure and patterns.
-6.  Tailor the "desired_output_characteristics_inferred" based on how the request fits into the existing code.
-7.  Summarize your analysis of how the codebase context impacts the plan in the new "codebase_context_summary_by_ai" field.
-8.  List specific, highly relevant code elements from the context in the new "relevant_code_elements_analyzed" field, noting their relevance.
+**Analysis Steps:**
+1.  **Interpret Goal:** Define the user's \`overall_goal\` by interpreting their prompt in light of the provided code context.
+2.  **Analyze Context:** In the \`codebase_context_summary_by_ai\` field, summarize how the existing code influences the plan. Is this a new feature, a modification, or a refactor? Which files are most relevant?
+3.  **Identify Key Entities:** In the \`relevant_code_elements_analyzed\` field, list the specific functions, classes, and files from the context that will be directly impacted or are crucial for implementation.
+4.  **Decompose Tasks:** Break down the goal into a sequence of actionable development tasks. Each task in \`decomposed_tasks\` must be concrete and grounded in the codebase (e.g., "Modify the 'processPayment' function in 'payment_service.ts' to handle gift cards.").
+5.  **Suggest Dependencies:** For each decomposed task, list any prerequisite tasks in the \`suggested_dependencies\` field. This is crucial for creating a valid execution plan.
+6.  **Suggest Validation:** Propose a \`suggested_validation_steps\` for the agent to perform after completing the plan, such as running specific tests or querying the knowledge graph to confirm changes.
 
-You MUST perform 100% comprehensive code analysis of the prompt content and the provided codebase context to produce a 100% complete refactoring or development plan. Your output must include detailed planning steps to ensure clarity and actionable guidance.
+**Output Schema:**
+You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema. Do not include any text or markdown outside the JSON block.
 
-For planning steps, follow the PLAN_MODE_RULES format strictly, which includes adaptive planning depth with quick, standard, and comprehensive plans. Use clear goals, timelines, success criteria, phases, milestones, risk management, decision points, resource plans, and communication matrices as applicable.
-
-You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema without any additional text, explanation, or markdown outside the JSON block.
-
-Ensure the JSON is valid and complete. If any field is not applicable, use null or empty arrays/objects as appropriate.
-
-JSON Schema for Refined Prompt:
 \`\`\`json
 {
-  "refined_prompt_id": "server_generated_uuid_for_this_refinement_instance",
-  "original_prompt_text": "The exact raw user prompt text that was processed.",
+  "refined_prompt_id": "server_generated_uuid",
+  "original_prompt_text": "The exact raw user prompt text.",
   "refinement_engine_model": "${modelToUse}",
   "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
-  "overall_goal": "A clear, concise statement of the user's primary objective, as interpreted from the prompt and the provided codebase context.",
-  "decomposed_tasks": [ 
-    "Sub-task 1 identified from the prompt and context.",
-    "Sub-task 2 identified from the prompt and context."
+  "overall_goal": "A clear, concise statement of the user's primary objective, informed by the codebase context.",
+  "decomposed_tasks": [
+    {
+      "task_description": "A specific, actionable development task.",
+      "suggested_dependencies": ["Description of a prerequisite task from this list."]
+    }
   ],
   "key_entities_identified": [ 
-    {"type": "filename | function | class | variable | concept", "value": "user_authentication.py | process_data | UserAuthenticator", "relevance_to_prompt": "Mentioned in prompt, or identified as highly relevant from codebase context."}
+    {"type": "filename | function | class", "value": "path/to/file.ts | functionName | ClassName", "relevance_to_prompt": "Identified as highly relevant from codebase context."}
   ],
-  "implicit_assumptions_made_by_refiner": [ 
-    "Assuming 'the dashboard' refers to the main application dashboard, based on context item X.",
-    "Assuming standard Python library availability unless specified otherwise."
-  ],
-  "explicit_constraints_from_prompt": [ 
-    "The solution must be implemented in Python 3.9.",
-    "The UI must remain consistent with the existing design language."
-  ],
-  "suggested_ai_role_for_agent": "Example: Act as a Senior Python Developer specializing in API security and database interactions, with knowledge of the provided codebase context.",
-  "suggested_reasoning_strategy_for_agent": "Example: Prioritize security best practices. Analyze potential attack vectors. The codebase context shows function 'calculate_discount' in 'utils.py'; consider if this can be reused or needs modification for the 'apply discount' task.",
-  "desired_output_characteristics_inferred": {
-    "type": "Example: A fully functional Python module with accompanying unit tests.", 
-    "key_content_elements": [ 
-      "Refactored Python code for user_authentication.py based on context.",
-      "Detailed explanation of Argon2 parameter choices.",
-      "Unit tests covering new hashing and verification logic."
-    ],
-    "level_of_detail": "Example: Sufficient for another developer to understand, integrate, and maintain the changes, considering existing codebase patterns shown in context." 
-  },
-  "codebase_context_summary_by_ai": "A brief summary (2-3 sentences) generated by you (the refiner AI) about how the retrieved codebase context influences the interpretation of the user's prompt and the proposed plan.",
+  "codebase_context_summary_by_ai": "Your mandatory, brief analysis of how the retrieved codebase context influences the interpretation and plan.",
   "relevant_code_elements_analyzed": [
     {
       "element_path": "src/services/payment_service.ts",
-      "element_type": "file | function | class | interface",
-      "entity_name": "PaymentService | processPayment | IPaymentOptions",
-      "relevance_notes": "This service seems to handle existing payment logic; the new feature should integrate here by potentially adding a new method or extending an existing one."
+      "element_type": "function",
+      "entity_name": "processPayment",
+      "relevance_notes": "This function currently handles credit card payments and will need to be modified to include the new payment logic."
     }
   ],
-  "suggested_context_analysis_for_agent": [ 
-    {
-      "suggestion_type": "MEMORY_RETRIEVAL",
-      "tool_to_use": "get_conversation_history",
-      "parameters": {"limit": 5, "offset": 0},
-      "rationale": "To understand immediate preceding dialogue for context."
-    },
-    {
-      "suggestion_type": "CODEBASE_ANALYSIS",
-      "tool_to_use": "get_codebase_context_by_entity", 
-      "parameters": {"entity_names": ["ExampleClass", "example_function"]},
-      "rationale": "To fetch full definitions of ExampleClass and example_function identified as relevant from the initial context scan."
-    }
+  "suggested_validation_steps": [
+      "Run all unit tests in 'tests/payment_service.test.ts'.",
+      "Query the knowledge graph to ensure the new 'GiftCardService' node is correctly linked to the 'PaymentService'."
   ],
-  "confidence_in_refinement_score": "Example: High/Medium/Low - based on clarity of prompt and richness of context.",
-  "refinement_error_message": "Null if successful, or an error message if refinement faced issues."
+  "confidence_in_refinement_score": "High | Medium | Low",
+  "refinement_error_message": "Null if successful, or an error message if refinement failed."
 }
 \`\`\`
 
@@ -458,30 +459,25 @@ Raw User Prompt:
 ${raw_user_prompt}
 \`\`\`
 
-${target_ai_persona ? `Suggested AI Persona: ${target_ai_persona}\n` : ''}
-
 ---
-Retrieved Codebase Context (analyze this to inform your refinement):
+Retrieved Codebase Context (MANDATORY ANALYSIS):
 \`\`\`text
 ${retrievedCodeContextString}
 \`\`\`
 ---
 
-Please provide the JSON object only.
+Now, provide the JSON object only.
 `;
         try {
-            const result = await this.askGemini(metaPrompt, modelToUse); 
+            const result = await this.askGemini(metaPrompt, modelToUse);
             const textResponse = result.content[0].text ?? '';
-            let parsedResponse: any;
 
             try {
                 let jsonString = textResponse;
                 const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
                 if (jsonMatch && jsonMatch[1]) {
                     jsonString = jsonMatch[1];
-                } else if (jsonString.startsWith("{") && jsonString.endsWith("}")) {
-                    // Allow if it's already a valid JSON string
-                } else {
+                } else if (!(jsonString.startsWith("{") && jsonString.endsWith("}"))) {
                     const firstBrace = jsonString.indexOf('{');
                     const lastBrace = jsonString.lastIndexOf('}');
                     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -490,54 +486,24 @@ Please provide the JSON object only.
                         throw new Error("Response from Gemini was not in a recognizable JSON format.");
                     }
                 }
-                parsedResponse = JSON.parse(jsonString);
+                const refinedPrompt = JSON.parse(jsonString);
+                
+                // Add server-side generated fields
+                refinedPrompt.refined_prompt_id = randomUUID();
+                refinedPrompt.refinement_timestamp = new Date().toISOString();
+                refinedPrompt.original_prompt_text = raw_user_prompt;
+                refinedPrompt.agent_id = agent_id;
+
+
+                return refinedPrompt;
+
             } catch (parseError: any) {
-                console.error(`Error parsing Gemini API response for prompt refinement. Raw response: "${textResponse}". Parse error:`, parseError);
+                console.error(`Error parsing Gemini API JSON response for prompt refinement. Raw response: "${textResponse}". Parse error:`, parseError);
                 throw new Error(`Failed to parse Gemini API response for prompt refinement. Raw response: "${textResponse.substring(0,200)}...". Error: ${parseError.message}`);
             }
-
-            parsedResponse.refined_prompt_id = parsedResponse.refined_prompt_id && parsedResponse.refined_prompt_id !== "server_generated_uuid_for_this_refinement_instance" 
-                ? parsedResponse.refined_prompt_id 
-                : randomUUID();
-            parsedResponse.original_prompt_text = raw_user_prompt; 
-            parsedResponse.refinement_engine_model = modelToUse;
-            parsedResponse.refinement_timestamp = new Date().toISOString();
-            parsedResponse.agent_id = agent_id;
-
-            console.log('[DEBUG] Gemini refined prompt raw overall_goal:', parsedResponse.overall_goal);
-            if (!parsedResponse.overall_goal || parsedResponse.overall_goal.trim() === '') {
-                console.warn("Refined prompt from Gemini is missing or has empty 'overall_goal'. Using raw prompt as fallback.");
-                parsedResponse.overall_goal = raw_user_prompt; 
-            }
-            
-            parsedResponse.retrieved_codebase_context_summary = retrievedCodeContextString.substring(0, 1000) + (retrievedCodeContextString.length > 1000 ? "..." : "");
-
-            await this.storeRefinedPrompt(parsedResponse);
-            return parsedResponse;
-
         } catch (error: any) {
-            console.error(`Error in processAndRefinePrompt (agent: ${agent_id}):`, error);
-            if (error instanceof GeminiApiNotInitializedError) throw error;
-            return {
-                refined_prompt_id: randomUUID(),
-                original_prompt_text: raw_user_prompt,
-                refinement_engine_model: modelToUse,
-                refinement_timestamp: new Date().toISOString(),
-                overall_goal: "Error: Gemini API call failed during prompt refinement.",
-                decomposed_tasks: [],
-                key_entities_identified: [],
-                implicit_assumptions_made_by_refiner: [],
-                explicit_constraints_from_prompt: [],
-                suggested_ai_role_for_agent: null,
-                suggested_reasoning_strategy_for_agent: null,
-                desired_output_characteristics_inferred: {},
-                codebase_context_summary_by_ai: "Error during context analysis or refinement.",
-                relevant_code_elements_analyzed: [],
-                suggested_context_analysis_for_agent: [],
-                confidence_in_refinement_score: "Low",
-                refinement_error_message: `Gemini API call failed: ${error.message}`,
-                retrieved_codebase_context_summary: retrievedCodeContextString.substring(0,1000) + "..."
-            };
+            console.error(`Error calling Gemini API for prompt refinement (agent: ${agent_id}):`, error);
+            throw new Error(`Failed to refine prompt using Gemini API: ${error.message}`);
         }
     }
 

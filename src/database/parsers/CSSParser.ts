@@ -1,8 +1,9 @@
 // CSS and Tailwind CSS parser module
 import { BaseLanguageParser } from './ILanguageParser.js';
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
-import postcss from 'postcss';
-import * as csstree from 'css-tree';
+import postcss, { AtRule, Rule } from 'postcss';
+import path from 'path';
+
 
 export class CSSParser extends BaseLanguageParser {
     getSupportedExtensions(): string[] {
@@ -13,23 +14,27 @@ export class CSSParser extends BaseLanguageParser {
     }
 
     async parseImports(filePath: string, fileContent: string): Promise<ExtractedImport[]> {
-        // CSS @import rules
         const imports: ExtractedImport[] = [];
+        const fileDir = path.dirname(filePath);
         try {
-            const ast = csstree.parse(fileContent, { positions: true });
-            csstree.walk(ast, (node: any) => {
-                if (node.type === 'Atrule' && node.name === 'import' && node.prelude && node.prelude.value) {
-                    imports.push({
-                        type: 'file',
-                        targetPath: node.prelude.value.replace(/['";]/g, ''),
-                        originalImportString: fileContent.substring(node.loc.start.offset, node.loc.end.offset),
-                        importedSymbols: [],
-                        isDynamicImport: false,
-                        isTypeOnlyImport: false,
-                        startLine: node.loc.start.line,
-                        endLine: node.loc.end.line,
-                    });
-                }
+            const root = postcss.parse(fileContent, { from: filePath });
+            root.walkAtRules('import', (rule: AtRule) => {
+                const rawValue = rule.params.trim();
+                let targetPath = rawValue.replace(/url\(|\)|'|"/g, '').trim();
+                
+                // Resolve the path relative to the current file
+                const resolvedPath = path.resolve(fileDir, targetPath);
+
+                imports.push({
+                    type: 'file',
+                    targetPath: resolvedPath,
+                    originalImportString: rule.toString(),
+                    importedSymbols: [],
+                    isDynamicImport: true,
+                    isTypeOnlyImport: false,
+                    startLine: rule.source?.start?.line || 0,
+                    endLine: rule.source?.end?.line || 0,
+                });
             });
         } catch (error) {
             console.error(`Error parsing CSS imports in ${filePath}:`, error);
@@ -38,46 +43,63 @@ export class CSSParser extends BaseLanguageParser {
     }
 
     async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {
-        // Extract CSS classes, ids, and Tailwind utility classes
         const entities: ExtractedCodeEntity[] = [];
-        const relativeFilePath = this.getRelativeFilePath(filePath);
+        const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
+        const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
+        const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
+
         try {
-            const root = postcss.parse(fileContent);
-            root.walkRules((rule: any) => {
+            const root = postcss.parse(fileContent, { from: filePath });
+
+            root.walkRules((rule: Rule) => {
                 if (rule.selector) {
-                    // Split selectors by comma
-                    rule.selector.split(',').forEach((sel: string) => {
-                        sel = sel.trim();
-                        if (sel.startsWith('.')) {
-                            // CSS class or Tailwind utility
-                            entities.push({
-                                type: 'property',
-                                name: sel,
-                                fullName: `${relativeFilePath}::${sel}`,
-                                startLine: rule.source.start.line,
-                                endLine: rule.source.end.line,
-                                docstring: null,
-                                filePath: relativeFilePath,
-                                className: undefined,
-                                isExported: false,
-                            });
-                        } else if (sel.startsWith('#')) {
-                            // CSS id
-                            entities.push({
-                                type: 'property',
-                                name: sel,
-                                fullName: `${relativeFilePath}::${sel}`,
-                                startLine: rule.source.start.line,
-                                endLine: rule.source.end.line,
-                                docstring: null,
-                                filePath: relativeFilePath,
-                                className: undefined,
-                                isExported: false,
-                            });
-                        }
+                    const properties: { [key: string]: string } = {};
+                    rule.walkDecls(decl => {
+                        properties[decl.prop] = decl.value;
+                    });
+
+                    rule.selectors.forEach((selectorString: string) => {
+                        const trimmedSelector = selectorString.trim();
+                        if (!trimmedSelector) return;
+                        
+                        const entityType = trimmedSelector.startsWith('#') ? 'variable' : 'property';
+
+                        entities.push({
+                            type: entityType,
+                            name: trimmedSelector,
+                            fullName: `${relativeFilePath}::${trimmedSelector}`,
+                            startLine: rule.source?.start?.line || 0,
+                            endLine: rule.source?.end?.line || 0,
+                            filePath: absoluteFilePath,
+                            containingDirectory,
+                            signature: `${trimmedSelector} { ... }`,
+                            isExported: true,
+                            metadata: {
+                                properties: properties,
+                                parent: rule.parent?.type === 'atrule' ? (rule.parent as AtRule).name : 'root'
+                            }
+                        });
                     });
                 }
             });
+
+            root.walkAtRules(/keyframes|media|supports$/, (rule: AtRule) => {
+                 entities.push({
+                    type: 'function',
+                    name: `@${rule.name} ${rule.params}`,
+                    fullName: `${relativeFilePath}::@${rule.name}::${rule.params}`,
+                    startLine: rule.source?.start?.line || 0,
+                    endLine: rule.source?.end?.line || 0,
+                    filePath: absoluteFilePath,
+                    containingDirectory,
+                    signature: `@${rule.name} ${rule.params} { ... }`,
+                    isExported: true,
+                    metadata: {
+                        params: rule.params
+                    }
+                });
+            });
+
         } catch (error) {
             console.error(`Error parsing CSS code entities in ${filePath}:`, error);
         }

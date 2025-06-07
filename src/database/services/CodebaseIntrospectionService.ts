@@ -13,7 +13,7 @@ import { PHPParser } from '../parsers/PHPParser.js';
 import { JSONLParser } from '../parsers/JSONLParser.js';
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
 
-// ... (ScannedItem, ExtractedImport, ExtractedCodeEntity interfaces remain unchanged)
+// ... (ScannedItem, ExtractedImport interfaces remain unchanged)
 export interface ScannedItem {
     path: string;
     name: string;
@@ -31,23 +31,28 @@ export interface ExtractedImport {
     startLine: number;
     endLine: number;
 }
+
+// MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
     type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export';
     name: string;
     fullName: string;
-    signature?: string;
+    signature?: string; // e.g., "function process(data: string): number"
     startLine: number;
     endLine: number;
     docstring?: string | null;
-    parentClass?: string | null;
-    implementedInterfaces?: string[];
+    parentClass?: string | null; // For methods, the name of the containing class
+    implementedInterfaces?: string[]; // For classes
     parameters?: Array<{ name: string; type?: string; optional?: boolean; rest?: boolean; defaultValue?: string | null; }>;
     returnType?: string | null;
     isAsync?: boolean;
     isExported?: boolean;
-    filePath: string;
-    className?: string;
+    filePath: string; // Absolute path to the file
+    containingDirectory: string; // NEW: Relative path of the containing directory
+    className?: string; // Redundant? parentClass is better. Keep for now for compatibility.
+    metadata?: any;
 }
+
 
 export class CodebaseIntrospectionService {
     private memoryManager: MemoryManager;

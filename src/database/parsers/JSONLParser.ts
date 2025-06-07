@@ -196,16 +196,18 @@ export class JSONLParser implements ILanguageParser {
                 
                 // Extract code entities from knowledge graph nodes
                 if (jsonObj.entityType && ['class', 'function', 'method', 'interface', 'variable'].includes(jsonObj.entityType)) {
-                    entities.push({
-                        type: jsonObj.entityType as any,
-                        name: jsonObj.name || `entity_${lineNum}`,
-                        fullName: jsonObj.fullName || jsonObj.name || `${filePath}:${lineNum}`,
-                        signature: jsonObj.signature || JSON.stringify(jsonObj).substring(0, 100),
-                        startLine: lineNum,
-                        endLine: lineNum,
-                        filePath,
-                        isExported: true
-                    });
+                entities.push({
+                    type: jsonObj.entityType as any,
+                    name: jsonObj.name || `entity_${lineNum}`,
+                    fullName: jsonObj.fullName || jsonObj.name || `${filePath}:${lineNum}`,
+                    signature: jsonObj.signature || JSON.stringify(jsonObj).substring(0, 100),
+                    startLine: lineNum,
+                    endLine: lineNum,
+                    filePath,
+                    containingDirectory: path.dirname(filePath),
+                    isExported: true
+                });
+
                 }
                 
                 // Extract from observations if they contain code entity info
@@ -222,6 +224,7 @@ export class JSONLParser implements ILanguageParser {
                                     startLine: lineNum,
                                     endLine: lineNum,
                                     filePath,
+                                    containingDirectory: path.dirname(filePath),
                                     isExported: true
                                 });
                             }

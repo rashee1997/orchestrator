@@ -73,8 +73,10 @@ export class TypeScriptParser extends BaseLanguageParser {
             }
             // Traverse AST for dynamic imports and require calls
             const traverseNode = (node: any): void => {
+                if (!node || typeof node !== 'object') return;
+
                 if (node.type === AST_NODE_TYPES.ImportExpression) {
-                    if (node.source.type === AST_NODE_TYPES.Literal && typeof node.source.value === 'string') {
+                    if (node.source && node.source.type === AST_NODE_TYPES.Literal && typeof node.source.value === 'string') {
                         const source = node.source.value;
                         imports.push({
                             type: this.determineImportType(source, filePath),
@@ -93,7 +95,7 @@ export class TypeScriptParser extends BaseLanguageParser {
                             type: this.determineImportType(source, filePath),
                             targetPath: this.resolveImportPath(source, filePath),
                             originalImportString: fileContent.substring(node.range![0], node.range![1]),
-                            isDynamicImport: false,
+                            isDynamicImport: false, // This is a CommonJS-style import, not ES module dynamic
                             isTypeOnlyImport: false,
                             startLine: node.loc!.start.line,
                             endLine: node.loc!.end.line,
@@ -101,15 +103,14 @@ export class TypeScriptParser extends BaseLanguageParser {
                     }
                 }
                 for (const key in node) {
-                    if (node[key] && typeof node[key] === 'object') {
-                        if (Array.isArray(node[key])) {
-                            node[key].forEach((child: any) => {
-                                if (child && typeof child === 'object' && child.type) {
-                                    traverseNode(child);
-                                }
-                            });
-                        } else if (node[key].type) {
-                            traverseNode(node[key]);
+                    if (node.hasOwnProperty(key)) {
+                        const child = node[key];
+                        if (child && typeof child === 'object') {
+                            if (Array.isArray(child)) {
+                                child.forEach(traverseNode);
+                            } else {
+                                traverseNode(child);
+                            }
                         }
                     }
                 }
@@ -124,8 +125,10 @@ export class TypeScriptParser extends BaseLanguageParser {
     private resolveImportPath(importSpecifier: string, currentFilePath: string): string {
         if (importSpecifier.startsWith('.') || path.isAbsolute(importSpecifier)) {
             let resolved = path.resolve(path.dirname(currentFilePath), importSpecifier);
+            // Normalize to POSIX-style paths for consistency
             return resolved.replace(/\\/g, '/');
         }
+        // It's an external library/module
         return importSpecifier;
     }
 
@@ -136,9 +139,34 @@ export class TypeScriptParser extends BaseLanguageParser {
         return 'external_library';
     }
 
+    private formatSignature(node: any, fileContent: string): string {
+        if (!node.range) return node.id?.name || '';
+    
+        let signatureText = '';
+    
+        if (node.type === AST_NODE_TYPES.FunctionDeclaration || node.type === AST_NODE_TYPES.MethodDefinition || node.type === AST_NODE_TYPES.TSDeclareFunction) {
+            const start = node.range[0];
+            const end = node.body ? node.body.range[0] - 1 : node.range[1];
+            signatureText = fileContent.substring(start, end).replace(/{\s*$/, '').trim();
+        } else if (node.type === AST_NODE_TYPES.ClassDeclaration || node.type === AST_NODE_TYPES.TSInterfaceDeclaration) {
+            const start = node.range[0];
+            const end = node.body ? node.body.range[0] : node.range[1];
+            signatureText = fileContent.substring(start, end).replace(/{\s*$/, '').trim();
+        } else {
+            // Fallback for other types like variables or properties
+            signatureText = fileContent.substring(node.range[0], node.range[1]).trim();
+        }
+    
+        // Clean up excessive whitespace
+        return signatureText.replace(/\s+/g, ' ');
+    }
+    
     async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {
         const entities: ExtractedCodeEntity[] = [];
-        const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
+        const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
+        const relativeFilePath = path.relative(projectRootPath, absoluteFilePath).replace(/\\/g, '/');
+        const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
+
         try {
             const ast = parse(fileContent, {
                 ecmaVersion: 2022,
@@ -149,222 +177,78 @@ export class TypeScriptParser extends BaseLanguageParser {
                 comment: true,
                 attachComment: true,
             });
+
             const traverseNode = (node: any, parent?: any): void => {
+                if (!node || !node.type) return;
+
+                const baseEntity = {
+                    startLine: node.loc!.start.line,
+                    endLine: node.loc!.end.line,
+                    filePath: absoluteFilePath,
+                    containingDirectory: containingDirectory,
+                    signature: this.formatSignature(node, fileContent),
+                };
+
                 switch (node.type) {
                     case AST_NODE_TYPES.ClassDeclaration:
                         entities.push({
+                            ...baseEntity,
                             type: 'class',
                             name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
+                            fullName: `${relativeFilePath}::${node.id.name}`,
+                            isExported: parent.type === AST_NODE_TYPES.ExportNamedDeclaration || parent.type === AST_NODE_TYPES.ExportDefaultDeclaration,
+                            implementedInterfaces: (node.implements || []).map((impl: any) => impl.expression.name),
                         });
                         break;
+                    
                     case AST_NODE_TYPES.FunctionDeclaration:
                         entities.push({
+                            ...baseEntity,
                             type: 'function',
                             name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
+                            fullName: `${relativeFilePath}::${node.id.name}`,
+                            isExported: parent.type === AST_NODE_TYPES.ExportNamedDeclaration || parent.type === AST_NODE_TYPES.ExportDefaultDeclaration,
+                            isAsync: node.async,
+                            parameters: node.params.map((p: any) => ({ name: p.name, type: p.typeAnnotation?.typeAnnotation?.typeName?.name })),
+                            returnType: node.returnType?.typeAnnotation?.typeName?.name,
                         });
                         break;
-                    case AST_NODE_TYPES.TSInterfaceDeclaration:
-                        entities.push({
-                            type: 'interface',
-                            name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
+
                     case AST_NODE_TYPES.MethodDefinition:
                         entities.push({
+                            ...baseEntity,
                             type: 'method',
-                            name: node.key.name,
-                            fullName: relativeFilePath + '::' + node.key.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
+                            name: (node.key as TSESTree.Identifier).name,
+                            fullName: `${relativeFilePath}::${parent?.id?.name || 'anonymous_class'}::${(node.key as TSESTree.Identifier).name}`,
+                            parentClass: parent?.id?.name || null,
+                            isExported: false, // Methods are exported via their class
+                            isAsync: node.value.async,
+                            parameters: node.value.params.map((p: any) => ({ name: p.name, type: p.typeAnnotation?.typeAnnotation?.typeName?.name })),
+                            returnType: node.value.returnType?.typeAnnotation?.typeName?.name,
                         });
                         break;
-                    case AST_NODE_TYPES.VariableDeclaration:
-                        node.declarations.forEach((declaration: any) => {
-                            if (declaration.id.type === AST_NODE_TYPES.Identifier) {
-                                entities.push({
-                                    type: 'variable',
-                                    name: declaration.id.name,
-                                    fullName: relativeFilePath + '::' + declaration.id.name,
-                                    startLine: node.loc!.start.line,
-                                    endLine: node.loc!.end.line,
-                                    filePath: filePath,
-                                    isExported: node.exported, // Assuming variable declarations are not directly exported
-                                });
-                            }
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSPropertySignature:
+
+                    case AST_NODE_TYPES.TSInterfaceDeclaration:
                         entities.push({
-                            type: 'property',
-                            name: node.key.name,
-                            fullName: relativeFilePath + '::' + node.key.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported, // Assuming property signatures are not directly exported
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSMethodSignature:
-                        entities.push({
-                            type: 'method',
-                            name: node.key.name,
-                            fullName: relativeFilePath + '::' + node.key.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported, // Assuming method signatures are not directly exported
-                        });
-                        break;
-                    case 'TSPropertyDeclaration':
-                        entities.push({
-                            type: 'property',
-                            name: node.key.name,
-                            fullName: relativeFilePath + '::' + node.key.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported, // Assuming property declarations are not directly exported
-                        });
-                        break;
-                    // Add more cases for other code entity types (e.g., methods, variables, etc.)
-                    case AST_NODE_TYPES.TSEnumDeclaration:
-                        entities.push({
-                            type: 'enum',
+                            ...baseEntity,
+                            type: 'interface',
                             name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSTypeAliasDeclaration:
-                        entities.push({
-                            type: 'type_alias',
-                            name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSModuleDeclaration:
-                        entities.push({
-                            type: 'module',
-                            name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSCallSignatureDeclaration:
-                        entities.push({
-                            type: 'call_signature',
-                            name: '', // call signatures may not have a name
-                            fullName: relativeFilePath + '::call_signature',
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: false,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSConstructSignatureDeclaration:
-                        entities.push({
-                            type: 'construct_signature',
-                            name: '', // construct signatures may not have a name
-                            fullName: relativeFilePath + '::construct_signature',
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: false,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSIndexSignature:
-                        entities.push({
-                            type: 'index_signature',
-                            name: '', // index signatures may not have a name
-                            fullName: relativeFilePath + '::index_signature',
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: false,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSParameterProperty:
-                        entities.push({
-                            type: 'parameter_property',
-                            name: node.parameter.name || '',
-                            fullName: relativeFilePath + '::' + (node.parameter.name || ''),
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: false,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSAbstractMethodDefinition:
-                        entities.push({
-                            type: 'abstract_method',
-                            name: node.key.name,
-                            fullName: relativeFilePath + '::' + node.key.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSDeclareFunction:
-                        entities.push({
-                            type: 'declare_function',
-                            name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
-                        });
-                        break;
-                    case AST_NODE_TYPES.TSNamespaceExportDeclaration:
-                        entities.push({
-                            type: 'namespace_export',
-                            name: node.id.name,
-                            fullName: relativeFilePath + '::' + node.id.name,
-                            startLine: node.loc!.start.line,
-                            endLine: node.loc!.end.line,
-                            filePath: filePath,
-                            isExported: node.exported,
+                            fullName: `${relativeFilePath}::${node.id.name}`,
+                            isExported: parent.type === AST_NODE_TYPES.ExportNamedDeclaration,
                         });
                         break;
                 }
+
+                // Recursively traverse children
                 for (const key in node) {
-                    if (node[key] && typeof node[key] === 'object') {
-                        if (Array.isArray(node[key])) {
-                            node[key].forEach((child: any) => {
-                                if (child && typeof child === 'object' && child.type) {
-                                    traverseNode(child, node);
-                                }
-                            });
-                        } else if (node[key].type) {
-                            traverseNode(node[key], node);
+                    if (node.hasOwnProperty(key)) {
+                        const child = node[key];
+                        if (child && typeof child === 'object') {
+                            if (Array.isArray(child)) {
+                                child.forEach(item => traverseNode(item, node));
+                            } else {
+                                traverseNode(child, node);
+                            }
                         }
                     }
                 }

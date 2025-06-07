@@ -1,26 +1,20 @@
 // src/services/CodebaseContextRetrieverService.ts
 import { MemoryManager } from '../memory_manager.js';
-// All vector search and storage is now robust and VSS/vec-enabled via CodebaseEmbeddingService
 import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-// Potentially import other necessary types or services
+import { PlanTaskManager } from '../managers/PlanTaskManager.js';
+import { TaskProgressLogManager } from '../managers/TaskProgressLogManager.js';
 
 /**
  * Options for configuring context retrieval.
  */
 export interface ContextRetrievalOptions {
-    /** Maximum number of results to return from embedding search. */
     topKEmbeddings?: number;
-    /** Depth for Knowledge Graph traversal if applicable. */
     kgQueryDepth?: number;
-    /** Whether to include full file content for file nodes retrieved from KG. */
     includeFileContent?: boolean;
-    /** Specific file paths (relative to project root) to restrict embedding search. */
     targetFilePaths?: string[];
-    /** Maximum number of KG search results. */
     topKKgResults?: number;
-    /** Threshold for embedding relevance score. */
     embeddingScoreThreshold?: number;
 }
 
@@ -28,22 +22,16 @@ export interface ContextRetrievalOptions {
  * Represents a piece of retrieved codebase context.
  */
 export interface RetrievedCodeContext {
-    /** The type of context retrieved. */
-    type: 'file_snippet' | 'function_definition' | 'class_definition' | 'interface_definition' | 'enum_definition' | 'type_alias_definition' | 'variable_definition' | 'kg_node_info' | 'directory_structure' | 'import_statement' | 'generic_code_chunk';
-    /** The relative path to the source file from the project root. */
+    type: 'file_snippet' | 'function_definition' | 'class_definition' | 'interface_definition' | 'enum_definition' | 'type_alias_definition' | 'variable_definition' | 'kg_node_info' | 'directory_structure' | 'import_statement' | 'generic_code_chunk' | 'documentation' | 'task_log';
     sourcePath: string;
-    /** The name of the specific code entity (e.g., function name, class name), if applicable. */
     entityName?: string;
-    /** The actual content snippet (e.g., code, KG node observation). */
     content: string;
-    /** A score indicating the relevance of this context, typically from embedding search. */
     relevanceScore?: number;
-    /** Additional metadata, e.g., line numbers, KG node type, language. */
     metadata?: {
         startLine?: number;
         endLine?: number;
         language?: string;
-        kgNodeType?: string; // e.g., 'file', 'function', 'class' from KG
+        kgNodeType?: string;
         [key: string]: any;
     };
 }
@@ -58,517 +46,261 @@ interface KGNode {
     observations: string[];
 }
 
+type QueryIntent = 'find_example' | 'refactor_code' | 'debug_error' | 'add_feature' | 'understand_code' | 'general_query';
+
+
 /**
  * Service responsible for retrieving relevant codebase context.
- * It uses both semantic search (vector embeddings) and structured Knowledge Graph queries.
+ * It uses semantic search, structured KG queries, and AI-powered ranking and filtering.
  */
 export class CodebaseContextRetrieverService {
     private memoryManager: MemoryManager;
     private embeddingService: CodebaseEmbeddingService;
     private kgManager: IKnowledgeGraphManager;
-    private geminiService?: GeminiIntegrationService; // Optional, for advanced processing
+    private geminiService: GeminiIntegrationService;
+    private planTaskManager: PlanTaskManager;
+    private taskProgressLogManager: TaskProgressLogManager;
+    private contextCache = new Map<string, RetrievedCodeContext[]>();
 
     constructor(memoryManager: MemoryManager) {
         this.memoryManager = memoryManager;
-        
-        try {
-            this.embeddingService = memoryManager.getCodebaseEmbeddingService();
-        } catch (error) {
-            console.warn("CodebaseContextRetrieverService: CodebaseEmbeddingService not available, semantic search will be disabled.");
-            this.embeddingService = null as any;
-        }
-        
-        try {
-            this.kgManager = memoryManager.knowledgeGraphManager;
-        } catch (error) {
-            console.warn("CodebaseContextRetrieverService: KnowledgeGraphManager not available, KG search will be disabled.");
-            this.kgManager = null as any;
-        }
-        
-        // Optionally initialize GeminiService if needed for tasks like keyword extraction
-        // or intelligent combination of results within this service.
-        try {
-            this.geminiService = memoryManager.getGeminiIntegrationService();
-        } catch (error) {
-            console.warn("CodebaseContextRetrieverService: GeminiIntegrationService not available, some advanced features might be disabled.");
-            this.geminiService = undefined;
-        }
+        this.embeddingService = memoryManager.getCodebaseEmbeddingService();
+        this.kgManager = memoryManager.knowledgeGraphManager;
+        this.geminiService = memoryManager.getGeminiIntegrationService();
+        this.planTaskManager = memoryManager.planTaskManager;
+        this.taskProgressLogManager = memoryManager.taskProgressLogManager;
     }
 
     /**
      * Retrieves relevant codebase context based on a natural language prompt.
-     * This method will orchestrate calls to semantic search and KG queries.
-     * @param agentId The ID of the agent.
-     * @param prompt The natural language prompt.
-     * @param options Optional retrieval configurations.
-     * @returns A promise resolving to an array of RetrievedCodeContext.
+     * This method orchestrates calls to semantic search, KG queries, and other sources.
      */
     public async retrieveContextForPrompt(
         agentId: string,
         prompt: string,
-        options?: ContextRetrievalOptions
+        options: ContextRetrievalOptions = {}
     ): Promise<RetrievedCodeContext[]> {
+        const cacheKey = `${agentId}:${prompt}:${JSON.stringify(options)}`;
+        if (this.contextCache.has(cacheKey)) {
+            console.log(`[Cache HIT] Returning cached context for prompt: "${prompt.substring(0, 50)}..."`);
+            return this.contextCache.get(cacheKey)!;
+        }
+
         console.log(`Retrieving context for prompt (agent: ${agentId}): "${prompt.substring(0, 100)}..."`);
-        const retrievedContexts: RetrievedCodeContext[] = [];
+        
+        // Phase 1: Query Intent Classification
+        const queryIntent = await this.classifyQueryIntent(prompt);
+        console.log(`Query Intent Classified as: ${queryIntent}`);
 
-        // 1. Extract keywords/entities from prompt using Gemini or fallback to basic extraction
         const keywords = await this._extractKeywordsAndEntitiesWithGemini(prompt);
-        console.log('[DEBUG] Extracted keywords:', keywords);
-
-        // 2. Perform semantic search using CodebaseEmbeddingService
-        if (keywords.length > 0 && this.embeddingService) {
-            try {
-                const semanticQuery = keywords.join(' '); // Or use the full prompt
-                const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(
-                    agentId,
-                    semanticQuery,
-                    options?.topKEmbeddings ?? 5,
-                    options?.targetFilePaths
-                );
-                console.log(`Raw embedding results count: ${embeddingResults.length}`);
-                console.log(`Raw embedding results:`, JSON.stringify(embeddingResults, null, 2));
-
-
-                embeddingResults.forEach(embResult => {
-                    if (options?.embeddingScoreThreshold && embResult.score < options.embeddingScoreThreshold) {
-                        console.log(`Skipping embedding result due to low score: ${embResult.score} < ${options.embeddingScoreThreshold}`);
-                        return; // Skip if below threshold
-                    }
-                    let type: RetrievedCodeContext['type'] = 'generic_code_chunk';
-                    let metadata: RetrievedCodeContext['metadata'] = {
-                        language: undefined, // Placeholder, could try to infer
-                    };
-
-                    if (embResult.metadata) {
-                        const embMetadata = embResult.metadata; // Already parsed
-                        metadata = { ...metadata, ...embMetadata };
-                        if (embMetadata.type === 'function' || embMetadata.type === 'method') type = 'function_definition';
-                        else if (embMetadata.type === 'class') type = 'class_definition';
-                        else if (embMetadata.type === 'interface') type = 'interface_definition';
-                        // Add more type mappings based on your chunking metadata
-                    }
-
-                    const newContextItem = {
-                        type: type,
-                        sourcePath: embResult.file_path_relative,
-                        entityName: embResult.entity_name || undefined,
-                        content: embResult.chunk_text,
-                        relevanceScore: embResult.score,
-                        metadata: metadata,
-                    };
-                    retrievedContexts.push(newContextItem);
-                    console.log(`Added embedding context item: ${newContextItem.sourcePath} - ${newContextItem.entityName || newContextItem.type} (Score: ${newContextItem.relevanceScore})`);
-                });
-                console.log(`Retrieved ${embeddingResults.length} items from semantic search.`);
-            } catch (error) {
-                console.error(`Error during semantic search for prompt context:`, error);
-            }
-        }
-
-        // 3. Perform Knowledge Graph searches using natural language query
-        if (this.kgManager) {
-            try {
-                // Use the original prompt for natural language KG query for better context
-                const rawKgQueryResults = await this.kgManager.queryNaturalLanguage(agentId, prompt);
-                console.log(`Raw KG natural language query results:`, JSON.stringify(rawKgQueryResults, null, 2));
-
-                let kgQueryResults: any;
-                try {
-                    // Attempt to parse the string output from kg_nl_query
-                    kgQueryResults = JSON.parse(rawKgQueryResults);
-                } catch (parseError) {
-                    console.error(`Failed to parse KG natural language query results as JSON:`, parseError);
-                    console.warn(`KG natural language query returned non-JSON string: "${rawKgQueryResults.substring(0, 200)}..."`);
-                    // If it's not JSON, we can't process it further for structured results.
-                    // Consider logging this as an error or handling it more gracefully.
-                    return retrievedContexts; 
-                }
-
-                // Process the results from kg_nl_query. The structure might vary,
-                // so we'll need to adapt based on the actual output of kg_nl_query.
-                // Assuming kgQueryResults.results contains an array of nodes or similar.
-                if (kgQueryResults && kgQueryResults.results && Array.isArray(kgQueryResults.results)) {
-                    kgQueryResults.results.slice(0, options?.topKKgResults ?? 5).forEach((resultItem: any) => {
-                        // The structure of resultItem depends on kg_nl_query's output.
-                        // Assuming it returns nodes directly or in a structured way.
-                        const node = resultItem.node || resultItem; // Adjust based on actual structure
-
-                        if (node && node.name && node.entityType) {
-                            let nodeContent = `Entity Type: ${node.entityType}\nObservations:\n`;
-                            if (Array.isArray(node.observations)) {
-                                nodeContent += node.observations.map((obs: string) => `- ${obs}`).join('\n');
-                            } else if (node.observations) {
-                                nodeContent += String(node.observations);
-                            }
-
-                            let contextType: RetrievedCodeContext['type'] = 'kg_node_info';
-                            if (node.entityType === 'file') contextType = 'file_snippet';
-                            else if (node.entityType === 'function' || node.entityType === 'method') contextType = 'function_definition';
-                            else if (node.entityType === 'class') contextType = 'class_definition';
-
-                            // Calculate relevance score for KG results
-                            let kgRelevanceScore = resultItem.score || 0.7; // Default score if not provided by kg_nl_query
-                            if (keywords.includes(node.name) || (node.entityType !== 'file' && keywords.includes(node.name.split('::').pop()))) {
-                                kgRelevanceScore = 0.9; // Higher score if node name is a direct keyword match
-                            }
-
-                            retrievedContexts.push({
-                                type: contextType,
-                                sourcePath: node.name,
-                                entityName: node.entityType !== 'file' ? node.name : undefined,
-                                content: nodeContent,
-                                relevanceScore: kgRelevanceScore,
-                                metadata: {
-                                    kgNodeType: node.entityType,
-                                    kgQuery: prompt, // Store the original NL query for context
-                                    // Potentially extract language from observations if available
-                                },
-                            });
-                            console.log(`Added KG context item: ${node.name} - ${node.entityType} (Score: ${kgRelevanceScore})`);
-                        }
-                    });
-                    console.log(`Retrieved ${kgQueryResults.results.length} items from KG natural language query.`);
-                } else {
-                    console.warn("KG natural language query returned no results or unexpected format.");
-                }
-            } catch (error) {
-                console.error(`Error during KG natural language search for prompt context:`, error);
-            }
-        }
-
-        // 4. Combine and rank results (placeholder for more sophisticated ranking)
-        // For now, just sort by relevanceScore if available, then by type or sourcePath
-        retrievedContexts.sort((a, b) => {
-            if (a.relevanceScore && b.relevanceScore) {
-                return b.relevanceScore - a.relevanceScore;
-            }
-            if (a.relevanceScore) return -1;
-            if (b.relevanceScore) return 1;
-            return a.sourcePath.localeCompare(b.sourcePath);
-        });
         
-        // Filter out known non-target files like vector_db.ts to reduce false positives
-        // Replace hardcoded filtering with AI-based filtering
-        const aiFilteredContexts = await this.filterContextsWithAI(agentId, prompt, retrievedContexts);
+        // Phase 1 & 2: Perform initial retrieval from multiple sources
+        const semanticResults = await this.performSemanticSearch(agentId, prompt, options, queryIntent);
+        const kgResults = await this.performKgSearch(agentId, prompt, options);
+        const docResults = await this.searchDocumentation(agentId, prompt, options);
+        const taskLogResults = await this.searchTaskLogs(agentId, keywords, options);
+        
+        let combinedResults = [...semanticResults, ...kgResults, ...docResults, ...taskLogResults];
 
-        // Deduplicate results (simple deduplication based on content and sourcePath for now)
-        const uniqueContexts = Array.from(new Map(aiFilteredContexts.map(item => [`${item.sourcePath}#${item.entityName || ''}#${item.content.substring(0,100)}`, item])).values());
+        // Phase 1 & 2: Hybrid Scoring and Cross-Referencing
+        let rankedResults = this.hybridScoring(combinedResults, kgResults);
+        rankedResults = await this.performCrossReferencing(agentId, rankedResults);
 
-        console.log('[DEBUG] Returning', uniqueContexts.length, 'unique context items.');
-        return uniqueContexts.slice(0, (options?.topKEmbeddings ?? 5) + (options?.topKKgResults ?? 5)); // Limit total results
+        // Phase 1: Negative Filtering (AI-powered)
+        const filteredResults = await this.filterWithAI(prompt, rankedResults);
+
+        // Phase 3: Proactive Context Expansion
+        const finalContext = await this.proactiveExpansion(agentId, prompt, filteredResults, options);
+        
+        // Final deduplication and limit
+        const uniqueContexts = Array.from(new Map(finalContext.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
+        const limitedContext = uniqueContexts.slice(0, (options.topKEmbeddings ?? 10) + (options.topKKgResults ?? 5));
+        
+        this.contextCache.set(cacheKey, limitedContext); // Cache the final result
+        console.log(`[Context Retrieval] Final context contains ${limitedContext.length} items.`);
+        return limitedContext;
     }
 
-    /**
-     * Uses Gemini AI to filter retrieved codebase contexts based on relevance to the prompt.
-     * @param agentId The ID of the agent.
-     * @param prompt The original user prompt.
-     * @param contexts The array of retrieved code contexts.
-     * @returns Filtered array of contexts deemed relevant by AI.
-     */
-    private async filterContextsWithAI(agentId: string, prompt: string, contexts: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
-        if (!this.geminiService || contexts.length === 0) {
-            return contexts; // No AI filtering possible
-        }
-
-        // Prepare a prompt for Gemini to classify relevance of each context item
-        let aiPrompt = `You are an AI assistant that filters codebase context items for relevance to a user's development task.
-The user prompt is:
-"""
-${prompt}
-"""
-
-Below is a list of codebase context items. For each item, decide if it is relevant for understanding, analyzing, or modifying the code related to the user prompt.
-Return a JSON array of objects, where each object has an 'index' (0-based) and a 'relevance_score' (0.0 to 1.0).
-A score of 1.0 means highly relevant, 0.0 means completely irrelevant.
-
-Context items:
-`;
-
-        contexts.forEach((ctx, idx) => {
-            aiPrompt += `Item ${idx}:
-- Source Path: ${ctx.sourcePath}
-- Entity Name: ${ctx.entityName || 'N/A'}
-- Type: ${ctx.type}
-- Content Preview: ${ctx.content.substring(0, 100).replace(/\n/g, ' ')}
-\n`;
-        });
-
-        aiPrompt += `
-
-Respond ONLY with a JSON array of objects, e.g., [{"index": 0, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.2}, ...].`;
-
+    private async classifyQueryIntent(prompt: string): Promise<QueryIntent> {
+        const intentPrompt = `Classify the user's intent into one of the following categories: 'find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code', 'general_query'. User prompt: "${prompt}"`;
         try {
-            const response = await this.geminiService.askGemini(aiPrompt, "gemini-2.5-flash-preview-05-20");
-            const textResponse = response.content[0].text ?? '';
-            let jsonString = textResponse;
-            const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
-            if (jsonMatch && jsonMatch[1]) {
-                jsonString = jsonMatch[1];
-            } else if (!(jsonString.startsWith("[") && jsonString.endsWith("]"))) {
-                const firstBracket = jsonString.indexOf('[');
-                const lastBracket = jsonString.lastIndexOf(']');
-                if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                    jsonString = jsonString.substring(firstBracket, lastBracket + 1);
-                } else {
-                    throw new Error("Response from Gemini was not in a recognizable JSON array format.");
-                }
+            const response = await this.geminiService.askGemini(intentPrompt, 'gemini-1.5-flash-latest');
+            const classification = response.content[0].text?.trim().toLowerCase() as QueryIntent;
+            if (['find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code'].includes(classification)) {
+                return classification;
             }
-            
-            interface RelevanceScore {
-                index: number;
-                relevance_score: number;
-            }
+        } catch (e) {
+            console.error("Error classifying query intent:", e);
+        }
+        return 'general_query';
+    }
 
-            const relevanceScores: RelevanceScore[] = JSON.parse(jsonString);
-            if (!Array.isArray(relevanceScores) || !relevanceScores.every(item => typeof item.index === 'number' && typeof item.relevance_score === 'number')) {
-                console.warn("AI filtering response invalid format. Returning original contexts.");
-                return contexts;
-            }
-
-            const filteredContexts: RetrievedCodeContext[] = [];
-            const defaultFilterThreshold = 0.5; // Can be made dynamic later
-
-            relevanceScores.forEach(scoreItem => {
-                if (scoreItem.index >= 0 && scoreItem.index < contexts.length) {
-                    const originalContext = contexts[scoreItem.index];
-                    if (scoreItem.relevance_score >= defaultFilterThreshold) {
-                        // Update the relevance score with the AI's assessment
-                        originalContext.relevanceScore = scoreItem.relevance_score;
-                        filteredContexts.push(originalContext);
-                    } else {
-                        console.log(`[CodebaseContextRetrieverService] AI filtered out item ${scoreItem.index} due to low relevance score: ${scoreItem.relevance_score}`);
-                    }
-                }
-            });
-
-            // Sort by the new AI-assigned relevance score
-            filteredContexts.sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0));
-
-            console.log(`[CodebaseContextRetrieverService] AI filtered contexts from ${contexts.length} to ${filteredContexts.length}`);
-            return filteredContexts;
+    private async performSemanticSearch(agentId: string, prompt: string, options: ContextRetrievalOptions, intent: QueryIntent): Promise<RetrievedCodeContext[]> {
+        const topK = intent === 'find_example' ? 3 : options.topKEmbeddings ?? 5;
+        try {
+            const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(agentId, prompt, topK, options.targetFilePaths);
+            return embeddingResults.map(res => ({
+                type: (res.metadata?.type as any) || 'generic_code_chunk',
+                sourcePath: res.file_path_relative,
+                entityName: res.entity_name || undefined,
+                content: res.chunk_text,
+                relevanceScore: res.score,
+                metadata: res.metadata || {},
+            }));
         } catch (error) {
-            console.error("Error during AI filtering of contexts:", error);
-            return contexts; // Fallback to original contexts on error
+            console.error("Error during semantic search:", error);
+            return [];
         }
     }
-
-    /**
-     * Extracts keywords and relevant code entities from a prompt using Gemini.
-     * @param prompt The natural language prompt.
-     * @returns A promise resolving to an array of extracted keywords and entity names.
-     */
-    private async _extractKeywordsAndEntitiesWithGemini(prompt: string): Promise<string[]> {
-        if (!this.geminiService) {
-            console.warn("GeminiIntegrationService not available, falling back to basic keyword extraction.");
-            return this._basicExtractKeywordsFromPrompt(prompt);
-        }
-
-        const extractionPrompt = `
-You are an expert code analysis assistant. Your task is to extract key technical keywords and specific code entity names (e.g., file paths, function names, class names, interface names, variable names) from the following user prompt. Focus on terms that directly relate to code elements or programming concepts.
-
-Provide the output as a JSON array of strings. Each string should be a distinct keyword or entity name. Do not include stop words or common conversational phrases.
-
-Example:
-User Prompt: "How do I use the 'processPayment' function in 'src/services/payment_service.ts' to handle different payment types?"
-Output: ["processPayment", "src/services/payment_service.ts", "payment types", "function"]
-
-User Prompt: "Implement a new authentication middleware for user login."
-Output: ["authentication middleware", "user login", "implement"]
-
-User Prompt: "Refactor the 'User' class to use a new 'IUser' interface."
-Output: ["Refactor", "User class", "IUser interface"]
-
-User Prompt: "${prompt}"
-Output:
-`;
+    
+    private async performKgSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         try {
-            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash-preview-05-20");
-            const textResponse = result.content[0].text ?? '';
-            
-            try {
-                let jsonString = textResponse;
-                const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
-                if (jsonMatch && jsonMatch[1]) {
-                    jsonString = jsonMatch[1];
-                } else if (!(jsonString.startsWith("[") && jsonString.endsWith("]"))) {
-                    const firstBracket = jsonString.indexOf('[');
-                    const lastBracket = jsonString.lastIndexOf(']');
-                    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                        jsonString = jsonString.substring(firstBracket, lastBracket + 1);
-                    } else {
-                        throw new Error("Response from Gemini was not in a recognizable JSON array format.");
+            const rawKgResults = await this.kgManager.queryNaturalLanguage(agentId, prompt);
+            const kgQueryResults = JSON.parse(rawKgResults);
+
+            if (kgQueryResults && kgQueryResults.results && Array.isArray(kgQueryResults.results)) {
+                return kgQueryResults.results.slice(0, options.topKKgResults ?? 5).map((node: any) => ({
+                    type: 'kg_node_info',
+                    sourcePath: node.name,
+                    entityName: node.entityType !== 'file' ? node.name : undefined,
+                    content: `Entity Type: ${node.entityType}\nObservations:\n${(node.observations || []).join('\n- ')}`,
+                    relevanceScore: 0.75, // Base score for KG results
+                    metadata: { kgNodeType: node.entityType }
+                }));
+            }
+        } catch (error) {
+            console.error("Error during KG search:", error);
+        }
+        return [];
+    }
+    
+    private async searchDocumentation(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        // This is a placeholder. A real implementation would query embeddings filtered by file type (.md).
+        console.log("Searching documentation (placeholder)...");
+        return [];
+    }
+
+    private async searchTaskLogs(agentId: string, keywords: string[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        try {
+            const allLogs = await this.taskProgressLogManager.getTaskProgressLogsByAgentId(agentId, 1000);
+            const relevantLogs = allLogs.filter(log =>
+                keywords.some(kw => (log.change_summary_text || '').includes(kw) || (log.output_summary_or_error || '').includes(kw))
+            );
+            return relevantLogs.slice(0, 3).map(log => ({
+                type: 'task_log',
+                sourcePath: `log_id:${log.progress_log_id}`,
+                entityName: `Task: ${log.associated_task_id}`,
+                content: `Log: ${log.change_summary_text}\nStatus: ${log.status_of_step_execution}\nOutput: ${log.output_summary_or_error}`,
+                relevanceScore: 0.7,
+                metadata: { timestamp: log.execution_timestamp_iso }
+            }));
+        } catch (error) {
+            console.error("Error searching task logs:", error);
+        }
+        return [];
+    }
+    
+    private hybridScoring(combinedResults: RetrievedCodeContext[], kgResults: RetrievedCodeContext[]): RetrievedCodeContext[] {
+        const kgSourcePaths = new Set(kgResults.map(r => r.sourcePath));
+        combinedResults.forEach(res => {
+            if (kgSourcePaths.has(res.sourcePath)) {
+                res.relevanceScore = (res.relevanceScore || 0.7) * 1.2; // Boost score for items in both sets
+            }
+        });
+        return combinedResults.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+    }
+
+    private async performCrossReferencing(agentId: string, results: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
+        const newResults: RetrievedCodeContext[] = [];
+        const functionCallRegex = /(\w+)\s*\(/g; // Simple regex for function calls
+
+        for (const res of results) {
+            if (res.type === 'function_definition') {
+                let match;
+                while ((match = functionCallRegex.exec(res.content)) !== null) {
+                    const calledFuncName = match[1];
+                    // Query KG to find the definition of the called function
+                    const kgNodes = await this.kgManager.searchNodes(agentId, `entityType:function name:${calledFuncName}`);
+                    if (kgNodes.length > 0) {
+                        const calledFuncNode = kgNodes[0];
+                        newResults.push({
+                            type: 'function_definition',
+                            sourcePath: calledFuncNode.name, // This is the full KG name/path
+                            entityName: calledFuncNode.name.split('::').pop(),
+                            content: (calledFuncNode.observations || []).find((obs: string) => obs.startsWith('signature:')) || 'No signature found',
+                            relevanceScore: (res.relevanceScore || 0) * 0.9, // Slightly lower score for cross-referenced items
+                            metadata: { kgNodeType: 'function', crossReferenced: true }
+                        });
                     }
                 }
-                const parsedResponse = JSON.parse(jsonString);
-                if (Array.isArray(parsedResponse) && parsedResponse.every(item => typeof item === 'string')) {
-                    return parsedResponse;
-                } else {
-                    throw new Error("Parsed JSON is not an array of strings.");
-                }
-            } catch (parseError: any) {
-                console.error(`Error parsing Gemini API JSON response for keyword extraction. Raw response: "${textResponse}". Parse error:`, parseError);
-                return this._basicExtractKeywordsFromPrompt(prompt); // Fallback
             }
-        } catch (error: any) {
-            console.error(`Error calling Gemini API for keyword extraction:`, error);
-            return this._basicExtractKeywordsFromPrompt(prompt); // Fallback
+        }
+        return [...results, ...newResults];
+    }
+    
+    private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
+        if (contexts.length === 0) return [];
+        const contextSummary = contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 100)}...`).join('\n');
+        const filterPrompt = `Given the user prompt "${prompt}", identify which of the following context items are most relevant. Return a JSON array of the indices of the relevant items. \n\n${contextSummary}`;
+        try {
+            const response = await this.geminiService.askGemini(filterPrompt, 'gemini-1.5-flash-latest');
+            const textResponse = response.content[0].text;
+            const relevantIndices: number[] = JSON.parse(textResponse!.match(/\[(.*?)\]/s)![0]);
+            return contexts.filter((_, idx) => relevantIndices.includes(idx));
+        } catch (e) {
+            console.error("Error filtering with AI:", e);
+            return contexts; // Fallback to unfiltered on error
         }
     }
 
-    /**
-     * A simple keyword extraction method (fallback).
-     * @param prompt The prompt string.
-     * @returns An array of keywords.
-     */
-    private _basicExtractKeywordsFromPrompt(prompt: string): string[] {
-        const stopWords = new Set([
-            'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should',
-            'can', 'could', 'may', 'might', 'must', 'in', 'on', 'at', 'by', 'for',
-            'with', 'about', 'to', 'from', 'into', 'out', 'of', 'up', 'down',
-            'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there',
-            'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few',
-            'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-            'own', 'same', 'so', 'than', 'too', 'very', 's', 't', 'just', 'don',
-            'now', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those',
-            'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us',
-            'them', 'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours',
-            'hers', 'ours', 'theirs', 'myself', 'yourself', 'himself', 'herself',
-            'itself', 'ourselves', 'yourselves', 'themselves', 'please', 'give',
-            'me', 'about', 'regarding', 'concerning', 'related', 'based', 'on',
-            'using', 'via', 'that', 'which', 'how', 'can', 'i', 'and', 'or', 'but',
-            'if', 'else', 'while', 'for', 'switch', 'case', 'default', 'try', 'catch',
-            'finally', 'throw', 'new', 'delete', 'typeof', 'instanceof', 'void',
-            'null', 'undefined', 'true', 'false', 'help', 'explain', 'understand',
-            'meaning', 'definition', 'purpose', 'reason', 'logic', 'flow', 'structure',
-            'design', 'architecture', 'pattern', 'best', 'practice', 'convention',
-            'standard', 'guideline', 'rule', 'policy', 'procedure', 'process', 'step',
-            'task', 'action', 'operation', 'command', 'instruction', 'request', 'query',
-            'question', 'answer', 'response', 'result', 'output', 'input', 'data',
-            'information', 'context', 'detail', 'summary', 'overview', 'report',
-            'analysis', 'review', 'test', 'debug', 'fix', 'change', 'update', 'modify',
-            'add', 'remove', 'delete', 'create', 'generate', 'implement', 'develop',
-            'build', 'refactor', 'optimize', 'improve', 'enhance', 'ensure', 'verify',
-            'validate', 'check', 'confirm', 'compare', 'contrast', 'differentiate',
-            'relate', 'connect', 'link', 'associate', 'integrate', 'combine', 'merge',
-            'split', 'separate', 'extract', 'parse', 'transform', 'convert', 'format',
-            'display', 'show', 'hide', 'log', 'store', 'save', 'load', 'retrieve',
-            'fetch', 'get', 'set', 'find', 'search', 'locate', 'identify', 'detect',
-            'recognize', 'monitor', 'track', 'manage', 'control', 'handle', 'process',
-            'execute', 'run', 'start', 'stop', 'pause', 'resume', 'continue', 'cancel',
-            'abort', 'reset', 'configure', 'setup', 'install', 'uninstall', 'deploy',
-            'publish', 'release', 'version', 'upgrade', 'downgrade', 'migrate', 'backup',
-            'restore', 'synchronize', 'share', 'collaborate', 'communicate', 'notify',
-            'alert', 'warn', 'inform', 'advise', 'suggest', 'recommend', 'propose',
-            'offer', 'provide', 'support', 'assist', 'aid', 'serve', 'give', 'present',
-            'donate', 'contribute', 'distribute', 'deliver', 'send', 'transmit', 'receive',
-            'accept', 'take', 'obtain', 'acquire', 'collect', 'gather', 'accumulate',
-            'keep', 'hold', 'possess', 'own', 'belong', 'lose', 'misplace', 'forget',
-            'remember', 'recall', 'recognize', 'distinguish', 'sense', 'feel', 'touch',
-            'taste', 'smell', 'hear', 'listen', 'read', 'draw', 'paint', 'sculpt',
-            'carve', 'engrave', 'print', 'type', 'photograph', 'film', 'record', 'play',
-            'sing', 'dance', 'act', 'perform', 'compose', 'arrange', 'conduct', 'direct',
-            'produce', 'edit', 'broadcast', 'telecast', 'stream', 'download', 'upload',
-            'post', 'like', 'dislike', 'comment', 'subscribe', 'follow', 'unfollow',
-            'friend', 'unfriend', 'block', 'report', 'flag', 'mute', 'unmute', 'pin',
-            'unpin', 'tag', 'mention', 'reply', 'forward', 'retweet', 'repost', 'favorite',
-            'bookmark', 'archive', 'erase', 'clear', 'empty', 'fill', 'insert', 'append',
-            'prepend', 'cut', 'copy', 'paste', 'undo', 'redo', 'sort', 'filter', 'group', 'ungroup',
-            'move', 'drag', 'drop', 'resize', 'rotate', 'crop', 'zoom', 'pan', 'scroll',
-            'navigate', 'browse', 'open', 'close', 'minimize', 'maximize', 'restore',
-            'switch', 'select', 'deselect', 'tap', 'double-click', 'double-tap', 'press',
-            'hold', 'release', 'swipe', 'pinch', 'spread', 'hover', 'focus', 'blur',
-            'submit', 'decline', 'approve', 'reject', 'next', 'previous', 'back', 'forward',
-            'home', 'end', 'page-up', 'page-down', 'tab', 'enter', 'escape', 'space',
-            'shift', 'ctrl', 'alt', 'cmd', 'option', 'fn', 'caps-lock', 'num-lock',
-            'scroll-lock', 'print-screen', 'pause', 'break', 'insert', 'delete', 'backspace',
-            'menu', 'context-menu', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9',
-            'F10', 'F11', 'F12'
-        ]);
-
-        const words = prompt.toLowerCase().replace(/[^\w\s'-]|(?<=\w)-(?=\w)|(?<=')-(?=\w)|(?<=\w)-(?=')/g, "").split(/\s+/);
-        const significantWords = words.filter((word: string) => word.length > 2 && !stopWords.has(word));
-        
-        // Further refinement: identify potential entity names (e.g., CamelCase, snake_case, paths)
-        const potentialEntities = prompt.match(/([A-Za-z0-9_]+\.[A-Za-z0-9_]+)|([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)*)|([a-z0-9_]+_[a-z0-9_]+)/g) || [];
-        
-        return Array.from(new Set([...significantWords, ...potentialEntities]));
+    private async proactiveExpansion(agentId: string, prompt: string, currentContext: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        const contextSummary = currentContext.map(c => c.sourcePath).join(', ');
+        const expansionPrompt = `Based on the prompt "${prompt}" and the currently retrieved context (${contextSummary}), what other specific functions, classes, or files might be essential to understand? Answer with a short list of names.`;
+        try {
+            const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-1.5-flash-latest');
+            const suggestions = response.content[0].text?.split(',').map(s => s.trim()).filter(Boolean);
+            if (suggestions && suggestions.length > 0) {
+                console.log("Proactive expansion suggestions:", suggestions);
+                const expansionResults = await this.retrieveContextByEntityNames(agentId, suggestions, options);
+                return [...currentContext, ...expansionResults];
+            }
+        } catch (e) {
+            console.error("Error in proactive context expansion:", e);
+        }
+        return currentContext;
     }
-
-    /**
-     * Retrieves relevant codebase context based on a list of keywords.
-     * @param agentId The ID of the agent.
-     * @param keywords An array of keywords.
-     * @param options Optional retrieval configurations.
-     * @returns A promise resolving to an array of RetrievedCodeContext.
-     */
-    public async retrieveContextByKeywords(
-        agentId: string,
-        keywords: string[],
-        options?: ContextRetrievalOptions
-    ): Promise<RetrievedCodeContext[]> {
-        if (!keywords || keywords.length === 0) {
-            return [];
-        }
-        // This can be a simplified version of retrieveContextForPrompt,
-        // focusing on the parts that use the pre-defined keywords.
-        const promptFromKeywords = keywords.join(' ');
-        return this.retrieveContextForPrompt(agentId, promptFromKeywords, options);
-    }
-
-    /**
-     * Retrieves context for specific code entities by their names from the Knowledge Graph.
-     * @param agentId The ID of the agent.
-     * @param entityNames An array of entity names (e.g., "src/utils/formatters.ts::formatTaskToMarkdown").
-     * @param options Optional retrieval configurations.
-     * @returns A promise resolving to an array of RetrievedCodeContext.
-     */
-    public async retrieveContextByEntityNames(
-        agentId: string,
-        entityNames: string[],
-        options?: ContextRetrievalOptions
-    ): Promise<RetrievedCodeContext[]> {
-        if (!entityNames || entityNames.length === 0) {
-            return [];
-        }
-        const retrievedContexts: RetrievedCodeContext[] = [];
-        
-        if (!this.kgManager) {
-            console.warn("KnowledgeGraphManager not available, cannot retrieve context by entity names");
-            return [];
-        }
-        
+    
+    public async retrieveContextByEntityNames(agentId: string, entityNames: string[], options?: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        if (!entityNames || entityNames.length === 0) return [];
         try {
             const kgNodes = await this.kgManager.openNodes(agentId, entityNames);
-            kgNodes.forEach((node: KGNode) => {
-                if (!node) {
-                    console.warn("Skipping undefined KG node.");
-                    return;
-                }
-                let nodeContent = `Entity Type: ${node.entityType}\nObservations:\n`;
-                 if (node.observations && Array.isArray(node.observations)) {
-                    nodeContent += node.observations.map((obs: string) => `- ${obs}`).join('\n');
-                } else if (node.observations) {
-                    nodeContent += String(node.observations);
-                }
-
-                let contextType: RetrievedCodeContext['type'] = 'kg_node_info';
-                if (node.entityType === 'file') contextType = 'file_snippet';
-                else if (node.entityType === 'function' || node.entityType === 'method') contextType = 'function_definition';
-                else if (node.entityType === 'class') contextType = 'class_definition';
-
-                retrievedContexts.push({
-                    type: contextType,
-                    sourcePath: node.name, // Assuming KG node name is the unique identifier/path
-                    entityName: node.entityType !== 'file' ? node.name : undefined,
-                    content: nodeContent, // Placeholder, ideally fetch actual code if options.includeFileContent
-                    relevanceScore: 0.7, // Placeholder, KG results might not have a direct score like embeddings
-                    metadata: { kgNodeType: node.entityType },
-                });
-            });
+            return kgNodes.map((node: KGNode) => ({
+                type: 'kg_node_info',
+                sourcePath: node.name,
+                entityName: node.entityType !== 'file' ? node.name : undefined,
+                content: `Entity Type: ${node.entityType}\nObservations:\n${(node.observations || []).join('\n- ')}`,
+                relevanceScore: 0.9, // High score as it's a direct lookup
+                metadata: { kgNodeType: node.entityType }
+            }));
         } catch (error) {
-            console.error(`Error retrieving KG nodes by names:`, error);
+            console.error("Error retrieving context by entity names:", error);
+            return [];
         }
-        return retrievedContexts;
+    }
+
+    private async _extractKeywordsAndEntitiesWithGemini(prompt: string): Promise<string[]> {
+        const extractionPrompt = `Extract key technical keywords and specific code entity names (file paths, function names, class names) from the following prompt. Return a JSON array of strings. Prompt: "${prompt}"`;
+        try {
+            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-1.5-flash-latest");
+            const textResponse = result.content[0].text ?? '';
+            const jsonMatch = textResponse.match(/\[.*?\]/s);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+        } catch (error) {
+            console.error("Error extracting keywords with Gemini:", error);
+        }
+        // Fallback to basic extraction
+        return prompt.split(/\s+/).filter((w: string) => w.length > 3);
     }
 }
