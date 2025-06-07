@@ -60,7 +60,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
             // Ensure project_root_path is absolute for reliable relative path calculation
             const absoluteProjectRootPath = path.resolve(project_root_path);
-            const absolutePathToEmbed = path.resolve(path_to_embed);
+            const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
 
 
             if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {

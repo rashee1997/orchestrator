@@ -21,11 +21,11 @@ import { TaskReviewLogManager, FinalPlanReviewLogManager } from './managers/Task
 import { CodebaseEmbeddingService } from './services/CodebaseEmbeddingService.js';
 import { CodebaseContextRetrieverService } from './services/CodebaseContextRetrieverService.js'; // Import new service
 import { initializeVectorStoreDatabase, getVectorStoreDb, closeVectorStoreDatabase } from './vector_db.js';
-import { Database } from 'sqlite';
+import BetterSqlite3 from 'better-sqlite3';
 
 export class MemoryManager {
     private dbService!: DatabaseService;
-    private vectorDb!: Database;
+    private vectorDb!: BetterSqlite3;
     public conversationHistoryManager!: ConversationHistoryManager;
     public contextInformationManager!: ContextInformationManager;
     public referenceKeyManager!: ReferenceKeyManager;
@@ -57,7 +57,7 @@ export class MemoryManager {
         return this.dbService;
     }
 
-    public getVectorDb(): Database {
+    public getVectorDb(): BetterSqlite3 {
         if (!this.vectorDb) {
             throw new Error("Vector DB not initialized. Call MemoryManager.create() first.");
         }
@@ -137,7 +137,7 @@ export class MemoryManager {
         this.geminiPlannerService = new GeminiPlannerService(this.geminiIntegrationService, this);
         
         // Create CodebaseEmbeddingService after GeminiIntegrationService is ready
-        this.codebaseEmbeddingService = new CodebaseEmbeddingService(this, this.vectorDb);
+        this.codebaseEmbeddingService = new CodebaseEmbeddingService(this, this.vectorDb as any);
         
         // Finally, create CodebaseContextRetrieverService after all dependencies are ready
         this.codebaseContextRetrieverService = new CodebaseContextRetrieverService(this);

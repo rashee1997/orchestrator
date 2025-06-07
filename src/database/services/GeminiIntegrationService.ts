@@ -40,6 +40,7 @@ export class GeminiIntegrationService {
         topK: 1,
         topP: 1,
         maxOutputTokens: 8192,
+        responseMimeType: "application/json",
     };
 
 
@@ -109,9 +110,31 @@ export class GeminiIntegrationService {
             }
 
             const result = await this.genAI!.models.generateContent(request);
-            // The response structure is different when using system instructions
-            // The type GenerateContentResponse does not have 'content' property, so cast to any
-            const responseText = (result as any).content?.[0]?.text ?? 'No response from Gemini.';
+
+            // Defensive extraction of text from result
+            let responseText = "";
+            try {
+                // Check if result has candidates array
+                if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
+                    responseText = result.candidates[0].content?.parts?.[0]?.text ?? "";
+                } else if (result && typeof result.text === "string") {
+                    responseText = result.text;
+                } else if (typeof result === "string") {
+                    responseText = result;
+                } else {
+                    // Fallback: try to get text from result.content
+                    // Removed due to TypeScript error: Property 'content' does not exist on type 'GenerateContentResponse'.
+                    responseText = "";
+                }
+            } catch (ex) {
+                console.error("Error extracting text from Gemini result:", ex, "Full result:", result);
+                responseText = "";
+            }
+
+            if (!responseText) {
+                console.warn("Gemini response text is empty or undefined. Full result:", result);
+            }
+
             return { content: [{ text: responseText }] };
 
         } catch (error: any) {

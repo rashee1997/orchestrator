@@ -38,7 +38,7 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
 
     if (prompt.decomposed_tasks_parsed && prompt.decomposed_tasks_parsed.length > 0) {
         md += "\n**Decomposed Tasks:**\n";
-        prompt.decomposed_tasks_parsed.forEach((task: string) => md += `- ${task}\n`);
+        prompt.decomposed_tasks_parsed.forEach((task: { task_description: string }) => md += `- ${task.task_description}\n`);
     }
     
     if (prompt.key_entities_identified_parsed && prompt.key_entities_identified_parsed.length > 0) {
@@ -124,6 +124,7 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
                 args.conversation_context_ids as string[] | undefined,
                 enhancedContextOptions
             );
+            await memoryManager.storeRefinedPrompt(refinedPromptObject);
             // The refinedPromptObject itself is the full structured data.
             return { content: [{ type: 'text', text: formatRefinedPromptToMarkdown(refinedPromptObject, effective_agent_id) }] };
         },

@@ -37,11 +37,6 @@ CREATE TABLE IF NOT EXISTS doc_embeddings (
 );
 
 -- Create multiple sqlite-vec vector tables for different domains
-CREATE TABLE IF NOT EXISTS codebase_embeddings_vec (
-    embedding_id TEXT PRIMARY KEY,
-    vector BLOB NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS doc_embeddings_vec (
     embedding_id TEXT PRIMARY KEY,
     vector BLOB NOT NULL

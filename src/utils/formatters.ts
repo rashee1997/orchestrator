@@ -19,6 +19,15 @@ function formatValue(value: any, options: { isCodeOrId?: boolean, isBlockContent
     if (value === null || typeof value === 'undefined') {
         return '*N/A*';
     }
+
+    if (typeof value === 'boolean') {
+        return `*${value ? 'Yes' : 'No'}*`;
+    }
+
+    if (value instanceof Date) {
+        return `*${value.toLocaleString()}*`;
+    }
+
     const stringValue = String(value);
 
     if (options.isCodeOrId) {

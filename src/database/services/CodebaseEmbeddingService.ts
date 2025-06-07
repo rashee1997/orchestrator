@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { CodebaseIntrospectionService, ExtractedCodeEntity, ScannedItem, ExtractedImport } from './CodebaseIntrospectionService.js';
-import { Database } from 'sqlite';
+import { Database } from 'better-sqlite3';
 import {
     storeVecEmbedding,
     findSimilarVecEmbeddings
@@ -21,7 +21,7 @@ async function insertEmbeddingMetadata(
     const columns = Object.keys(metadata);
     const placeholders = columns.map(() => '?').join(',');
     const sql = `INSERT OR REPLACE INTO ${table} (${columns.join(',')}) VALUES (${placeholders})`;
-    await db.run(sql, ...columns.map(k => metadata[k]));
+    db.prepare(sql).run(...columns.map(k => metadata[k]));
 }
 
 // Helper to fetch metadata for a set of embedding_ids
@@ -33,7 +33,7 @@ async function fetchMetadataByIds(
     if (embeddingIds.length === 0) return [];
     const placeholders = embeddingIds.map(() => '?').join(',');
     const sql = `SELECT * FROM ${table} WHERE embedding_id IN (${placeholders})`;
-    return db.all(sql, ...embeddingIds);
+    return db.prepare(sql).all(...embeddingIds);
 }
 
 // Helper to fetch all embeddings for a given file path
@@ -43,7 +43,7 @@ async function getEmbeddingsForFile(
     metadataTable: string
 ): Promise<CodebaseEmbeddingRecord[]> {
     const sql = `SELECT * FROM ${metadataTable} WHERE file_path_relative = ?`;
-    return db.all<CodebaseEmbeddingRecord[]>(sql, filePathRelative);
+    return db.prepare(sql).all(filePathRelative) as CodebaseEmbeddingRecord[];
 }
 
 // Helper to delete an embedding by its ID from both vector and metadata tables
@@ -53,8 +53,8 @@ async function deleteEmbedding(
     vectorTable: string,
     metadataTable: string
 ): Promise<void> {
-    await db.run(`DELETE FROM ${vectorTable} WHERE embedding_id = ?`, embeddingId);
-    await db.run(`DELETE FROM ${metadataTable} WHERE embedding_id = ?`, embeddingId);
+    db.prepare(`DELETE FROM ${vectorTable} WHERE embedding_id = ?`).run(embeddingId);
+    db.prepare(`DELETE FROM ${metadataTable} WHERE embedding_id = ?`).run(embeddingId);
 }
 
 // Define the structure for storing embeddings if not already defined elsewhere
@@ -129,36 +129,85 @@ export class CodebaseEmbeddingService {
      */
     private async getExistingEmbeddingByHash(chunkHash: string, metadataTable: string): Promise<CodebaseEmbeddingRecord | null> {
         const sql = `SELECT * FROM ${metadataTable} WHERE chunk_hash = ?`;
-        return (await this.vectorDb.get<CodebaseEmbeddingRecord>(sql, chunkHash)) || null;
+        return (this.vectorDb.prepare(sql).get(chunkHash) as CodebaseEmbeddingRecord) || null;
     }
 
-    private async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<Array<{ vector: number[], dimensions: number }>> {
+    private async getExistingSummaryByHash(originalCodeHash: string, metadataTable: string): Promise<string | null> {
+        const sql = `SELECT chunk_text FROM ${metadataTable} WHERE json_extract(metadata_json, '$.original_code_hash') = ?`;
+        const result = this.vectorDb.prepare(sql).get(originalCodeHash);
+        return result ? result.chunk_text : null;
+    }
+
+    private async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<Array<{ vector: number[], dimensions: number } | null>> {
         if (texts.length === 0) return [];
-        
+
         if (!this.geminiService) {
             throw new Error(`GeminiIntegrationService not available in CodebaseEmbeddingService.`);
         }
-        
+
         const genAIInstance = this.geminiService.getGenAIInstance();
         if (!genAIInstance) {
             throw new Error(`Gemini API not initialized in GeminiIntegrationService.`);
         }
 
-        const results: Array<{ vector: number[], dimensions: number }> = [];
+        const results: Array<{ vector: number[], dimensions: number } | null> = [];
+        const batchSize = 100; // Increased batch size for better performance
+        const maxRetries = 2; // Reduced retry attempts
 
-        // Use individual embedContent calls as batchEmbedContents might not be available or typed correctly
-        for (const text of texts) {
-            try {
-                const result = await genAIInstance.models.embedContent({ model: modelName, contents: [{ role: "user", parts: [{ text }] }] });
-                const embeddingValues = result.embeddings?.[0]?.values;
-                if (!embeddingValues) {
-                    console.warn(`Failed to get embedding values for text: ${text.substring(0,50)}...`);
-                    continue; // Skip this chunk if embedding failed
+        for (let i = 0; i < texts.length; i += batchSize) {
+            const batchTexts = texts.slice(i, i + batchSize);
+            const contents = batchTexts.map(text => ({ role: "user", parts: [{ text }] }));
+            const totalTokens = batchTexts.reduce((acc, text) => acc + text.length, 0);
+            console.log(`[CodebaseEmbeddingService] Processing batch with ${batchTexts.length} texts and ${totalTokens} tokens.`);
+
+            let attempt = 0;
+            let success = false;
+            while (attempt <= maxRetries && !success) {
+                try {
+const result = await genAIInstance.models.embedContent({ model: modelName, contents });
+                    const embeddings = result.embeddings;
+
+                    if (embeddings && embeddings.length === batchTexts.length) {
+                        for (const embedding of embeddings) {
+                            if (embedding.values) {
+                                results.push({ vector: embedding.values, dimensions: embedding.values.length });
+                            } else {
+                                results.push(null);
+                            }
+                        }
+                        success = true;
+                    } else {
+                        // If the batch fails, push null for each text in the batch
+                        for (let j = 0; j < batchTexts.length; j++) {
+                            results.push(null);
+                        }
+                        success = true; // Consider as success to break retry loop
+                    }
+                } catch (error: any) {
+                    attempt++;
+                    if (error?.message?.includes('429') || error?.message?.includes('Too Many Requests') || (error?.cause && error.cause.message && error.cause.message.includes('429'))) {
+                        if (attempt <= maxRetries) {
+                            const backoffTime = 6000 * attempt; // Exponential backoff: 6s, 12s, 18s
+                            console.warn(`Received 429 Too Many Requests. Retry attempt ${attempt} after ${backoffTime}ms.`);
+                            await new Promise(resolve => setTimeout(resolve, backoffTime));
+                        } else {
+                            console.error(`Max retries reached for batch starting at index ${i}. Skipping batch.`);
+                            for (let j = 0; j < batchTexts.length; j++) {
+                                results.push(null);
+                            }
+                            success = true; // Break retry loop
+                        }
+                    } else {
+                        console.error(`Error embedding batch starting at index ${i}:`, error);
+                        for (let j = 0; j < batchTexts.length; j++) {
+                            results.push(null);
+                        }
+                        success = true; // Break retry loop on other errors
+                    }
                 }
-                results.push({ vector: embeddingValues, dimensions: embeddingValues.length });
-            } catch (error) {
-                console.error(`Error embedding chunk: "${text.substring(0, 50)}..."`, error);
             }
+            // Wait for 7 seconds before the next request to stay within the 10 requests/minute limit
+            await new Promise(resolve => setTimeout(resolve, 7000));
         }
         return results;
     }
@@ -255,14 +304,21 @@ export class CodebaseEmbeddingService {
                             }
                         });
 
-                        // Create a separate chunk for the AI-generated summary
-                        const summary = await this.geminiService.summarizeCodeChunk(codeWithFullContext, entity.type, language);
+                        // Check if a summary for this code chunk already exists
+                        const originalCodeHash = this.generateChunkHash(entityCode);
+                        let summary = await this.getExistingSummaryByHash(originalCodeHash, 'codebase_embeddings');
+
+                        if (!summary) {
+                            // If no summary exists, generate a new one
+                            summary = await this.geminiService.summarizeCodeChunk(codeWithFullContext, entity.type, language);
+                        }
+
                         chunks.push({
                             chunk_text: summary,
                             entity_name: entity.name,
                             metadata: {
                                 type: `${entity.type}_summary`,
-                                original_code_hash: this.generateChunkHash(entityCode),
+                                original_code_hash: originalCodeHash,
                                 startLine: entity.startLine,
                                 endLine: entity.endLine,
                                 fullName: entity.fullName,
@@ -284,12 +340,14 @@ export class CodebaseEmbeddingService {
         filePath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
-        vectorTable: string = 'codebase_embeddings_vec',
+        vectorTable: string = 'codebase_embeddings_vec_idx',
         metadataTable: string = 'codebase_embeddings'
     ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
+        console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
         let fileContent: string;
         try {
             fileContent = await fs.readFile(filePath, 'utf-8');
+            console.log(`[CodebaseEmbeddingService] File content read successfully. Length: ${fileContent.length}`);
             if (!fileContent.trim()) {
                 console.log(`Skipping empty file: ${filePath}`);
                 return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
@@ -301,10 +359,12 @@ export class CodebaseEmbeddingService {
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
         const language = await this.introspectionService.detectLanguage(agentId, filePath, path.basename(filePath));
+        console.log(`[CodebaseEmbeddingService] Detected language: ${language}`);
 
         const existingEmbeddingsForFile = await getEmbeddingsForFile(this.vectorDb, relativeFilePath, metadataTable);
         const currentHashesInFile = new Set<string>();
         const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy);
+        console.log(`[CodebaseEmbeddingService] Created ${chunksData.length} chunks.`);
         
         if (chunksData.length === 0) {
             if (existingEmbeddingsForFile.length > 0) {
@@ -318,49 +378,54 @@ export class CodebaseEmbeddingService {
         }
 
         const textsToEmbed = chunksData.map(c => c.chunk_text);
-        const embeddingResults = await this.getEmbeddingsForChunks(textsToEmbed);
+        const embeddingResultsWithNulls = await this.getEmbeddingsForChunks(textsToEmbed);
 
-        if (embeddingResults.length !== chunksData.length) {
-            console.error(`Mismatch between chunks and generated vectors for ${filePath}. Skipping.`);
-            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
-        }
+        const validResults = embeddingResultsWithNulls
+            .map((result, index) => ({ result, index }))
+            .filter(item => item.result !== null);
+
+        const embeddingResults = validResults.map(item => item.result);
+        const originalIndices = validResults.map(item => item.index);
 
         let newEmbeddingsCount = 0;
         let reusedEmbeddingsCount = 0;
 
-        for (let i = 0; i < chunksData.length; i++) {
-            const chunk = chunksData[i];
-            const chunkHash = this.generateChunkHash(chunk.chunk_text);
-            currentHashesInFile.add(chunkHash);
+            for (let i = 0; i < embeddingResults.length; i++) {
+                const originalIndex = originalIndices[i];
+                const chunk = chunksData[originalIndex];
+                const chunkHash = this.generateChunkHash(chunk.chunk_text);
+                currentHashesInFile.add(chunkHash);
 
-            const existingEmbedding = await this.getExistingEmbeddingByHash(chunkHash, metadataTable);
+                const existingEmbedding = await this.getExistingEmbeddingByHash(chunkHash, metadataTable);
 
-            if (existingEmbedding) {
-                reusedEmbeddingsCount++;
-            } else {
-                const { vector } = embeddingResults[i];
-                if (!vector || vector.length === 0) continue;
-                const embedding_id = uuidv4();
+                if (existingEmbedding) {
+                    reusedEmbeddingsCount++;
+                } else {
+                    const embedding = embeddingResults[i];
+                    if (!embedding) continue;
+                    const { vector } = embedding;
+                    if (!vector || vector.length === 0) continue;
+                    const embedding_id = uuidv4();
 
-                try {
-                    await storeVecEmbedding(embedding_id, vector, vectorTable);
-                    await insertEmbeddingMetadata(this.vectorDb, metadataTable, {
-                        embedding_id,
-                        agent_id: agentId,
-                        file_path_relative: relativeFilePath,
-                        entity_name: chunk.entity_name || null,
-                        chunk_text: chunk.chunk_text,
-                        model_name: DEFAULT_EMBEDDING_MODEL,
-                        chunk_hash: chunkHash,
-                        created_timestamp_unix: Math.floor(Date.now() / 1000),
-                        metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
-                    });
-                    newEmbeddingsCount++;
-                } catch (insertError: any) {
-                    console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
+                    try {
+                        await storeVecEmbedding(embedding_id, vector, vectorTable);
+                        await insertEmbeddingMetadata(this.vectorDb, metadataTable, {
+                            embedding_id,
+                            agent_id: agentId,
+                            file_path_relative: relativeFilePath,
+                            entity_name: chunk.entity_name || null,
+                            chunk_text: chunk.chunk_text,
+                            model_name: DEFAULT_EMBEDDING_MODEL,
+                            chunk_hash: chunkHash,
+                            created_timestamp_unix: Math.floor(Date.now() / 1000),
+                            metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
+                        });
+                        newEmbeddingsCount++;
+                    } catch (insertError: any) {
+                        console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
+                    }
                 }
             }
-        }
 
         let deletedEmbeddingsCount = 0;
         for (const existingEmbedding of existingEmbeddingsForFile) {
@@ -429,7 +494,7 @@ export class CodebaseEmbeddingService {
         queryText: string,
         topK: number = 5,
         targetFilePaths?: string[],
-        vectorTable: string = 'codebase_embeddings_vec',
+        vectorTable: string = 'codebase_embeddings_vec_idx',
         metadataTable: string = 'codebase_embeddings'
     ): Promise<Array<{ chunk_text: string; file_path_relative: string; entity_name: string | null; score: number; metadata?: Record<string, any> | null }>> {
         const embeddingResult = (await this.getEmbeddingsForChunks([queryText]))[0];

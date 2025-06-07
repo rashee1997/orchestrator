@@ -1,6 +1,5 @@
 // src/database/vector_db.ts
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
+import Database from 'better-sqlite3';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -78,25 +77,6 @@ console.log(`[vector_db] Final SQLITE_VEC_EXTENSION_PATH: ${SQLITE_VEC_EXTENSION
 
 let vectorDbInstance: Database | null = null;
 
-// Promisify helper for sqlite3 driver's callback-based methods
-function promisifyDriverMethod(driver: any, methodName: 'enableLoadExtension' | 'loadExtension', ...args: any[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-        // Check if the method exists before calling
-        if (typeof driver[methodName] !== 'function') {
-            return reject(new Error(`Method ${methodName} not found on sqlite3 driver instance.`));
-        }
-        driver[methodName](...args, (err: Error | null) => {
-            if (err) {
-                console.error(`[vector_db] Error in promisified ${methodName}:`, err);
-                reject(err);
-            } else {
-                resolve();
-            }
-        });
-    });
-}
-
-
 export async function initializeVectorStoreDatabase(): Promise<Database> {
     console.log('[vector_db] Initializing vector store database...');
     if (vectorDbInstance) {
@@ -104,56 +84,28 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
         return vectorDbInstance;
     }
 
-    console.log(`[vector_db] Opening database at: ${VECTOR_DB_PATH}`);
-    const db = await open({
-        filename: VECTOR_DB_PATH,
-        driver: sqlite3.Database
-    });
-    console.log(`[vector_db] Vector store database opened successfully at: ${VECTOR_DB_PATH}`);
+    let db: Database | undefined;
+    try {
+        db = new Database(VECTOR_DB_PATH, { fileMustExist: false });
+        console.log(`[vector_db] Vector store database opened successfully at: ${VECTOR_DB_PATH}`);
 
-    // Access the underlying sqlite3.Database instance
-    const driverInstance = db.db as any; // sqlite.Database.driver is the sqlite3.Database
-
-    if (driverInstance) {
-        try {
-            if (typeof driverInstance.enableLoadExtension === 'function') {
-                console.log('[vector_db] Attempting to enable SQLite extension loading on db.db...');
-                await promisifyDriverMethod(driverInstance, 'enableLoadExtension', true);
-                console.log('[vector_db] Successfully enabled SQLite extension loading on db.db.');
-            } else {
-                console.warn('[vector_db] Warning: enableLoadExtension method not found on sqlite3 driver instance. Skipping enableLoadExtension.');
-            }
-
-            if (typeof driverInstance.loadExtension === 'function') {
-                console.log(`[vector_db] Attempting to load vec extension on db.db from: ${SQLITE_VEC_EXTENSION_PATH}`);
-                await promisifyDriverMethod(driverInstance, 'loadExtension', SQLITE_VEC_EXTENSION_PATH);
-                console.log(`[vector_db] Successfully loaded vec extension on db.db from ${SQLITE_VEC_EXTENSION_PATH}`);
-            } else {
-                console.warn('[vector_db] Warning: loadExtension method not found on sqlite3 driver instance. Skipping loadExtension.');
-            }
-        } catch (extSetupError) {
-            console.error(`[vector_db] CRITICAL: Error during extension setup on db.db: `, extSetupError);
-            // Close DB if critical extension setup fails
+        console.log('[vector_db] Attempting to load vec extension...');
+        db.loadExtension(SQLITE_VEC_EXTENSION_PATH);
+        console.log(`[vector_db] Successfully loaded vec extension from ${SQLITE_VEC_EXTENSION_PATH}`);
+    } catch (extSetupError) {
+        console.error(`[vector_db] CRITICAL: Error during extension setup: `, extSetupError);
+        if (db) {
             try {
-                await db.close();
+                db.close();
             } catch (closeError) {
                 console.error('[vector_db] Error closing DB after extension setup failure:', closeError);
             }
-            throw extSetupError; // Re-throw to prevent application from starting with a bad DB state
         }
-    } else {
-        const errMsg = '[vector_db] CRITICAL: Could not access the underlying sqlite3 driver instance (db.db). Extension loading failed.';
-        console.error(errMsg);
-        try {
-            await db.close();
-        } catch (closeError) {
-            console.error('[vector_db] Error closing DB after driver access failure:', closeError);
-        }
-        throw new Error(errMsg);
+        throw extSetupError;
     }
 
     try {
-        await db.exec('PRAGMA journal_mode = WAL;');
+        db.pragma('journal_mode = WAL');
         console.log('[vector_db] WAL mode enabled.');
     } catch (walError) {
         console.error('[vector_db] Failed to enable WAL mode:', walError);
@@ -163,14 +115,24 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
         console.log(`[vector_db] Reading vector store schema from: ${VECTOR_SCHEMA_PATH}`);
         const schema = readFileSync(VECTOR_SCHEMA_PATH, 'utf-8');
         console.log('[vector_db] Applying vector store database schema...');
-        await db.exec(schema);
+        db.exec(schema);
         console.log('[vector_db] Vector store database schema applied successfully.');
+
+        // Create vec virtual table if not exists
+        console.log('[vector_db] Creating vec virtual table if not exists...');
+        db.exec(`
+            CREATE VIRTUAL TABLE IF NOT EXISTS codebase_embeddings_vec_idx USING vec0(
+                embedding_id TEXT,
+                embedding float[768]
+            );
+        `);
+        console.log('[vector_db] vec virtual table created or already exists.');
     } catch (error) {
-        console.error('[vector_db] CRITICAL: Failed to read or apply vector store schema:', error);
+        console.error('[vector_db] CRITICAL: Failed to read or apply vector store schema or create vec virtual table:', error);
         try {
-            await db.close();
+            db.close();
         } catch (closeError) {
-            console.error('[vector_db] Error closing DB after schema failure:', closeError);
+            console.error('[vector_db] Error closing DB after schema or VSS failure:', closeError);
         }
         throw error;
     }
@@ -194,7 +156,7 @@ export async function closeVectorStoreDatabase(): Promise<void> {
     console.log('[vector_db] closeVectorStoreDatabase called.');
     if (vectorDbInstance) {
         try {
-            await vectorDbInstance.close();
+            vectorDbInstance.close();
             vectorDbInstance = null;
             console.log('[vector_db] Vector store database connection closed successfully.');
         } catch (error) {
@@ -205,16 +167,14 @@ export async function closeVectorStoreDatabase(): Promise<void> {
     }
 }
 
-export async function storeVecEmbedding(embedding_id: string, vector: number[], tableName: string = 'codebase_embeddings_vec'): Promise<void> {
+export async function storeVecEmbedding(embedding_id: string, vector: number[], tableName: string = 'codebase_embeddings_vec_idx'): Promise<void> {
     console.log(`[vector_db] Storing vector embedding with ID: ${embedding_id} in table: ${tableName}`);
     const db = getVectorStoreDb();
-    const floatVec = new Float32Array(vector);
+    const vectorString = `[${vector.join(',')}]`;
     try {
-        await db.run(
-            `INSERT OR REPLACE INTO ${tableName} (embedding_id, vector) VALUES (?, ?);`,
-            embedding_id,
-            Buffer.from(floatVec.buffer)
-        );
+        db.prepare(
+            `INSERT OR REPLACE INTO ${tableName} (embedding_id, embedding) VALUES (?, ?);`
+        ).run(embedding_id, vectorString);
         console.log(`[vector_db] Successfully stored vector for ID: ${embedding_id}`);
     } catch (error) {
         console.error(`[vector_db] Error storing vector for ID ${embedding_id} in table ${tableName}:`, error);
@@ -222,30 +182,25 @@ export async function storeVecEmbedding(embedding_id: string, vector: number[], 
     }
 }
 
-export async function findSimilarVecEmbeddings(queryVector: number[], topK: number = 5, tableName: string = 'codebase_embeddings_vec'): Promise<Array<{ embedding_id: string, similarity: number }>> {
-    console.log(`[vector_db] Finding similar vector embeddings using vec_search in table: ${tableName}, topK: ${topK}`);
+export async function findSimilarVecEmbeddings(queryVector: number[], topK: number = 5, tableName: string = 'codebase_embeddings_vec_idx'): Promise<Array<{ embedding_id: string, similarity: number }>> {
+    console.log(`[vector_db] Finding similar vector embeddings using vec virtual table in table: ${tableName}, topK: ${topK}`);
     const db = getVectorStoreDb();
-    const floatVec = new Float32Array(queryVector);
+    const vectorString = `[${queryVector.join(',')}]`;
 
     try {
-        // Use the vec_search function provided by the sqlite-vec extension
-        // The vec_search function returns rows with 'rowid' (which is embedding_id in our case) and 'distance'
-        const results = await db.all<{ embedding_id: string, distance: number }[]>(
-            `SELECT embedding_id, distance FROM vec_search(?, ?, ?);`,
-            tableName,
-            Buffer.from(floatVec.buffer),
-            topK
+        // Use the vec virtual table for similarity search
+        const stmt = db.prepare(
+            `SELECT embedding_id, distance FROM ${tableName} WHERE embedding MATCH ? ORDER BY distance LIMIT ?;`
         );
+        const results = stmt.all(vectorString, topK);
 
         // Convert distance to similarity (1 - distance for cosine similarity, assuming normalized vectors)
-        // sqlite-vec's vec_search returns cosine distance, which is 1 - cosine similarity for normalized vectors.
-        // So, similarity = 1 - distance.
         return results.map(row => ({
             embedding_id: row.embedding_id,
             similarity: 1 - row.distance,
         }));
     } catch (error) {
-        console.error(`[vector_db] Error finding similar vector embeddings using vec_search in table ${tableName}:`, error);
+        console.error(`[vector_db] Error finding similar vector embeddings using vec virtual table in table ${tableName}:`, error);
         throw error;
     }
 }
