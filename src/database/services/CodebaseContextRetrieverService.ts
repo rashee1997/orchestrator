@@ -139,17 +139,13 @@ export class CodebaseContextRetrieverService {
                         language: undefined, // Placeholder, could try to infer
                     };
 
-                    if (embResult.metadata_json) {
-                        try {
-                            const embMetadata = JSON.parse(embResult.metadata_json);
-                            metadata = { ...metadata, ...embMetadata };
-                            if (embMetadata.type === 'function' || embMetadata.type === 'method') type = 'function_definition';
-                            else if (embMetadata.type === 'class') type = 'class_definition';
-                            else if (embMetadata.type === 'interface') type = 'interface_definition';
-                            // Add more type mappings based on your chunking metadata
-                        } catch (e) {
-                            console.warn(`Failed to parse metadata_json for embedding: ${embResult.metadata_json}`);
-                        }
+                    if (embResult.metadata) {
+                        const embMetadata = embResult.metadata; // Already parsed
+                        metadata = { ...metadata, ...embMetadata };
+                        if (embMetadata.type === 'function' || embMetadata.type === 'method') type = 'function_definition';
+                        else if (embMetadata.type === 'class') type = 'class_definition';
+                        else if (embMetadata.type === 'interface') type = 'interface_definition';
+                        // Add more type mappings based on your chunking metadata
                     }
 
                     const newContextItem = {
@@ -282,13 +278,14 @@ ${prompt}
 """
 
 Below is a list of codebase context items. For each item, decide if it is relevant for understanding, analyzing, or modifying the code related to the user prompt.
-Return a JSON array of booleans corresponding to each item, where true means relevant and false means irrelevant.
+Return a JSON array of objects, where each object has an 'index' (0-based) and a 'relevance_score' (0.0 to 1.0).
+A score of 1.0 means highly relevant, 0.0 means completely irrelevant.
 
 Context items:
 `;
 
         contexts.forEach((ctx, idx) => {
-            aiPrompt += `Item ${idx + 1}:
+            aiPrompt += `Item ${idx}:
 - Source Path: ${ctx.sourcePath}
 - Entity Name: ${ctx.entityName || 'N/A'}
 - Type: ${ctx.type}
@@ -298,7 +295,7 @@ Context items:
 
         aiPrompt += `
 
-Respond ONLY with a JSON array of booleans, e.g. [true, false, true, ...].`;
+Respond ONLY with a JSON array of objects, e.g., [{"index": 0, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.2}, ...].`;
 
         try {
             const response = await this.geminiService.askGemini(aiPrompt, "gemini-2.5-flash-preview-05-20");
@@ -316,12 +313,37 @@ Respond ONLY with a JSON array of booleans, e.g. [true, false, true, ...].`;
                     throw new Error("Response from Gemini was not in a recognizable JSON array format.");
                 }
             }
-            const relevanceArray: boolean[] = JSON.parse(jsonString);
-            if (!Array.isArray(relevanceArray) || relevanceArray.length !== contexts.length) {
-                console.warn("AI filtering response length mismatch or invalid format. Returning original contexts.");
+            
+            interface RelevanceScore {
+                index: number;
+                relevance_score: number;
+            }
+
+            const relevanceScores: RelevanceScore[] = JSON.parse(jsonString);
+            if (!Array.isArray(relevanceScores) || !relevanceScores.every(item => typeof item.index === 'number' && typeof item.relevance_score === 'number')) {
+                console.warn("AI filtering response invalid format. Returning original contexts.");
                 return contexts;
             }
-            const filteredContexts = contexts.filter((ctx, idx) => relevanceArray[idx]);
+
+            const filteredContexts: RetrievedCodeContext[] = [];
+            const defaultFilterThreshold = 0.5; // Can be made dynamic later
+
+            relevanceScores.forEach(scoreItem => {
+                if (scoreItem.index >= 0 && scoreItem.index < contexts.length) {
+                    const originalContext = contexts[scoreItem.index];
+                    if (scoreItem.relevance_score >= defaultFilterThreshold) {
+                        // Update the relevance score with the AI's assessment
+                        originalContext.relevanceScore = scoreItem.relevance_score;
+                        filteredContexts.push(originalContext);
+                    } else {
+                        console.log(`[CodebaseContextRetrieverService] AI filtered out item ${scoreItem.index} due to low relevance score: ${scoreItem.relevance_score}`);
+                    }
+                }
+            });
+
+            // Sort by the new AI-assigned relevance score
+            filteredContexts.sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0));
+
             console.log(`[CodebaseContextRetrieverService] AI filtered contexts from ${contexts.length} to ${filteredContexts.length}`);
             return filteredContexts;
         } catch (error) {

@@ -428,7 +428,7 @@ export class CodebaseEmbeddingService {
         targetFilePaths?: string[],
         vectorTable: string = 'codebase_embeddings_vec',
         metadataTable: string = 'codebase_embeddings'
-    ): Promise<Array<{ chunk_text: string; file_path_relative: string; entity_name: string | null; score: number; metadata_json: string | null }>> {
+    ): Promise<Array<{ chunk_text: string; file_path_relative: string; entity_name: string | null; score: number; metadata?: Record<string, any> | null }>> {
         const embeddingResult = (await this.getEmbeddingsForChunks([queryText]))[0];
         if (!embeddingResult || !embeddingResult.vector) {
             throw new Error("Failed to generate embedding for query text.");
@@ -442,12 +442,20 @@ export class CodebaseEmbeddingService {
         // Join similarity scores with metadata
         return ids.map((id, i) => {
             const meta = metadataRows.find(row => row.embedding_id === id) || {};
+            let parsedMetadata: Record<string, any> | null = null;
+            if (meta.metadata_json) {
+                try {
+                    parsedMetadata = JSON.parse(meta.metadata_json);
+                } catch (e) {
+                    console.warn(`Failed to parse metadata_json for embedding ID ${id}:`, e);
+                }
+            }
             return {
                 chunk_text: meta.chunk_text || '',
                 file_path_relative: meta.file_path_relative || '',
                 entity_name: meta.entity_name || null,
                 score: vecResults[i]?.similarity ?? 0,
-                metadata_json: meta.metadata_json || null
+                metadata: parsedMetadata // Include parsed metadata object
             };
         });
     }

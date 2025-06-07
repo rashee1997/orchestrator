@@ -223,40 +223,29 @@ export async function storeVecEmbedding(embedding_id: string, vector: number[], 
 }
 
 export async function findSimilarVecEmbeddings(queryVector: number[], topK: number = 5, tableName: string = 'codebase_embeddings_vec'): Promise<Array<{ embedding_id: string, similarity: number }>> {
-    console.log(`[vector_db] Finding similar vector embeddings in table: ${tableName}, topK: ${topK}`);
+    console.log(`[vector_db] Finding similar vector embeddings using vec_search in table: ${tableName}, topK: ${topK}`);
     const db = getVectorStoreDb();
     const floatVec = new Float32Array(queryVector);
 
-    function cosineSimilarity(vecA: Float32Array, vecB: Float32Array): number {
-        let dot = 0;
-        let normA = 0;
-        let normB = 0;
-        for (let i = 0; i < vecA.length; i++) {
-            dot += vecA[i] * vecB[i];
-            normA += vecA[i] * vecA[i];
-            normB += vecB[i] * vecB[i];
-        }
-        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-    }
-
     try {
-        const rows = await db.all(`SELECT embedding_id, vector FROM ${tableName};`);
-        console.log(`[vector_db] Retrieved ${rows.length} embeddings from DB for similarity computation.`);
+        // Use the vec_search function provided by the sqlite-vec extension
+        // The vec_search function returns rows with 'rowid' (which is embedding_id in our case) and 'distance'
+        const results = await db.all<{ embedding_id: string, distance: number }[]>(
+            `SELECT embedding_id, distance FROM vec_search(?, ?, ?);`,
+            tableName,
+            Buffer.from(floatVec.buffer),
+            topK
+        );
 
-        const similarities = rows.map(row => {
-            const storedVec = new Float32Array(row.vector.buffer);
-            const similarity = cosineSimilarity(floatVec, storedVec);
-            return {
-                embedding_id: row.embedding_id,
-                similarity,
-            };
-        });
-
-        similarities.sort((a, b) => b.similarity - a.similarity);
-
-        return similarities.slice(0, topK);
+        // Convert distance to similarity (1 - distance for cosine similarity, assuming normalized vectors)
+        // sqlite-vec's vec_search returns cosine distance, which is 1 - cosine similarity for normalized vectors.
+        // So, similarity = 1 - distance.
+        return results.map(row => ({
+            embedding_id: row.embedding_id,
+            similarity: 1 - row.distance,
+        }));
     } catch (error) {
-        console.error(`[vector_db] Error finding similar vector embeddings in table ${tableName}:`, error);
+        console.error(`[vector_db] Error finding similar vector embeddings using vec_search in table ${tableName}:`, error);
         throw error;
     }
 }

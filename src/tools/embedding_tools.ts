@@ -133,16 +133,16 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     if (res.entity_name) {
                         md += `- **Entity:** \`${res.entity_name}\`\n`;
                     }
-                    if (res.metadata_json) {
+                    if (res.metadata) { // res.metadata is already an object or null
                         try {
-                            const metadata = JSON.parse(res.metadata_json);
+                            const metadata = res.metadata; // Directly use res.metadata
                             if (metadata.startLine && metadata.endLine) {
                                 md += `- **Lines:** ${metadata.startLine}-${metadata.endLine}\n`;
                             }
                             if (metadata.type) {
                                 md += `- **Chunk Type:** ${metadata.type}\n`;
                             }
-                        } catch (e) { /* ignore metadata parsing error */ }
+                        } catch (e) { /* ignore metadata access error, though less likely now */ }
                     }
                     md += `**Content Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'text')}\n---\n`;
                 });
