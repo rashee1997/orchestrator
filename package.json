@@ -29,7 +29,8 @@
     "simple-git": "^3.24.0",
     "sqlite": "^5.1.1",
     "sqlite-vec": "^0.1.7-alpha.2",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "marked": "^12.0.2"
   },
   "devDependencies": {
     "@babel/parser": "^7.27.3",

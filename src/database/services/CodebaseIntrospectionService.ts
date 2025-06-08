@@ -11,6 +11,7 @@ import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
 import { PHPParser } from '../parsers/PHPParser.js';
 import { JSONLParser } from '../parsers/JSONLParser.js';
+import { MarkdownParser } from '../parsers/MarkdownParser.js'; // Import MarkdownParser
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
 
 // ... (ScannedItem, ExtractedImport interfaces remain unchanged)
@@ -34,7 +35,7 @@ export interface ExtractedImport {
 
 // MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'unknown';
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown';
     name?: string; // Made optional
     fullName?: string; // Made optional
     signature?: string; // e.g., "function process(data: string): number"
@@ -74,7 +75,8 @@ export class CodebaseIntrospectionService {
             new HTMLParser(this.projectRootPath),
             new CSSParser(this.projectRootPath),
             new PHPParser(this.projectRootPath),
-            new JSONLParser(this)
+            new JSONLParser(this),
+            new MarkdownParser(this.projectRootPath) // Add MarkdownParser
         ];
         for (const parser of parsers) {
             // Handle both BaseLanguageParser and ILanguageParser
@@ -147,7 +149,7 @@ export class CodebaseIntrospectionService {
         // Explicitly skip known non-code files or files that are handled by specific parsers
         // but should not be passed to generic code parsers like TypeScriptParser if misidentified.
         const nonCodeOrNonParsableExtensions = new Set([
-            '.md', '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
+            '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
             '.gitmodules', '.prettierrc', '.eslintrc', '.vscode', '.idea', '.env', '.sample',
             '.example', '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
             '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
