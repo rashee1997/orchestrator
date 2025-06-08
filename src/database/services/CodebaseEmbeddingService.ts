@@ -342,7 +342,15 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         strategy: ChunkingStrategy = 'auto',
         vectorTable: string = 'codebase_embeddings_vec_idx',
         metadataTable: string = 'codebase_embeddings'
-    ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
+    ): Promise<{
+        newEmbeddingsCount: number;
+        reusedEmbeddingsCount: number;
+        deletedEmbeddingsCount: number;
+        newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        aiSummary?: string;
+    }> {
         console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
         let fileContent: string;
         try {
@@ -350,11 +358,25 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             console.log(`[CodebaseEmbeddingService] File content read successfully. Length: ${fileContent.length}`);
             if (!fileContent.trim()) {
                 console.log(`Skipping empty file: ${filePath}`);
-                return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
+                return {
+                    newEmbeddingsCount: 0,
+                    reusedEmbeddingsCount: 0,
+                    deletedEmbeddingsCount: 0,
+                    newEmbeddings: [],
+                    reusedEmbeddings: [],
+                    deletedEmbeddings: []
+                };
             }
         } catch (e) {
             console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
-            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0 };
+            return {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                deletedEmbeddingsCount: 0,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                deletedEmbeddings: []
+            };
         }
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
@@ -374,7 +396,17 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                     }
                 }
             }
-            return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: existingEmbeddingsForFile.length };
+            return {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                deletedEmbeddingsCount: existingEmbeddingsForFile.length,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                deletedEmbeddings: existingEmbeddingsForFile.map(e => ({
+                    file_path_relative: relativeFilePath,
+                    chunk_text: e.chunk_text
+                }))
+            };
         }
 
         const textsToEmbed = chunksData.map(c => c.chunk_text);
@@ -389,6 +421,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
 
         let newEmbeddingsCount = 0;
         let reusedEmbeddingsCount = 0;
+        const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
 
             for (let i = 0; i < embeddingResults.length; i++) {
                 const originalIndex = originalIndices[i];
@@ -400,6 +434,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
 
                 if (existingEmbedding) {
                     reusedEmbeddingsCount++;
+                    reusedEmbeddings.push({
+                        file_path_relative: relativeFilePath,
+                        chunk_text: chunk.chunk_text
+                    });
                 } else {
                     const embedding = embeddingResults[i];
                     if (!embedding) continue;
@@ -421,6 +459,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                             metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null
                         });
                         newEmbeddingsCount++;
+                        newEmbeddings.push({
+                            file_path_relative: relativeFilePath,
+                            chunk_text: chunk.chunk_text
+                        });
                     } catch (insertError: any) {
                         console.error(`Failed to insert embedding for ${relativeFilePath}:`, insertError);
                     }
@@ -428,12 +470,17 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             }
 
         let deletedEmbeddingsCount = 0;
+        const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         for (const existingEmbedding of existingEmbeddingsForFile) {
             if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
                 try {
                     if (existingEmbedding.embedding_id) {
                         await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
                         deletedEmbeddingsCount++;
+                        deletedEmbeddings.push({
+                            file_path_relative: relativeFilePath,
+                            chunk_text: existingEmbedding.chunk_text
+                        });
                     }
                 } catch (deleteError: any) {
                     console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id}:`, deleteError);
@@ -444,8 +491,30 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         if (newEmbeddingsCount > 0) console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
         if (reusedEmbeddingsCount > 0) console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
         if (deletedEmbeddingsCount > 0) console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
-        
-        return { newEmbeddingsCount, reusedEmbeddingsCount, deletedEmbeddingsCount };
+
+        let aiSummary = '';
+        try {
+            if (this.geminiService) {
+                const response = await this.geminiService.askGemini(
+                    `You are an expert software engineer. Provide a sophisticated, detailed, and insightful summary of the embedding ingestion operation for the file "${relativeFilePath}". Include counts of new, reused, and deleted embeddings. Highlight the significance of the changes, potential impacts on the codebase, and any notable patterns or observations. Use clear technical language suitable for a development team review.`
+                );
+                if (response && response.content && Array.isArray(response.content)) {
+                    aiSummary = response.content.map(part => part.text).join('').trim();
+                }
+            }
+        } catch (e) {
+            console.warn('AI summarizer failed:', e);
+        }
+
+        return {
+            newEmbeddingsCount,
+            reusedEmbeddingsCount,
+            deletedEmbeddingsCount,
+            newEmbeddings,
+            reusedEmbeddings,
+            deletedEmbeddings,
+            aiSummary
+        };
     }
 
     public async generateAndStoreEmbeddingsForDirectory(
@@ -453,7 +522,15 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         directoryPath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto'
-    ): Promise<{ newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; }> {
+    ): Promise<{
+        newEmbeddingsCount: number;
+        reusedEmbeddingsCount: number;
+        deletedEmbeddingsCount: number;
+        newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+        aiSummary?: string;
+    }> {
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const absoluteDirectoryPath = path.resolve(directoryPath);
 
@@ -462,6 +539,9 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
         let totalDeletedEmbeddings = 0;
+        const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
 
         for (const item of scannedItems) {
             if (item.type === 'file') {
@@ -472,6 +552,9 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                         totalNewEmbeddings += result.newEmbeddingsCount;
                         totalReusedEmbeddings += result.reusedEmbeddingsCount;
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                        newEmbeddings.push(...result.newEmbeddings);
+                        reusedEmbeddings.push(...result.reusedEmbeddings);
+                        deletedEmbeddings.push(...result.deletedEmbeddings);
                     } catch (fileError) {
                         console.error(`Error processing file ${item.path} for embeddings:`, fileError);
                     }
@@ -485,7 +568,11 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         return {
             newEmbeddingsCount: totalNewEmbeddings,
             reusedEmbeddingsCount: totalReusedEmbeddings,
-            deletedEmbeddingsCount: totalDeletedEmbeddings
+            deletedEmbeddingsCount: totalDeletedEmbeddings,
+            newEmbeddings,
+            reusedEmbeddings,
+            deletedEmbeddings,
+            aiSummary: ''
         };
     }
 

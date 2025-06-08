@@ -76,7 +76,15 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
-            let resultCounts: { newEmbeddingsCount: number; reusedEmbeddingsCount: number; deletedEmbeddingsCount: number; };
+            let resultCounts: { 
+                newEmbeddingsCount: number; 
+                reusedEmbeddingsCount: number; 
+                deletedEmbeddingsCount: number; 
+                newEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
+                reusedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
+                deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
+                aiSummary?: string;
+            };
 
             if (is_directory) {
                 resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(
@@ -94,12 +102,85 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 );
             }
 
+            // Format detailed output with granular lists if available
+            let detailedOutput = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/')}") complete.\n` +
+                `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}\n` +
+                `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n` +
+                `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}\n`;
+
+            if (resultCounts.newEmbeddings && resultCounts.newEmbeddings.length > 0) {
+                detailedOutput += `\n### New Embeddings Summary:\n`;
+                // Generate a single AI summary for all new embeddings combined
+                let combinedNewChunksText = resultCounts.newEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                let newSummary = '';
+                try {
+                    const geminiService = memoryManager.getGeminiIntegrationService();
+                    if (geminiService) {
+                        const response = await geminiService.askGemini(
+                            `You are an expert software engineer. Summarize the key changes and additions in the following newly added code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedNewChunksText}`
+                        );
+                        if (response && response.content && Array.isArray(response.content)) {
+                            newSummary = response.content.map(part => part.text).join('').trim();
+                        }
+                    }
+                } catch (e) {
+                    console.warn('AI summarizer failed for new embeddings summary:', e);
+                }
+                detailedOutput += `${newSummary}\n`;
+            }
+
+            if (resultCounts.reusedEmbeddings && resultCounts.reusedEmbeddings.length > 0) {
+                detailedOutput += `\n### Reused Embeddings Summary:\n`;
+                // Generate a single AI summary for all reused embeddings combined
+                let combinedReusedChunksText = resultCounts.reusedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                let reusedSummary = '';
+                try {
+                    const geminiService = memoryManager.getGeminiIntegrationService();
+                    if (geminiService) {
+                        const response = await geminiService.askGemini(
+                            `You are an expert software engineer. Summarize the context and significance of the following reused code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedReusedChunksText}`
+                        );
+                        if (response && response.content && Array.isArray(response.content)) {
+                            reusedSummary = response.content.map(part => part.text).join('').trim();
+                        }
+                    }
+                } catch (e) {
+                    console.warn('AI summarizer failed for reused embeddings summary:', e);
+                }
+                detailedOutput += `${reusedSummary}\n`;
+            }
+
+            if (resultCounts.deletedEmbeddings && resultCounts.deletedEmbeddings.length > 0) {
+                detailedOutput += `\n### Deleted Embeddings Summary:\n`;
+                // Generate a single AI summary for all deleted embeddings combined
+                let combinedDeletedChunksText = resultCounts.deletedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                let deletedSummary = '';
+                try {
+                    const geminiService = memoryManager.getGeminiIntegrationService();
+                    if (geminiService) {
+                        const response = await geminiService.askGemini(
+                            `You are an expert software engineer. Summarize the impact and reasons for deletion of the following code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedDeletedChunksText}`
+                        );
+                        if (response && response.content && Array.isArray(response.content)) {
+                            deletedSummary = response.content.map(part => part.text).join('').trim();
+                        }
+                    }
+                } catch (e) {
+                    console.warn('AI summarizer failed for deleted embeddings summary:', e);
+                }
+                detailedOutput += `${deletedSummary}\n`;
+            }
+
+            // Remove separate AI summary block since summaries are integrated per chunk
+            /*
+            if (resultCounts.aiSummary && resultCounts.aiSummary.length > 0) {
+                detailedOutput += `\n### AI Summary:\n${resultCounts.aiSummary}\n`;
+            }
+            */
+
             return {
                 content: [{
-                    type: 'text', text: formatSimpleMessage(
-                        `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/')}") complete.\n- New Embeddings Created: ${resultCounts.newEmbeddingsCount}\n- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}`,
-                        "Codebase Embedding Ingestion Report"
-                    )
+                    type: 'text', text: detailedOutput
                 }]
             };
         },
