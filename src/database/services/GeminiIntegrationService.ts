@@ -20,10 +20,12 @@ export class GeminiIntegrationService {
     private contextManager: ContextInformationManager;
     private memoryManager: MemoryManager;
     private _codebaseContextRetrieverService?: CodebaseContextRetrieverService;
+    private _apiKeys: string[] | null = null; // Use a private backing field
+    private currentApiKeyIndex: number = 0;
 
     // Model names based on user's provided code
-    private readonly summarizationModelName = "gemini-2.5-flash-preview-05-20";
-    private readonly entityExtractionModelName = "gemini-1.5-flash-latest";
+    public readonly summarizationModelName = "gemini-2.5-flash-preview-05-20"; // Changed to public
+    private readonly entityExtractionModelName = "gemini-2.5-flash-preview-05-20";
     private readonly embeddingModelName = "models/text-embedding-004";
     private readonly defaultAskModelName = "gemini-2.5-flash-preview-05-20";
     private readonly refinementModelName = "gemini-2.5-flash-preview-05-20";
@@ -57,14 +59,41 @@ export class GeminiIntegrationService {
         if (genAIInstance) {
             this.genAI = genAIInstance;
         } else {
-            const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-            if (!GEMINI_API_KEY) {
-                this.genAI = undefined;
-                console.warn('Gemini API key not found. GeminiIntegrationService will not be functional for direct API calls.');
-            } else {
-                this.genAI = new GoogleGenAI({ apiKey: GEMINI_API_KEY }); 
+            // The actual initialization of genAI with an API key will happen when this.apiKeys is first accessed.
+            // This constructor only sets up the initial state.
+            this.genAI = undefined; // Initialize as undefined, will be set in askGemini
+        }
+    }
+
+    private get apiKeys(): string[] {
+        if (this._apiKeys === null) {
+            this._apiKeys = [];
+            let i = 1;
+            while (true) { // Loop indefinitely until no more keys are found
+                const geminiKeyName = `GEMINI_API_KEY${i > 1 ? i : ''}`;
+                const googleKeyName = `GOOGLE_API_KEY${i > 1 ? i : ''}`;
+
+                const geminiKey = process.env[geminiKeyName];
+                const googleKey = process.env[googleKeyName];
+
+                if (geminiKey) {
+                    this._apiKeys.push(geminiKey as string);
+                }
+                if (googleKey) {
+                    this._apiKeys.push(googleKey as string);
+                }
+
+                // If neither key for the current 'i' is found, break the loop
+                if (!geminiKey && !googleKey) {
+                    break;
+                }
+                i++;
+            }
+            if (this._apiKeys.length === 0) {
+                console.warn('Gemini API key(s) not found. GeminiIntegrationService will not be functional for direct API calls.');
             }
         }
+        return this._apiKeys;
     }
     
     private get codebaseContextRetrieverService(): CodebaseContextRetrieverService {
@@ -91,56 +120,84 @@ export class GeminiIntegrationService {
     }
 
     async askGemini(query: string, modelName?: string, systemInstruction?: string): Promise<{ content: Part[] }> {
-        this.checkApiInitialized();
+        // Use the getter to access apiKeys, which will lazily load them if not already loaded
+        const availableApiKeys = this.apiKeys;
+
+        // Explicitly check if API keys are available before proceeding
+        if (availableApiKeys.length === 0) {
+            throw new GeminiApiNotInitializedError("Gemini API key(s) not configured. Please set GEMINI_API_KEY environment variable(s).");
+        }
+
         const modelToUse = modelName || this.defaultAskModelName;
-        try {
-            const request: any = { // Use 'any' to dynamically add systemInstruction
-                model: modelToUse,
-                contents: [{ role: "user", parts: [{ text: query }] }],
-                safetySettings: this.safetySettings, 
-                generationConfig: this.generationConfig, 
-            };
-            
-            if (systemInstruction) {
-                // The correct way to add a system instruction
-                request.systemInstruction = {
-                    role: "system",
-                    parts: [{ text: systemInstruction }]
-                };
-            }
+        let retries = 0;
+        const maxRetries = availableApiKeys.length;
+        let lastError: any = null; // Store the last error encountered
 
-            const result = await this.genAI!.models.generateContent(request);
-
-            // Defensive extraction of text from result
-            let responseText = "";
+        while (retries < maxRetries) {
             try {
-                // Check if result has candidates array
-                if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
-                    responseText = result.candidates[0].content?.parts?.[0]?.text ?? "";
-                } else if (result && typeof result.text === "string") {
-                    responseText = result.text;
-                } else if (typeof result === "string") {
-                    responseText = result;
-                } else {
-                    // Fallback: try to get text from result.content
-                    // Removed due to TypeScript error: Property 'content' does not exist on type 'GenerateContentResponse'.
+                // Re-initialize genAI with the current API key for each attempt
+                this.genAI = new GoogleGenAI({ apiKey: availableApiKeys[this.currentApiKeyIndex] });
+
+                const request: any = { // Use 'any' to dynamically add systemInstruction
+                    model: modelToUse,
+                    contents: [{ role: "user", parts: [{ text: query }] }],
+                    safetySettings: this.safetySettings,
+                    generationConfig: this.generationConfig,
+                };
+
+                if (systemInstruction) {
+                    request.systemInstruction = {
+                        role: "system",
+                        parts: [{ text: systemInstruction }]
+                    };
+                }
+
+                const result = await this.genAI!.models.generateContent(request);
+
+                let responseText = "";
+                try {
+                    if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
+                        responseText = result.candidates[0].content?.parts?.[0]?.text ?? "";
+                    } else if (result && typeof result.text === "string") {
+                        responseText = result.text;
+                    } else if (typeof result === "string") {
+                        responseText = result;
+                    } else {
+                        responseText = "";
+                    }
+                } catch (ex) {
+                    console.error("Error extracting text from Gemini result:", ex, "Full result:", result);
                     responseText = "";
                 }
-            } catch (ex) {
-                console.error("Error extracting text from Gemini result:", ex, "Full result:", result);
-                responseText = "";
+
+                if (!responseText) {
+                    console.warn("Gemini response text is empty or undefined. Full result:", result);
+                }
+
+                return { content: [{ text: responseText }] };
+
+            } catch (error: any) {
+                lastError = error; // Store the current error
+                console.error(`Error calling Gemini API (${modelToUse}) for query (API Key Index: ${this.currentApiKeyIndex}):`, error);
+
+                // Check for 429 (Too Many Requests) or other rate-limiting errors
+                if (error.response && error.response.status === 429 || (typeof error.message === 'string' && (error.message.includes('quota') || error.message.includes('rate limit')))) {
+                    retries++;
+                    if (retries < maxRetries) {
+                        this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length; // Use availableApiKeys.length
+                        console.warn(`Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying...`);
+                        // Optionally add a delay before retrying
+                        await new Promise(resolve => setTimeout(resolve, 1000 * retries)); // 1s, 2s, 3s delay
+                    } else {
+                        throw new Error(`Failed to get response from Gemini (${modelToUse}) after multiple retries with all available API keys: ${lastError.message}`);
+                    }
+                } else {
+                    throw new Error(`Failed to get response from Gemini (${modelToUse}): ${lastError.message}`);
+                }
             }
-
-            if (!responseText) {
-                console.warn("Gemini response text is empty or undefined. Full result:", result);
-            }
-
-            return { content: [{ text: responseText }] };
-
-        } catch (error: any) {
-            console.error(`Error calling Gemini API (${modelToUse}) for query:`, error);
-            throw new Error(`Failed to get response from Gemini (${modelToUse}): ${error.message}`);
         }
+        // If the loop finishes without returning, it means all retries failed.
+        throw new Error(`Failed to get response from Gemini (${modelToUse}): All API keys exhausted or unexpected error. Last error: ${lastError ? lastError.message : 'None'}`);
     }
     
     /**
@@ -174,8 +231,8 @@ One-sentence summary:
             return summary;
         } catch (error: any) {
             console.error(`Error calling Gemini API for code chunk summarization:`, error);
-            // Return a default message on error to avoid breaking the embedding process
-            return `Failed to generate summary: ${error.message}`;
+            // Re-throw the error to propagate it up and make it visible
+            throw error;
         }
     }
 
