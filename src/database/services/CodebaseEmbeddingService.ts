@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { minimatch } from 'minimatch'; // Import minimatch for glob pattern matching
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { CodebaseIntrospectionService, ExtractedCodeEntity, ScannedItem, ExtractedImport } from './CodebaseIntrospectionService.js';
@@ -265,7 +266,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         fileContent: string,
         relativeFilePath: string,
         language: string | undefined,
-        strategy: ChunkingStrategy
+        strategy: ChunkingStrategy,
+        storeEntitySummaries: boolean // New parameter
     ): Promise<Array<{ chunk_text: string; entity_name?: string; metadata?: any }>> {
         const chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any }> = [];
 
@@ -388,18 +390,20 @@ Concise Name:`;
                                 conciseSummaryName = `${entity.name}_summary`; // Fallback on error
                             }
 
-                            chunks.push({
-                                chunk_text: summary,
-                                entity_name: conciseSummaryName, // Use the concise name
-                                metadata: {
-                                    type: `${entity.type}_summary`,
-                                    original_code_hash: originalCodeHash,
-                                    startLine: entity.startLine,
-                                    endLine: entity.endLine,
-                                    fullName: entity.fullName,
-                                    language: 'en'
-                                }
-                            });
+                            if (storeEntitySummaries) { // Conditionally push summary chunk
+                                chunks.push({
+                                    chunk_text: summary,
+                                    entity_name: conciseSummaryName, // Use the concise name
+                                    metadata: {
+                                        type: `${entity.type}_summary`,
+                                        original_code_hash: originalCodeHash,
+                                        startLine: entity.startLine,
+                                        endLine: entity.endLine,
+                                        fullName: entity.fullName,
+                                        language: 'en'
+                                    }
+                                });
+                            }
                         }
                     }
                 }
@@ -411,29 +415,43 @@ Concise Name:`;
     /**
      * Generates and stores embeddings for a single file, handling chunking, hashing, and stale data cleanup.
      */
-    public async generateAndStoreEmbeddingsForFile(
-        agentId: string,
-        filePath: string,
-        projectRootPath: string,
-        strategy: ChunkingStrategy = 'auto',
-        vectorTable: string = 'codebase_embeddings_vec_idx',
-        metadataTable: string = 'codebase_embeddings'
-    ): Promise<{
-        newEmbeddingsCount: number;
-        reusedEmbeddingsCount: number;
-        deletedEmbeddingsCount: number;
-        newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        aiSummary?: string;
-    }> {
-        console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
-        let fileContent: string;
-        try {
-            fileContent = await fs.readFile(filePath, 'utf-8');
-            console.log(`[CodebaseEmbeddingService] File content read successfully. Length: ${fileContent.length}`);
-            if (!fileContent.trim()) {
-                console.log(`Skipping empty file: ${filePath}`);
+        public async generateAndStoreEmbeddingsForFile(
+            agentId: string,
+            filePath: string,
+            projectRootPath: string,
+            strategy: ChunkingStrategy = 'auto',
+            includeSummaryPatterns?: string[],
+            excludeSummaryPatterns?: string[],
+            storeEntitySummaries: boolean = true, // New argument
+            vectorTable: string = 'codebase_embeddings_vec_idx',
+            metadataTable: string = 'codebase_embeddings'
+        ): Promise<{
+            newEmbeddingsCount: number;
+            reusedEmbeddingsCount: number;
+            deletedEmbeddingsCount: number;
+            newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+            reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+            deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+            aiSummary?: string;
+        }> {
+            console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
+            let fileContent: string;
+            try {
+                fileContent = await fs.readFile(filePath, 'utf-8');
+                console.log(`[CodebaseEmbeddingService] File content read successfully. Length: ${fileContent.length}`);
+                if (!fileContent.trim()) {
+                    console.log(`Skipping empty file: ${filePath}`);
+                    return {
+                        newEmbeddingsCount: 0,
+                        reusedEmbeddingsCount: 0,
+                        deletedEmbeddingsCount: 0,
+                        newEmbeddings: [],
+                        reusedEmbeddings: [],
+                        deletedEmbeddings: []
+                    };
+                }
+            } catch (e) {
+                console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
                 return {
                     newEmbeddingsCount: 0,
                     reusedEmbeddingsCount: 0,
@@ -443,62 +461,62 @@ Concise Name:`;
                     deletedEmbeddings: []
                 };
             }
-        } catch (e) {
-            console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
-            return {
-                newEmbeddingsCount: 0,
-                reusedEmbeddingsCount: 0,
-                deletedEmbeddingsCount: 0,
-                newEmbeddings: [],
-                reusedEmbeddings: [],
-                deletedEmbeddings: []
-            };
-        }
 
-        const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
-        const language = await this.introspectionService.detectLanguage(agentId, filePath, path.basename(filePath));
-        console.log(`[CodebaseEmbeddingService] Detected language: ${language}`);
+            const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
+            const language = await this.introspectionService.detectLanguage(agentId, filePath, path.basename(filePath));
+            console.log(`[CodebaseEmbeddingService] Detected language: ${language}`);
 
-        const existingEmbeddingsForFile = await getEmbeddingsForFile(this.vectorDb, relativeFilePath, metadataTable);
-        const currentHashesInFile = new Set<string>();
-        const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy);
-        console.log(`[CodebaseEmbeddingService] Created ${chunksData.length} chunks.`);
-        
-        if (chunksData.length === 0) {
-            if (existingEmbeddingsForFile.length > 0) {
-                for (const existingEmbedding of existingEmbeddingsForFile) {
-                    if (existingEmbedding.embedding_id) {
-                        await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+            const existingEmbeddingsForFile = await getEmbeddingsForFile(this.vectorDb, relativeFilePath, metadataTable);
+            const currentHashesInFile = new Set<string>();
+            const chunksData = await this.chunkFileContent(agentId, filePath, fileContent, relativeFilePath, language, strategy, storeEntitySummaries);
+            console.log(`[CodebaseEmbeddingService] Created ${chunksData.length} chunks.`);
+            
+            if (chunksData.length === 0) {
+                if (existingEmbeddingsForFile.length > 0) {
+                    for (const existingEmbedding of existingEmbeddingsForFile) {
+                        if (existingEmbedding.embedding_id) {
+                            await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+                        }
                     }
                 }
+                return {
+                    newEmbeddingsCount: 0,
+                    reusedEmbeddingsCount: 0,
+                    deletedEmbeddingsCount: existingEmbeddingsForFile.length,
+                    newEmbeddings: [],
+                    reusedEmbeddings: [],
+                    deletedEmbeddings: existingEmbeddingsForFile.map(e => ({
+                        file_path_relative: relativeFilePath,
+                        chunk_text: e.chunk_text
+                    }))
+                };
             }
-            return {
-                newEmbeddingsCount: 0,
-                reusedEmbeddingsCount: 0,
-                deletedEmbeddingsCount: existingEmbeddingsForFile.length,
-                newEmbeddings: [],
-                reusedEmbeddings: [],
-                deletedEmbeddings: existingEmbeddingsForFile.map(e => ({
-                    file_path_relative: relativeFilePath,
-                    chunk_text: e.chunk_text
-                }))
-            };
-        }
 
-        const textsToEmbed = chunksData.map(c => c.chunk_text);
-        const embeddingResultsWithNulls = await this.getEmbeddingsForChunks(textsToEmbed);
+            const textsToEmbed = chunksData.map(c => c.chunk_text);
+            const embeddingResultsWithNulls = await this.getEmbeddingsForChunks(textsToEmbed);
 
-        const validResults = embeddingResultsWithNulls
-            .map((result, index) => ({ result, index }))
-            .filter(item => item.result !== null);
+            const validResults = embeddingResultsWithNulls
+                .map((result, index) => ({ result, index }))
+                .filter(item => item.result !== null);
 
-        const embeddingResults = validResults.map(item => item.result);
-        const originalIndices = validResults.map(item => item.index);
+            const embeddingResults = validResults.map(item => item.result);
+            const originalIndices = validResults.map(item => item.index);
 
-        let newEmbeddingsCount = 0;
-        let reusedEmbeddingsCount = 0;
-        const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
-        const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+            let newEmbeddingsCount = 0;
+            let reusedEmbeddingsCount = 0;
+            const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+            const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+
+            // Determine if summary should be generated for this file based on patterns
+            const shouldGenerateSummaryForFile = (
+                (includeSummaryPatterns && includeSummaryPatterns.length > 0)
+                    ? includeSummaryPatterns.some(pattern => minimatch(relativeFilePath, pattern))
+                    : true
+            ) && (
+                (excludeSummaryPatterns && excludeSummaryPatterns.length > 0)
+                    ? !excludeSummaryPatterns.some(pattern => minimatch(relativeFilePath, pattern))
+                    : true
+            );
 
             for (let i = 0; i < embeddingResults.length; i++) {
                 const originalIndex = originalIndices[i];
@@ -545,59 +563,62 @@ Concise Name:`;
                 }
             }
 
-        let deletedEmbeddingsCount = 0;
-        const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
-        for (const existingEmbedding of existingEmbeddingsForFile) {
-            if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
-                try {
-                    if (existingEmbedding.embedding_id) {
-                        await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
-                        deletedEmbeddingsCount++;
-                        deletedEmbeddings.push({
-                            file_path_relative: relativeFilePath,
-                            chunk_text: existingEmbedding.chunk_text
-                        });
+            let deletedEmbeddingsCount = 0;
+            const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+            for (const existingEmbedding of existingEmbeddingsForFile) {
+                if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
+                    try {
+                        if (existingEmbedding.embedding_id) {
+                            await deleteEmbedding(this.vectorDb, existingEmbedding.embedding_id, vectorTable, metadataTable);
+                            deletedEmbeddingsCount++;
+                            deletedEmbeddings.push({
+                                file_path_relative: relativeFilePath,
+                                chunk_text: existingEmbedding.chunk_text
+                            });
+                        }
+                    } catch (deleteError: any) {
+                        console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id}:`, deleteError);
                     }
-                } catch (deleteError: any) {
-                    console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id}:`, deleteError);
                 }
             }
-        }
 
-        if (newEmbeddingsCount > 0) console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
-        if (reusedEmbeddingsCount > 0) console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
-        if (deletedEmbeddingsCount > 0) console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
+            if (newEmbeddingsCount > 0) console.log(`Created ${newEmbeddingsCount} new embeddings for file ${relativeFilePath}`);
+            if (reusedEmbeddingsCount > 0) console.log(`Reused ${reusedEmbeddingsCount} existing embeddings for file ${relativeFilePath}`);
+            if (deletedEmbeddingsCount > 0) console.log(`Deleted ${deletedEmbeddingsCount} stale embeddings for file ${relativeFilePath}`);
 
-        let aiSummary = '';
-        try {
-            if (this.geminiService) {
-                const response = await this.geminiService.askGemini(
-                    `You are an expert software engineer. Provide a sophisticated, detailed, and insightful summary of the embedding ingestion operation for the file "${relativeFilePath}". Include counts of new, reused, and deleted embeddings. Highlight the significance of the changes, potential impacts on the codebase, and any notable patterns or observations. Use clear technical language suitable for a development team review.`
-                );
-                if (response && response.content && Array.isArray(response.content)) {
-                    aiSummary = response.content.map(part => part.text).join('').trim();
+            let aiSummary = '';
+            try {
+                if (this.geminiService && shouldGenerateSummaryForFile) { // Only generate summary if allowed by patterns
+                    const response = await this.geminiService.askGemini(
+                        `You are an expert software engineer. Provide a sophisticated, detailed, and insightful summary of the embedding ingestion operation for the file "${relativeFilePath}". Include counts of new, reused, and deleted embeddings. Highlight the significance of the changes, potential impacts on the codebase, and any notable patterns or observations. Use clear technical language suitable for a development team review.`
+                    );
+                    if (response && response.content && Array.isArray(response.content)) {
+                        aiSummary = response.content.map(part => part.text).join('').trim();
+                    }
                 }
+            } catch (e) {
+                console.warn('AI summarizer failed:', e);
             }
-        } catch (e) {
-            console.warn('AI summarizer failed:', e);
-        }
 
-        return {
-            newEmbeddingsCount,
-            reusedEmbeddingsCount,
-            deletedEmbeddingsCount,
-            newEmbeddings,
-            reusedEmbeddings,
-            deletedEmbeddings,
-            aiSummary
-        };
-    }
+            return {
+                newEmbeddingsCount,
+                reusedEmbeddingsCount,
+                deletedEmbeddingsCount,
+                newEmbeddings,
+                reusedEmbeddings,
+                deletedEmbeddings,
+                aiSummary
+            };
+        }
 
     public async generateAndStoreEmbeddingsForDirectory(
         agentId: string,
         directoryPath: string,
         projectRootPath: string,
-        strategy: ChunkingStrategy = 'auto'
+        strategy: ChunkingStrategy = 'auto',
+        includeSummaryPatterns?: string[],
+        excludeSummaryPatterns?: string[],
+        storeEntitySummaries: boolean = true // New argument
     ): Promise<{
         newEmbeddingsCount: number;
         reusedEmbeddingsCount: number;
@@ -624,7 +645,15 @@ Concise Name:`;
                 const language = item.language || await this.introspectionService.detectLanguage(agentId, item.path, path.basename(item.path));
                 if ((language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) || (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024)) {
                      try {
-                        const result = await this.generateAndStoreEmbeddingsForFile(agentId, item.path, absoluteProjectRootPath, strategy);
+                        const result = await this.generateAndStoreEmbeddingsForFile(
+                            agentId,
+                            item.path,
+                            absoluteProjectRootPath,
+                            strategy,
+                            includeSummaryPatterns,
+                            excludeSummaryPatterns,
+                            storeEntitySummaries // Pass new argument
+                        );
                         totalNewEmbeddings += result.newEmbeddingsCount;
                         totalReusedEmbeddings += result.reusedEmbeddingsCount;
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;

@@ -99,7 +99,21 @@ export const schemas = {
                 enum: ['file', 'function', 'class', 'auto'],
                 default: 'auto',
                 description: "Strategy for chunking code before embedding ('file', 'function', 'class', or 'auto')."
-            }
+            },
+            disable_ai_output_summary: { type: 'boolean', default: false, description: "If true, disables the AI-generated summary of the embedding process results." },
+            include_summary_patterns: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of glob patterns to include specific files for AI summary generation. If provided, only files matching these patterns will have summaries generated."
+            },
+            exclude_summary_patterns: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of glob patterns to exclude specific files from AI summary generation. Files matching these patterns will not have summaries generated."
+            },
+            storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." }
         },
         required: ['agent_id', 'path_to_embed', 'project_root_path'],
         additionalProperties: false,

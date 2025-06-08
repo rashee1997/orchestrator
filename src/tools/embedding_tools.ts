@@ -74,7 +74,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_embeddings: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { path_to_embed, project_root_path, is_directory, chunking_strategy } = args;
+            const { path_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
 
             // Ensure project_root_path is absolute for reliable relative path calculation
             const absoluteProjectRootPath = path.resolve(project_root_path);
@@ -100,7 +100,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 deletedEmbeddingsCount: number; 
                 newEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
                 reusedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
-                deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
+                deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
                 aiSummary?: string;
             };
 
@@ -109,14 +109,20 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     agent_id,
                     absolutePathToEmbed,
                     absoluteProjectRootPath, // Pass the validated absolute project root
-                    chunking_strategy as ChunkingStrategy
+                    chunking_strategy as ChunkingStrategy,
+                    include_summary_patterns,
+                    exclude_summary_patterns,
+                    storeEntitySummaries // Pass the new argument
                 );
             } else {
                 resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(
                     agent_id,
                     absolutePathToEmbed,
                     absoluteProjectRootPath, // Pass the validated absolute project root
-                    chunking_strategy as ChunkingStrategy
+                    chunking_strategy as ChunkingStrategy,
+                    include_summary_patterns,
+                    exclude_summary_patterns,
+                    storeEntitySummaries // Pass the new argument
                 );
             }
 
@@ -126,67 +132,69 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n` +
                 `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}\n`;
 
-            if (resultCounts.newEmbeddings && resultCounts.newEmbeddings.length > 0) {
-                detailedOutput += `\n### New Embeddings Summary:\n`;
-                // Generate a single AI summary for all new embeddings combined
-                let combinedNewChunksText = resultCounts.newEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
-                let newSummary = '';
-                try {
-                    const geminiService = memoryManager.getGeminiIntegrationService();
-                    if (geminiService) {
-                        const response = await geminiService.askGemini(
-                            `You are an expert software engineer. Summarize the key changes and additions in the following newly added code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedNewChunksText}`
-                        );
-                        if (response && response.content && Array.isArray(response.content)) {
-                            newSummary = response.content.map(part => part.text).join('').trim();
+            if (!disable_ai_output_summary) {
+                if (resultCounts.newEmbeddings && resultCounts.newEmbeddings.length > 0) {
+                    detailedOutput += `\n### New Embeddings Summary:\n`;
+                    // Generate a single AI summary for all new embeddings combined
+                    let combinedNewChunksText = resultCounts.newEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                    let newSummary = '';
+                    try {
+                        const geminiService = memoryManager.getGeminiIntegrationService();
+                        if (geminiService) {
+                            const response = await geminiService.askGemini(
+                                `You are an expert software engineer. Summarize the key changes and additions in the following newly added code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedNewChunksText}`
+                            );
+                            if (response && response.content && Array.isArray(response.content)) {
+                                newSummary = response.content.map(part => part.text).join('').trim();
+                            }
                         }
+                    } catch (e) {
+                        console.warn('AI summarizer failed for new embeddings summary:', e);
                     }
-                } catch (e) {
-                    console.warn('AI summarizer failed for new embeddings summary:', e);
+                    detailedOutput += `${newSummary}\n`;
                 }
-                detailedOutput += `${newSummary}\n`;
-            }
 
-            if (resultCounts.reusedEmbeddings && resultCounts.reusedEmbeddings.length > 0) {
-                detailedOutput += `\n### Reused Embeddings Summary:\n`;
-                // Generate a single AI summary for all reused embeddings combined
-                let combinedReusedChunksText = resultCounts.reusedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
-                let reusedSummary = '';
-                try {
-                    const geminiService = memoryManager.getGeminiIntegrationService();
-                    if (geminiService) {
-                        const response = await geminiService.askGemini(
-                            `You are an expert software engineer. Summarize the context and significance of the following reused code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedReusedChunksText}`
-                        );
-                        if (response && response.content && Array.isArray(response.content)) {
-                            reusedSummary = response.content.map(part => part.text).join('').trim();
+                if (resultCounts.reusedEmbeddings && resultCounts.reusedEmbeddings.length > 0) {
+                    detailedOutput += `\n### Reused Embeddings Summary:\n`;
+                    // Generate a single AI summary for all reused embeddings combined
+                    let combinedReusedChunksText = resultCounts.reusedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                    let reusedSummary = '';
+                    try {
+                        const geminiService = memoryManager.getGeminiIntegrationService();
+                        if (geminiService) {
+                            const response = await geminiService.askGemini(
+                                `You are an expert software engineer. Summarize the context and significance of the following reused code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedReusedChunksText}`
+                            );
+                            if (response && response.content && Array.isArray(response.content)) {
+                                reusedSummary = response.content.map(part => part.text).join('').trim();
+                            }
                         }
+                    } catch (e) {
+                        console.warn('AI summarizer failed for reused embeddings summary:', e);
                     }
-                } catch (e) {
-                    console.warn('AI summarizer failed for reused embeddings summary:', e);
+                    detailedOutput += `${reusedSummary}\n`;
                 }
-                detailedOutput += `${reusedSummary}\n`;
-            }
 
-            if (resultCounts.deletedEmbeddings && resultCounts.deletedEmbeddings.length > 0) {
-                detailedOutput += `\n### Deleted Embeddings Summary:\n`;
-                // Generate a single AI summary for all deleted embeddings combined
-                let combinedDeletedChunksText = resultCounts.deletedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
-                let deletedSummary = '';
-                try {
-                    const geminiService = memoryManager.getGeminiIntegrationService();
-                    if (geminiService) {
-                        const response = await geminiService.askGemini(
-                            `You are an expert software engineer. Summarize the impact and reasons for deletion of the following code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedDeletedChunksText}`
-                        );
-                        if (response && response.content && Array.isArray(response.content)) {
-                            deletedSummary = response.content.map(part => part.text).join('').trim();
+                if (resultCounts.deletedEmbeddings && resultCounts.deletedEmbeddings.length > 0) {
+                    detailedOutput += `\n### Deleted Embeddings Summary:\n`;
+                    // Generate a single AI summary for all deleted embeddings combined
+                    let combinedDeletedChunksText = resultCounts.deletedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
+                    let deletedSummary = '';
+                    try {
+                        const geminiService = memoryManager.getGeminiIntegrationService();
+                        if (geminiService) {
+                            const response = await geminiService.askGemini(
+                                `You are an expert software engineer. Summarize the impact and reasons for deletion of the following code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.\n\n${combinedDeletedChunksText}`
+                            );
+                            if (response && response.content && Array.isArray(response.content)) {
+                                deletedSummary = response.content.map(part => part.text).join('').trim();
+                            }
                         }
+                    } catch (e) {
+                        console.warn('AI summarizer failed for deleted embeddings summary:', e);
                     }
-                } catch (e) {
-                    console.warn('AI summarizer failed for deleted embeddings summary:', e);
+                    detailedOutput += `${deletedSummary}\n`;
                 }
-                detailedOutput += `${deletedSummary}\n`;
             }
 
             // Remove separate AI summary block since summaries are integrated per chunk
