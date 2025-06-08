@@ -2,6 +2,7 @@ import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { KnowledgeGraphManagerV2 } from '../managers/KnowledgeGraphManagerV2.js';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
+import { CodebaseEmbeddingService } from '../services/CodebaseEmbeddingService.js'; // Import CodebaseEmbeddingService
 import { getKnowledgeGraphConfig } from '../../config/knowledge_graph_config.js';
 import { KnowledgeGraphMigrator } from '../../tools/migration/KnowledgeGraphMigrator.js';
 import path from 'path';
@@ -28,8 +29,7 @@ export class KnowledgeGraphFactory {
     private static config = getKnowledgeGraphConfig();
 
     static async create(
-        dbService: DatabaseService, 
-        geminiService: GeminiIntegrationService
+        memoryManager: import("../memory_manager.js").MemoryManager
     ): Promise<IKnowledgeGraphManager> {
         // If already created, return the existing instance
         if (this.instance) {
@@ -48,11 +48,11 @@ export class KnowledgeGraphFactory {
             
             // Create the V2 manager with the correct path
             const jsonlRootPath = path.join(projectRoot, config.jsonlRootPath || 'knowledge_graphs');
-            const managerV2 = new KnowledgeGraphManagerV2(jsonlRootPath, geminiService);
+            const managerV2 = new KnowledgeGraphManagerV2(jsonlRootPath, memoryManager.getGeminiIntegrationService());
             
             // If auto-migrate is enabled, check if migration is needed
             if (config.autoMigrate) {
-                const migrator = new KnowledgeGraphMigrator(dbService, jsonlRootPath);
+                const migrator = new KnowledgeGraphMigrator(memoryManager.getDbService(), jsonlRootPath);
                 // You could add logic here to check if migration is needed
                 console.log('Auto-migration check completed');
             }
@@ -60,7 +60,9 @@ export class KnowledgeGraphFactory {
             this.instance = managerV2;
         } else {
             console.log('Using SQLite-based Knowledge Graph Manager');
-            this.instance = new KnowledgeGraphManager(dbService, geminiService);
+            // Instantiate CodebaseEmbeddingService and pass it
+            const embeddingService = new CodebaseEmbeddingService(memoryManager, memoryManager.getVectorDb() as import('better-sqlite3').Database);
+            this.instance = new KnowledgeGraphManager(memoryManager.getDbService(), memoryManager.getGeminiIntegrationService(), embeddingService);
         }
 
         return this.instance;

@@ -15,7 +15,8 @@ export interface ParsedComplexQuery {
     observationContains?: string[]; // From one or more obs:value
     idEquals?: string;            // From id:value
     limit?: number;               // From limit:value
-    // Add other specific fields as needed for other key:value pairs
+    definedInFilePath?: string;   // From defined_in_file_path:value
+    parentClassFullName?: string; // From parent_class_full_name:value
 }
 
 /**
@@ -113,6 +114,12 @@ export class QueryEngine {
                         if (!isNaN(limitVal)) {
                             complexQuery.limit = limitVal;
                         }
+                        break;
+                    case 'defined_in_file_path':
+                        complexQuery.definedInFilePath = value;
+                        break;
+                    case 'parent_class_full_name':
+                        complexQuery.parentClassFullName = value;
                         break;
                     default:
                         // If key is not recognized, add the whole match to remainingQueryParts
@@ -220,14 +227,39 @@ export class QueryEngine {
                 });
                 // console.log(`[QueryEngine.executeQuery] Nodes after filePathCondition filter ('${filePathLower}'): ${filteredNodes.length}`);
             }
+            if (complexAst.definedInFilePath) {
+                const definedInFilePathLower = complexAst.definedInFilePath.toLowerCase();
+                filteredNodes = filteredNodes.filter(node =>
+                    node.observations && Array.isArray(node.observations) &&
+                    node.observations.some((obs: string) => obs && typeof obs === 'string' && obs.toLowerCase().startsWith('defined_in_file_path:') && obs.toLowerCase().includes(definedInFilePathLower))
+                );
+                // console.log(`[QueryEngine.executeQuery] Nodes after definedInFilePath filter ('${definedInFilePathLower}'): ${filteredNodes.length}`);
+            }
+            if (complexAst.parentClassFullName) {
+                const parentClassFullNameLower = complexAst.parentClassFullName.toLowerCase();
+                filteredNodes = filteredNodes.filter(node =>
+                    node.observations && Array.isArray(node.observations) &&
+                    node.observations.some((obs: string) => obs && typeof obs === 'string' && obs.toLowerCase().startsWith('parent_class_full_name:') && obs.toLowerCase().includes(parentClassFullNameLower))
+                );
+                // console.log(`[QueryEngine.executeQuery] Nodes after parentClassFullName filter ('${parentClassFullNameLower}'): ${filteredNodes.length}`);
+            }
             if (complexAst.observationContains && complexAst.observationContains.length > 0) {
                 complexAst.observationContains.forEach(obsQuery => {
                     if (obsQuery && obsQuery.trim() !== "") { // Ensure obsQuery is not empty
                         const obsQueryLower = obsQuery.toLowerCase();
-                        filteredNodes = filteredNodes.filter(node =>
-                            node.observations && Array.isArray(node.observations) &&
-                            node.observations.some((obs: string) => obs && typeof obs === 'string' && obs.toLowerCase().includes(obsQueryLower))
-                        );
+                        filteredNodes = filteredNodes.filter(node => {
+                            if (!node.observations || !Array.isArray(node.observations)) return false;
+
+                            // Special handling for "public" or "private" in signature
+                            if (obsQueryLower === 'public' || obsQueryLower === 'private') {
+                                const signatureObs = node.observations.find((obs: string) => obs.startsWith('signature:'));
+                                if (signatureObs && signatureObs.toLowerCase().includes(obsQueryLower)) {
+                                    return true;
+                                }
+                            }
+                            // General observation matching
+                            return node.observations.some((obs: string) => obs && typeof obs === 'string' && obs.toLowerCase().includes(obsQueryLower));
+                        });
                         // console.log(`[QueryEngine.executeQuery] Nodes after observationContains filter ('${obsQueryLower}'): ${filteredNodes.length}`);
                     }
                 });

@@ -53,19 +53,13 @@ export class CSSParser extends BaseLanguageParser {
 
             root.walkRules((rule: Rule) => {
                 if (rule.selector) {
-                    const properties: { [key: string]: string } = {};
-                    rule.walkDecls(decl => {
-                        properties[decl.prop] = decl.value;
-                    });
-
                     rule.selectors.forEach((selectorString: string) => {
                         const trimmedSelector = selectorString.trim();
                         if (!trimmedSelector) return;
                         
-                        const entityType = trimmedSelector.startsWith('#') ? 'variable' : 'property';
-
+                        // Main selector entity
                         entities.push({
-                            type: entityType,
+                            type: 'unknown', // More generic type for CSS selectors
                             name: trimmedSelector,
                             fullName: `${relativeFilePath}::${trimmedSelector}`,
                             startLine: rule.source?.start?.line || 0,
@@ -73,19 +67,58 @@ export class CSSParser extends BaseLanguageParser {
                             filePath: absoluteFilePath,
                             containingDirectory,
                             signature: `${trimmedSelector} { ... }`,
-                            isExported: true,
+                            isExported: true, // Consider selectors as "exported" in a CSS context
                             metadata: {
-                                properties: properties,
-                                parent: rule.parent?.type === 'atrule' ? (rule.parent as AtRule).name : 'root'
+                                parent: rule.parent?.type === 'atrule' ? (rule.parent as AtRule).name : 'root',
+                                type: 'css_selector'
                             }
                         });
+
+                        // Extract individual properties as entities
+                        rule.walkDecls(decl => {
+                            entities.push({
+                                type: 'property',
+                                name: decl.prop,
+                                fullName: `${relativeFilePath}::${trimmedSelector}::${decl.prop}`,
+                                startLine: decl.source?.start?.line || 0,
+                                endLine: decl.source?.end?.line || 0,
+                                filePath: absoluteFilePath,
+                                containingDirectory,
+                                signature: `${decl.prop}: ${decl.value}`,
+                                parentClass: trimmedSelector, // Parent is the selector
+                                metadata: {
+                                    value: decl.value,
+                                    important: decl.important
+                                }
+                            });
+                        });
+                    });
+                }
+            });
+
+            // Extract CSS variables
+            root.walkDecls(decl => {
+                if (decl.prop.startsWith('--')) {
+                    entities.push({
+                        type: 'variable',
+                        name: decl.prop,
+                        fullName: `${relativeFilePath}::${decl.prop}`,
+                        startLine: decl.source?.start?.line || 0,
+                        endLine: decl.source?.end?.line || 0,
+                        filePath: absoluteFilePath,
+                        containingDirectory,
+                        signature: `${decl.prop}: ${decl.value}`,
+                        isExported: true,
+                        metadata: {
+                            value: decl.value
+                        }
                     });
                 }
             });
 
             root.walkAtRules(/keyframes|media|supports$/, (rule: AtRule) => {
                  entities.push({
-                    type: 'function',
+                    type: 'control_flow', // Changed to control_flow
                     name: `@${rule.name} ${rule.params}`,
                     fullName: `${relativeFilePath}::@${rule.name}::${rule.params}`,
                     startLine: rule.source?.start?.line || 0,
@@ -95,7 +128,8 @@ export class CSSParser extends BaseLanguageParser {
                     signature: `@${rule.name} ${rule.params} { ... }`,
                     isExported: true,
                     metadata: {
-                        params: rule.params
+                        params: rule.params,
+                        type: 'css_at_rule'
                     }
                 });
             });

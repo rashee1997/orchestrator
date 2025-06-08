@@ -185,8 +185,12 @@ export class JSONLParser implements ILanguageParser {
         return imports;
     }
 
-    async parseCodeEntities(filePath: string, fileContent: string, projectRootPath?: string): Promise<ExtractedCodeEntity[]> {
+    async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {
         const entities: ExtractedCodeEntity[] = [];
+        const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
+        const relativeFilePath = path.relative(projectRootPath, absoluteFilePath).replace(/\\/g, '/');
+        const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
+        
         const lines = fileContent.split('\n').filter(line => line.trim());
         
         lines.forEach((line, index) => {
@@ -194,45 +198,58 @@ export class JSONLParser implements ILanguageParser {
                 const jsonObj = JSON.parse(line);
                 const lineNum = index + 1;
                 
-                // Extract code entities from knowledge graph nodes
-                if (jsonObj.entityType && ['class', 'function', 'method', 'interface', 'variable'].includes(jsonObj.entityType)) {
-                entities.push({
-                    type: jsonObj.entityType as any,
-                    name: jsonObj.name || `entity_${lineNum}`,
-                    fullName: jsonObj.fullName || jsonObj.name || `${filePath}:${lineNum}`,
-                    signature: jsonObj.signature || JSON.stringify(jsonObj).substring(0, 100),
-                    startLine: lineNum,
-                    endLine: lineNum,
-                    filePath,
-                    containingDirectory: path.dirname(filePath),
-                    isExported: true
-                });
+                let entityType: ExtractedCodeEntity['type'] = 'unknown';
+                let entityName: string = `json_object_line_${lineNum}`;
+                let signature: string = JSON.stringify(jsonObj).substring(0, 100);
+                let fullName: string = `${relativeFilePath}::line_${lineNum}`;
+                let metadata: Record<string, any> = { originalJson: jsonObj };
 
+                // Attempt to infer more specific types and names
+                if (jsonObj.entityType && ['class', 'function', 'method', 'interface', 'variable', 'control_flow', 'call_signature'].includes(jsonObj.entityType)) {
+                    entityType = jsonObj.entityType;
+                    entityName = jsonObj.name || entityName;
+                    signature = jsonObj.signature || signature;
+                    fullName = jsonObj.fullName || fullName;
+                } else if (jsonObj.type && ['event', 'log', 'record'].includes(jsonObj.type)) {
+                    entityType = 'unknown'; // Or a new 'event' type if ExtractedCodeEntity is extended
+                    entityName = jsonObj.id || jsonObj.name || entityName;
+                    signature = jsonObj.message || JSON.stringify(jsonObj).substring(0, 100);
+                    fullName = `${relativeFilePath}::${entityName}`;
+                } else if (jsonObj.name && typeof jsonObj.value !== 'undefined') {
+                    entityType = 'variable';
+                    entityName = jsonObj.name;
+                    signature = `${jsonObj.name}: ${JSON.stringify(jsonObj.value)}`;
+                    fullName = `${relativeFilePath}::${entityName}`;
+                } else if (jsonObj.action && jsonObj.target) {
+                    entityType = 'control_flow'; // Represents a step or action
+                    entityName = jsonObj.action;
+                    signature = `${jsonObj.action} ${jsonObj.target}`;
+                    fullName = `${relativeFilePath}::${entityName}`;
                 }
-                
-                // Extract from observations if they contain code entity info
-                if (jsonObj.observations && Array.isArray(jsonObj.observations)) {
-                    for (const obs of jsonObj.observations) {
-                        if (typeof obs === 'string' && obs.includes('type:')) {
-                            const typeMatch = obs.match(/type:\s*(\w+)/);
-                            if (typeMatch && ['class', 'function', 'method', 'interface'].includes(typeMatch[1])) {
-                                entities.push({
-                                    type: typeMatch[1] as any,
-                                    name: jsonObj.name || `entity_${lineNum}`,
-                                    fullName: jsonObj.name || `${filePath}:${lineNum}`,
-                                    signature: obs,
-                                    startLine: lineNum,
-                                    endLine: lineNum,
-                                    filePath,
-                                    containingDirectory: path.dirname(filePath),
-                                    isExported: true
-                                });
-                            }
-                        }
+
+                // Add all top-level properties to metadata
+                for (const key in jsonObj) {
+                    if (jsonObj.hasOwnProperty(key)) {
+                        metadata[key] = jsonObj[key];
                     }
                 }
+
+                entities.push({
+                    type: entityType,
+                    name: entityName,
+                    fullName: fullName,
+                    signature: signature,
+                    startLine: lineNum,
+                    endLine: lineNum,
+                    filePath: absoluteFilePath,
+                    containingDirectory: containingDirectory,
+                    isExported: true, // Consider all top-level JSON objects as "exported"
+                    metadata: metadata
+                });
+
             } catch (e) {
                 // Skip invalid JSON lines
+                console.warn(`Skipping invalid JSON at line ${index + 1} in ${filePath}:`, e);
             }
         });
 

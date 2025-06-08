@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
+import { CodebaseEmbeddingService } from '../services/CodebaseEmbeddingService.js'; // Import CodebaseEmbeddingService
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 // fs, fsp, and path are not used in this manager based on current code, can be removed if not planned for future use.
 // import fs from 'fs';
@@ -17,10 +18,12 @@ interface KnowledgeGraph { // This interface is not used locally in this manager
 export class KnowledgeGraphManager {
     private dbService: DatabaseService;
     private geminiService: GeminiIntegrationService;
+    private embeddingService: CodebaseEmbeddingService; // Add embeddingService
 
-    constructor(dbService: DatabaseService, geminiService: GeminiIntegrationService) {
+    constructor(dbService: DatabaseService, geminiService: GeminiIntegrationService, embeddingService: CodebaseEmbeddingService) {
         this.dbService = dbService;
         this.geminiService = geminiService;
+        this.embeddingService = embeddingService; // Initialize embeddingService
     }
 
     public async getExistingRelation(agentId: string, fromNodeName: string, toNodeName: string, relationType: string): Promise<any | null> {
@@ -345,25 +348,40 @@ export class KnowledgeGraphManager {
     async queryNaturalLanguage(agent_id: string, naturalLanguageQuery: string): Promise<string> {
         try {
             // Step 1: For large graphs, first try to identify relevant subgraph based on query keywords
+            // Step 1: Perform semantic search to get relevant code chunks
+            const similarCodeChunks = await this.embeddingService.retrieveSimilarCodeChunks(agent_id, naturalLanguageQuery);
+            let semanticContext = '';
+            let semanticallyRelevantNodeNames: string[] = [];
+
+            if (similarCodeChunks && similarCodeChunks.length > 0) {
+                semanticContext = `\n\nSemantically Relevant Code Chunks (from embeddings):\n`;
+                similarCodeChunks.forEach((chunk: any, index: number) => {
+                    semanticContext += `Chunk ${index + 1} (File: ${chunk.metadata.filePath}, Type: ${chunk.metadata.entityType || 'N/A'}):\n`;
+                    semanticContext += `\`\`\`${chunk.metadata.language || ''}\n${chunk.content}\n\`\`\`\n`;
+                    if (chunk.metadata.entityName) {
+                        semanticallyRelevantNodeNames.push(chunk.metadata.entityName);
+                    }
+                });
+                semanticallyRelevantNodeNames = [...new Set(semanticallyRelevantNodeNames)]; // Remove duplicates
+            }
+
+            // Step 2: Identify relevant subgraph based on query keywords and semantically relevant nodes
             let graphData: any;
             let graphRepresentation: string;
             
-            // Extract potential keywords from the query for initial filtering
             const keywords = this.extractKeywordsFromQuery(naturalLanguageQuery);
-            
-            if (keywords.length > 0) {
-                // Try to get a focused subgraph first
+            const combinedRelevantNames = [...new Set([...keywords, ...semanticallyRelevantNodeNames])];
+
+            if (combinedRelevantNames.length > 0) {
                 const relevantNodes: any[] = [];
-                for (const keyword of keywords) {
-                    const searchResults = await this.searchNodes(agent_id, keyword);
+                for (const name of combinedRelevantNames) {
+                    const searchResults = await this.searchNodes(agent_id, name); // Search by name/keyword
                     relevantNodes.push(...searchResults);
                 }
                 
-                // Remove duplicates
                 const uniqueNodes = Array.from(new Map(relevantNodes.map(n => [n.node_id, n])).values());
                 
-                if (uniqueNodes.length > 0 && uniqueNodes.length < 100) { // Use focused subgraph if reasonable size
-                    // Get relations between these nodes
+                if (uniqueNodes.length > 0 && uniqueNodes.length < 100) {
                     const nodeIds = uniqueNodes.map(n => n.node_id);
                     const db = this.dbService.getDb();
                     const placeholders = nodeIds.map(() => '?').join(',');
@@ -372,7 +390,7 @@ export class KnowledgeGraphManager {
                          FROM knowledge_graph_relations r 
                          JOIN knowledge_graph_nodes n1 ON r.from_node_id = n1.node_id 
                          JOIN knowledge_graph_nodes n2 ON r.to_node_id = n2.node_id 
-                         WHERE r.agent_id = ? AND r.from_node_id IN (${placeholders}) AND r.to_node_id IN (${placeholders})`,
+                         WHERE r.agent_id = ? AND (r.from_node_id IN (${placeholders}) OR r.to_node_id IN (${placeholders}))`,
                         agent_id, ...nodeIds, ...nodeIds
                     );
                     
@@ -387,22 +405,20 @@ export class KnowledgeGraphManager {
                     };
                     graphRepresentation = JSON.stringify(graphData, null, 2);
                 } else {
-                    // Fall back to full graph if subgraph is too large or empty
                     graphData = await this.readGraph(agent_id);
                     graphRepresentation = JSON.stringify(graphData, null, 2);
                 }
             } else {
-                // No keywords extracted, use full graph
                 graphData = await this.readGraph(agent_id);
                 graphRepresentation = JSON.stringify(graphData, null, 2);
             }
 
-            // Step 2: Use Gemini to translate the natural language query into a structured query
-            const prompt = `You are an expert in translating natural language questions about software codebases into structured queries for a knowledge graph. The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables. Key relation types include: 'contains_item' (directory to file/subdir), 'imports_file' (file to file), 'imports_module' (file to module), 'defined_in_file' (code entity to file), 'has_method' (class to method).
+            // Step 3: Use Gemini to translate the natural language query into a structured query
+            const prompt = `You are an expert in translating natural language questions about software codebases into structured queries for a knowledge graph. The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables. Key relation types include: 'contains_item' (directory to file/subdir), 'imports_file' (file to file), 'imports_module' (file to module), 'defined_in_file' (code entity to file), 'has_method' (class to method), 'calls_function', 'uses_class', 'modifies_variable', 'implements_interface', 'extends_class', 'related_to_feature', 'depends_on', 'tested_by', 'configures'.
 
-Node observations often include 'absolute_path', 'language', 'signature', 'lines'.
+Node observations often include 'absolute_path', 'language', 'signature', 'lines', and 'calls' (for functions/methods).
 
-Given the following knowledge graph structure and a natural language query, translate the natural language query into a structured query JSON object. The structured query should have 'operation' and 'args' properties.
+Given the following knowledge graph structure, semantically relevant code context, and a natural language query, translate the natural language query into a structured query JSON object. The structured query should have 'operation' and 'args' properties.
 
 Supported operations:
 - 'search_nodes': args = { "query": "search term for name, type, or observations" }
@@ -427,6 +443,7 @@ Examples of Codebase NL Queries and their Structured Translation:
 
 Knowledge Graph Structure:
 ${graphRepresentation}
+${semanticContext}
 
 Natural Language Query: "${naturalLanguageQuery}"
 
@@ -435,6 +452,7 @@ Instructions for translation:
 2. For search_nodes queries, try to be specific by combining entity type and observation filters
 3. For graph_traversal, ensure the start_node exists in the provided graph
 4. If the query cannot be reasonably translated, return { "error": "explanation of why" }
+5. Leverage the "Semantically Relevant Code Chunks" to better understand the user's intent and identify specific entities or relationships mentioned implicitly.
 
 Translate the above NL Query into the structured JSON format. Provide only the JSON object.`;
 

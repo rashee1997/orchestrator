@@ -5,8 +5,19 @@ import { parseDocument } from 'htmlparser2';
 import * as DomHandler from 'domhandler';
 import * as DomUtils from 'domutils';
 import path from 'path';
+import { TypeScriptParser } from './TypeScriptParser.js'; // Import TypeScriptParser
+import { CSSParser } from './CSSParser.js'; // Import CSSParser
 
 export class HTMLParser extends BaseLanguageParser {
+    private tsParser: TypeScriptParser;
+    private cssParser: CSSParser;
+
+    constructor(projectRootPath: string = process.cwd()) {
+        super(projectRootPath);
+        this.tsParser = new TypeScriptParser(projectRootPath);
+        this.cssParser = new CSSParser(projectRootPath);
+    }
+
     getSupportedExtensions(): string[] {
         return ['.html', '.htm'];
     }
@@ -85,7 +96,7 @@ export class HTMLParser extends BaseLanguageParser {
         try {
             const dom = parseDocument(fileContent, { withStartIndices: true, withEndIndices: true });
 
-            const traverse = (nodes: DomHandler.Node[], parent: DomHandler.Element | null = null) => {
+            const traverse = async (nodes: DomHandler.Node[], parent: DomHandler.Element | null = null) => { // Added async here
                 for (const node of nodes) {
                     if (node.type === 'tag') {
                         const element = node as DomHandler.Element;
@@ -114,8 +125,9 @@ export class HTMLParser extends BaseLanguageParser {
                             });
                         }
                         
+                        // Recursively traverse children
                         if (element.children && Array.isArray(element.children)) {
-                            traverse(element.children, element);
+                            await traverse(element.children, element); // Await recursive call
                         }
                     } else if (node.type === 'script') {
                         const element = node as DomHandler.Element;
@@ -124,24 +136,60 @@ export class HTMLParser extends BaseLanguageParser {
                         if (element.children && element.children.length > 0) {
                             const scriptContent = (element.children[0] as DomHandler.Text).data;
                             if (scriptContent.trim()) {
-                                 entities.push({
-                                    type: 'function',
-                                    name: `inline_script_at_line_${start.line}`,
-                                    fullName: `${relativeFilePath}::inline_script_at_line_${start.line}`,
-                                    startLine: start.line,
-                                    endLine: end.line,
-                                    filePath: absoluteFilePath,
-                                    containingDirectory,
-                                    signature: `<script>...</script>`,
-                                    docstring: scriptContent.substring(0, 200) + (scriptContent.length > 200 ? '...' : ''),
-                                    isExported: false,
+                                // Parse inline JavaScript using TypeScriptParser
+                                const jsEntities = await this.tsParser.parseCodeEntities(filePath, scriptContent, projectRootPath);
+                                jsEntities.forEach(jsEntity => {
+                                    // Adjust line numbers to be relative to the HTML file
+                                    jsEntity.startLine += start.line - 1;
+                                    jsEntity.endLine += start.line - 1;
+                                    entities.push(jsEntity);
                                 });
                             }
+                        }
+                    } else if (node.type === 'style') {
+                        const element = node as DomHandler.Element;
+                        const start = this.getLineAndColumn(fileContent, element.startIndex!);
+                        const end = this.getLineAndColumn(fileContent, element.endIndex!);
+                        if (element.children && element.children.length > 0) {
+                            const styleContent = (element.children[0] as DomHandler.Text).data;
+                            if (styleContent.trim()) {
+                                // Parse inline CSS using CSSParser
+                                const cssEntities = await this.cssParser.parseCodeEntities(filePath, styleContent, projectRootPath);
+                                cssEntities.forEach(cssEntity => {
+                                    // Adjust line numbers to be relative to the HTML file
+                                    cssEntity.startLine += start.line - 1;
+                                    cssEntity.endLine += start.line - 1;
+                                    entities.push(cssEntity);
+                                });
+                            }
+                        }
+                    } else if (node.type === 'text' || node.type === 'comment') {
+                        // Ignore text and comment nodes for now, or handle as 'unknown' if needed
+                    } else {
+                        // Handle other unknown node types if necessary
+                        const unknownNode = node as DomHandler.Node;
+                        if (unknownNode.startIndex !== undefined && unknownNode.endIndex !== undefined) {
+                            const start = this.getLineAndColumn(fileContent, unknownNode.startIndex!);
+                            const end = this.getLineAndColumn(fileContent, unknownNode.endIndex!);
+                            entities.push({
+                                type: 'unknown',
+                                name: `html_node_at_line_${start.line}`,
+                                fullName: `${relativeFilePath}::html_node_at_line_${start.line}`,
+                                startLine: start.line,
+                                endLine: end.line,
+                                filePath: absoluteFilePath,
+                                containingDirectory,
+                                signature: fileContent.substring(unknownNode.startIndex!, unknownNode.endIndex! + 1).split('\n')[0],
+                                isExported: false,
+                                metadata: {
+                                    nodeType: unknownNode.type
+                                }
+                            });
                         }
                     }
                 }
             };
-            traverse(dom.children);
+            await traverse(dom.children); // Await the initial call to traverse
         } catch (error) {
             console.error(`Error parsing HTML code entities in ${filePath}:`, error);
         }

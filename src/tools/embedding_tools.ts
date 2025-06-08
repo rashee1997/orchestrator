@@ -37,6 +37,24 @@ Output is Markdown formatted.`,
             required: ['agent_id', 'query_text'],
             additionalProperties: false,
         }
+    },
+    {
+        name: 'clean_up_embeddings',
+        description: `Removes and cleans up embeddings from the vector database based on specified file paths.
+Returns a summary of deleted embeddings.`,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: "Agent ID associated with the embeddings." },
+                file_paths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: "Array of relative file paths to delete embeddings for."
+                }
+            },
+            required: ['agent_id', 'file_paths'],
+            additionalProperties: false,
+        }
     }
 ];
 
@@ -232,6 +250,36 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             } catch (error: any) {
                 console.error(`Error querying codebase embeddings for agent ${agent_id}:`, error);
                 throw new McpError(ErrorCode.InternalError, `Embedding query failed: ${error.message}`);
+            }
+        },
+        'clean_up_embeddings': async (args: any, agent_id_from_server: string) => {
+            const agent_id = args.agent_id || agent_id_from_server;
+            if (!agent_id) {
+                throw new McpError(ErrorCode.InvalidParams, "agent_id is required for clean_up_embeddings.");
+            }
+
+            const validationResult = validate('cleanUpEmbeddings', args);
+            if (!validationResult.valid) {
+                throw new McpError(ErrorCode.InvalidParams, `Validation failed for clean_up_embeddings: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
+            }
+
+            const { file_paths } = args;
+            const embeddingService = memoryManager.getCodebaseEmbeddingService();
+
+            try {
+                const result: any = await embeddingService.cleanUpEmbeddingsByFilePaths(
+                    agent_id, // Pass agent_id
+                    file_paths
+                );
+                return {
+                    content: [{
+                        type: 'text',
+                        text: formatSimpleMessage(`Successfully deleted ${result.deletedCount} embeddings for the specified file paths.`, "Clean Up Embeddings Result")
+                    }]
+                };
+            } catch (error: any) {
+                console.error(`Error cleaning up embeddings for agent ${agent_id}:`, error);
+                throw new McpError(ErrorCode.InternalError, `Embedding cleanup failed: ${error.message}`);
             }
         }
     };

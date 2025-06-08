@@ -131,7 +131,7 @@ export class MemoryManager {
         this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, this.geminiIntegrationService);
         
         // Create Knowledge Graph Manager using factory
-        this.knowledgeGraphManager = await KnowledgeGraphFactory.create(this.dbService, this.geminiIntegrationService);
+        this.knowledgeGraphManager = await KnowledgeGraphFactory.create(this);
         
         // Create GeminiPlannerService
         this.geminiPlannerService = new GeminiPlannerService(this.geminiIntegrationService, this);

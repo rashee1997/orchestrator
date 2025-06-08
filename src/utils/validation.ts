@@ -74,6 +74,19 @@ export const schemas = {
         required: ['agent_id', 'query_text'],
         additionalProperties: false,
     },
+    cleanUpEmbeddings: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: "Agent ID associated with the embeddings." },
+            file_paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: "Array of relative file paths to delete embeddings for."
+            }
+        },
+        required: ['agent_id', 'file_paths'],
+        additionalProperties: false,
+    },
     ingestCodebaseEmbeddings: {
         type: 'object',
         properties: {

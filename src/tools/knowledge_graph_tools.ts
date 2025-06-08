@@ -7,8 +7,7 @@ import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCo
 import path from 'path';
 import fs from 'fs/promises';
 
-// Helper to create a canonical key from an absolute path (lowercase, forward slashes)
-function createCanonicalAbsPathKey(absPath: string): string {
+export function createCanonicalAbsPathKey(absPath: string): string {
     // Normalize to POSIX separators first, then toLowerCase.
     return absPath.replace(/\\/g, '/').toLowerCase();
 }
@@ -259,6 +258,30 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
                     type: 'string',
                     description: 'Optional: A natural language query to filter the knowledge graph using AI.',
                     nullable: true
+                },
+                max_nodes: {
+                    type: 'number',
+                    default: 100,
+                    minimum: 1,
+                    description: 'Maximum number of nodes to include in the visualization.'
+                },
+                max_edges: {
+                    type: 'number',
+                    default: 200,
+                    minimum: 1,
+                    description: 'Maximum number of edges to include in the visualization.'
+                },
+                exclude_imports: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional: A list of import paths or module names to exclude from the visualization.',
+                    nullable: true
+                },
+                exclude_relation_types: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional: A list of relation types to exclude from the visualization (e.g., "imports_file", "contains_item").',
+                    nullable: true
                 }
             },
             required: ['agent_id'],
@@ -268,6 +291,11 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
 
 export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
     const codebaseIntrospectionService = new CodebaseIntrospectionService(memoryManager, memoryManager.getGeminiIntegrationService(), memoryManager.projectRootPath);
+
+    // Type guard to check if an entity has required name and entityType as strings
+    function isValidEntity(entity: any): entity is { name: string; entityType: string; observations?: string[] } {
+        return entity && typeof entity.name === 'string' && typeof entity.entityType === 'string';
+    }
 
     return {
         'ingest_codebase_structure': async (args: any, agent_id_from_server: string) => {
@@ -642,8 +670,11 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     if (entity.returnType) currentObservations.push(`return_type: ${entity.returnType}`);
                     if (entity.parentClass && entity.filePath) currentObservations.push(`parent_class_full_name: ${entity.filePath}::${entity.parentClass}`);
                     if (entity.implementedInterfaces && entity.implementedInterfaces.length > 0) currentObservations.push(`implements: ${entity.implementedInterfaces.join(', ')}`);
+                    if (entity.calls && entity.calls.length > 0) {
+                        currentObservations.push(`calls: ${JSON.stringify(entity.calls.map(c => c.name))}`);
+                    }
 
-                    const existingEntities = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.fullName]);
+                    const existingEntities = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.fullName || '']);
                     const existingEntityNode = existingEntities.find((n:any) => n.name === entity.fullName && n.entityType === entity.type);
 
                     if (existingEntityNode) {
@@ -655,20 +686,42 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         }
                     } else {
                         entitiesToCreateBatch.push({
-                            name: entity.fullName,
+                            name: entity.fullName || '',
                             entityType: entity.type as string,
                             observations: currentObservations,
                         });
                     }
 
-                    const defRelKey = { from: entity.fullName, to: fileNodeRelativeName, type: 'defined_in_file'};
-                    relationsToCreateSetKG.add(JSON.stringify(defRelKey));
+                    if (entity.fullName && fileNodeRelativeName) {
+                        const defRelKey = { from: entity.fullName, to: fileNodeRelativeName, type: 'defined_in_file'};
+                        relationsToCreateSetKG.add(JSON.stringify(defRelKey));
+                    }
 
 
-                    if (entity.type === 'method' && entity.className && entity.filePath) {
-                        const classFullName = `${entity.filePath}::${entity.className}`;
+                    if (entity.type === 'method' && entity.parentClass && entity.fullName && fileNodeRelativeName) {
+                        const classFullName = `${fileNodeRelativeName}::${entity.parentClass}`;
                         const methodRelKey = {from: classFullName, to: entity.fullName, type: 'has_method'};
                         relationsToCreateSetKG.add(JSON.stringify(methodRelKey));
+                    }
+
+                    // Infer 'calls_function' or 'calls_method' relations
+                    if (entity.calls && entity.calls.length > 0 && entity.fullName && fileNodeRelativeName) {
+                        for (const call of entity.calls) {
+                            // For now, assume called entities are within the same file or are global functions/methods.
+                            // A more advanced approach would involve resolving the full path of the called entity.
+                            const calledEntityFullName = `${fileNodeRelativeName}::${call.name}`;
+                            const callRelKey = { from: entity.fullName, to: calledEntityFullName, type: `calls_${call.type}` };
+                            relationsToCreateSetKG.add(JSON.stringify(callRelKey));
+                        }
+                    }
+
+                    // Infer 'implements_interface' relations
+                    if (entity.type === 'class' && entity.implementedInterfaces && entity.implementedInterfaces.length > 0 && entity.fullName && fileNodeRelativeName) {
+                        for (const implementedInterface of entity.implementedInterfaces) {
+                            const interfaceFullName = `${fileNodeRelativeName}::${implementedInterface}`; // Assuming interface is in the same file
+                            const implementsRelKey = { from: entity.fullName, to: interfaceFullName, type: 'implements_interface' };
+                            relationsToCreateSetKG.add(JSON.stringify(implementsRelKey));
+                        }
                     }
                 }
 
@@ -720,36 +773,42 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 switch (operation) {
                     case 'create_entities':
                         if (!args.entities || !Array.isArray(args.entities) || args.entities.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entities' array for 'create_entities' operation.");
-                        const entitiesToCreateOp: any[] = [];
-                        const observationsToUpdateOp: any[] = [];
-                        let createdOpCount = 0;
-                        let updatedOpCount = 0;
+                const entitiesToCreateOp: any[] = [];
+                const observationsToUpdateOp: any[] = [];
+                let createdOpCount = 0;
+                let updatedOpCount = 0;
 
-                        for (const entity of args.entities) {
-                            if (!entity.name || !entity.entityType) throw new McpError(ErrorCode.InvalidParams, "Each entity must have a 'name' and 'entityType'.");
-                            const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.name]);
-                            const existingNode = existingNodes.find((n: any) => n.name === entity.name && n.entityType === entity.entityType);
-                            if (existingNode) {
-                                if (entity.observations && entity.observations.length > 0 && haveObservationsChanged(existingNode.observations, entity.observations)) {
-                                     const newObsToAdd = entity.observations.filter((obs:string) => !(existingNode.observations || []).includes(obs));
-                                     if(newObsToAdd.length > 0) {
-                                        observationsToUpdateOp.push({ entityName: existingNode.name, contents: newObsToAdd });
-                                     }
-                                }
-                            } else {
-                                entitiesToCreateOp.push(entity);
-                            }
+                for (const entity of args.entities) {
+                    if (!isValidEntity(entity)) {
+                        throw new McpError(ErrorCode.InvalidParams, "Each entity must have a valid 'name' and 'entityType' of type string.");
+                    }
+                    const entityName: string = entity.name!;
+                    const entityType: string = entity.entityType!;
+                    const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
+                    const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === entityType);
+                    if (existingNode) {
+                        if (entity.observations && entity.observations.length > 0 && haveObservationsChanged(existingNode.observations, entity.observations)) {
+                             const newObsToAdd = entity.observations.filter((obs:string) => !(existingNode.observations || []).includes(obs));
+                             if(newObsToAdd.length > 0) {
+                                observationsToUpdateOp.push({ entityName: existingNode.name, contents: newObsToAdd });
+                             }
                         }
-                        if (entitiesToCreateOp.length > 0) {
-                            const creationRes = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateOp);
-                            createdOpCount = Array.isArray(creationRes) ? creationRes.length : 0;
-                        }
-                        if (observationsToUpdateOp.length > 0) {
-                            const updateRes = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateOp);
-                            updatedOpCount = Array.isArray(updateRes) ? updateRes.length : 0;
-                        }
-                        resultData = { message: `Create entities operation: ${createdOpCount} created, ${updatedOpCount} updated.`, details: { created: entitiesToCreateOp, updated_observations_for: observationsToUpdateOp.map(o=>o.entityName) } };
-                        break;
+                    } else {
+                        entitiesToCreateOp.push(entity);
+                    }
+                }
+
+                if (entitiesToCreateOp.length > 0) {
+                    const creationRes = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateOp);
+                    createdOpCount = Array.isArray(creationRes) ? creationRes.length : 0;
+                }
+                if (observationsToUpdateOp.length > 0) {
+                    const updateRes = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateOp);
+                    updatedOpCount = Array.isArray(updateRes) ? updateRes.length : 0;
+                }
+                resultData = { message: `Create entities operation: ${createdOpCount} created, ${updatedOpCount} updated.`, details: { created: entitiesToCreateOp, updated_observations_for: observationsToUpdateOp.map(o=>o.entityName) } };
+
+                break;
                     case 'create_relations':
                         if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'create_relations' operation.");
                          args.relations.forEach((relation: any) => {
@@ -918,7 +977,11 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         layoutDirection: args.layout_direction || 'TD',
                         depth: args.depth || 2,
                         includeLegend: args.include_legend !== false,
-                        groupByDirectory: args.group_by_directory || false
+                        groupByDirectory: args.group_by_directory || false,
+                        maxNodes: args.max_nodes,
+                        maxEdges: args.max_edges,
+                        excludeImports: args.exclude_imports,
+                        excludeRelationTypes: args.exclude_relation_types
                     };
                      mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
                         agent_id,
@@ -931,7 +994,11 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         layoutDirection: args.layout_direction || 'TD',
                         depth: args.depth || 2,
                         includeLegend: args.include_legend !== false,
-                        groupByDirectory: args.group_by_directory || false
+                        groupByDirectory: args.group_by_directory || false,
+                        maxNodes: args.max_nodes,
+                        maxEdges: args.max_edges,
+                        excludeImports: args.exclude_imports,
+                        excludeRelationTypes: args.exclude_relation_types
                     };
                     mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
                         agent_id,

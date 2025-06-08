@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { JsonlStorageManager } from '../storage/JsonlStorageManager.js';
 import { EventStore, KnowledgeGraphEvent } from '../storage/EventStore.js';
 import { IndexManager } from '../storage/IndexManager.js';
-// import { LRUCache } from 'lru-cache'; // Not used directly, but this.cache might use it
+// import { LRUCache }s from 'lru-cache'; // Not used directly, but this.cache might use it
 import { randomUUID } from 'crypto';
 import { QueryEngine, QueryAST } from '../query/QueryEngine.js'; // Import QueryAST
 import { FuzzySearchEngine } from '../search/FuzzySearchEngine.js';
@@ -13,6 +13,7 @@ import { EntityResolver } from '../ai/EntityResolver.js';
 import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
 
 export class KnowledgeGraphManagerV2 {
     private jsonlStorage: JsonlStorageManager;
@@ -24,7 +25,7 @@ export class KnowledgeGraphManagerV2 {
     private entityResolver: EntityResolver;
     private nlpQueryProcessor: NLPQueryProcessor;
     private geminiService?: GeminiIntegrationService;
-    private readonly MAX_PROMPT_GRAPH_LENGTH = 15000; // Max chars for graph representation in prompt
+    private readonly MAX_PROMPT_GRAPH_LENGTH = 150000; // Max chars for graph representation in prompt
 
     constructor(rootPath?: string, geminiService?: GeminiIntegrationService) {
         if (!rootPath) {
@@ -372,25 +373,35 @@ export class KnowledgeGraphManagerV2 {
         const queryEngineResult = await this.queryEngine.executeQuery(ast, agentId);
         console.log(`[KGManagerV2.searchNodes] QueryEngine result count: ${queryEngineResult.nodes.length}`);
         
-        // Fuzzy search part
-        const allGraphNodesRaw = await this.jsonlStorage.readAllLines(this.getAgentNodesPath(agentId));
-        const activeGraphNodes = allGraphNodesRaw.filter((n:any) => n && !n.deleted);
-        
-        let fuzzyResultsIds: string[] = [];
-        if (query && query.trim() !== "") { // Only run fuzzy search if there's a query term
-            this.fuzzySearchEngine.indexForFuzzySearch(activeGraphNodes);
-            fuzzyResultsIds = this.fuzzySearchEngine.search(query); // Fuzzy search uses the original raw query string
-            console.log(`[KGManagerV2.searchNodes] Fuzzy search found IDs: ${fuzzyResultsIds.length}`);
-        } else {
-            console.log(`[KGManagerV2.searchNodes] Skipping fuzzy search due to empty or whitespace query.`);
-        }
-        
-        const combinedNodeIds = new Set<string>();
-        queryEngineResult.nodes.forEach((n: any) => { if(n && n.id) combinedNodeIds.add(n.id); });
-        fuzzyResultsIds.forEach(id => combinedNodeIds.add(id));
+        let finalNodes = queryEngineResult.nodes; // Start with nodes filtered by QueryEngine
 
-        const finalNodes = activeGraphNodes.filter((node: any) => node && node.id && combinedNodeIds.has(node.id));
-        console.log(`[KGManagerV2.searchNodes] Combined and filtered node count: ${finalNodes.length}`);
+        // Only apply fuzzy search if the original query was a simple search (not complex key:value pairs)
+        // and if the queryEngine didn't return specific results (meaning it was a simple search or no exact matches)
+        if (ast.type === 'simple_search' && query && query.trim() !== "") {
+            const allGraphNodesRaw = await this.jsonlStorage.readAllLines(this.getAgentNodesPath(agentId));
+            const activeGraphNodes = allGraphNodesRaw.filter((n:any) => n && !n.deleted);
+            
+            this.fuzzySearchEngine.indexForFuzzySearch(activeGraphNodes);
+            const fuzzyResultsIds = this.fuzzySearchEngine.search(query); // Fuzzy search uses the original raw query string
+            console.log(`[KGManagerV2.searchNodes] Fuzzy search found IDs: ${fuzzyResultsIds.length}`);
+
+            const fuzzyNodes = activeGraphNodes.filter((node: any) => node && node.id && fuzzyResultsIds.includes(node.id));
+            
+            // Combine fuzzy results with query engine results, prioritizing query engine results
+            const combinedNodeIds = new Set<string>();
+            finalNodes.forEach((n: any) => { if(n && n.id) combinedNodeIds.add(n.id); });
+            fuzzyNodes.forEach((n: any) => { if(n && n.id) combinedNodeIds.add(n.id); });
+
+            finalNodes = activeGraphNodes.filter((node: any) => node && node.id && combinedNodeIds.has(node.id));
+            console.log(`[KGManagerV2.searchNodes] Combined (QueryEngine + Fuzzy) node count: ${finalNodes.length}`);
+
+        } else if (ast.type === 'parsed_complex_search') {
+            // If it was a complex search, the queryEngineResult.nodes are already the final, precise results.
+            // No need for fuzzy search or further combination.
+            console.log(`[KGManagerV2.searchNodes] Complex search, using QueryEngine results directly. Final node count: ${finalNodes.length}`);
+        } else {
+            console.log(`[KGManagerV2.searchNodes] No fuzzy search applied. Final node count: ${finalNodes.length}`);
+        }
 
         const mappedResult = finalNodes.map((node: any) => {
             return {
@@ -447,8 +458,8 @@ export class KnowledgeGraphManagerV2 {
                 const nodesForPrompt = graphData.nodes.map(n => ({
                     id: n.id, name: n.name, entityType: n.entityType,
                     observations: n.observations?.slice(0, 3).map((o: string) => o.substring(0, 70) + (o.length > 70 ? '...' : '')) // Limit obs count and length
-                })).slice(0, 50); // Limit number of nodes in prompt
-                const relationsForPrompt = graphData.relations.slice(0,50); // Limit relations
+                })).slice(0, 200); // Limit number of nodes in prompt
+                const relationsForPrompt = graphData.relations.slice(0,200); // Limit relations
                 graphRepresentation = JSON.stringify({nodes: nodesForPrompt, relations: relationsForPrompt}, null, 2);
             }
             console.log(`[KGManagerV2.queryNaturalLanguage] Graph Representation for Gemini (length: ${graphRepresentation.length}): ${graphRepresentation.substring(0, 300)}...`);
@@ -486,9 +497,12 @@ Supported operations and their 'args' structure:
      - 'obs:<text_to_contain_in_observations>' (e.g., obs:authenticate) - can be repeated for multiple observation conditions.
      - 'id:<exact_node_id>'
      - 'limit:<number>'
+     - 'defined_in_file_path:<file_path>' (e.g., defined_in_file_path:src/database/memory_manager.ts) - use this to find entities defined within a specific file.
+     - 'parent_class_full_name:<class_full_name>' (e.g., parent_class_full_name:src/database/memory_manager.ts::MemoryManager) - use this to find methods/properties of a specific class.
    - Combine multiple key:value pairs with spaces. Values with spaces should be double-quoted, e.g., file:"path with spaces/file.ts".
    - Example: "entityType:function file:src/utils.ts obs:format"
    - Example: "name:controller limit:5"
+   - Example: "entityType:method parent_class_full_name:src/database/memory_manager.ts::MemoryManager"
 
 2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
    - Use for fetching specific nodes if their exact names are known from the NLQ.
@@ -510,10 +524,11 @@ Natural Language Query: "${naturalLanguageQuery}"
 Instructions for translation:
 1. Analyze the NLQ and choose the most appropriate "operation".
 2. If using 'search_nodes', formulate the "query" string using the specified key:value pairs. Be precise.
-3. If the NLQ implies exact names, consider 'open_nodes'.
-4. If the NLQ is about relationships or paths, use 'graph_traversal'.
-5. If the query is very broad and asks for the entire graph, use 'read_graph'.
-6. If the NLQ cannot be reasonably translated to one of these operations or if necessary information (like a start node for traversal) is missing and cannot be inferred, return:
+3. If the NLQ asks for "public" or "private" methods or properties, ensure to add 'obs:public' or 'obs:private' to the 'search_nodes' query arguments.
+4. If the NLQ implies exact names, consider 'open_nodes'.
+5. If the NLQ is about relationships or paths, use 'graph_traversal'.
+6. If the query is very broad and asks for the entire graph, use 'read_graph'.
+7. If the NLQ cannot be reasonably translated to one of these operations or if necessary information (like a start node for traversal) is missing and cannot be inferred, return:
    { "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }
 
 Translate the above Natural Language Query into the structured JSON format. Provide ONLY the JSON object.
@@ -797,9 +812,9 @@ If no new relations can be confidently inferred, return an empty array [].
         ) || null;
     }
 
-    async generateMermaidGraph(agentId: string, options: { query?: string; layoutDirection?: string; depth?: number; includeLegend?: boolean; groupByDirectory?: boolean, maxNodes?: number, maxEdges?: number }): Promise<string> {
+    async generateMermaidGraph(agentId: string, options: { query?: string; layoutDirection?: string; depth?: number; includeLegend?: boolean; groupByDirectory?: boolean, maxNodes?: number, maxEdges?: number, excludeImports?: string[], excludeRelationTypes?: string[] }): Promise<string> {
         console.log(`[KGManagerV2.generateMermaidGraph] Agent: ${agentId}, Options:`, options);
-        const { query, layoutDirection = 'TD', includeLegend = true, groupByDirectory = false, maxNodes = 100, maxEdges = 200 } = options;
+        const { query, layoutDirection = 'TD', includeLegend = true, groupByDirectory = false, maxNodes = 100, maxEdges = 200, excludeImports, excludeRelationTypes } = options;
         
         let graphNodes: any[] = [];
         let graphRelations: any[] = [];
@@ -824,6 +839,31 @@ If no new relations can be confidently inferred, return an empty array [].
             graphRelations = Array.isArray(fullGraph.relations) ? fullGraph.relations.slice(0, maxEdges) : [];
             if (graphNodes.length === 0) return `graph ${layoutDirection}\n    A["Knowledge graph is empty for agent ${agentId}"]`;
         }
+
+        // Apply filtering for unwanted imports and relations
+        if (excludeImports && excludeImports.length > 0) {
+            const excludeImportSet = new Set(excludeImports.map(imp => createCanonicalAbsPathKey(imp)));
+            const originalRelationsCount = graphRelations.length;
+            graphRelations = graphRelations.filter(rel => {
+                if (rel.relationType === 'imports_file' || rel.relationType === 'imports_module') {
+                    const toNode = graphNodes.find(n => n.id === rel.toNodeId);
+                    if (toNode && toNode.name) {
+                        // Check if the canonical path of the imported node is in the exclude list
+                        return !excludeImportSet.has(createCanonicalAbsPathKey(toNode.name));
+                    }
+                }
+                return true;
+            });
+            console.log(`[KGManagerV2.generateMermaidGraph] Filtered out ${originalRelationsCount - graphRelations.length} import relations.`);
+        }
+
+        if (excludeRelationTypes && excludeRelationTypes.length > 0) {
+            const excludeRelationTypeSet = new Set(excludeRelationTypes);
+            const originalRelationsCount = graphRelations.length;
+            graphRelations = graphRelations.filter(rel => !excludeRelationTypeSet.has(rel.relationType));
+            console.log(`[KGManagerV2.generateMermaidGraph] Filtered out ${originalRelationsCount - graphRelations.length} relations by type.`);
+        }
+
         console.log(`[KGManagerV2.generateMermaidGraph] Visualizing ${graphNodes.length} nodes and ${graphRelations.length} relations.`);
 
         let mermaid = `graph ${layoutDirection}\n`;
@@ -844,7 +884,7 @@ If no new relations can be confidently inferred, return an empty array [].
             directory: ['([', '])'],
             function: ['(', ')'],
             class: ['{{', '}}'],
-            interface: ['<', '>'],
+            interface: ['[', ']'],
             module: ['{{', '}}'],
             variable: ['(', ')'],
             default: ['[', ']']

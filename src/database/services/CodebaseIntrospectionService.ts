@@ -34,9 +34,9 @@ export interface ExtractedImport {
 
 // MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export';
-    name: string;
-    fullName: string;
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'unknown';
+    name?: string; // Made optional
+    fullName?: string; // Made optional
     signature?: string; // e.g., "function process(data: string): number"
     startLine: number;
     endLine: number;
@@ -51,6 +51,8 @@ export interface ExtractedCodeEntity {
     containingDirectory: string; // NEW: Relative path of the containing directory
     className?: string; // Redundant? parentClass is better. Keep for now for compatibility.
     metadata?: any;
+    calls?: Array<{ name: string; type: 'function' | 'method' | 'unknown'; }>; // New property
+    accessibility?: 'public' | 'private' | 'protected' | null; // New property for method/property accessibility
 }
 
 

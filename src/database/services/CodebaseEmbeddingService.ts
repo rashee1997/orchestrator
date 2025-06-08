@@ -96,6 +96,50 @@ export class CodebaseEmbeddingService {
         this.vectorDb = vectorDbConnection;
     }
 
+    /**
+     * Deletes embeddings related to specified file paths from vector and metadata tables.
+     * @param filePaths Array of relative file paths to delete embeddings for.
+     * @param vectorTable Name of the vector table.
+     * @param metadataTable Name of the metadata table.
+     * @returns Number of deleted embeddings.
+     */
+    public async cleanUpEmbeddingsByFilePaths(
+        agentId: string, // Add agentId as a parameter
+        filePaths: string[],
+        vectorTable: string = 'codebase_embeddings_vec_idx',
+        metadataTable: string = 'codebase_embeddings'
+    ): Promise<{ deletedCount: number; deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> }> { // Change return type to object with deletedCount and deletedEmbeddings
+        if (!agentId) {
+            throw new Error("Agent ID is required for cleanup.");
+        }
+        if (!filePaths || filePaths.length === 0) {
+            throw new Error("No file paths provided for cleanup.");
+        }
+
+        const placeholders = filePaths.map(() => '?').join(',');
+        const selectSql = `SELECT embedding_id, file_path_relative, chunk_text FROM ${metadataTable} WHERE file_path_relative IN (${placeholders})`;
+        const embeddingsToDelete = this.vectorDb.prepare(selectSql).all(...filePaths) as Array<{ embedding_id: string; file_path_relative: string; chunk_text: string }>;
+
+        let deletedCount = 0;
+        const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+
+        for (const embedding of embeddingsToDelete) {
+            try {
+                this.vectorDb.prepare(`DELETE FROM ${vectorTable} WHERE embedding_id = ?`).run(embedding.embedding_id);
+                this.vectorDb.prepare(`DELETE FROM ${metadataTable} WHERE embedding_id = ?`).run(embedding.embedding_id);
+                deletedCount++;
+                deletedEmbeddings.push({
+                    file_path_relative: embedding.file_path_relative,
+                    chunk_text: embedding.chunk_text
+                });
+            } catch (error) {
+                console.error(`Failed to delete embedding ${embedding.embedding_id}:`, error);
+            }
+        }
+
+        return { deletedCount, deletedEmbeddings };
+    }
+
     private generateChunkHash(text: string): string {
         return crypto.createHash('sha256').update(text).digest('hex');
     }
@@ -246,8 +290,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         const functionCodeMap = new Map<string, string>();
         codeEntities.forEach(entity => {
             if (entity.type === 'function' || entity.type === 'method') {
-                 const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
-                 functionCodeMap.set(entity.name, entityCode);
+                if (typeof entity.name === 'string' && entity.name.length > 0) {
+                    const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
+                    functionCodeMap.set(entity.name, entityCode);
+                }
             }
         });
 
@@ -257,26 +303,26 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                 if ((strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
                     (strategy === 'class' && entity.type === 'class') ||
                     (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type))) {
-                    
+
                     const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
-                    
+
                     if (entityCode.trim()) { // Only add non-empty chunks
-                        
+
                         // Get graph context (entity relationships)
                         let graphContext = "/* Code structure context */\n";
                         try {
-                             const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
-                             if (relations && relations.length > 0) {
-                                 const relatedNodes = relations.map((r: any) => r.name);
-                                 graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
-                             }
-                             if(entity.parentClass) {
+                            const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                            if (relations && relations.length > 0) {
+                                const relatedNodes = relations.map((r: any) => r.name);
+                                graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                            }
+                            if (entity.parentClass) {
                                 graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
-                             }
-                        } catch(e) {
+                            }
+                        } catch (e) {
                             console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
                         }
-                        
+
                         // Implement Recursive Chunking by finding internal function calls
                         let recursiveContext = '/* Recursively included function calls */\n';
                         if (entity.type === 'function' || entity.type === 'method') {
@@ -289,7 +335,7 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
 
                         // Combine all context with the actual code
                         const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
-                        
+
                         // Create a chunk for the raw code with all its context
                         chunks.push({
                             chunk_text: codeWithFullContext,
@@ -304,27 +350,57 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                             }
                         });
 
-                        // Check if a summary for this code chunk already exists
-                        const originalCodeHash = this.generateChunkHash(entityCode);
-                        let summary = await this.getExistingSummaryByHash(originalCodeHash, 'codebase_embeddings');
+                        // Only summarize if it's a named function/method/class/interface
+                        const shouldSummarize = (
+                            entity.name &&
+                            !entity.name.startsWith('anonymous_function_at_line_') && // Exclude anonymous functions
+                            ['function', 'method', 'class', 'interface'].includes(entity.type) // Only these types
+                        );
 
-                        if (!summary) {
-                            // If no summary exists, generate a new one
-                            summary = await this.geminiService.summarizeCodeChunk(codeWithFullContext, entity.type, language);
-                        }
+                        if (shouldSummarize) {
+                            // Check if a summary for this code chunk already exists
+                            const originalCodeHash = this.generateChunkHash(entityCode);
+                            let summary = await this.getExistingSummaryByHash(originalCodeHash, 'codebase_embeddings');
 
-                        chunks.push({
-                            chunk_text: summary,
-                            entity_name: entity.name,
-                            metadata: {
-                                type: `${entity.type}_summary`,
-                                original_code_hash: originalCodeHash,
-                                startLine: entity.startLine,
-                                endLine: entity.endLine,
-                                fullName: entity.fullName,
-                                language: 'en' // Summary is in English
+                            if (!summary) {
+                                // If no summary exists, generate a new one
+                                summary = await this.geminiService.summarizeCodeChunk(codeWithFullContext, entity.type, language);
                             }
-                        });
+
+                            // Always try to extract a concise name from the summary for all summarized entities
+                            let conciseSummaryName = entity.name; // Default to original entity name
+                            try {
+                                const nameExtractionPrompt = `Extract a very concise (2-5 words) and meaningful name for the following code summary. The name should describe the primary purpose of the code. Do not include any punctuation.
+Summary: ${summary}
+Concise Name:`;
+                                const nameResult = await this.geminiService.askGemini(nameExtractionPrompt, this.geminiService.summarizationModelName);
+                                let extractedName = nameResult.content[0].text ?? '';
+                                extractedName = extractedName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+                                extractedName = extractedName.replace(/\s+/g, '_');
+
+                                if (extractedName.length > 0) {
+                                    conciseSummaryName = extractedName;
+                                } else {
+                                    conciseSummaryName = `${entity.name}_summary`; // Fallback
+                                }
+                            } catch (nameError: any) {
+                                console.warn(`Failed to extract concise name from summary for ${entity.name}:`, nameError);
+                                conciseSummaryName = `${entity.name}_summary`; // Fallback on error
+                            }
+
+                            chunks.push({
+                                chunk_text: summary,
+                                entity_name: conciseSummaryName, // Use the concise name
+                                metadata: {
+                                    type: `${entity.type}_summary`,
+                                    original_code_hash: originalCodeHash,
+                                    startLine: entity.startLine,
+                                    endLine: entity.endLine,
+                                    fullName: entity.fullName,
+                                    language: 'en'
+                                }
+                            });
+                        }
                     }
                 }
             }
