@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS codebase_embeddings (
     agent_id TEXT NOT NULL,
     file_path_relative TEXT NOT NULL, 
     entity_name TEXT, -- Optional: e.g., function name, class name if chunking by entity
-    chunk_text TEXT NOT NULL, -- The actual code/text chunk that was embedded
+    chunk_text TEXT NOT NULL, -- The actual code/text chunk that was embedded (will now always be original code)
+    ai_summary_text TEXT, -- New: Stores the AI-generated summary for code entities
     model_name TEXT NOT NULL, -- e.g., "models/text-embedding-004"
     chunk_hash TEXT UNIQUE, -- SHA256 hash of chunk_text to detect changes and avoid re-embedding
     created_timestamp_unix INTEGER NOT NULL,
@@ -47,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_file_path ON codebase_embe
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_entity_name ON codebase_embeddings (entity_name);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_model_name ON codebase_embeddings (model_name);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_chunk_hash ON codebase_embeddings (chunk_hash);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_ai_summary ON codebase_embeddings (ai_summary_text);
 
 -- Note: The VSS virtual table and triggers will be created programmatically
 -- in the vector_db.ts file after checking if the VSS module is available

@@ -11,6 +11,11 @@ function escapeMinimalMarkdown(text: string | number | boolean | null | undefine
     return stringText.replace(/([*_])/g, '\\$1');
 }
 
+// Helper to indent multi-line block content
+function indentBlockContent(content: string, indentString: string = '    '): string {
+    return content.split('\n').map(line => `${indentString}${line}`).join('\n');
+}
+
 // Function to present a value:
 // - isCodeOrId: if true, wraps in single backticks (for IDs, paths, etc.)
 // - isBlockContent: if true, wraps in triple backticks (for messages, stack traces)
@@ -96,7 +101,7 @@ export function formatObjectToMarkdown(obj: any, indentLevel: number = 0): strin
         }
         obj.forEach((item) => {
             if (typeof item === 'object' && item !== null && !(item instanceof Date)) {
-                md += `${indent}- Array Item:\n`; // Indicate it's an item in an array
+                // For nested objects/arrays within an array, directly indent them
                 md += formatObjectToMarkdown(item, indentLevel + 1);
             } else {
                 // Array items are formatted as simple values
@@ -333,12 +338,17 @@ export function formatToolExecutionLogToMarkdown(log: any): string {
     if (log.task_id) md += `  - **Task ID:** ${formatValue(log.task_id, {isCodeOrId: true})}\n`;
     if (log.subtask_id) md += `  - **Subtask ID:** ${formatValue(log.subtask_id, {isCodeOrId: true})}\n`;
 
+    // Add a separator for better visual distinction of arguments/output
+    md += `\n---\n\n`;
+
     const args = log.arguments_parsed || log.arguments_json;
     if (args) {
-        md += `  - **Arguments:**\n${formatJsonToMarkdownCodeBlock(args).split('\n').map(line => `    ${line}`).join('\n')}\n`;
+        md += `  - **Arguments:**\n\n`; // Extra newline for separation
+        md += `${formatJsonToMarkdownCodeBlock(args).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
     }
     if (log.output_summary) {
-        md += `  - **Output Summary:**\n${formatValue(log.output_summary, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n`;
+        md += `  - **Output Summary:**\n\n`; // Extra newline for separation
+        md += `${formatValue(log.output_summary, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
     }
     if (log.execution_start_timestamp_iso) md += `  - **Started:** ${new Date(log.execution_start_timestamp_iso).toLocaleString()}\n`;
     if (log.execution_end_timestamp_iso) md += `  - **Ended:** ${new Date(log.execution_end_timestamp_iso).toLocaleString()}\n`;
@@ -390,18 +400,25 @@ export function formatErrorLogToMarkdown(log: any): string {
     let md = `- **Error ID:** ${formatValue(log.error_log_id, { isCodeOrId: true })}\n`;
     md += `  - **Agent ID:** ${formatValue(log.agent_id, { isCodeOrId: true })}\n`;
     md += `  - **Type:** ${formatValue(log.error_type)}\n`;
-    md += `  - **Message:**\n${formatValue(log.error_message, { isBlockContent: true, lang: 'text' }).split('\n').map(line => `    ${line}`).join('\n')}\n`; // Indent block
     md += `  - **Severity:** ${formatValue(log.severity)}\n`;
     md += `  - **Status:** ${formatValue(log.status)}\n`;
-    if (log.associated_plan_id) md += `  - **Plan ID:** ${formatValue(log.associated_plan_id, { isCodeOrId: true })}\n`;
-    if (log.associated_task_id) md += `  - **Task ID:** ${formatValue(log.associated_task_id, { isCodeOrId: true })}\n`;
-    if (log.associated_subtask_id) md += `  - **Subtask ID:** ${formatValue(log.associated_subtask_id, { isCodeOrId: true })}\n`;
-    if (log.associated_tool_execution_log_id) md += `  - **Tool Log ID:** ${formatValue(log.associated_tool_execution_log_id, { isCodeOrId: true })}\n`;
+    if (log.associated_plan_id) md += `  - **Plan ID:** ${formatValue(log.associated_plan_id, {isCodeOrId: true})}\n`;
+    if (log.associated_task_id) md += `  - **Task ID:** ${formatValue(log.associated_task_id, {isCodeOrId: true})}\n`;
+    if (log.associated_subtask_id) md += `  - **Subtask ID:** ${formatValue(log.associated_subtask_id, {isCodeOrId: true})}\n`;
+    if (log.associated_tool_execution_log_id) md += `  - **Tool Log ID:** ${formatValue(log.associated_tool_execution_log_id, {isCodeOrId: true})}\n`;
     if (log.source_file) {
         md += `  - **Source:** ${formatValue(log.source_file, { isCodeOrId: true })}${log.source_line ? ` (Line: ${log.source_line})` : ''}\n`;
     }
+
+    // Add a separator for better visual distinction of message/stack trace
+    md += `\n---\n\n`;
+
+    md += `  - **Message:**\n\n`; // Extra newline for separation
+    md += `${formatValue(log.error_message, { isBlockContent: true, lang: 'text' }).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
+    
     if (log.stack_trace) {
-        md += `  - **Stack Trace:**\n${formatValue(log.stack_trace, { isBlockContent: true }).split('\n').map(line => `    ${line}`).join('\n')}\n`; // Indent block
+        md += `  - **Stack Trace:**\n\n`; // Extra newline for separation
+        md += `${formatValue(log.stack_trace, { isBlockContent: true }).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
     }
     if (log.resolution_details) md += `  - **Resolution:** ${formatValue(log.resolution_details)}\n`;
     if (log.error_timestamp_iso) md += `  - **Occurred At:** ${new Date(log.error_timestamp_iso).toLocaleString()}\n`;

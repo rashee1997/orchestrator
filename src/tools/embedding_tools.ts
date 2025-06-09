@@ -7,6 +7,16 @@ import { CodebaseEmbeddingService, ChunkingStrategy } from '../database/services
 import fs from 'fs/promises'; // For checking if path exists
 import path from 'path'; // For path operations
 
+// Define the interface for the chunk result, including the new original_code_snippet
+interface CodeChunkResult {
+    chunk_text: string; // Now always contains the original code
+    ai_summary_text?: string | null; // New: Contains the AI-generated summary
+    file_path_relative: string;
+    entity_name: string | null;
+    score: number;
+    metadata?: Record<string, any> | null;
+}
+
 export const embeddingToolDefinitions = [
     {
         name: 'ingest_codebase_embeddings',
@@ -32,6 +42,12 @@ Output is Markdown formatted.`,
                     items: { type: 'string' },
                     nullable: true,
                     description: "Optional: Array of relative file paths to restrict the search to."
+                },
+                exclude_chunk_types: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    nullable: true,
+                    description: "Optional: Array of chunk types to exclude from the results (e.g., 'full_file', 'function_summary')."
                 }
             },
             required: ['agent_id', 'query_text'],
@@ -215,22 +231,27 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for query_codebase_embeddings.");
             }
-            // No specific schema in `schemas` object yet for this, so inline or add to `schemas`
-            // For now, assuming basic validation or direct use of args.
-
-            const { query_text, top_k, target_file_paths } = args;
+            const { query_text, top_k, target_file_paths, exclude_chunk_types } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
             try {
-                const results = await embeddingService.retrieveSimilarCodeChunks(
+                let results: CodeChunkResult[] = await embeddingService.retrieveSimilarCodeChunks(
                     agent_id,
                     query_text,
                     top_k || 5,
                     target_file_paths
                 );
 
+                // Filter results based on exclude_chunk_types
+                if (exclude_chunk_types && Array.isArray(exclude_chunk_types) && exclude_chunk_types.length > 0) {
+                    results = results.filter(res => {
+                        const chunkType = res.metadata?.type;
+                        return chunkType ? !exclude_chunk_types.includes(chunkType) : true;
+                    });
+                }
+
                 if (results.length === 0) {
-                    return { content: [{ type: 'text', text: formatSimpleMessage(`No similar code chunks found for query: "${query_text}"`, "Embedding Query Results") }] };
+                    return { content: [{ type: 'text', text: formatSimpleMessage(`No similar code chunks found for query: "${query_text}" (after filtering).`, "Embedding Query Results") }] };
                 }
 
                 let md = `## Similar Code Chunks for Query: "${query_text}" (Top ${results.length})\n\n`;
@@ -240,18 +261,29 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     if (res.entity_name) {
                         md += `- **Entity:** \`${res.entity_name}\`\n`;
                     }
-                    if (res.metadata) { // res.metadata is already an object or null
+                    if (res.metadata) {
                         try {
-                            const metadata = res.metadata; // Directly use res.metadata
+                            const metadata = res.metadata;
+                            if (metadata.full_file_path) {
+                                md += `- **Full Path:** \`${metadata.full_file_path}\`\n`;
+                            }
                             if (metadata.startLine && metadata.endLine) {
                                 md += `- **Lines:** ${metadata.startLine}-${metadata.endLine}\n`;
                             }
                             if (metadata.type) {
                                 md += `- **Chunk Type:** ${metadata.type}\n`;
                             }
-                        } catch (e) { /* ignore metadata access error, though less likely now */ }
+                        } catch (e) { /* ignore metadata access error */ }
                     }
-                    md += `**Content Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'text')}\n---\n`;
+                    if (res.metadata && res.metadata.type && res.metadata.type.endsWith('_summary')) {
+                        md += `**Original Code Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'typescript')}\n`;
+                        if (res.ai_summary_text) {
+                            md += `**AI Summary:**\n${formatJsonToMarkdownCodeBlock(res.ai_summary_text, 'text')}\n`;
+                        }
+                    } else {
+                        md += `**Content Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'text')}\n`;
+                    }
+                    md += `---\n`;
                 });
                 return { content: [{ type: 'text', text: md }] };
 

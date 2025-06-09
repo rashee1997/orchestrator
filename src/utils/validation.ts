@@ -64,16 +64,22 @@ export const schemas = {
             agent_id: { type: 'string', description: "Agent ID associated with the embeddings." },
             query_text: { type: 'string', description: "The text to find similar code chunks for." },
             top_k: { type: 'number', default: 5, minimum: 1, description: "Number of top results to return." },
-            target_file_paths: {
-                type: 'array',
-                items: { type: 'string' },
-                nullable: true,
-                description: "Optional: Array of relative file paths to restrict the search to."
-            }
+                target_file_paths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    nullable: true,
+                    description: "Optional: Array of relative file paths to restrict the search to."
+                },
+                exclude_chunk_types: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    nullable: true,
+                    description: "Optional: Array of chunk types to exclude from the results (e.g., 'full_file', 'function_summary')."
+                }
+            },
+            required: ['agent_id', 'query_text'],
+            additionalProperties: false,
         },
-        required: ['agent_id', 'query_text'],
-        additionalProperties: false,
-    },
     cleanUpEmbeddings: {
         type: 'object',
         properties: {

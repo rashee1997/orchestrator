@@ -246,24 +246,28 @@ export class TypeScriptParser extends BaseLanguageParser {
 
                     case AST_NODE_TYPES.MethodDefinition:
                         const methodCalls: Array<{ name: string; type: 'function' | 'method' | 'unknown'; }> = [];
-                        const collectMethodCalls = (n: any) => {
-                            if (n.type === AST_NODE_TYPES.CallExpression && n.callee) {
-                                if (n.callee.type === AST_NODE_TYPES.Identifier) {
-                                    methodCalls.push({ name: n.callee.name, type: 'function' });
-                                } else if (n.callee.type === AST_NODE_TYPES.MemberExpression && n.callee.property.type === AST_NODE_TYPES.Identifier) {
-                                    methodCalls.push({ name: n.callee.property.name, type: 'method' });
-                                }
-                            }
-                            for (const key in n) {
-                                if (n.hasOwnProperty(key) && typeof n[key] === 'object' && n[key] !== null) {
-                                    if (Array.isArray(n[key])) {
-                                        n[key].forEach(collectMethodCalls);
-                                    } else {
-                                        collectMethodCalls(n[key]);
-                                    }
-                                }
-                            }
-                        };
+const collectMethodCalls = (n: any) => {
+    if (n && n.type === AST_NODE_TYPES.CallExpression && n.callee) {
+        if (n.callee && typeof n.callee === 'object' && n.callee !== null && 'type' in n.callee && n.callee.type === AST_NODE_TYPES.Identifier) {
+            methodCalls.push({ name: n.callee.name, type: 'function' });
+        } else if (
+            n.callee && typeof n.callee === 'object' && n.callee !== null &&
+            n.callee.type === AST_NODE_TYPES.MemberExpression &&
+            n.callee.property && typeof n.callee.property === 'object' && n.callee.property !== null && 'type' in n.callee.property && n.callee.property.type === AST_NODE_TYPES.Identifier
+        ) {
+            methodCalls.push({ name: n.callee.property.name, type: 'method' });
+        }
+    }
+    for (const key in n) {
+        if (n.hasOwnProperty(key) && typeof n[key] === 'object' && n[key] !== null) {
+            if (Array.isArray(n[key])) {
+                n[key].forEach(collectMethodCalls);
+            } else {
+                collectMethodCalls(n[key]);
+            }
+        }
+    }
+};
                         collectMethodCalls(node.value.body); // Only traverse the method body for calls
 
                         entities.push({
