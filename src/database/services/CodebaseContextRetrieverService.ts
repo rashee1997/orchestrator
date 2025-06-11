@@ -295,7 +295,17 @@ export class CodebaseContextRetrieverService {
             const textResponse = result.content[0].text ?? '';
             const jsonMatch = textResponse.match(/\[.*?\]/s);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                let jsonString = jsonMatch[0];
+                // Remove single-line comments (// ...) that might be present in the JSON string
+                jsonString = jsonString.replace(/\/\/.*$/gm, '');
+                // Remove trailing commas before closing brackets to fix invalid JSON
+                jsonString = jsonString.replace(/,(\s*[\]\}])/g, '$1');
+                try {
+                    return JSON.parse(jsonString);
+                } catch (parseError) {
+                    console.error("JSON parse error in _extractKeywordsAndEntitiesWithGemini. JSON string was:", jsonString);
+                    throw parseError;
+                }
             }
         } catch (error) {
             console.error("Error extracting keywords with Gemini:", error);

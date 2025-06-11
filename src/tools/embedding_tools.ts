@@ -110,14 +110,17 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
-            let resultCounts: { 
-                newEmbeddingsCount: number; 
-                reusedEmbeddingsCount: number; 
-                deletedEmbeddingsCount: number; 
-                newEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
-                reusedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
-                deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>; 
+            let resultCounts: {
+                newEmbeddingsCount: number;
+                reusedEmbeddingsCount: number;
+                deletedEmbeddingsCount: number;
+                newEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
+                reusedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
+                deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
                 aiSummary?: string;
+                embeddingRequestCount?: number; // Add new fields
+                embeddingRetryCount?: number; // Add new fields
+                totalTimeMs?: number; // Add new fields
             };
 
             if (is_directory) {
@@ -147,6 +150,17 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}\n` +
                 `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n` +
                 `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}\n`;
+
+            // Add embedding metrics to the output
+            if (resultCounts.embeddingRequestCount !== undefined) {
+                detailedOutput += `- Embedding API Requests: ${resultCounts.embeddingRequestCount}\n`;
+            }
+            if (resultCounts.embeddingRetryCount !== undefined) {
+                detailedOutput += `- Embedding API Retries: ${resultCounts.embeddingRetryCount}\n`;
+            }
+            if (resultCounts.totalTimeMs !== undefined) {
+                detailedOutput += `- Total Time Taken: ${resultCounts.totalTimeMs}ms\n`;
+            }
 
             if (!disable_ai_output_summary) {
                 if (resultCounts.newEmbeddings && resultCounts.newEmbeddings.length > 0) {

@@ -119,7 +119,7 @@ export class GeminiIntegrationService {
         return this.genAI;
     }
 
-    async askGemini(query: string, modelName?: string, systemInstruction?: string): Promise<{ content: Part[] }> {
+    async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[]): Promise<{ content: Part[], confidenceScore?: number }> {
         // Use the getter to access apiKeys, which will lazily load them if not already loaded
         const availableApiKeys = this.apiKeys;
 
@@ -174,7 +174,14 @@ export class GeminiIntegrationService {
                     console.warn("Gemini response text is empty or undefined. Full result:", result);
                 }
 
-                return { content: [{ text: responseText }] };
+                let confidenceScore: number | undefined;
+                if (contextResults && contextResults.length > 0) {
+                    // Calculate a simple average of relevance scores for confidence
+                    const totalScore = contextResults.reduce((sum, ctx) => sum + (ctx.relevanceScore || 0), 0);
+                    confidenceScore = totalScore / contextResults.length;
+                }
+
+                return { content: [{ text: responseText }], confidenceScore };
 
             } catch (error: any) {
                 lastError = error; // Store the current error
@@ -312,7 +319,7 @@ One-sentence summary:
                 const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
                 if (jsonMatch && jsonMatch[1]) {
                     jsonString = jsonMatch[1];
-                } else if (!(jsonString.startsWith("{") && jsonString.endsWith("}"))) { 
+                } else if (!(jsonString.startsWith("{") && jsonString.endsWith("}"))) {
                     const firstBrace = jsonString.indexOf('{');
                     const lastBrace = jsonString.lastIndexOf('}');
                     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -321,6 +328,8 @@ One-sentence summary:
                         throw new Error("Response from Gemini was not in a recognizable JSON format.");
                     }
                 }
+                // Remove single-line comments (// ...) that might be present in the JSON string
+                jsonString = jsonString.replace(/\/\/.*$/gm, '');
                 const parsedResponse = JSON.parse(jsonString);
                 return {
                     entities: parsedResponse.entities || [],
@@ -483,7 +492,7 @@ One-sentence summary:
             retrievedCodeContextString = `Error retrieving codebase context: ${contextError.message}`;
         }
         
-        const metaPrompt = `
+const metaPrompt = `
 You are an expert AI prompt engineer and senior software architect. Your task is to take a raw user prompt, perform a deep and mandatory analysis of the provided codebase context, and transform the prompt into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to execute the user's request with precision.
 
 **CRITICAL INSTRUCTION: Your primary function is to analyze the "Retrieved Codebase Context". Do not ignore it. Your entire output must be based on how the user's request interacts with this existing code.**
@@ -492,9 +501,10 @@ You are an expert AI prompt engineer and senior software architect. Your task is
 1.  **Interpret Goal:** Define the user's \`overall_goal\` by interpreting their prompt in light of the provided code context.
 2.  **Analyze Context:** In the \`codebase_context_summary_by_ai\` field, summarize how the existing code influences the plan. Is this a new feature, a modification, or a refactor? Which files are most relevant?
 3.  **Identify Key Entities:** In the \`relevant_code_elements_analyzed\` field, list the specific functions, classes, and files from the context that will be directly impacted or are crucial for implementation.
-4.  **Decompose Tasks:** Break down the goal into a sequence of actionable development tasks. Each task in \`decomposed_tasks\` must be concrete and grounded in the codebase (e.g., "Modify the 'processPayment' function in 'payment_service.ts' to handle gift cards.").
+5.  **Decompose Tasks:** Break down the goal into a sequence of actionable development tasks. Each task in \`decomposed_tasks\` must be concrete and grounded in the codebase (e.g., "Modify the 'processPayment' function in 'payment_service.ts' to handle gift cards.").
 5.  **Suggest Dependencies:** For each decomposed task, list any prerequisite tasks in the \`suggested_dependencies\` field. This is crucial for creating a valid execution plan.
 6.  **Suggest Validation:** Propose a \`suggested_validation_steps\` for the agent to perform after completing the plan, such as running specific tests or querying the knowledge graph to confirm changes.
+7.  **Suggest New File Paths:** If the task involves refactoring or modularizing large code files, suggest new file paths for the modularized components in a new \`suggested_new_file_paths\` field.
 
 **Output Schema:**
 You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema. Do not include any text or markdown outside the JSON block.
@@ -527,6 +537,10 @@ You MUST output the refined prompt strictly as a JSON object, adhering exactly t
   "suggested_validation_steps": [
       "Run all unit tests in 'tests/payment_service.test.ts'.",
       "Query the knowledge graph to ensure the new 'GiftCardService' node is correctly linked to the 'PaymentService'."
+  ],
+  "suggested_new_file_paths": [
+    "path/to/new_module1.ts",
+    "path/to/new_module2.ts"
   ],
   "confidence_in_refinement_score": "High | Medium | Low",
   "refinement_error_message": "Null if successful, or an error message if refinement failed."
@@ -576,6 +590,8 @@ Now, provide the JSON object only.
 
 
                 return refinedPrompt;
+
+
 
             } catch (parseError: any) {
                 console.error(`Error parsing Gemini API JSON response for prompt refinement. Raw response: "${textResponse}". Parse error:`, parseError);
@@ -647,7 +663,7 @@ Now, provide the JSON object only.
                 'decomposed_tasks', 'key_entities_identified', 
                 'implicit_assumptions_made_by_refiner', 'explicit_constraints_from_prompt',
                 'desired_output_characteristics_inferred', 'suggested_context_analysis_for_agent',
-                'relevant_code_elements_analyzed' // Ensure this new field is parsed if stored as JSON string
+                'relevant_code_elements_analyzed'
             ];
             for (const field of fieldsToParse) {
                 const jsonField = result[field]; 

@@ -79,92 +79,119 @@ export type ChunkingStrategy = 'file' | 'function' | 'class' | 'auto';
 const DEFAULT_EMBEDDING_MODEL = "models/text-embedding-004";
 const VECTOR_FLOAT_SIZE = 4; // Bytes per float32
 
-    class EmbeddingCache {
-        private cache: Map<string, {
-            chunk_text: string;
-            entity_name?: string | null;
-            vector: number[];
-            vector_dimensions: number;
-            model_name: string;
-            chunk_hash: string;
-            metadata?: any;
-            created_timestamp_unix: number;
-        }>;
-        private vectorDb: Database;
-        private vectorTable: string = 'codebase_embeddings_vec_idx';
-        private metadataTable: string = 'codebase_embeddings';
-        private cacheFilePath: string = 'embedding_cache.json';
+interface CachedChunk {
+    embedding_id: string; // This will be the chunk_hash
+    agent_id: string;
+    chunk_text: string;
+    entity_name?: string | null;
+    vector: number[];
+    vector_dimensions: number;
+    model_name: string;
+    chunk_hash: string;
+    metadata?: any;
+    created_timestamp_unix: number;
+    file_path_relative: string;
+    full_file_path: string;
+}
 
-        constructor(vectorDb: Database) {
-            this.cache = new Map();
-            this.vectorDb = vectorDb;
-        }
+class EmbeddingCache {
+    private vectorDb: Database;
+    private vectorTable: string = 'codebase_embeddings_vec_idx';
+    private metadataTable: string = 'codebase_embeddings';
+    private cacheFilePath: string = 'embedding_cache.json';
 
-        // Add a chunk and its embedding to the cache
-        public addChunk = async (
-            agentId: string,
-            chunk_text: string,
-            entity_name: string | null,
-            vector: number[],
-            vector_dimensions: number,
-            model_name: string,
-            chunk_hash: string,
-            metadata: any,
-            created_timestamp_unix: number,
-            file_path_relative: string,
-            full_file_path: string // Add new parameter for full file path
-        ) => {
-            try {
-                // Check if embedding already exists in DB
-                const existing = this.vectorDb.prepare(`SELECT 1 FROM ${this.metadataTable} WHERE chunk_hash = ?`).get(chunk_hash);
-                if (existing) {
-                    // Already stored, skip
-                    return;
-                }
-                // Store vector embedding
-                await storeVecEmbedding(chunk_hash, vector, this.vectorTable);
-                // Store metadata
-                await insertEmbeddingMetadata(this.vectorDb, this.metadataTable, {
-                    embedding_id: chunk_hash,
-                    agent_id: agentId,
-                    file_path_relative: file_path_relative,
-                    entity_name: entity_name,
-                    chunk_text: chunk_text,
-                    ai_summary_text: metadata?.ai_summary_text || null,
-                    model_name: model_name,
-                    chunk_hash: chunk_hash,
-                    created_timestamp_unix: created_timestamp_unix,
-                    metadata_json: metadata ? JSON.stringify(metadata) : null
-                });
-            } catch (error) {
-                console.error(`Failed to store chunk ${chunk_hash} directly to DB:`, error);
+    constructor(vectorDb: Database) {
+        this.vectorDb = vectorDb;
+        // Ensure the cache file exists on initialization
+        this.initializeCacheFile();
+    }
+
+    private async initializeCacheFile(): Promise<void> {
+        try {
+            await fs.access(this.cacheFilePath);
+        } catch (error: any) {
+            if (error.code === 'ENOENT') {
+                await fs.writeFile(this.cacheFilePath, JSON.stringify([], null, 2), 'utf-8');
+            } else {
+                console.error('Failed to access or initialize embedding cache file:', error);
             }
         }
+    }
 
-    // Flush cache to DB in batch
+    // Add a chunk and its embedding to the cache file
+    public addChunk = async (
+        agentId: string,
+        chunk_text: string,
+        entity_name: string | null,
+        vector: number[],
+        vector_dimensions: number,
+        model_name: string,
+        chunk_hash: string,
+        metadata: any,
+        created_timestamp_unix: number,
+        file_path_relative: string,
+        full_file_path: string
+    ) => {
+        try {
+            // Check if embedding already exists in DB
+            const existingInDb = this.vectorDb.prepare(`SELECT 1 FROM ${this.metadataTable} WHERE chunk_hash = ?`).get(chunk_hash);
+            if (existingInDb) {
+                // Already stored in DB, skip adding to cache file
+                return;
+            }
+
+            // Read existing cache, add new chunk, and write back
+            const currentCache: CachedChunk[] = await this.loadCacheState();
+            const newChunk: CachedChunk = {
+                embedding_id: chunk_hash,
+                agent_id: agentId,
+                chunk_text: chunk_text,
+                entity_name: entity_name,
+                vector: vector,
+                vector_dimensions: vector_dimensions,
+                model_name: model_name,
+                chunk_hash: chunk_hash,
+                metadata: metadata,
+                created_timestamp_unix: created_timestamp_unix,
+                file_path_relative: file_path_relative,
+                full_file_path: full_file_path
+            };
+
+            // Check if the chunk already exists in the cache file to prevent duplicates
+            const existingInCache = currentCache.some(c => c.chunk_hash === chunk_hash);
+            if (!existingInCache) {
+                currentCache.push(newChunk);
+                await fs.writeFile(this.cacheFilePath, JSON.stringify(currentCache, null, 2), 'utf-8');
+            }
+        } catch (error) {
+            console.error(`Failed to add chunk ${chunk_hash} to cache file:`, error);
+        }
+    }
+
+    // Flush cache from JSON file to DB in batch
     public async flushToDb(): Promise<number> {
-        if (this.cache.size === 0) {
+        const chunksToFlush: CachedChunk[] = await this.loadCacheState();
+        if (chunksToFlush.length === 0) {
             return 0;
         }
 
         let flushedCount = 0;
-        const flushedHashes: string[] = []; // Track successfully flushed hashes
+        const remainingChunks: CachedChunk[] = []; // Chunks that failed to flush or were already in DB
 
-        for (const [chunkHash, data] of this.cache.entries()) {
+        for (const data of chunksToFlush) {
             try {
                 // Check if embedding already exists in DB before flushing
-                const existing = this.vectorDb.prepare(`SELECT 1 FROM ${this.metadataTable} WHERE chunk_hash = ?`).get(chunkHash);
+                const existing = this.vectorDb.prepare(`SELECT 1 FROM ${this.metadataTable} WHERE chunk_hash = ?`).get(data.chunk_hash);
                 if (existing) {
-                    // Already stored, skip
-                    flushedHashes.push(chunkHash); // Mark as flushed even if skipped (already in DB)
+                    // Already stored, skip and don't add to remainingChunks
                     continue;
                 }
 
-                await storeVecEmbedding(chunkHash, data.vector, this.vectorTable);
+                await storeVecEmbedding(data.chunk_hash, data.vector, this.vectorTable);
                 await insertEmbeddingMetadata(this.vectorDb, this.metadataTable, {
-                    embedding_id: chunkHash,
-                    agent_id: data.metadata.agent_id,
-                    file_path_relative: data.metadata.file_path_relative,
+                    embedding_id: data.chunk_hash,
+                    agent_id: data.agent_id,
+                    file_path_relative: data.file_path_relative,
                     entity_name: data.entity_name,
                     chunk_text: data.chunk_text,
                     ai_summary_text: data.metadata?.ai_summary_text || null,
@@ -174,58 +201,49 @@ const VECTOR_FLOAT_SIZE = 4; // Bytes per float32
                     metadata_json: data.metadata ? JSON.stringify(data.metadata) : null
                 });
                 flushedCount++;
-                flushedHashes.push(chunkHash); // Mark as successfully flushed
             } catch (error) {
-                console.error(`Failed to flush chunk ${chunkHash} to DB:`, error);
+                console.error(`Failed to flush chunk ${data.chunk_hash} to DB:`, error);
+                remainingChunks.push(data); // Keep failed chunks in cache
             }
         }
 
-        // Remove successfully flushed items from cache
-        for (const hash of flushedHashes) {
-            this.cache.delete(hash);
-        }
-        
-        await this.saveCacheState(); // Save updated cache state
+        // Overwrite cache file with remaining (unflushed) chunks
+        await fs.writeFile(this.cacheFilePath, JSON.stringify(remainingChunks, null, 2), 'utf-8');
         return flushedCount;
     }
 
-    // Save cache state to JSON file for resuming
-    public async saveCacheState(): Promise<void> {
-        try {
-            const cacheArray = Array.from(this.cache.entries()).map(([key, value]) => ({ key, value }));
-            await fs.writeFile(this.cacheFilePath, JSON.stringify(cacheArray, null, 2), 'utf-8');
-        } catch (error) {
-            console.error('Failed to save embedding cache state:', error);
-        }
-    }
-
     // Load cache state from JSON file
-    public async loadCacheState(): Promise<void> {
+    public async loadCacheState(): Promise<CachedChunk[]> {
         try {
             const data = await fs.readFile(this.cacheFilePath, 'utf-8');
-            const cacheArray = JSON.parse(data);
-            this.cache = new Map(cacheArray.map((item: any) => [item.key, item.value]));
+            return JSON.parse(data) as CachedChunk[];
         } catch (error: any) {
             if (error.code === 'ENOENT') {
-                // File not found, which is expected on first run
-                this.cache = new Map();
+                // File not found, return empty array (will be created on first add)
+                return [];
             } else {
                 console.error('Failed to load embedding cache state:', error);
-                this.cache = new Map(); // Ensure cache is empty on error
+                return []; // Ensure empty array on error
             }
         }
     }
 
     // Clear cache and delete cache file
     public async clearCache(): Promise<void> {
-        this.cache.clear();
         try {
             await fs.unlink(this.cacheFilePath);
+            await this.initializeCacheFile(); // Re-initialize to create an empty file
         } catch (error: any) {
             if (error.code !== 'ENOENT') { // Ignore file not found error
                 console.error('Failed to delete embedding cache file:', error);
             }
         }
+    }
+
+    // Check if a chunk exists in the cache file (not in DB)
+    public async hasChunkInCache(chunkHash: string): Promise<boolean> {
+        const currentCache: CachedChunk[] = await this.loadCacheState();
+        return currentCache.some(c => c.chunk_hash === chunkHash);
     }
 }
 
@@ -237,6 +255,7 @@ export class CodebaseEmbeddingService {
 
     // New cache instance for live chunk caching
     private embeddingCache: EmbeddingCache;
+    private lastAiCallTimestamp: number = 0; // Timestamp of the last AI call for rate limiting
 
     constructor(memoryManager: MemoryManager, vectorDbConnection: Database) {
         this.memoryManager = memoryManager;
@@ -255,6 +274,23 @@ export class CodebaseEmbeddingService {
     }
 
     /**
+     * Waits to ensure the rate limit for AI calls (10/minute) is not exceeded.
+     * This translates to a minimum of 6 seconds between calls.
+     */
+    private async waitForRateLimit(): Promise<void> {
+        const now = Date.now();
+        const timeSinceLastCall = now - this.lastAiCallTimestamp;
+        const minimumDelay = 6000; // 6 seconds for 10 calls/minute
+
+        if (timeSinceLastCall < minimumDelay) {
+            const timeToWait = minimumDelay - timeSinceLastCall;
+            console.log(`[CodebaseEmbeddingService] Waiting ${timeToWait}ms to respect AI call rate limit.`);
+            await new Promise(resolve => setTimeout(resolve, timeToWait));
+        }
+        this.lastAiCallTimestamp = Date.now(); // Update timestamp after waiting (or immediately if no wait)
+    }
+
+    /**
      * Generates a meaningful entity name for an anonymous code chunk using AI.
      * @param codeChunk The code snippet to name.
      * @param language The programming language of the code.
@@ -264,6 +300,7 @@ export class CodebaseEmbeddingService {
         if (!this.geminiService) {
             return 'anonymous_chunk';
         }
+        await this.waitForRateLimit(); // Wait before making the AI call
         try {
             const prompt = `You are an expert software engineer. Analyze the following code snippet and provide a very concise (2-5 words) and meaningful name that describes its primary purpose or functionality. The name should be suitable for an entity identifier and should not include any punctuation or special characters, only alphanumeric and underscores.
 Code snippet (language: ${language || 'unknown'}):
@@ -374,12 +411,15 @@ Concise Name:`;
         return result ? result.chunk_text : null;
     }
 
-    private async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<Array<{ vector: number[], dimensions: number } | null>> {
-        if (texts.length === 0) return [];
+    private async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<{ embeddings: Array<{ vector: number[], dimensions: number } | null>, requestCount: number, retryCount: number }> {
+        if (texts.length === 0) return { embeddings: [], requestCount: 0, retryCount: 0 };
 
         if (!this.geminiService) {
             throw new Error(`GeminiIntegrationService not available in CodebaseEmbeddingService.`);
         }
+
+        let totalRequests = 0;
+        let totalRetries = 0;
 
         const genAIInstance = this.geminiService.getGenAIInstance();
         if (!genAIInstance) {
@@ -387,8 +427,10 @@ Concise Name:`;
         }
 
         const results: Array<{ vector: number[], dimensions: number } | null> = [];
-        const batchSize = 150; // Increased batch size for better performance
+        const batchSize = 100; // Increased batch size for better performance
         const maxRetries = 2; // Reduced retry attempts
+        const delayBetweenBatches = 7000; // 7 seconds delay between batches
+
 
         for (let i = 0; i < texts.length; i += batchSize) {
             const batchTexts = texts.slice(i, i + batchSize);
@@ -398,9 +440,10 @@ Concise Name:`;
 
             let attempt = 0;
             let success = false;
+            totalRequests++; // Count initial request
             while (attempt <= maxRetries && !success) {
                 try {
-const result = await genAIInstance.models.embedContent({ model: modelName, contents });
+                    const result = await genAIInstance.models.embedContent({ model: modelName, contents });
                     const embeddings = result.embeddings;
 
                     if (embeddings && embeddings.length === batchTexts.length) {
@@ -420,14 +463,15 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                         success = true; // Consider as success to break retry loop
                     }
                 } catch (error: any) {
-                    attempt++;
                     if (error?.message?.includes('429') || error?.message?.includes('Too Many Requests') || (error?.cause && error.cause.message && error.cause.message.includes('429'))) {
+                        attempt++;
+                        totalRetries++; // Count retry
                         if (attempt <= maxRetries) {
                             const backoffTime = 6000 * attempt; // Exponential backoff: 6s, 12s, 18s
                             console.warn(`Received 429 Too Many Requests. Retry attempt ${attempt} after ${backoffTime}ms.`);
                             await new Promise(resolve => setTimeout(resolve, backoffTime));
                         } else {
-                            console.error(`Max retries reached for batch starting at index ${i}. Skipping batch.`);
+                            console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. Skipping batch.`);
                             for (let j = 0; j < batchTexts.length; j++) {
                                 results.push(null);
                             }
@@ -442,10 +486,12 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                     }
                 }
             }
-            // Wait for 7 seconds before the next request to stay within the 10 requests/minute limit
-            await new Promise(resolve => setTimeout(resolve, 7000));
+            // Wait for the specified delay before the next batch request
+            if (i + batchSize < texts.length) { // Only wait if there are more batches
+                 await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+            }
         }
-        return results;
+        return { embeddings: results, requestCount: totalRequests, retryCount: totalRetries };
     }
     
     /**
@@ -561,6 +607,7 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
 
                             if (!summary) {
                                 // If no summary exists, generate a new one
+                                await this.waitForRateLimit(); // Wait before making the AI call
                                 const summarizationPrompt = `You are an expert software engineer. Summarize the following ${entity.type} code snippet focusing only on the main purpose and key functionality. Provide a concise, clear, and relevant summary suitable for a development team review.\n\n${codeWithFullContext}`;
                                 summary = await this.geminiService.summarizeCodeChunk(summarizationPrompt, entity.type, language);
                             }
@@ -613,7 +660,11 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
             deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
             aiSummary?: string;
+            embeddingRequestCount: number; // New field
+            embeddingRetryCount: number; // New field
+            totalTimeMs: number; // New field
         }> {
+            const startTime = Date.now(); // Record start time
             console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
             await this.embeddingCache.loadCacheState(); // Load cache state at the beginning
 
@@ -623,16 +674,23 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                 console.log(`[CodebaseEmbeddingService] File content read successfully. Length: ${fileContent.length}`);
                 if (!fileContent.trim()) {
                     console.log(`Skipping empty file: ${filePath}`);
+                    const endTime = Date.now();
+                    const totalTimeMs = endTime - startTime;
                     return {
                         newEmbeddingsCount: 0,
                         reusedEmbeddingsCount: 0,
                         deletedEmbeddingsCount: 0,
                         newEmbeddings: [],
                         reusedEmbeddings: [],
-                        deletedEmbeddings: []
+                        deletedEmbeddings: [],
+                        embeddingRequestCount: 0,
+                        embeddingRetryCount: 0,
+                        totalTimeMs
                     };
                 }
             } catch (e) {
+                const endTime = Date.now();
+                const totalTimeMs = endTime - startTime;
                 console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
                 return {
                     newEmbeddingsCount: 0,
@@ -640,7 +698,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                     deletedEmbeddingsCount: 0,
                     newEmbeddings: [],
                     reusedEmbeddings: [],
-                    deletedEmbeddings: []
+                    deletedEmbeddings: [],
+                    embeddingRequestCount: 0,
+                    embeddingRetryCount: 0,
+                    totalTimeMs
                 };
             }
 
@@ -661,7 +722,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                         }
                     }
                 }
-                await this.embeddingCache.saveCacheState(); // Save cache state at the end
+                const endTime = Date.now();
+                const totalTimeMs = endTime - startTime;
                 return {
                     newEmbeddingsCount: 0,
                     reusedEmbeddingsCount: 0,
@@ -671,24 +733,53 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                     deletedEmbeddings: existingEmbeddingsForFile.map(e => ({
                         file_path_relative: relativeFilePath,
                         chunk_text: e.chunk_text
-                    }))
+                    })),
+                    embeddingRequestCount: 0,
+                    embeddingRetryCount: 0,
+                    totalTimeMs
                 };
             }
 
             // Filter out chunks already in cache (for resumption)
-            const chunksToEmbed = chunksData.filter(chunk => {
+            const chunksToEmbed: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }> = [];
+            for (const chunk of chunksData) {
                 const chunkHash = this.generateChunkHash(chunk.chunk_text);
-                return !this.embeddingCache['cache'].has(chunkHash); // Access private cache for filtering
-            });
+                if (!(await this.embeddingCache.hasChunkInCache(chunkHash))) {
+                    chunksToEmbed.push(chunk);
+                }
+            }
             console.log(`[CodebaseEmbeddingService] ${chunksToEmbed.length} chunks to embed (after cache filtering).`);
 
 
         const textsToEmbed = chunksToEmbed.map(c => c.chunk_text);
-        const embeddingResultsWithNulls = await this.getEmbeddingsForChunks(textsToEmbed);
+        let embeddingResultsWithNulls = [];
+        let embeddingRequestCount = 0;
+        let embeddingRetryCount = 0;
+        try {
+            const result = await this.getEmbeddingsForChunks(textsToEmbed);
+            embeddingResultsWithNulls = result.embeddings;
+            embeddingRequestCount = result.requestCount;
+            embeddingRetryCount = result.retryCount;
+        } catch (e: unknown) {
+            // If the embedding API fails mid-batch, process all successful results up to the point of failure
+            if (
+                typeof e === 'object' &&
+                e !== null &&
+                'embeddings' in e &&
+                Array.isArray((e as any).embeddings)
+            ) {
+                const err = e as { embeddings: any[]; requestCount?: number; retryCount?: number };
+                embeddingResultsWithNulls = err.embeddings;
+                embeddingRequestCount = err.requestCount || 0;
+                embeddingRetryCount = err.retryCount || 0;
+            } else {
+                throw e;
+            }
+        }
 
         const validResults = embeddingResultsWithNulls
             .map((result, index) => ({ result, index }))
-            .filter(item => item.result !== null);
+            .filter((item): item is { result: { vector: number[]; dimensions: number }; index: number } => item.result !== null);
 
         const embeddingResults = validResults.map(item => item.result);
         const originalIndices = validResults.map(item => item.index); // These indices refer to chunksToEmbed
@@ -729,8 +820,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                 const { vector } = embedding;
                 if (!vector || vector.length === 0) continue;
 
-                // Add chunk and embedding to cache
-                this.embeddingCache.addChunk(
+                // Add chunk and embedding to cache immediately after embedding
+                await this.embeddingCache.addChunk(
                     agentId,
                     chunk.chunk_text,
                     chunk.entity_name || null,
@@ -754,6 +845,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                     chunk_text: chunk.chunk_text
                 });
             }
+        }
+        // If there were fewer results than requested, throw to simulate batch failure
+        if (embeddingResultsWithNulls.length < textsToEmbed.length) {
+            throw new Error('Embedding batch failed partway through.');
         }
 
             // Flush the cache after processing all chunks for the file
@@ -785,6 +880,7 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             let aiSummary = '';
             try {
                 if (this.geminiService && shouldGenerateSummaryForFile) { // Only generate summary if allowed by patterns
+                    await this.waitForRateLimit(); // Wait before making the AI call
                     const response = await this.geminiService.askGemini(
                         `You are an expert software engineer. Provide a sophisticated, detailed, and insightful summary of the embedding ingestion operation for the file "${relativeFilePath}". Include counts of new, reused, and deleted embeddings. Highlight the significance of the changes, potential impacts on the codebase, and any notable patterns or observations. Use clear technical language suitable for a development team review.`
                     );
@@ -795,18 +891,25 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             } catch (e) {
                 console.warn('AI summarizer failed:', e);
             }
-            await this.embeddingCache.saveCacheState(); // Save cache state at the end
 
-            return {
-                newEmbeddingsCount,
-                reusedEmbeddingsCount,
-                deletedEmbeddingsCount,
-                newEmbeddings,
-                reusedEmbeddings,
-                deletedEmbeddings,
-                aiSummary
-            };
-        }
+            const endTime = Date.now();
+            const totalTimeMs = endTime - startTime;
+
+            console.log(`[CodebaseEmbeddingService] Finished embedding generation for file: ${relativeFilePath}. Time taken: ${totalTimeMs}ms. Embedding requests: ${embeddingRequestCount}, retries: ${embeddingRetryCount}`);
+
+             return {
+                 newEmbeddingsCount,
+                 reusedEmbeddingsCount,
+                 deletedEmbeddingsCount,
+                 newEmbeddings,
+                 reusedEmbeddings,
+                 deletedEmbeddings,
+                 aiSummary,
+                 embeddingRequestCount,
+                 embeddingRetryCount,
+                 totalTimeMs
+             };
+         }
 
     public async generateAndStoreEmbeddingsForDirectory(
         agentId: string,
@@ -824,9 +927,13 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
         deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
         aiSummary?: string;
+        totalEmbeddingRequests: number; // New field
+        totalEmbeddingRetries: number; // New field
+        totalTimeMs: number; // New field
     }> {
-        const absoluteProjectRootPath = path.resolve(projectRootPath);
-        const absoluteDirectoryPath = path.resolve(directoryPath);
+   const startTime = Date.now(); // Record start time
+    const absoluteProjectRootPath = path.resolve(projectRootPath);
+    const absoluteDirectoryPath = path.resolve(directoryPath);
 
         const scannedItems = await this.introspectionService.scanDirectoryRecursive(agentId, absoluteDirectoryPath, absoluteProjectRootPath);
         
@@ -835,6 +942,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
         let totalDeletedEmbeddings = 0;
+        let totalEmbeddingRequests = 0; // New counter
+        let totalEmbeddingRetries = 0; // New counter
         const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
@@ -856,6 +965,8 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
                         totalNewEmbeddings += result.newEmbeddingsCount;
                         totalReusedEmbeddings += result.reusedEmbeddingsCount;
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                        totalEmbeddingRequests += result.embeddingRequestCount; // Accumulate counts
+                        totalEmbeddingRetries += result.embeddingRetryCount; // Accumulate counts
                         newEmbeddings.push(...result.newEmbeddings);
                         reusedEmbeddings.push(...result.reusedEmbeddings);
                         deletedEmbeddings.push(...result.deletedEmbeddings);
@@ -871,7 +982,12 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         console.log(`Total new embeddings created for directory ${directoryPath}: ${totalNewEmbeddings}`);
         console.log(`Total reused embeddings for directory ${directoryPath}: ${totalReusedEmbeddings}`);
         console.log(`Total deleted embeddings for directory ${directoryPath}: ${totalDeletedEmbeddings}`);
-        await this.embeddingCache.saveCacheState(); // Save cache state at the end
+        console.log(`Total embedding requests made for directory ${directoryPath}: ${totalEmbeddingRequests}`); // Log total requests
+        console.log(`Total embedding retries attempted for directory ${directoryPath}: ${totalEmbeddingRetries}`); // Log total retries
+
+        const endTime = Date.now();
+        const totalTimeMs = endTime - startTime;
+        console.log(`[CodebaseEmbeddingService] Finished embedding generation for directory: ${directoryPath}. Total time taken: ${totalTimeMs}ms.`);
 
         return {
             newEmbeddingsCount: totalNewEmbeddings,
@@ -880,7 +996,10 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
             newEmbeddings,
             reusedEmbeddings,
             deletedEmbeddings,
-            aiSummary: ''
+            aiSummary: '',
+            totalEmbeddingRequests: totalEmbeddingRequests, // Include in return
+            totalEmbeddingRetries: totalEmbeddingRetries, // Include in return
+            totalTimeMs: totalTimeMs // Include in return
         };
     }
 
@@ -892,7 +1011,7 @@ const result = await genAIInstance.models.embedContent({ model: modelName, conte
         vectorTable: string = 'codebase_embeddings_vec_idx',
         metadataTable: string = 'codebase_embeddings'
     ): Promise<Array<{ chunk_text: string; ai_summary_text?: string | null; file_path_relative: string; entity_name: string | null; score: number; metadata?: Record<string, any> | null }>> {
-        const embeddingResult = (await this.getEmbeddingsForChunks([queryText]))[0];
+        const embeddingResult = (await this.getEmbeddingsForChunks([queryText])).embeddings[0];
         if (!embeddingResult || !embeddingResult.vector) {
             throw new Error("Failed to generate embedding for query text.");
         }

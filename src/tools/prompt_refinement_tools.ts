@@ -80,7 +80,21 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
 
     if (prompt.relevant_code_elements_analyzed_parsed && prompt.relevant_code_elements_analyzed_parsed.length > 0) {
         md += `\n**Relevant Code Elements Analyzed:**\n`;
-        md += formatJsonToMarkdownCodeBlock(prompt.relevant_code_elements_analyzed_parsed) + "\n";
+        prompt.relevant_code_elements_analyzed_parsed.forEach((element: any) => {
+            md += `*   **${element.element_type.charAt(0).toUpperCase() + element.element_type.slice(1)}:** \`${element.element_path}\` (Entity: \`${element.entity_name}\`)\n`;
+            if (element.relevance_notes) {
+                md += `    *   **Notes:** ${element.relevance_notes}\n`;
+            }
+        });
+        md += "\n";
+    }
+
+    if (prompt.suggested_code_diffs_parsed && prompt.suggested_code_diffs_parsed.length > 0) {
+        md += `\n**Suggested Code Diffs:**\n`;
+        prompt.suggested_code_diffs_parsed.forEach((diff: string) => {
+            md += `\`\`\`diff\n${diff}\n\`\`\`\n`;
+        });
+        md += "\n";
     }
     
     if (prompt.confidence_in_refinement_score) {

@@ -521,7 +521,15 @@ export const schemas = {
                 properties: {
                     topKEmbeddings: { type: 'number', default: 3 },
                     topKKgResults: { type: 'number', default: 3 },
-                    embeddingScoreThreshold: { type: 'number', default: 0.5 }
+                    embeddingScoreThreshold: { type: 'number', default: 0.5 },
+                    kgQueryDepth: { type: 'number', description: "Optional: Depth for Knowledge Graph queries.", nullable: true },
+                    includeFileContent: { type: 'boolean', description: "Optional: Whether to include full file content for retrieved files.", nullable: true },
+                    targetFilePaths: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: "Optional: Array of relative file paths to restrict context retrieval to.",
+                        nullable: true
+                    }
                 },
                 additionalProperties: false,
                 nullable: true
