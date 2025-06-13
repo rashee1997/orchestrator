@@ -137,7 +137,8 @@ export class MemoryManager {
         this.geminiPlannerService = new GeminiPlannerService(this.geminiIntegrationService, this);
         
         // Create CodebaseEmbeddingService after GeminiIntegrationService is ready
-        this.codebaseEmbeddingService = new CodebaseEmbeddingService(this, this.vectorDb as any);
+        this.codebaseEmbeddingService = new CodebaseEmbeddingService(this, this.vectorDb as any, this.geminiIntegrationService);
+
         
         // Finally, create CodebaseContextRetrieverService after all dependencies are ready
         this.codebaseContextRetrieverService = new CodebaseContextRetrieverService(this);

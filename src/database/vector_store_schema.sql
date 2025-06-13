@@ -15,10 +15,11 @@ CREATE TABLE IF NOT EXISTS vector_tables_registry (
 CREATE TABLE IF NOT EXISTS codebase_embeddings (
     embedding_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
-    file_path_relative TEXT NOT NULL, 
+    file_path_relative TEXT NOT NULL,
     entity_name TEXT, -- Optional: e.g., function name, class name if chunking by entity
     chunk_text TEXT NOT NULL, -- The actual code/text chunk that was embedded (will now always be original code)
     ai_summary_text TEXT, -- New: Stores the AI-generated summary for code entities
+    vector_dimensions INTEGER NOT NULL, -- Added vector_dimensions column
     model_name TEXT NOT NULL, -- e.g., "models/text-embedding-004"
     chunk_hash TEXT UNIQUE, -- SHA256 hash of chunk_text to detect changes and avoid re-embedding
     created_timestamp_unix INTEGER NOT NULL,

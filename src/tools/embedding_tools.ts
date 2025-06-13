@@ -3,7 +3,8 @@ import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
-import { CodebaseEmbeddingService, ChunkingStrategy } from '../database/services/CodebaseEmbeddingService.js'; // Import the service
+import { CodebaseEmbeddingService } from '../database/services/CodebaseEmbeddingService.js'; // Import the service
+import { ChunkingStrategy } from '../types/codebase_embeddings.js'; // Correct import for ChunkingStrategy
 import fs from 'fs/promises'; // For checking if path exists
 import path from 'path'; // For path operations
 

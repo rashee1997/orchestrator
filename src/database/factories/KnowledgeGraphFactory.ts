@@ -61,8 +61,9 @@ export class KnowledgeGraphFactory {
         } else {
             console.log('Using SQLite-based Knowledge Graph Manager');
             // Instantiate CodebaseEmbeddingService and pass it
-            const embeddingService = new CodebaseEmbeddingService(memoryManager, memoryManager.getVectorDb() as import('better-sqlite3').Database);
+            const embeddingService = new CodebaseEmbeddingService(memoryManager, memoryManager.getVectorDb() as import('better-sqlite3').Database, memoryManager.getGeminiIntegrationService());
             this.instance = new KnowledgeGraphManager(memoryManager.getDbService(), memoryManager.getGeminiIntegrationService(), embeddingService);
+
         }
 
         return this.instance;
