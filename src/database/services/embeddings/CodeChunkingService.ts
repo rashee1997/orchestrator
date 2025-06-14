@@ -75,87 +75,153 @@ export class CodeChunkingService {
             }
         });
 
-        if ((strategy === 'function' || strategy === 'class' || strategy === 'auto') && codeEntities.length > 0) {
-            for (const entity of codeEntities) {
-                if ((strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
-                    (strategy === 'class' && entity.type === 'class') ||
-                    (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type))) {
+        const entitiesToProcess = codeEntities.filter(entity => {
+            return (strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
+                   (strategy === 'class' && entity.type === 'class') ||
+                   (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type));
+        }).filter(entity => {
+            // Filter out entities without a fullName as they cannot be stored in the map
+            if (entity.fullName === undefined) {
+                return false;
+            }
+            const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
+            return entityCode.trim();
+        });
 
-                    const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
+        const namingRequests: Array<{ codeChunk: string; language: string | undefined }> = [];
+        const summarizationRequests: Array<{ codeChunk: string; entityType: string; language: string }> = [];
+        const entityCodeMap = new Map<string, string>(); // To store entityCode for later use
 
-                    if (entityCode.trim()) {
-                        let graphContext = "/* Code structure context */\n";
-                        try {
-                            const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
-                            if (relations && relations.length > 0) {
-                                const relatedNodes = relations.map((r: any) => r.name);
-                                graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
-                            }
-                            if (entity.parentClass) {
-                                graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
-                            }
-                        } catch (e) {
-                            console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+        for (const entity of entitiesToProcess) {
+            const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
+            entityCodeMap.set(entity.fullName!, entityCode); // Store by full name for easy retrieval
+
+            if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
+                namingRequests.push({ codeChunk: entityCode, language: language });
+            }
+
+            if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
+                const originalCodeHash = this.generateChunkHash(entityCode);
+                const existingSummary = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                
+                if (!existingSummary) {
+                    // Prepare prompt for summarization
+                    let graphContext = "/* Code structure context */\n";
+                    try {
+                        const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                        if (relations && relations.length > 0) {
+                            const relatedNodes = relations.map((r: any) => r.name);
+                            graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
                         }
-
-                        let recursiveContext = '/* Recursively included function calls */\n';
-                        if (entity.type === 'function' || entity.type === 'method') {
-                            for (const [funcName, funcCode] of functionCodeMap.entries()) {
-                                if (funcName !== entity.name && entityCode.includes(funcName)) {
-                                    recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
-                                }
-                            }
+                        if (entity.parentClass) {
+                            graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
                         }
+                    } catch (e) {
+                        console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+                    }
 
-                        const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
-
-                        let entityNameForChunk = entity.name;
-                        if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
-                            entityNameForChunk = await this.aiProvider.generateMeaningfulEntityName(entityCode, language);
-                        }
-
-                        chunks.push({
-                            chunk_text: codeWithFullContext,
-                            entity_name: entityNameForChunk,
-                            metadata: {
-                                type: entity.type,
-                                startLine: entity.startLine,
-                                endLine: entity.endLine,
-                                signature: entity.signature,
-                                fullName: entity.fullName,
-                                language: language
+                    let recursiveContext = '/* Recursively included function calls */\n';
+                    if (entity.type === 'function' || entity.type === 'method') {
+                        for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                            if (funcName !== entity.name && entityCode.includes(funcName)) {
+                                recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
                             }
-                        });
-
-                        if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
-                            const originalCodeHash = this.generateChunkHash(entityCode);
-                            let summary = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
-
-                            if (!summary) {
-                                const summarizationPrompt = `You are an expert software engineer. Summarize the following ${entity.type} code snippet focusing only on the main purpose and key functionality. Provide a concise, clear, and relevant summary suitable for a development team review.\n\n${codeWithFullContext}`;
-                                summary = await this.aiProvider.geminiService.summarizeCodeChunk(summarizationPrompt, entity.type, language);
-                            }
-
-                            let summaryEntityName = `${entity.name}_summary`;
-                            if (entity.name.startsWith('anonymous_function_at_line_')) {
-                                summaryEntityName = await this.aiProvider.generateMeaningfulEntityName(summary, 'text');
-                            }
-
-                            chunks.push({
-                                chunk_text: entityCode,
-                                ai_summary_text: summary,
-                                entity_name: summaryEntityName,
-                                metadata: {
-                                    type: `${entity.type}_summary`,
-                                    original_code_hash: originalCodeHash,
-                                    startLine: entity.startLine,
-                                    endLine: entity.endLine,
-                                    fullName: entity.fullName,
-                                    language: language
-                                }
-                            });
                         }
                     }
+                    const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+                    summarizationRequests.push({ codeChunk: codeWithFullContext, entityType: entity.type, language: language! });
+                }
+            }
+        }
+
+        const meaningfulNames = namingRequests.length > 0 ? await this.aiProvider.batchGenerateMeaningfulEntityNames(namingRequests) : [];
+        const summaries = summarizationRequests.length > 0 ? await this.aiProvider.batchSummarizeCodeChunks(summarizationRequests) : [];
+
+        let nameIndex = 0;
+        let summaryIndex = 0;
+
+        if (entitiesToProcess.length > 0) {
+            for (const entity of entitiesToProcess) {
+                // Ensure entity.fullName is defined before retrieving from the map
+                const entityCode = entity.fullName !== undefined ? entityCodeMap.get(entity.fullName) : undefined;
+                if (entityCode === undefined) {
+                    // This should not happen if the filtering and setting logic is correct,
+                    // but adding a check for safety.
+                    console.warn(`Could not retrieve entity code for ${entity.fullName} from map.`);
+                    continue; // Skip this entity if code is not found
+                }
+
+                let graphContext = "/* Code structure context */\n";
+                try {
+                    const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                    if (relations && relations.length > 0) {
+                        const relatedNodes = relations.map((r: any) => r.name);
+                        graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                    }
+                    if (entity.parentClass) {
+                        graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
+                    }
+                } catch (e) {
+                    console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+                }
+
+                let recursiveContext = '/* Recursively included function calls */\n';
+                if (entity.type === 'function' || entity.type === 'method') {
+                    for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                        if (funcName !== entity.name && entityCode.includes(funcName)) {
+                            recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
+                        }
+                    }
+                }
+
+                const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+
+                let entityNameForChunk = entity.name;
+                if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
+                    entityNameForChunk = meaningfulNames[nameIndex++] || entity.name;
+                }
+
+                chunks.push({
+                    chunk_text: codeWithFullContext,
+                    entity_name: entityNameForChunk,
+                    metadata: {
+                        type: entity.type,
+                        startLine: entity.startLine,
+                        endLine: entity.endLine,
+                        signature: entity.signature,
+                        fullName: entity.fullName,
+                        language: language
+                    }
+                });
+
+                if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
+                    const originalCodeHash = this.generateChunkHash(entityCode);
+                    let summary = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+
+                    if (!summary) {
+                        summary = summaries[summaryIndex++] || 'Could not generate summary.';
+                    }
+
+                    let summaryEntityName = `${entity.name}_summary`;
+                    if (entity.name.startsWith('anonymous_function_at_line_')) {
+                        // If the original entity name was anonymous, generate a meaningful name for the summary too
+                        // This would ideally be batched as well, but for simplicity, we'll use the already generated meaningful name if available
+                        summaryEntityName = `${entityNameForChunk}_summary`;
+                    }
+
+                    chunks.push({
+                        chunk_text: entityCode,
+                        ai_summary_text: summary,
+                        entity_name: summaryEntityName,
+                        metadata: {
+                            type: `${entity.type}_summary`,
+                            original_code_hash: originalCodeHash,
+                            startLine: entity.startLine,
+                            endLine: entity.endLine,
+                            fullName: entity.fullName,
+                            language: language
+                        }
+                    });
                 }
             }
         }

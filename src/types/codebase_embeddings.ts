@@ -2,15 +2,16 @@ export interface CodebaseEmbeddingRecord {
     embedding_id: string;
     agent_id: string;
     file_path_relative: string;
-    entity_name?: string | null;
+    entity_name: string | null;
     chunk_text: string;
-    ai_summary_text?: string | null;
+    ai_summary_text: string | undefined;
     vector_blob: Buffer;
     vector_dimensions: number;
     model_name: string;
     chunk_hash?: string;
     created_timestamp_unix: number;
-    metadata_json?: string;
+    metadata_json?: string | null;
+    full_file_path?: string; // Added this property
 }
 
 export type ChunkingStrategy = 'file' | 'function' | 'class' | 'auto';
@@ -19,7 +20,7 @@ export interface CachedChunk {
     embedding_id: string;
     agent_id: string;
     chunk_text: string;
-    entity_name?: string | null;
+    entity_name: string | null;
     vector: number[];
     vector_dimensions: number;
     model_name: string;

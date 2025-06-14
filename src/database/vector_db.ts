@@ -167,7 +167,7 @@ export async function closeVectorStoreDatabase(): Promise<void> {
     }
 }
 
-export async function storeVecEmbedding(embedding_id: string, vector: number[], tableName: string = 'codebase_embeddings_vec_idx'): Promise<void> {
+export function storeVecEmbedding(embedding_id: string, vector: number[], tableName: string = 'codebase_embeddings_vec_idx'): void {
     console.log(`[vector_db] Storing vector embedding with ID: ${embedding_id} in table: ${tableName}`);
     const db = getVectorStoreDb();
     const vectorString = `[${vector.join(',')}]`;
@@ -176,6 +176,16 @@ export async function storeVecEmbedding(embedding_id: string, vector: number[], 
             `INSERT OR REPLACE INTO ${tableName} (embedding_id, embedding) VALUES (?, ?);`
         ).run(embedding_id, vectorString);
         console.log(`[vector_db] Successfully stored vector for ID: ${embedding_id}`);
+
+        // Add a read-back check immediately after insertion
+        const checkStmt = db.prepare(`SELECT embedding_id FROM ${tableName} WHERE embedding_id = ?;`);
+        const checkResult = checkStmt.get(embedding_id);
+        if (checkResult) {
+            console.log(`[vector_db] Read-back successful: Embedding with ID ${checkResult.embedding_id} found immediately after insertion.`);
+        } else {
+            console.error(`[vector_db] Read-back FAILED: Embedding with ID ${embedding_id} NOT found immediately after insertion.`);
+        }
+
     } catch (error) {
         console.error(`[vector_db] Error storing vector for ID ${embedding_id} in table ${tableName}:`, error);
         throw error;

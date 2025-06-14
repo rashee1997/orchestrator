@@ -88,9 +88,13 @@ export const schemas = {
                 type: 'array',
                 items: { type: 'string' },
                 description: "Array of relative file paths to delete embeddings for."
+            },
+            project_root_path: {
+                type: 'string',
+                description: "The absolute root path of the project. Used to correctly resolve and normalize file paths for deletion."
             }
         },
-        required: ['agent_id', 'file_paths'],
+        required: ['agent_id', 'file_paths', 'project_root_path'],
         additionalProperties: false,
     },
     ingestCodebaseEmbeddings: {

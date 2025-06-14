@@ -120,104 +120,123 @@ export class GeminiIntegrationService {
     }
 
     async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[]): Promise<{ content: Part[], confidenceScore?: number }> {
-        // Use the getter to access apiKeys, which will lazily load them if not already loaded
-        const availableApiKeys = this.apiKeys;
+        const results = await this.batchAskGemini([query], modelName, systemInstruction, contextResults);
+        if (results.length > 0) {
+            return results[0];
+        }
+        throw new Error("Failed to get response from Gemini.");
+    }
 
-        // Explicitly check if API keys are available before proceeding
+    /**
+     * New method to send multiple prompts to Gemini in batches.
+     * @param queries An array of query strings.
+     * @param modelName The name of the model to use.
+     * @param systemInstruction Optional system instruction for all prompts in the batch.
+     * @param contextResults Optional retrieved code context for all prompts in the batch.
+     * @returns A promise that resolves to an array of Gemini responses.
+     */
+    public async batchAskGemini(queries: string[], modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[]): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+        if (queries.length === 0) return [];
+
+        const availableApiKeys = this.apiKeys;
         if (availableApiKeys.length === 0) {
             throw new GeminiApiNotInitializedError("Gemini API key(s) not configured. Please set GEMINI_API_KEY environment variable(s).");
         }
 
         const modelToUse = modelName || this.defaultAskModelName;
-        let retries = 0;
-        const maxRetries = availableApiKeys.length;
-        let lastError: any = null; // Store the last error encountered
+        const batchSize = 10; // Adjust based on Gemini's batching capabilities and rate limits
+        const delayBetweenBatches = 7000; // 7 seconds to respect rate limits
 
-        while (retries < maxRetries) {
-            try {
-                // Re-initialize genAI with the current API key for each attempt
-                this.genAI = new GoogleGenAI({ apiKey: availableApiKeys[this.currentApiKeyIndex] });
+        const allResults: Array<{ content: Part[], confidenceScore?: number }> = [];
 
-                const request: any = { // Use 'any' to dynamically add systemInstruction
-                    model: modelToUse,
-                    contents: [], // Initialize contents array
-                    safetySettings: this.safetySettings,
-                    generationConfig: this.generationConfig,
-                };
+        for (let i = 0; i < queries.length; i += batchSize) {
+            const batchQueries = queries.slice(i, i + batchSize);
+            let attempt = 0;
+            const maxRetries = availableApiKeys.length;
+            let success = false;
+            let lastError: any = null;
 
-                // Add system instruction if provided
-                if (systemInstruction) {
-                    request.contents.push({
-                        role: "system",
-                        parts: [{ text: systemInstruction }]
-                    });
-                }
-
-                // Add retrieved context if available
-if (contextResults && contextResults.length > 0) {
-    const formattedContext = this.formatRetrievedContextForPrompt(contextResults);
-    request.contents.push({
-        role: "user", // Or "model" depending on how you want Gemini to perceive this context
-        parts: [{ text: formattedContext }]
-    });
-}
-
-                // Add the main user query
-                request.contents.push({ role: "user", parts: [{ text: query }] });
-
-                const result = await this.genAI!.models.generateContent(request);
-
-                let responseText = "";
+            while (attempt < maxRetries && !success) {
                 try {
-                    if (result && Array.isArray(result.candidates) && result.candidates.length > 0) {
-                        responseText = result.candidates[0].content?.parts?.[0]?.text ?? "";
-                    } else if (result && typeof result.text === "string") {
-                        responseText = result.text;
-                    } else if (typeof result === "string") {
-                        responseText = result;
-                    } else {
-                        responseText = "";
+                    this.genAI = new GoogleGenAI({ apiKey: availableApiKeys[this.currentApiKeyIndex] });
+                    const genAIInstance = this.genAI;
+
+                    const batchContents: Content[] = batchQueries.map(query => {
+                        const parts: Part[] = [];
+                        if (systemInstruction) {
+                            parts.push({ text: systemInstruction });
+                        }
+                        if (contextResults && contextResults.length > 0) {
+                            const formattedContext = this.formatRetrievedContextForPrompt(contextResults);
+                            parts.push({ text: formattedContext });
+                        }
+                        parts.push({ text: query });
+                        return { role: "user", parts };
+                    });
+
+                    // Gemini's generateContent API does not directly support an array of contents for batching in a single call
+                    // We need to iterate and call generateContent for each query in the batch
+                    const batchResponses: Array<{ content: Part[], confidenceScore?: number }> = [];
+                    for (const content of batchContents) {
+                        const request: any = {
+                            model: modelToUse,
+                            contents: [content],
+                            safetySettings: this.safetySettings,
+                            generationConfig: this.generationConfig,
+                        };
+                        const result = await genAIInstance.models.generateContent(request);
+                        let responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+                        if (!responseText && typeof result.text === "string") {
+                            responseText = result.text;
+                        }
+
+                        let confidenceScore: number | undefined;
+                        if (contextResults && contextResults.length > 0) {
+                            const totalScore = contextResults.reduce((sum, ctx) => sum + (ctx.relevanceScore || 0), 0);
+                            confidenceScore = totalScore / contextResults.length;
+                        }
+                        batchResponses.push({ content: [{ text: responseText }], confidenceScore });
                     }
-                } catch (ex) {
-                    console.error("Error extracting text from Gemini result:", ex, "Full result:", result);
-                    responseText = "";
-                }
+                    allResults.push(...batchResponses);
+                    success = true;
 
-                if (!responseText) {
-                    console.warn("Gemini response text is empty or undefined. Full result:", result);
-                }
+                } catch (error: any) {
+                    lastError = error;
+                    console.error(`Error calling Gemini API (${modelToUse}) for batch (API Key Index: ${this.currentApiKeyIndex}, batch start: ${i}):`, error);
 
-                let confidenceScore: number | undefined;
-                if (contextResults && contextResults.length > 0) {
-                    // Calculate a simple average of relevance scores for confidence
-                    const totalScore = contextResults.reduce((sum, ctx) => sum + (ctx.relevanceScore || 0), 0);
-                    confidenceScore = totalScore / contextResults.length;
-                }
-
-                return { content: [{ text: responseText }], confidenceScore };
-
-            } catch (error: any) {
-                lastError = error; // Store the current error
-                console.error(`Error calling Gemini API (${modelToUse}) for query (API Key Index: ${this.currentApiKeyIndex}):`, error);
-
-                // Check for 429 (Too Many Requests) or other rate-limiting errors
-                if (error.response && error.response.status === 429 || (typeof error.message === 'string' && (error.message.includes('quota') || error.message.includes('rate limit')))) {
-                    retries++;
-                    if (retries < maxRetries) {
-                        this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length; // Use availableApiKeys.length
-                        console.warn(`Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying...`);
-                        // Optionally add a delay before retrying
-                        await new Promise(resolve => setTimeout(resolve, 1000 * retries)); // 1s, 2s, 3s delay
+                    if (error.response && error.response.status === 429 || (typeof error.message === 'string' && (error.message.includes('quota') || error.message.includes('rate limit')))) {
+                        attempt++;
+                        if (attempt < maxRetries) {
+                            this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length;
+                            console.warn(`Received 429 Too Many Requests. Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying batch...`);
+                            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                        } else {
+                            console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. Skipping batch.`);
+                            for (let j = 0; j < batchQueries.length; j++) {
+                                allResults.push({ content: [{ text: "Error: Max retries reached for this query." }] });
+                            }
+                            success = true; // Mark as success to break out of retry loop, but with error results
+                        }
                     } else {
-                        throw new Error(`Failed to get response from Gemini (${modelToUse}) after multiple retries with all available API keys: ${lastError.message}`);
+                        console.error(`Non-retryable error for batch starting at index ${i}:`, error);
+                        for (let j = 0; j < batchQueries.length; j++) {
+                            allResults.push({ content: [{ text: `Error: ${error.message}` }] });
+                        }
+                        success = true; // Mark as success to break out of retry loop, but with error results
                     }
-                } else {
-                    throw new Error(`Failed to get response from Gemini (${modelToUse}): ${lastError.message}`);
                 }
             }
+            if (!success) { // If batch failed after all retries, push error results
+                for (let j = 0; j < batchQueries.length; j++) {
+                    allResults.push({ content: [{ text: `Error: Failed after all retries. Last error: ${lastError ? lastError.message : 'Unknown'}` }] });
+                }
+            }
+
+            if (i + batchSize < queries.length) {
+                await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+            }
         }
-        // If the loop finishes without returning, it means all retries failed.
-        throw new Error(`Failed to get response from Gemini (${modelToUse}): All API keys exhausted or unexpected error. Last error: ${lastError ? lastError.message : 'None'}`);
+        return allResults;
     }
     
     /**
@@ -244,7 +263,7 @@ ${codeChunk}
 One-sentence summary:
 `;
         try {
-            const result = await this.askGemini(prompt, modelToUse);
+            const result = await this.askGemini(prompt, modelToUse); // This will now use the new batchAskGemini internally
             // Clean up the response to ensure it's a single, clean sentence.
             let summary = result.content[0].text ?? 'Could not generate summary.';
             summary = summary.replace(/[\r\n]+/g, ' ').replace(/`/g, '').trim();

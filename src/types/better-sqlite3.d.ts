@@ -31,6 +31,8 @@ declare module 'better-sqlite3' {
     close(): void;
     loadExtension(path: string): void;
     pragma(options: string | { readonly: boolean }): any;
+
+    transaction(fn: Function): Function;
   }
 
   export default class BetterSqlite3 {

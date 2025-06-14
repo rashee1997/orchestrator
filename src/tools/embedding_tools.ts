@@ -67,18 +67,19 @@ Returns a summary of deleted embeddings.`,
                     type: 'array',
                     items: { type: 'string' },
                     description: "Array of relative file paths to delete embeddings for."
+                },
+                project_root_path: {
+                    type: 'string',
+                    description: "The absolute root path of the project. Used to correctly resolve and normalize file paths for deletion."
                 }
             },
-            required: ['agent_id', 'file_paths'],
+            required: ['agent_id', 'file_paths', 'project_root_path'],
             additionalProperties: false,
         }
     }
 ];
 
 export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
-    // CodebaseEmbeddingService is already instantiated in MemoryManager and accessible via a getter
-    // const codebaseEmbeddingService = memoryManager.getCodebaseEmbeddingService();
-
     return {
         'ingest_codebase_embeddings': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
@@ -93,18 +94,15 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
             const { path_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
 
-            // Ensure project_root_path is absolute for reliable relative path calculation
             const absoluteProjectRootPath = path.resolve(project_root_path);
             const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
-
 
             if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {
                 throw new McpError(ErrorCode.InvalidParams, `Path to embed (${absolutePathToEmbed}) must be within the project root path (${absoluteProjectRootPath}).`);
             }
 
-
             try {
-                await fs.access(absolutePathToEmbed); // Check if path exists
+                await fs.access(absolutePathToEmbed);
             } catch (e) {
                 throw new McpError(ErrorCode.InvalidParams, `Path not found or inaccessible: ${absolutePathToEmbed}`);
             }
@@ -119,40 +117,39 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 reusedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
                 deletedEmbeddings?: Array<{ file_path_relative: string; chunk_text: string }>;
                 aiSummary?: string;
-                embeddingRequestCount?: number; // Add new fields
-                embeddingRetryCount?: number; // Add new fields
-                totalTimeMs?: number; // Add new fields
+                embeddingRequestCount?: number;
+                embeddingRetryCount?: number;
+                totalTimeMs?: number;
             };
 
             if (is_directory) {
                 resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(
                     agent_id,
                     absolutePathToEmbed,
-                    absoluteProjectRootPath, // Pass the validated absolute project root
+                    absoluteProjectRootPath,
                     chunking_strategy as ChunkingStrategy,
                     include_summary_patterns,
                     exclude_summary_patterns,
-                    storeEntitySummaries // Pass the new argument
+                    storeEntitySummaries
                 );
             } else {
                 resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(
                     agent_id,
                     absolutePathToEmbed,
-                    absoluteProjectRootPath, // Pass the validated absolute project root
+                    absoluteProjectRootPath,
                     chunking_strategy as ChunkingStrategy,
                     include_summary_patterns,
                     exclude_summary_patterns,
-                    storeEntitySummaries // Pass the new argument
+                    storeEntitySummaries
                 );
+                await embeddingService.embeddingCache.flushToDb(); // Ensure flush after single file ingestion
             }
 
-            // Format detailed output with granular lists if available
             let detailedOutput = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/')}") complete.\n` +
                 `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}\n` +
                 `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}\n` +
                 `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}\n`;
 
-            // Add embedding metrics to the output
             if (resultCounts.embeddingRequestCount !== undefined) {
                 detailedOutput += `- Embedding API Requests: ${resultCounts.embeddingRequestCount}\n`;
             }
@@ -166,7 +163,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (!disable_ai_output_summary) {
                 if (resultCounts.newEmbeddings && resultCounts.newEmbeddings.length > 0) {
                     detailedOutput += `\n### New Embeddings Summary:\n`;
-                    // Generate a single AI summary for all new embeddings combined
                     let combinedNewChunksText = resultCounts.newEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
                     let newSummary = '';
                     try {
@@ -187,7 +183,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
                 if (resultCounts.reusedEmbeddings && resultCounts.reusedEmbeddings.length > 0) {
                     detailedOutput += `\n### Reused Embeddings Summary:\n`;
-                    // Generate a single AI summary for all reused embeddings combined
                     let combinedReusedChunksText = resultCounts.reusedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
                     let reusedSummary = '';
                     try {
@@ -208,7 +203,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
                 if (resultCounts.deletedEmbeddings && resultCounts.deletedEmbeddings.length > 0) {
                     detailedOutput += `\n### Deleted Embeddings Summary:\n`;
-                    // Generate a single AI summary for all deleted embeddings combined
                     let combinedDeletedChunksText = resultCounts.deletedEmbeddings.map(chunk => chunk.chunk_text).join('\n\n');
                     let deletedSummary = '';
                     try {
@@ -227,13 +221,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     detailedOutput += `${deletedSummary}\n`;
                 }
             }
-
-            // Remove separate AI summary block since summaries are integrated per chunk
-            /*
-            if (resultCounts.aiSummary && resultCounts.aiSummary.length > 0) {
-                detailedOutput += `\n### AI Summary:\n${resultCounts.aiSummary}\n`;
-            }
-            */
 
             return {
                 content: [{
@@ -257,7 +244,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     target_file_paths
                 );
 
-                // Filter results based on exclude_chunk_types
                 if (exclude_chunk_types && Array.isArray(exclude_chunk_types) && exclude_chunk_types.length > 0) {
                     results = results.filter(res => {
                         const chunkType = res.metadata?.type;
@@ -318,13 +304,14 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for clean_up_embeddings: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { file_paths } = args;
+            const { file_paths, project_root_path } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
             try {
                 const result: any = await embeddingService.cleanUpEmbeddingsByFilePaths(
-                    agent_id, // Pass agent_id
-                    file_paths
+                    agent_id,
+                    file_paths,
+                    project_root_path // Pass the new argument
                 );
                 return {
                     content: [{

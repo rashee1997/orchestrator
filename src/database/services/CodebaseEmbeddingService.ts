@@ -19,7 +19,7 @@ export class CodebaseEmbeddingService {
     private aiProvider: AIEmbeddingProvider;
 
     private chunkingService: CodeChunkingService;
-    private embeddingCache: EmbeddingCache;
+    public embeddingCache: EmbeddingCache; // Made public to allow access from embedding_tools.ts
     private introspectionService: CodebaseIntrospectionService;
 
     constructor(
@@ -42,18 +42,29 @@ export class CodebaseEmbeddingService {
      * Deletes embeddings associated with the specified file paths.
      * @param agentId The ID of the agent (not used currently but kept for interface consistency).
      * @param filePaths Array of relative file paths whose embeddings should be deleted.
+     * @param projectRootPath The absolute path to the project root.
      * @returns An object with the count of deleted embeddings.
      */
-    public async cleanUpEmbeddingsByFilePaths(agentId: string, filePaths: string[]): Promise<{ deletedCount: number }> {
+    public async cleanUpEmbeddingsByFilePaths(agentId: string, filePaths: string[], projectRootPath: string): Promise<{ deletedCount: number }> {
         let deletedCount = 0;
+        const absoluteProjectRootPath = path.resolve(projectRootPath);
+
+        const embeddingIdsToDelete: string[] = [];
         for (const filePath of filePaths) {
-            const embeddings = await this.repository.getEmbeddingsForFile(filePath);
+            // Normalize the input filePath to match the format stored in the database (relative, forward slashes)
+            const absoluteFilePath = path.resolve(filePath); // Ensure it's an absolute path first
+            const normalizedFilePath = path.relative(absoluteProjectRootPath, absoluteFilePath).replace(/\\/g, '/');
+            
+            const embeddings = await this.repository.getEmbeddingsForFile(normalizedFilePath);
             for (const embedding of embeddings) {
                 if (embedding.embedding_id) {
-                    await this.repository.deleteEmbedding(embedding.embedding_id);
-                    deletedCount++;
+                    embeddingIdsToDelete.push(embedding.embedding_id);
                 }
             }
+        }
+        if (embeddingIdsToDelete.length > 0) {
+            await this.repository.bulkDeleteEmbeddings(embeddingIdsToDelete);
+            deletedCount = embeddingIdsToDelete.length;
         }
         return { deletedCount };
     }
@@ -95,7 +106,6 @@ export class CodebaseEmbeddingService {
     }> {
         const startTime = Date.now();
         console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
-        await this.embeddingCache.loadCacheState();
 
         let fileContent: string;
         try {
@@ -149,49 +159,61 @@ export class CodebaseEmbeddingService {
         const { embeddings: embeddingResultsWithNulls, requestCount, retryCount } = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
 
         const validResults = embeddingResultsWithNulls
-            .map((result, index) => ({ result, index }))
-            .filter((item): item is { result: { vector: number[]; dimensions: number }; index: number } => item.result !== null);
+            .map((result: { vector: number[]; dimensions: number } | null, index: number) => ({ result, index }))
+            .filter((item: { result: { vector: number[]; dimensions: number } | null; index: number }): item is { result: { vector: number[]; dimensions: number }; index: number } => item.result !== null);
 
-        let newEmbeddingsCount = 0;
+        const newEmbeddingsToStore: CodebaseEmbeddingRecord[] = [];
         const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
 
         for (const { result: embedding, index } of validResults) {
             const chunk = chunksToEmbed[index];
             const chunkHash = this.generateChunkHash(chunk.chunk_text);
+            const embeddingId = crypto.randomUUID(); // Generate UUID for new embeddings
 
-            await this.embeddingCache.addChunk(
-                agentId,
-                chunk.chunk_text,
-                chunk.entity_name || null,
-                embedding.vector,
-                embedding.dimensions,
-                DEFAULT_EMBEDDING_MODEL,
-                chunkHash,
-                { ...chunk.metadata, full_file_path: filePath, ai_summary_text: chunk.ai_summary_text || null },
-                Math.floor(Date.now() / 1000),
-                relativeFilePath,
-                filePath
-            );
-            newEmbeddingsCount++;
+            const vectorBuffer = Buffer.alloc(embedding.vector.length * VECTOR_FLOAT_SIZE);
+            for (let i = 0; i < embedding.vector.length; i++) {
+                vectorBuffer.writeFloatLE(embedding.vector[i], i * VECTOR_FLOAT_SIZE);
+            }
+
+            newEmbeddingsToStore.push({
+                embedding_id: embeddingId,
+                agent_id: agentId,
+                chunk_text: chunk.chunk_text,
+                entity_name: chunk.entity_name || null,
+                vector_blob: vectorBuffer,
+                vector_dimensions: embedding.dimensions,
+                model_name: DEFAULT_EMBEDDING_MODEL,
+                chunk_hash: chunkHash,
+                metadata_json: JSON.stringify({ ...chunk.metadata, type: chunk.metadata?.type, full_file_path: filePath, ai_summary_text: chunk.ai_summary_text || undefined }),
+                created_timestamp_unix: Math.floor(Date.now() / 1000),
+                file_path_relative: relativeFilePath,
+                full_file_path: filePath,
+                ai_summary_text: chunk.ai_summary_text || undefined
+            });
             newEmbeddings.push({ file_path_relative: relativeFilePath, chunk_text: chunk.chunk_text });
         }
 
-        await this.embeddingCache.flushToDb();
+        if (newEmbeddingsToStore.length > 0) {
+            await this.repository.bulkInsertEmbeddings(newEmbeddingsToStore);
+        }
 
-        let deletedEmbeddingsCount = 0;
+        const newEmbeddingsCount = newEmbeddingsToStore.length;
         const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const embeddingIdsToDelete: string[] = [];
+
         for (const existingEmbedding of existingEmbeddingsForFile) {
             if (existingEmbedding.chunk_hash && !currentHashesInFile.has(existingEmbedding.chunk_hash)) {
-                try {
-                    if (existingEmbedding.embedding_id) {
-                        await this.repository.deleteEmbedding(existingEmbedding.embedding_id);
-                        deletedEmbeddingsCount++;
-                        deletedEmbeddings.push({ file_path_relative: relativeFilePath, chunk_text: existingEmbedding.chunk_text });
-                    }
-                } catch (deleteError: any) {
-                    console.error(`Failed to delete stale embedding ${existingEmbedding.embedding_id}:`, deleteError);
+                if (existingEmbedding.embedding_id) {
+                    embeddingIdsToDelete.push(existingEmbedding.embedding_id);
+                    deletedEmbeddings.push({ file_path_relative: relativeFilePath, chunk_text: existingEmbedding.chunk_text });
                 }
             }
+        }
+
+        let deletedEmbeddingsCount = 0;
+        if (embeddingIdsToDelete.length > 0) {
+            await this.repository.bulkDeleteEmbeddings(embeddingIdsToDelete);
+            deletedEmbeddingsCount = embeddingIdsToDelete.length;
         }
 
         return {
@@ -245,7 +267,7 @@ export class CodebaseEmbeddingService {
 
         const scannedItems = await this.introspectionService.scanDirectoryRecursive(agentId, absoluteDirectoryPath, absoluteProjectRootPath);
         
-        await this.embeddingCache.loadCacheState();
+        await this.embeddingCache.loadCacheState(); // Load cache once for the entire directory processing
 
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
@@ -256,11 +278,15 @@ export class CodebaseEmbeddingService {
         const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
 
-        for (const item of scannedItems) {
+        const concurrencyLimit = 5; // Limit concurrent file processing
+        const fileProcessingPromises: Promise<void>[] = [];
+        let activePromises = 0;
+
+        const processFile = async (item: any) => {
             if (item.type === 'file') {
                 const language = item.language || await this.introspectionService.detectLanguage(agentId, item.path, path.basename(item.path));
                 if ((language && ['typescript', 'javascript', 'python', 'markdown', 'json', 'jsonl', 'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'].includes(language)) || (!language && item.stats.size > 0 && item.stats.size < 1024 * 1024)) {
-                     try {
+                    try {
                         const result = await this.generateAndStoreEmbeddingsForFile(
                             agentId,
                             item.path,
@@ -283,8 +309,21 @@ export class CodebaseEmbeddingService {
                     }
                 }
             }
+        };
+
+        for (const item of scannedItems) {
+            const promise = processFile(item);
+            fileProcessingPromises.push(promise);
+
+            if (activePromises >= concurrencyLimit) {
+                await Promise.race(fileProcessingPromises.filter(p => p !== null));
+            }
+            activePromises++;
+            promise.finally(() => activePromises--);
         }
-        await this.embeddingCache.flushToDb();
+
+        await Promise.all(fileProcessingPromises); // Wait for all promises to settle
+        await this.embeddingCache.flushToDb(); // Flush cache once after all files in the directory are processed
 
         const endTime = Date.now();
         const totalTimeMs = endTime - startTime;

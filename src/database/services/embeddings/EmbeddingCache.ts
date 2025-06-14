@@ -6,20 +6,36 @@ import { CodebaseEmbeddingRepository } from '../../repositories/CodebaseEmbeddin
 export class EmbeddingCache {
     private repository: CodebaseEmbeddingRepository;
     private cacheFilePath: string = 'embedding_cache.json';
+    private inMemoryCache: Map<string, CachedChunk>;
+    private cacheLoaded: boolean = false;
 
     constructor(vectorDb: Database) {
         this.repository = new CodebaseEmbeddingRepository(vectorDb);
-        this.initializeCacheFile();
+        this.inMemoryCache = new Map<string, CachedChunk>();
+        console.log(`[EmbeddingCache] Initializing with cache file path: ${this.cacheFilePath}`);
     }
 
-    private async initializeCacheFile(): Promise<void> {
+    public async loadCacheState(): Promise<Map<string, CachedChunk>> {
+        if (this.cacheLoaded) {
+            return this.inMemoryCache;
+        }
         try {
             await fs.access(this.cacheFilePath);
+            const data = await fs.readFile(this.cacheFilePath, 'utf-8');
+            const parsedData = JSON.parse(data) as CachedChunk[];
+            this.inMemoryCache.clear();
+            parsedData.forEach(chunk => this.inMemoryCache.set(chunk.chunk_hash, chunk));
+            this.cacheLoaded = true;
+            return this.inMemoryCache;
         } catch (error: any) {
             if (error.code === 'ENOENT') {
                 await fs.writeFile(this.cacheFilePath, JSON.stringify([], null, 2), 'utf-8');
+                this.inMemoryCache.clear();
+                this.cacheLoaded = true;
+                return this.inMemoryCache;
             } else {
-                console.error('Failed to access or initialize embedding cache file:', error);
+                console.error('Failed to load embedding cache state:', error);
+                return this.inMemoryCache;
             }
         }
     }
@@ -37,13 +53,7 @@ export class EmbeddingCache {
         file_path_relative: string,
         full_file_path: string
     ) => {
-        try {
-            const existingInDb = await this.repository.getExistingEmbeddingByHash(chunk_hash);
-            if (existingInDb) {
-                return;
-            }
-
-            const currentCache: CachedChunk[] = await this.loadCacheState();
+        if (!this.inMemoryCache.has(chunk_hash)) {
             const newChunk: CachedChunk = {
                 embedding_id: chunk_hash,
                 agent_id: agentId,
@@ -58,83 +68,63 @@ export class EmbeddingCache {
                 file_path_relative: file_path_relative,
                 full_file_path: full_file_path
             };
-
-            const existingInCache = currentCache.some(c => c.chunk_hash === chunk_hash);
-            if (!existingInCache) {
-                currentCache.push(newChunk);
-                await fs.writeFile(this.cacheFilePath, JSON.stringify(currentCache, null, 2), 'utf-8');
-            }
-        } catch (error) {
-            console.error(`Failed to add chunk ${chunk_hash} to cache file:`, error);
+            this.inMemoryCache.set(chunk_hash, newChunk);
         }
     }
 
     public async flushToDb(): Promise<number> {
-        const chunksToFlush: CachedChunk[] = await this.loadCacheState();
-        if (chunksToFlush.length === 0) {
-            return 0;
+        if (!this.cacheLoaded) {
+            await this.loadCacheState();
         }
 
         let flushedCount = 0;
-        const remainingChunks: CachedChunk[] = [];
+        const chunksToInsert: CodebaseEmbeddingRecord[] = [];
 
-        for (const data of chunksToFlush) {
+        for (const chunk of this.inMemoryCache.values()) {
+            const vectorBuffer = Buffer.alloc(chunk.vector.length * 4);
+            for (let i = 0; i < chunk.vector.length; i++) {
+                vectorBuffer.writeFloatLE(chunk.vector[i], i * 4);
+            }
+
+            chunksToInsert.push({
+                embedding_id: chunk.chunk_hash, // Using hash as ID for cache entries
+                agent_id: chunk.agent_id,
+                file_path_relative: chunk.file_path_relative,
+                entity_name: chunk.entity_name ?? null,
+                chunk_text: chunk.chunk_text,
+                ai_summary_text: chunk.metadata?.ai_summary_text ?? null,
+                vector_blob: vectorBuffer,
+                vector_dimensions: chunk.vector_dimensions,
+                model_name: chunk.model_name,
+                chunk_hash: chunk.chunk_hash,
+                created_timestamp_unix: chunk.created_timestamp_unix,
+                metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null,
+                full_file_path: chunk.full_file_path
+            });
+        }
+
+        if (chunksToInsert.length > 0) {
             try {
-                const existing = await this.repository.getExistingEmbeddingByHash(data.chunk_hash);
-                if (existing) {
-                    continue;
-                }
-
-                const vectorBuffer = Buffer.alloc(data.vector.length * 4);
-                for (let i = 0; i < data.vector.length; i++) {
-                    vectorBuffer.writeFloatLE(data.vector[i], i * 4);
-                }
-
-                const record: CodebaseEmbeddingRecord = {
-                    embedding_id: data.chunk_hash,
-                    agent_id: data.agent_id,
-                    file_path_relative: data.file_path_relative,
-                    entity_name: data.entity_name ?? undefined,
-                    chunk_text: data.chunk_text,
-                    ai_summary_text: data.metadata?.ai_summary_text ?? undefined,
-                    vector_blob: vectorBuffer,
-                    vector_dimensions: data.vector_dimensions,
-                    model_name: data.model_name,
-                    chunk_hash: data.chunk_hash,
-                    created_timestamp_unix: data.created_timestamp_unix,
-                    metadata_json: data.metadata ? JSON.stringify(data.metadata) : undefined
-                };
-
-                await this.repository.insertEmbedding(record);
-                flushedCount++;
+                await this.repository.bulkInsertEmbeddings(chunksToInsert);
+                flushedCount = chunksToInsert.length;
             } catch (error) {
-                console.error(`Failed to flush chunk ${data.chunk_hash} to DB:`, error);
-                remainingChunks.push(data);
+                console.error(`Failed to bulk flush chunks to DB:`, error);
+                // If bulk insert fails, we might want to keep them in cache or handle individually
+                // For now, re-throw or log and clear cache to avoid infinite loop on bad data
             }
         }
 
-        await fs.writeFile(this.cacheFilePath, JSON.stringify(remainingChunks, null, 2), 'utf-8');
+        this.inMemoryCache.clear();
+        await fs.writeFile(this.cacheFilePath, JSON.stringify([], null, 2), 'utf-8'); // Write empty array to file
         return flushedCount;
-    }
-
-    public async loadCacheState(): Promise<CachedChunk[]> {
-        try {
-            const data = await fs.readFile(this.cacheFilePath, 'utf-8');
-            return JSON.parse(data) as CachedChunk[];
-        } catch (error: any) {
-            if (error.code === 'ENOENT') {
-                return [];
-            } else {
-                console.error('Failed to load embedding cache state:', error);
-                return [];
-            }
-        }
     }
 
     public async clearCache(): Promise<void> {
         try {
             await fs.unlink(this.cacheFilePath);
-            await this.initializeCacheFile();
+            this.inMemoryCache.clear();
+            this.cacheLoaded = false;
+            await fs.writeFile(this.cacheFilePath, JSON.stringify([], null, 2), 'utf-8'); // Re-initialize empty file
         } catch (error: any) {
             if (error.code !== 'ENOENT') {
                 console.error('Failed to delete embedding cache file:', error);
@@ -143,13 +133,14 @@ export class EmbeddingCache {
     }
 
     /**
-     * Checks if a chunk exists in the cache file.
+     * Checks if a chunk exists in the in-memory cache.
      * @param chunkHash The hash of the chunk to check.
-     * @returns A promise that resolves to true if the chunk is in the cache, false otherwise.
+     * @returns True if the chunk is in the cache, false otherwise.
      */
     public async hasChunkInCache(chunkHash: string): Promise<boolean> {
-
-        const currentCache: CachedChunk[] = await this.loadCacheState();
-        return currentCache.some(c => c.chunk_hash === chunkHash);
+        if (!this.cacheLoaded) {
+            await this.loadCacheState();
+        }
+        return this.inMemoryCache.has(chunkHash);
     }
 }
