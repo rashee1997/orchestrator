@@ -1,4 +1,3 @@
-// src/database/services/GeminiIntegrationService.ts
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content, Part } from "@google/genai";
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
@@ -42,9 +41,10 @@ export class GeminiIntegrationService {
         topK: 1,
         topP: 1,
         maxOutputTokens: 8192,
-        responseMimeType: "application/json",
     };
 
+    // Minor change to trigger re-compilation
+    // This comment is added to force TypeScript to re-evaluate types.
 
     constructor(
         dbService: DatabaseService,
@@ -140,17 +140,30 @@ export class GeminiIntegrationService {
 
                 const request: any = { // Use 'any' to dynamically add systemInstruction
                     model: modelToUse,
-                    contents: [{ role: "user", parts: [{ text: query }] }],
+                    contents: [], // Initialize contents array
                     safetySettings: this.safetySettings,
                     generationConfig: this.generationConfig,
                 };
 
+                // Add system instruction if provided
                 if (systemInstruction) {
-                    request.systemInstruction = {
+                    request.contents.push({
                         role: "system",
                         parts: [{ text: systemInstruction }]
-                    };
+                    });
                 }
+
+                // Add retrieved context if available
+if (contextResults && contextResults.length > 0) {
+    const formattedContext = this.formatRetrievedContextForPrompt(contextResults);
+    request.contents.push({
+        role: "user", // Or "model" depending on how you want Gemini to perceive this context
+        parts: [{ text: formattedContext }]
+    });
+}
+
+                // Add the main user query
+                request.contents.push({ role: "user", parts: [{ text: query }] });
 
                 const result = await this.genAI!.models.generateContent(request);
 
@@ -504,7 +517,7 @@ You are an expert AI prompt engineer and senior software architect. Your task is
 5.  **Decompose Tasks:** Break down the goal into a sequence of actionable development tasks. Each task in \`decomposed_tasks\` must be concrete and grounded in the codebase (e.g., "Modify the 'processPayment' function in 'payment_service.ts' to handle gift cards.").
 5.  **Suggest Dependencies:** For each decomposed task, list any prerequisite tasks in the \`suggested_dependencies\` field. This is crucial for creating a valid execution plan.
 6.  **Suggest Validation:** Propose a \`suggested_validation_steps\` for the agent to perform after completing the plan, such as running specific tests or querying the knowledge graph to confirm changes.
-7.  **Suggest New File Paths:** If the task involves refactoring or modularizing large code files, suggest new file paths for the modularized components in a new \`suggested_new_file_paths\` field.
+7.  **Suggest New File Paths:** If the task involves refactoring or modularizing large code files, **propose concrete new file paths and their corresponding new folder structures** for the modularized components in the \`suggested_new_file_paths\` field. These paths should be relative to the project root and reflect a logical, maintainable organization. **Format these as an array of strings, where each string is a full relative path including the new folder structure (e.g., "src/database/memory_manager/new_module/file.ts").**
 
 **Output Schema:**
 You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema. Do not include any text or markdown outside the JSON block.

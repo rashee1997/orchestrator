@@ -107,7 +107,7 @@ export class CodebaseContextRetrieverService {
         rankedResults = await this.performCrossReferencing(agentId, rankedResults);
 
         // Phase 1: Negative Filtering (AI-powered)
-        const filteredResults = await this.filterWithAI(prompt, rankedResults);
+        const filteredResults = await this.filterWithAI(prompt, rankedResults, options);
 
         // Phase 3: Proactive Context Expansion
         const finalContext = await this.proactiveExpansion(agentId, prompt, filteredResults, options);
@@ -238,15 +238,40 @@ export class CodebaseContextRetrieverService {
         return [...results, ...newResults];
     }
     
-    private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
+    private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (contexts.length === 0) return [];
+
+        const targetPaths = options.targetFilePaths || [];
+        const targetedContexts = contexts.filter(ctx => targetPaths.includes(ctx.sourcePath));
+        const nonTargetedContexts = contexts.filter(ctx => !targetPaths.includes(ctx.sourcePath));
+
+        let filterPrompt = `Given the user prompt "${prompt}", identify which of the following context items are most relevant.`;
+        if (targetPaths.length > 0) {
+            filterPrompt += `\n\n**Special Instruction:** Prioritize items from the following target file paths: ${targetPaths.join(', ')}. Ensure that relevant content from these paths is included if it directly addresses the prompt.`;
+        }
+        filterPrompt += `\n\nReturn a JSON array of the indices of the relevant items.\n\n`;
+
         const contextSummary = contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 100)}...`).join('\n');
-        const filterPrompt = `Given the user prompt "${prompt}", identify which of the following context items are most relevant. Return a JSON array of the indices of the relevant items. \n\n${contextSummary}`;
+        filterPrompt += contextSummary;
+
         try {
             const response = await this.geminiService.askGemini(filterPrompt, 'gemini-1.5-flash-latest');
             const textResponse = response.content[0].text;
             const relevantIndices: number[] = JSON.parse(textResponse!.match(/\[(.*?)\]/s)![0]);
-            return contexts.filter((_, idx) => relevantIndices.includes(idx));
+            
+            let filtered = contexts.filter((_, idx) => relevantIndices.includes(idx));
+
+            // Fallback: If target paths were specified and all targeted contexts were filtered out, re-include them.
+            if (targetPaths.length > 0 && targetedContexts.length > 0) {
+                const filteredTargeted = filtered.filter(ctx => targetPaths.includes(ctx.sourcePath));
+                if (filteredTargeted.length === 0) {
+                    console.warn(`[CodebaseContextRetrieverService] AI filtered out all targeted contexts. Re-including them.`);
+                    filtered = [...filtered, ...targetedContexts];
+                    // Deduplicate after re-adding
+                    filtered = Array.from(new Map(filtered.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
+                }
+            }
+            return filtered;
         } catch (e) {
             console.error("Error filtering with AI:", e);
             return contexts; // Fallback to unfiltered on error
