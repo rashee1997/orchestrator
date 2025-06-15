@@ -45,7 +45,7 @@ export class CodebaseEmbeddingRepository {
             embedding_id, agent_id, chunk_text, entity_name, model_name, chunk_hash, metadata_json, created_timestamp_unix, file_path_relative, full_file_path, ai_summary_text
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-        const insertVectorSql = `INSERT OR REPLACE INTO ${this.vectorTable} (embedding_id, vector_blob, dimensions) VALUES (?, ?, ?)`;
+        const insertVectorSql = `INSERT OR REPLACE INTO ${this.vectorTable} (embedding_id, embedding) VALUES (?, ?);`;
 
         const insertTransaction = this.db.transaction((records: CodebaseEmbeddingRecord[]) => {
             const stmtMetadata = this.db.prepare(insertMetadataSql);
@@ -70,7 +70,9 @@ export class CodebaseEmbeddingRepository {
                 for (let i = 0; i < metadata.vector_blob.length; i += 4) {
                     vector.push(metadata.vector_blob.readFloatLE(i));
                 }
-                stmtVector.run(metadata.embedding_id, metadata.vector_blob, vector.length);
+                // Convert the vector array to a string representation for sqlite-vec
+                const vectorString = `[${vector.join(',')}]`;
+                stmtVector.run(metadata.embedding_id, vectorString);
             }
         });
 
@@ -90,15 +92,25 @@ export class CodebaseEmbeddingRepository {
         return this.db.prepare(sql).all(...embeddingIds) as CodebaseEmbeddingRecord[];
     }
 
-    public async getEmbeddingsForFile(filePathRelative: string): Promise<CodebaseEmbeddingRecord[]> {
-        const sql = `SELECT * FROM ${this.metadataTable} WHERE file_path_relative = ?`;
-        return this.db.prepare(sql).all(filePathRelative) as CodebaseEmbeddingRecord[];
+    public async getEmbeddingsForFile(filePathRelative: string, agentId?: string): Promise<CodebaseEmbeddingRecord[]> {
+        // Use LIKE with wildcards for more robust matching, in case of subtle path differences
+        let sql = `SELECT * FROM ${this.metadataTable} WHERE file_path_relative LIKE ?`;
+        const params: (string | undefined)[] = [`%${filePathRelative}%`];
+
+        if (agentId) {
+            sql += ` AND agent_id = ?`;
+            params.push(agentId);
+        }
+
+        return this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
     }
 
-    public async getChunkHashesForFile(filePathRelative: string): Promise<Set<string>> {
+    public async getChunkHashesForFile(filePathRelative: string): Promise<{ hashes: Set<string>; latencyMs: number; callCount: number }> {
+        const startTime = Date.now();
         const sql = `SELECT chunk_hash FROM ${this.metadataTable} WHERE file_path_relative = ? AND chunk_hash IS NOT NULL`;
         const rows = this.db.prepare(sql).all(filePathRelative) as { chunk_hash: string }[];
-        return new Set(rows.map(row => row.chunk_hash));
+        const endTime = Date.now();
+        return { hashes: new Set(rows.map(row => row.chunk_hash)), latencyMs: endTime - startTime, callCount: 1 };
     }
 
 
@@ -119,6 +131,8 @@ export class CodebaseEmbeddingRepository {
         try {
             deleteTransaction(embeddingIds);
             console.log(`[CodebaseEmbeddingRepository] Successfully bulk deleted ${embeddingIds.length} embeddings.`);
+            this.db.pragma('wal_checkpoint(FULL)'); // Force a checkpoint to ensure data is written to disk
+            console.log(`[CodebaseEmbeddingRepository] WAL checkpoint performed.`);
         } catch (error) {
             console.error(`[CodebaseEmbeddingRepository] Error bulk deleting embeddings:`, error);
             throw error;
@@ -130,10 +144,12 @@ export class CodebaseEmbeddingRepository {
         return (this.db.prepare(sql).get(chunkHash) as CodebaseEmbeddingRecord) || null;
     }
 
-    public async getExistingSummaryByHash(originalCodeHash: string): Promise<string | null> {
+    public async getExistingSummaryByHash(originalCodeHash: string): Promise<{ summary: string | null; latencyMs: number; callCount: number }> {
+        const startTime = Date.now();
         const sql = `SELECT ai_summary_text FROM ${this.metadataTable} WHERE json_extract(metadata_json, '$.original_code_hash') = ? AND ai_summary_text IS NOT NULL`;
         const result: any = this.db.prepare(sql).get(originalCodeHash);
-        return result ? result.ai_summary_text : null;
+        const endTime = Date.now();
+        return { summary: result ? result.ai_summary_text : null, latencyMs: endTime - startTime, callCount: 1 };
     }
 
 

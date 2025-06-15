@@ -119,6 +119,10 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 aiSummary?: string;
                 embeddingRequestCount?: number;
                 embeddingRetryCount?: number;
+                namingApiCallCount?: number;
+                summarizationApiCallCount?: number;
+                dbCallCount?: number;
+                dbCallLatencyMs?: number;
                 totalTimeMs?: number;
             };
 
@@ -156,8 +160,22 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (resultCounts.embeddingRetryCount !== undefined) {
                 detailedOutput += `- Embedding API Retries: ${resultCounts.embeddingRetryCount}\n`;
             }
+            if (resultCounts.namingApiCallCount !== undefined) {
+                detailedOutput += `- Naming API Calls: ${resultCounts.namingApiCallCount}\n`;
+            }
+            if (resultCounts.summarizationApiCallCount !== undefined) {
+                detailedOutput += `- Summarization API Calls: ${resultCounts.summarizationApiCallCount}\n`;
+            }
+            if (resultCounts.dbCallCount !== undefined) {
+                detailedOutput += `- Database Call Count (for existing hashes/summaries): ${resultCounts.dbCallCount}\n`;
+            }
+            if (resultCounts.dbCallLatencyMs !== undefined) {
+                const dbCallLatencySeconds = (resultCounts.dbCallLatencyMs / 1000).toFixed(2);
+                detailedOutput += `- Database Call Latency (for existing hashes/summaries): ${dbCallLatencySeconds} seconds\n`;
+            }
             if (resultCounts.totalTimeMs !== undefined) {
-                detailedOutput += `- Total Time Taken: ${resultCounts.totalTimeMs}ms\n`;
+                const totalTimeMinutes = (resultCounts.totalTimeMs / 60000).toFixed(2);
+                detailedOutput += `- Total Time Taken: ${totalTimeMinutes} minutes\n`;
             }
 
             if (!disable_ai_output_summary) {
@@ -304,14 +322,24 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for clean_up_embeddings: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { file_paths, project_root_path } = args;
+            const { file_paths, project_root_path, filter_by_agent } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
+            const vectorDb = memoryManager.getVectorDb(); // Get the DB instance
+            console.log(`[CleanUpTool] Tool is using database at: ${(vectorDb as any).name}`); // Log the DB path, casting to any to bypass TS error
+
+            // Normalize file paths to be relative to project root and use forward slashes
+            const absoluteProjectRootPath = path.resolve(project_root_path);
+const normalizedFilePaths = file_paths.map((fp: string) => {
+    const absoluteFilePath = path.isAbsolute(fp) ? fp : path.resolve(absoluteProjectRootPath, fp);
+    return path.relative(absoluteProjectRootPath, absoluteFilePath).replace(/\\/g, '/');
+});
 
             try {
                 const result: any = await embeddingService.cleanUpEmbeddingsByFilePaths(
                     agent_id,
-                    file_paths,
-                    project_root_path // Pass the new argument
+                    normalizedFilePaths,
+                    project_root_path,
+                    filter_by_agent // Pass the new argument
                 );
                 return {
                     content: [{

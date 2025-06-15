@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS codebase_embeddings (
     model_name TEXT NOT NULL, -- e.g., "models/text-embedding-004"
     chunk_hash TEXT UNIQUE, -- SHA256 hash of chunk_text to detect changes and avoid re-embedding
     created_timestamp_unix INTEGER NOT NULL,
-    metadata_json TEXT -- Optional: for start/end lines of chunk, or other info
+    metadata_json TEXT, -- Optional: for start/end lines of chunk, or other info
+    full_file_path TEXT -- Added: absolute path to the original file
 );
 
 -- Example: Metadata for doc embeddings (if needed)

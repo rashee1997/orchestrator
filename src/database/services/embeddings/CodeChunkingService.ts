@@ -8,6 +8,7 @@ export class CodeChunkingService {
     private introspectionService: CodebaseIntrospectionService;
     private aiProvider: AIEmbeddingProvider;
     private memoryManager: MemoryManager;
+    private knowledgeGraphCache: Map<string, any>; // Cache for knowledge graph search results
 
     constructor(
         introspectionService: CodebaseIntrospectionService,
@@ -17,6 +18,7 @@ export class CodeChunkingService {
         this.introspectionService = introspectionService;
         this.aiProvider = aiProvider;
         this.memoryManager = memoryManager;
+        this.knowledgeGraphCache = new Map<string, any>();
     }
 
     private generateChunkHash(text: string): string {
@@ -43,12 +45,23 @@ export class CodeChunkingService {
         language: string | undefined,
         strategy: ChunkingStrategy,
         storeEntitySummaries: boolean
-    ): Promise<Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }>> {
+    ): Promise<{
+        chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }>;
+        namingApiCallCount: number;
+        summarizationApiCallCount: number;
+        summaryDbCallCount: number;
+        summaryDbCallLatencyMs: number;
+    }> {
         const chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }> = [];
+        let namingApiCallCount = 0;
+        let summarizationApiCallCount = 0;
+        let summaryDbCallCount = 0;
+        let summaryDbCallLatencyMs = 0;
 
         let fullFileEntityName: string | null = 'full_file_chunk';
         if (!language) {
             fullFileEntityName = await this.aiProvider.generateMeaningfulEntityName(fileContent, language);
+            namingApiCallCount++; // Increment if a meaningful name is generated for the full file
         }
         chunks.push({
             chunk_text: fileContent,
@@ -57,7 +70,7 @@ export class CodeChunkingService {
         });
 
         if (!language || !['typescript', 'javascript', 'python', 'php'].includes(language)) {
-            return chunks;
+            return { chunks, namingApiCallCount, summarizationApiCallCount, summaryDbCallCount: 0, summaryDbCallLatencyMs: 0 };
         }
 
         const imports = await this.introspectionService.parseFileForImports(agentId, filePath, language);
@@ -92,6 +105,23 @@ export class CodeChunkingService {
         const summarizationRequests: Array<{ codeChunk: string; entityType: string; language: string }> = [];
         const entityCodeMap = new Map<string, string>(); // To store entityCode for later use
 
+        // Batch fetch knowledge graph search results for all entities to reduce DB calls
+        const fullNames = entitiesToProcess.map(e => e.fullName!).filter(name => !this.knowledgeGraphCache.has(name));
+        if (fullNames.length > 0) {
+            try {
+                // Batch search by combining queries with OR
+                const batchQuery = fullNames.map(name => `name:${name}`).join(' OR ');
+                const batchResults = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, batchQuery);
+                // Organize results by entity fullName
+                for (const fullName of fullNames) {
+                    const related = batchResults.filter((r: any) => r.name.includes(fullName));
+                    this.knowledgeGraphCache.set(fullName, related);
+                }
+            } catch (e) {
+                console.warn('Batch knowledge graph search failed:', e);
+            }
+        }
+
         for (const entity of entitiesToProcess) {
             const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
             entityCodeMap.set(entity.fullName!, entityCode); // Store by full name for easy retrieval
@@ -102,13 +132,21 @@ export class CodeChunkingService {
 
             if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
                 const originalCodeHash = this.generateChunkHash(entityCode);
-                const existingSummary = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                const { summary: existingSummary, latencyMs: summaryLatencyMs, callCount: summaryCallCount } = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                summaryDbCallCount += summaryCallCount;
+                summaryDbCallLatencyMs += summaryLatencyMs;
                 
                 if (!existingSummary) {
                     // Prepare prompt for summarization
                     let graphContext = "/* Code structure context */\n";
                     try {
-                        const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                        let relations;
+                        if (this.knowledgeGraphCache.has(entity.fullName!)) {
+                            relations = this.knowledgeGraphCache.get(entity.fullName!);
+                        } else {
+                            relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                            this.knowledgeGraphCache.set(entity.fullName!, relations);
+                        }
                         if (relations && relations.length > 0) {
                             const relatedNodes = relations.map((r: any) => r.name);
                             graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
@@ -135,7 +173,14 @@ export class CodeChunkingService {
         }
 
         const meaningfulNames = namingRequests.length > 0 ? await this.aiProvider.batchGenerateMeaningfulEntityNames(namingRequests) : [];
+        if (namingRequests.length > 0) {
+            namingApiCallCount++;
+        }
+
         const summaries = summarizationRequests.length > 0 ? await this.aiProvider.batchSummarizeCodeChunks(summarizationRequests) : [];
+        if (summarizationRequests.length > 0) {
+            summarizationApiCallCount++;
+        }
 
         let nameIndex = 0;
         let summaryIndex = 0;
@@ -153,7 +198,13 @@ export class CodeChunkingService {
 
                 let graphContext = "/* Code structure context */\n";
                 try {
-                    const relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                    let relations;
+                    if (this.knowledgeGraphCache.has(entity.fullName!)) {
+                        relations = this.knowledgeGraphCache.get(entity.fullName!);
+                    } else {
+                        relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                        this.knowledgeGraphCache.set(entity.fullName!, relations);
+                    }
                     if (relations && relations.length > 0) {
                         const relatedNodes = relations.map((r: any) => r.name);
                         graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
@@ -196,10 +247,13 @@ export class CodeChunkingService {
 
                 if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
                     const originalCodeHash = this.generateChunkHash(entityCode);
-                    let summary = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                    const { summary: fetchedSummary, latencyMs: fetchedLatency, callCount: fetchedCallCount } = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                    summaryDbCallCount += fetchedCallCount;
+                    summaryDbCallLatencyMs += fetchedLatency;
 
-                    if (!summary) {
-                        summary = summaries[summaryIndex++] || 'Could not generate summary.';
+                    let summaryToUse = fetchedSummary;
+                    if (!summaryToUse) {
+                        summaryToUse = summaries[summaryIndex++] || 'Could not generate summary.';
                     }
 
                     let summaryEntityName = `${entity.name}_summary`;
@@ -211,7 +265,7 @@ export class CodeChunkingService {
 
                     chunks.push({
                         chunk_text: entityCode,
-                        ai_summary_text: summary,
+                        ai_summary_text: summaryToUse,
                         entity_name: summaryEntityName,
                         metadata: {
                             type: `${entity.type}_summary`,
@@ -225,6 +279,6 @@ export class CodeChunkingService {
                 }
             }
         }
-        return chunks;
+        return { chunks, namingApiCallCount, summarizationApiCallCount, summaryDbCallCount, summaryDbCallLatencyMs };
     }
 }

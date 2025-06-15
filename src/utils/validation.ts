@@ -92,7 +92,8 @@ export const schemas = {
             project_root_path: {
                 type: 'string',
                 description: "The absolute root path of the project. Used to correctly resolve and normalize file paths for deletion."
-            }
+            },
+            filter_by_agent: { type: 'boolean', description: "Optional: If true, only delete embeddings associated with the specified agent_id.", nullable: true }
         },
         required: ['agent_id', 'file_paths', 'project_root_path'],
         additionalProperties: false,

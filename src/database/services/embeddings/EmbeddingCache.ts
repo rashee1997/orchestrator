@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import { Database } from 'better-sqlite3';
+import crypto from 'crypto'; // Import crypto
 import { CachedChunk, CodebaseEmbeddingRecord } from '../../../types/codebase_embeddings.js';
 import { CodebaseEmbeddingRepository } from '../../repositories/CodebaseEmbeddingRepository.js';
 
@@ -87,7 +88,7 @@ export class EmbeddingCache {
             }
 
             chunksToInsert.push({
-                embedding_id: chunk.chunk_hash, // Using hash as ID for cache entries
+                embedding_id: crypto.randomUUID(), // Generate UUID for new embeddings from cache
                 agent_id: chunk.agent_id,
                 file_path_relative: chunk.file_path_relative,
                 entity_name: chunk.entity_name ?? null,
@@ -114,8 +115,7 @@ export class EmbeddingCache {
             }
         }
 
-        this.inMemoryCache.clear();
-        await fs.writeFile(this.cacheFilePath, JSON.stringify([], null, 2), 'utf-8'); // Write empty array to file
+        await fs.writeFile(this.cacheFilePath, JSON.stringify(Array.from(this.inMemoryCache.values()), null, 2), 'utf-8');
         return flushedCount;
     }
 
