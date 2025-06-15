@@ -5,18 +5,19 @@ import { ContextInformationManager } from '../database/managers/ContextInformati
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 
 
 export const askGeminiToolDefinition: InternalToolDefinition = {
     name: 'ask_gemini',
-    description: 'Asks a query to the Gemini external AI and returns the response, formatted as Markdown.',
+    description: 'Asks a query to the Gemini external AI and returns the response, formatted as Markdown. Supports optional focus areas like "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing", "refactoring", "testing", and "documentation" for tailored responses.',
     inputSchema: {
         type: 'object',
         properties: {
             query: { type: 'string', description: 'The query string to send to Gemini.' },
             model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-1.5-flash-latest".', default: 'gemini-1.5-flash-latest' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
-            enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: true, nullable: true },
+            enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
             focus_area: { type: 'string', description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions).', nullable: true },
             context_options: {
                 type: 'object',
@@ -63,30 +64,28 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 let metaPrompt = "";
                 switch (focus_area) {
                     case "code_review":
-                        metaPrompt = `You are an expert AI code reviewer. Given the following codebase context and user question, provide a detailed code review. Reference the file paths and entity names from the context in your review. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
-Codebase Context:
-{context}
-User Question: {query}
-Your Response should include:
-- Identification of potential issues, bugs, or vulnerabilities.
-- Suggestions for code improvements, refactoring, or optimization.
-- Adherence to best practices and coding standards.`;
+                        metaPrompt = CODE_REVIEW_META_PROMPT;
                         break;
                     case "code_explanation":
-                        metaPrompt = `You are an expert AI code explainer. Given the following codebase context and user question, provide a clear and concise explanation of the code. Reference the file paths and entity names from the context in your explanation.`;
+                        metaPrompt = CODE_EXPLANATION_META_PROMPT;
                         break;
                     case "enhancement_suggestions":
-                        metaPrompt = `You are an expert AI enhancement suggester. Given the following codebase context and user question, provide suggestions for code improvements. Reference the file paths and entity names from the context in your suggestions. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
-Codebase Context:
-{context}
-User Question: {query}
-Your Response should include:
-- Suggestions for code improvements, refactoring, or optimization.
-- Identification of potential performance bottlenecks.
-- Recommendations for new features or functionality.`;
+                        metaPrompt = ENHANCEMENT_SUGGESTIONS_META_PROMPT;
+                        break;
+                    case "bug_fixing":
+                        metaPrompt = BUG_FIXING_META_PROMPT;
+                        break;
+                    case "refactoring":
+                        metaPrompt = REFACTORING_META_PROMPT;
+                        break;
+                    case "testing":
+                        metaPrompt = TESTING_META_PROMPT;
+                        break;
+                    case "documentation":
+                        metaPrompt = DOCUMENTATION_META_PROMPT;
                         break;
                     default:
-                        metaPrompt = `You are a helpful AI assistant that answers questions about the given codebase. Use the context provided to answer the question. Reference the file paths and entity names from the context in your answer.`;
+                        metaPrompt = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
                         break;
                 }
                 const contextResults = await contextRetrieverService.retrieveContextForPrompt("cline", query, context_options || {});

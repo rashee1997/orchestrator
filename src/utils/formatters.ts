@@ -16,6 +16,27 @@ function indentBlockContent(content: string, indentString: string = '    '): str
     return content.split('\n').map(line => `${indentString}${line}`).join('\n');
 }
 
+// Helper to parse and normalize array fields from various sources (parsed, json string, or raw array)
+function getParsedArrayField<T = string>(input: any): T[] {
+    let items: T[] = [];
+    if (typeof input === 'string') {
+        try {
+            items = JSON.parse(input);
+            if (!Array.isArray(items)) { // Ensure parsed result is an array
+                items = [items];
+            }
+        } catch {
+            items = [input as T]; // Treat as single item if not JSON
+        }
+    } else if (Array.isArray(input)) {
+        items = input;
+    } else if (input !== null && typeof input !== 'undefined') {
+        // Handle cases where it might be a single non-string item
+        items = [input];
+    }
+    return items;
+}
+
 // Function to present a value:
 // - isCodeOrId: if true, wraps in single backticks (for IDs, paths, etc.)
 // - isBlockContent: if true, wraps in triple backticks (for messages, stack traces)
@@ -92,7 +113,7 @@ export function formatObjectToMarkdown(obj: any, indentLevel: number = 0): strin
 
     // Handle primitive types and Dates directly
     if (typeof obj !== 'object' || obj instanceof Date) {
-        return `${indent}- ${formatValue(obj instanceof Date ? obj.toLocaleString() : obj)}\n`;
+        return `${indent}- ${formatValue(obj)}\n`;
     }
 
     if (Array.isArray(obj)) {
@@ -105,7 +126,7 @@ export function formatObjectToMarkdown(obj: any, indentLevel: number = 0): strin
                 md += formatObjectToMarkdown(item, indentLevel + 1);
             } else {
                 // Array items are formatted as simple values
-                md += `${indent}- ${formatValue(item instanceof Date ? item.toLocaleString() : item)}\n`;
+                md += `${indent}- ${formatValue(item)}\n`;
             }
         });
     } else { // Is an object
@@ -122,7 +143,7 @@ export function formatObjectToMarkdown(obj: any, indentLevel: number = 0): strin
                 md += formatObjectToMarkdown(value, indentLevel + 1);
             } else {
                 // Object values are formatted as simple values
-                md += `${formatValue(value instanceof Date ? value.toLocaleString() : value)}\n`;
+                md += `${formatValue(value)}\n`;
             }
         });
     }
@@ -162,21 +183,12 @@ export function formatTaskToMarkdown(task: any): string {
     if (task.purpose) md += `  - **Purpose:** ${formatValue(task.purpose)}\n`;
     if (task.action_description) md += `  - **Action:** ${formatValue(task.action_description)}\n`;
 
-    const formatJsonArrayField = (fieldName: string, arrInput: any) => {
-        let items: string[] = [];
-        if (typeof arrInput === 'string') {
-            try { items = JSON.parse(arrInput); } catch { items = [arrInput]; } // Treat as single item if not JSON
-        } else if (Array.isArray(arrInput)) {
-            items = arrInput;
-        }
-        if (items.length > 0) {
-            md += `  - **${escapeMinimalMarkdown(fieldName)}:** ${items.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
-        }
-    };
-
-    formatJsonArrayField('Files Involved', task.files_involved_parsed || task.files_involved_json || task.files_involved);
-    formatJsonArrayField('Dependencies', task.dependencies_task_ids_parsed || task.dependencies_task_ids_json || task.dependencies_task_ids);
-    formatJsonArrayField('Tools Required', task.tools_required_list_parsed || task.tools_required_list_json || task.tools_required_list);
+    const filesInvolved = getParsedArrayField(task.files_involved_parsed || task.files_involved_json || task.files_involved);
+    if (filesInvolved.length > 0) md += `  - **Files Involved:** ${filesInvolved.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
+    const dependencies = getParsedArrayField(task.dependencies_task_ids_parsed || task.dependencies_task_ids_json || task.dependencies_task_ids);
+    if (dependencies.length > 0) md += `  - **Dependencies:** ${dependencies.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
+    const toolsRequired = getParsedArrayField(task.tools_required_list_parsed || task.tools_required_list_json || task.tools_required_list);
+    if (toolsRequired.length > 0) md += `  - **Tools Required:** ${toolsRequired.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
 
     if (task.inputs_summary) md += `  - **Inputs:** ${formatValue(task.inputs_summary)}\n`;
     if (task.outputs_summary) md += `  - **Outputs:** ${formatValue(task.outputs_summary)}\n`;
@@ -184,9 +196,9 @@ export function formatTaskToMarkdown(task: any): string {
     if (task.estimated_effort_hours) md += `  - **Estimated Effort:** ${formatValue(task.estimated_effort_hours)} hours\n`;
     if (task.assigned_to) md += `  - **Assigned To:** ${formatValue(task.assigned_to)}\n`;
     if (task.verification_method) md += `  - **Verification:** ${formatValue(task.verification_method)}\n`;
-    if (task.creation_timestamp_iso) md += `  - **Created:** ${new Date(task.creation_timestamp_iso).toLocaleString()}\n`;
-    if (task.last_updated_timestamp_iso) md += `  - **Last Updated:** ${new Date(task.last_updated_timestamp_iso).toLocaleString()}\n`;
-    if (task.completion_timestamp_iso) md += `  - **Completed:** ${new Date(task.completion_timestamp_iso).toLocaleString()}\n`;
+    if (task.creation_timestamp_iso) md += `  - **Created:** ${formatValue(task.creation_timestamp_iso ? new Date(task.creation_timestamp_iso) : null)}\n`;
+    if (task.last_updated_timestamp_iso) md += `  - **Last Updated:** ${formatValue(task.last_updated_timestamp_iso ? new Date(task.last_updated_timestamp_iso) : null)}\n`;
+    if (task.completion_timestamp_iso) md += `  - **Completed:** ${formatValue(task.completion_timestamp_iso ? new Date(task.completion_timestamp_iso) : null)}\n`;
 
     const notes = task.notes_parsed || task.notes_json || task.notes;
     if (notes) {
@@ -218,13 +230,7 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
     let md = "| Task No. | Title | Status | Dependencies | Assigned To | Task ID |\n";
     md += "|----------|-------|--------|--------------|-------------|---------|\n";
     tasks.forEach(task => {
-        const dependenciesInput = task.dependencies_task_ids_parsed || task.dependencies_task_ids_json || task.dependencies_task_ids;
-        let dependencies: string[] = [];
-        if (typeof dependenciesInput === 'string') {
-            try { dependencies = JSON.parse(dependenciesInput); } catch { dependencies = [dependenciesInput];}
-        } else if (Array.isArray(dependenciesInput)) {
-            dependencies = dependenciesInput;
-        }
+        const dependencies = getParsedArrayField(task.dependencies_task_ids_parsed || task.dependencies_task_ids_json || task.dependencies_task_ids);
 
         md += `| ${formatValue(task.task_number || 'N/A')} `
             + `| ${formatValue(task.title || 'N/A')} `
@@ -234,12 +240,14 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
             + `| ${formatValue(task.task_id || 'N/A', {isCodeOrId: true})} |\n`;
 
         if (includeSubtasks && task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
-            // For subtasks within a table, it's tricky. A simple list under the row might be better than trying to fit into table cells.
-            // Or, if it must be in table, it needs careful cell spanning or just listing in a notes-like column.
-            // For now, keeping it simple, but this might look odd in some markdown renderers.
-            md += `| | **Subtasks:** | | | | |\n`;
-            task.subtasks.forEach((subtask: any, index: number) => {
-                 md += `| | ${index === 0 ? '' : '  '}└ ${formatValue(subtask.subtask_id, {isCodeOrId: true})}: ${formatValue(subtask.title)} (${formatValue(subtask.status)}) | | | | |\n`;
+            md += `\n**Subtasks for Task ${formatValue(task.task_number, {isCodeOrId: true})} - ${formatValue(task.title)}:**\n`;
+            task.subtasks.forEach((subtask: any) => {
+                md += `- Subtask ID: ${formatValue(subtask.subtask_id || 'N/A', {isCodeOrId: true})}\n`;
+                md += `  - Title: ${formatValue(subtask.title || 'N/A')}\n`;
+                md += `  - Status: ${formatValue(subtask.status || 'N/A')}\n`;
+                if (subtask.parent_task_id) {
+                    md += `  - Parent Task ID: ${formatValue(subtask.parent_task_id, {isCodeOrId: true})}\n`;
+                }
             });
         }
     });
@@ -253,8 +261,8 @@ export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks:
     md += `- **Status:** ${formatValue(plan.status || 'N/A')}\n`;
     if (plan.overall_goal) md += `- **Overall Goal:** ${formatValue(plan.overall_goal)}\n`;
     md += `- **Version:** ${formatValue(plan.version || 1)}\n`;
-    if (plan.creation_timestamp_iso) md += `- **Created:** ${new Date(plan.creation_timestamp_iso).toLocaleString()}\n`;
-    if (plan.last_updated_timestamp_iso) md += `- **Last Updated:** ${new Date(plan.last_updated_timestamp_iso).toLocaleString()}\n`;
+    if (plan.creation_timestamp_iso) md += `- **Created:** ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
+    if (plan.last_updated_timestamp_iso) md += `- **Last Updated:** ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
     if (plan.refined_prompt_id_associated) md += `- **Refined Prompt ID:** ${formatValue(plan.refined_prompt_id_associated, {isCodeOrId: true})}\n`;
     if (plan.analysis_report_id_referenced) md += `- **Analysis Report ID:** ${formatValue(plan.analysis_report_id_referenced, {isCodeOrId: true})}\n`;
 
@@ -291,7 +299,7 @@ export function formatPlansListToMarkdownTable(plans: any[]): string {
             + `| ${formatValue(plan.status || 'N/A')} `
             + `| ${formatValue(goalSummary)} ` // Goal summary is plain text
             + `| ${formatValue(plan.version || 1)} `
-            + `| ${plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso).toLocaleDateString() : '*N/A*'} |\n`;
+            + `| ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)} |\n`;
     });
     return md;
 }
@@ -322,8 +330,8 @@ export function formatCorrectionLogToMarkdown(log: any): string {
     }
     md += `  - **Applied Automatically:** ${log.applied_automatically ? 'Yes' : 'No'}\n`;
     md += `  - **Status:** ${formatValue(log.status)}\n`;
-    if (log.creation_timestamp_iso) md += `  - **Created:** ${new Date(log.creation_timestamp_iso).toLocaleString()}\n`;
-    if (log.last_updated_timestamp_iso) md += `  - **Last Updated:** ${new Date(log.last_updated_timestamp_iso).toLocaleString()}\n`;
+    if (log.creation_timestamp_iso) md += `  - **Created:** ${formatValue(log.creation_timestamp_iso ? new Date(log.creation_timestamp_iso) : null)}\n`;
+    if (log.last_updated_timestamp_iso) md += `  - **Last Updated:** ${formatValue(log.last_updated_timestamp_iso ? new Date(log.last_updated_timestamp_iso) : null)}\n`;
     return md;
 }
 
@@ -350,8 +358,8 @@ export function formatToolExecutionLogToMarkdown(log: any): string {
         md += `  - **Output Summary:**\n\n`; // Extra newline for separation
         md += `${formatValue(log.output_summary, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
     }
-    if (log.execution_start_timestamp_iso) md += `  - **Started:** ${new Date(log.execution_start_timestamp_iso).toLocaleString()}\n`;
-    if (log.execution_end_timestamp_iso) md += `  - **Ended:** ${new Date(log.execution_end_timestamp_iso).toLocaleString()}\n`;
+    if (log.execution_start_timestamp_iso) md += `  - **Started:** ${formatValue(log.execution_start_timestamp_iso ? new Date(log.execution_start_timestamp_iso) : null)}\n`;
+    if (log.execution_end_timestamp_iso) md += `  - **Ended:** ${formatValue(log.execution_end_timestamp_iso ? new Date(log.execution_end_timestamp_iso) : null)}\n`;
     if (typeof log.duration_ms === 'number') md += `  - **Duration:** ${log.duration_ms} ms\n`;
     if (log.step_number_executed) md += `  - **Step Executed:** ${formatValue(log.step_number_executed)}\n`;
     if (log.plan_step_title) md += `  - **Plan Step Title:** ${formatValue(log.plan_step_title)}\n`;
@@ -375,13 +383,7 @@ export function formatTaskProgressLogToMarkdown(log: any): string {
         md += `  - **Tool Parameters:**\n${formatJsonToMarkdownCodeBlock(toolParams).split('\n').map(line => `    ${line}`).join('\n')}\n`;
     }
 
-    const filesModifiedInput = log.files_modified_list_parsed || log.files_modified_list_json;
-    let filesModified: string[] = [];
-     if (typeof filesModifiedInput === 'string') {
-        try { filesModified = JSON.parse(filesModifiedInput); } catch { filesModified = [filesModifiedInput];}
-    } else if (Array.isArray(filesModifiedInput)) {
-        filesModified = filesModifiedInput;
-    }
+    const filesModified = getParsedArrayField(log.files_modified_list_parsed || log.files_modified_list_json);
     if (filesModified.length > 0) md += `  - **Files Modified:** ${filesModified.map((f:string) => formatValue(f, {isCodeOrId: true})).join(', ')}\n`;
 
     if (log.change_summary_text) md += `  - **Change Summary:** ${formatValue(log.change_summary_text)}\n`;
@@ -389,7 +391,7 @@ export function formatTaskProgressLogToMarkdown(log: any): string {
     if (log.output_summary_or_error) {
         md += `  - **Output/Error:**\n${formatValue(log.output_summary_or_error, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n`;
     }
-    if (log.execution_timestamp_iso) md += `  - **Executed At:** ${new Date(log.execution_timestamp_iso).toLocaleString()}\n`;
+    if (log.execution_timestamp_iso) md += `  - **Executed At:** ${formatValue(log.execution_timestamp_iso ? new Date(log.execution_timestamp_iso) : null)}\n`;
     return md;
 }
 
@@ -421,6 +423,6 @@ export function formatErrorLogToMarkdown(log: any): string {
         md += `${formatValue(log.stack_trace, { isBlockContent: true }).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
     }
     if (log.resolution_details) md += `  - **Resolution:** ${formatValue(log.resolution_details)}\n`;
-    if (log.error_timestamp_iso) md += `  - **Occurred At:** ${new Date(log.error_timestamp_iso).toLocaleString()}\n`;
+    if (log.error_timestamp_iso) md += `  - **Occurred At:** ${formatValue(log.error_timestamp_iso ? new Date(log.error_timestamp_iso) : null)}\n`;
     return md;
 }
