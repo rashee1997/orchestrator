@@ -19,6 +19,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
             focus_area: { type: 'string', description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions).', nullable: true },
+            context_snippet_length: { type: 'number', description: 'Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.', default: 200, nullable: true },
             analysis_focus_points: {
                 type: 'array',
                 items: {
@@ -63,7 +64,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
 
-        const { query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options } = args;
+        const { query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length } = args;
+        const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
 
         // Access dbService and contextManager via memoryManagerInstance's public getters or properties
         // This assumes MemoryManager exposes these, or provides a method to get GeminiIntegrationService
@@ -122,7 +124,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const contextText = contextResults.map(res => {
                     const filePath = res.sourcePath;
                     const entityName = res.entityName ? ` (${res.entityName})` : '';
-                    const contentPreview = res.content.substring(0, 200);
+                    const contentPreview = res.content.substring(0, snippetLength);
                     return `File: \`${filePath}\` ${entityName}\n\`\`\`${res.metadata?.language || 'text'}\n${contentPreview}...\n\`\`\``;
                 }).join("\n\n");
 

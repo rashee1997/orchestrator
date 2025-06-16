@@ -114,7 +114,7 @@ Your Response should include:
 - Suggestions for code improvements, refactoring, or optimization.
 - Adherence to best practices and coding standards.`;
 
-export const CODE_EXPLANATION_META_PROMPT = `You are an expert AI code explainer. Given the following codebase context and user question, provide a clear and concise explanation of the code. Reference the file paths and entity names from the context in your explanation.`;
+export const CODE_EXPLANATION_META_PROMPT = `You are an expert AI code explainer. Given the following codebase context and user question, provide a detailed and comprehensive explanation of the code. Reference the file paths and entity names from the context in your explanation.`;
 
 export const ENHANCEMENT_SUGGESTIONS_META_PROMPT = `You are an expert AI enhancement suggester. Given the following codebase context and user question, provide suggestions for code improvements. Reference the file paths and entity names from the context in your suggestions. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
 Codebase Context:
