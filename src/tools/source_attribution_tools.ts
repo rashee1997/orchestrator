@@ -38,7 +38,7 @@ export const sourceAttributionToolDefinitions = [
     },
     {
         name: 'tavily_web_search',
-        description: 'Performs a Tavily web search and returns results as Markdown. Source attribution should be logged separately by the calling agent using the log_search_attribution tool.',
+        description: 'Performs a Tavily web search and returns results as Markdown. Source attribution should be logged separately by the calling agent using the log_source_attribution tool with source_type \'tavily_search\'.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -47,23 +47,6 @@ export const sourceAttributionToolDefinitions = [
                 max_results: { type: 'number', default: 5, description: 'Maximum number of search results to return.' },
             },
             required: ['query'],
-        },
-    },
-    {
-        name: 'log_search_attribution', // This is a specialized version of log_source_attribution for searches
-        description: 'Logs the attribution details for a completed web search. Output is Markdown formatted.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                agent_id: { type: 'string', description: 'Identifier of the AI agent that performed the search.' },
-                query: { type: 'string', description: 'The original search query.' },
-                search_results_summary: { type: 'string', description: 'A summary of the search results.', nullable: true },
-                retrieval_timestamp: { type: 'number', description: 'Unix timestamp of when the search was performed.' },
-                // source_uri is implicitly the query for search
-                full_content_hash: { type: 'string', description: 'Optional hash of the full content for integrity checking.', nullable: true },
-                full_content_json: { type: ['string', 'object'], description: 'Optional, full search results content as a JSON string or object.', nullable: true },
-            },
-            required: ['agent_id', 'query', 'retrieval_timestamp'],
         },
     },
 ];
@@ -131,33 +114,6 @@ export function getSourceAttributionToolHandlers(memoryManager: MemoryManager) {
                 });
             }
             return { content: [{ type: 'text', text: md }] };
-        },
-        'log_search_attribution': async (args: any, agent_id: string) => {
-            // Validate against a modified sourceAttribution schema or ensure args match
-             const validationResult = validate('sourceAttribution', { // Use the base schema
-                agent_id: args.agent_id,
-                source_type: 'tavily_search', // Hardcode for this tool
-                source_uri: args.query, // Map query to source_uri
-                retrieval_timestamp: args.retrieval_timestamp,
-                content_summary: args.search_results_summary, // Map
-                full_content_hash: args.full_content_hash,
-                full_content_json: args.full_content_json
-            });
-            if (!validationResult.valid) {
-                throw new McpError(ErrorCode.InvalidParams, `Validation failed for log_search_attribution: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
-            }
-
-            const contentJson = typeof args.full_content_json === 'object' ? JSON.stringify(args.full_content_json) : args.full_content_json;
-            const newAttrId = await memoryManager.logSourceAttribution(
-                agent_id,
-                'tavily_search', // Source type is fixed for this tool
-                args.query as string, // Use query as the source_uri
-                args.retrieval_timestamp as number,
-                args.search_results_summary as string | null,
-                args.full_content_hash as string | null,
-                contentJson as string | null
-            );
-            return { content: [{ type: 'text', text: formatSimpleMessage(`Search attribution for query "${args.query}" logged with ID: \`${newAttrId}\``, "Search Attribution Logged") }] };
         },
     };
 }

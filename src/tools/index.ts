@@ -1,9 +1,7 @@
 // src/tools/index.ts
 import { conversationToolDefinitions, getConversationToolHandlers } from './conversation_tools.js';
-import { contextToolDefinitions, getContextToolHandlers } from './context_tools.js';
 import { referenceToolDefinitions, getReferenceToolHandlers } from './reference_tools.js';
 import { sourceAttributionToolDefinitions, getSourceAttributionToolHandlers } from './source_attribution_tools.js';
-import { correctionToolDefinitions, getCorrectionToolHandlers } from './correction_tools.js';
 import { successMetricsToolDefinitions, getSuccessMetricsToolHandlers } from './success_metrics_tools.js';
 import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } from './database_management_tools.js';
 import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './plan_management_tools.js';
@@ -13,7 +11,6 @@ import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from '
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 import { gitToolDefinitions, getGitToolHandlers } from './git_tools.js';
-import { codeAnalysisToolDefinitions, getCodeAnalysisToolHandlers } from './code_analysis_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
 import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 
@@ -113,10 +110,8 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
 
     const allDefs: Tool[] = [
         ...stripFuncFromDefs(conversationToolDefinitions),
-        ...stripFuncFromDefs(contextToolDefinitions),
         ...stripFuncFromDefs(referenceToolDefinitions),
         ...stripFuncFromDefs(sourceAttributionToolDefinitions),
-        ...stripFuncFromDefs(correctionToolDefinitions),
         ...stripFuncFromDefs([geminiCorrectionSummarizerToolDefinition]),
         ...stripFuncFromDefs(successMetricsToolDefinitions),
         ...stripFuncFromDefs(databaseManagementToolDefinitions),
@@ -128,7 +123,6 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
         ...stripFuncFromDefs(geminiToolDefinitions),
         ...stripFuncFromDefs(gitToolDefinitions),
-        ...stripFuncFromDefs(codeAnalysisToolDefinitions),
         ...stripFuncFromDefs(embeddingToolDefinitions), 
         ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions), 
         stripFuncFromDefs([listToolsToolDefinition])[0] 
@@ -158,10 +152,8 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
 
     return {
         ...getConversationToolHandlers(memoryManager),
-        ...getContextToolHandlers(memoryManager),
         ...getReferenceToolHandlers(memoryManager),
         ...getSourceAttributionToolHandlers(memoryManager),
-        ...getCorrectionToolHandlers(memoryManager),
         'summarize_correction_logs': summarizeCorrectionLogsHandler,
         'list_tools': listToolsHandler,
         ...getSuccessMetricsToolHandlers(memoryManager),
@@ -173,7 +165,6 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getReviewLogToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
         ...getGitToolHandlers(), 
-        ...getCodeAnalysisToolHandlers(memoryManager),
         ...getEmbeddingToolHandlers(memoryManager), 
         ...getAiTaskEnhancementToolHandlers(memoryManager), 
         ...loggingHandlers,

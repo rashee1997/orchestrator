@@ -706,6 +706,51 @@ export const schemas = {
         required: ['final_review_log_id'],
         additionalProperties: false
     },
+    askGemini: {
+        type: 'object',
+        properties: {
+            query: { type: 'string', description: 'The query string to send to Gemini.' },
+            model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
+            systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
+            enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
+            focus_area: { type: 'string', description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions).', nullable: true },
+            analysis_focus_points: {
+                type: 'array',
+                items: {
+                    type: 'string',
+                    enum: [
+                        "Potential Bugs & Errors",
+                        "Best Practices & Conventions",
+                        "Performance",
+                        "Security Vulnerabilities",
+                        "Readability & Maintainability",
+                        "Duplications",
+                        "Code Smells",
+                        "Testability",
+                        "Error Handling",
+                        "Modularity & Coupling",
+                        "Documentation & Comments"
+                    ]
+                },
+                description: 'Specific aspects to focus on during the review. If empty or not provided, a general comprehensive review is performed.',
+                nullable: true
+            },
+            context_options: {
+                type: 'object',
+                properties: {
+                    topKEmbeddings: { type: 'number', description: 'Optional: Number of top embedding results to retrieve.', nullable: true },
+                    kgQueryDepth: { type: 'number', description: 'Optional: Depth for Knowledge Graph queries.', nullable: true },
+                    includeFileContent: { type: 'boolean', description: 'Optional: Whether to include full file content for retrieved files.', nullable: true },
+                    targetFilePaths: { type: 'array', items: { type: 'string' }, description: 'Optional: Array of relative file paths to restrict context retrieval to.', nullable: true },
+                    topKKgResults: { type: 'number', description: 'Optional: Number of top Knowledge Graph results to retrieve.', nullable: true },
+                    embeddingScoreThreshold: { type: 'number', description: 'Optional: Minimum embedding similarity score to include results.', nullable: true }
+                },
+                additionalProperties: false,
+                nullable: true
+            }
+        },
+        required: ['query']
+    }
 };
 
 // Compile schemas
