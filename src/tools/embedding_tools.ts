@@ -71,6 +71,11 @@ Returns a summary of deleted embeddings.`,
                 project_root_path: {
                     type: 'string',
                     description: "The absolute root path of the project. Used to correctly resolve and normalize file paths for deletion."
+                },
+                filter_by_agent: {
+                    type: 'boolean',
+                    default: true,
+                    description: "Optional: If true, only deletes embeddings associated with the calling agent_id. Defaults to true."
                 }
             },
             required: ['agent_id', 'file_paths', 'project_root_path'],
@@ -322,7 +327,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for clean_up_embeddings: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { file_paths, project_root_path, filter_by_agent } = args;
+            const { file_paths, project_root_path, filter_by_agent = true } = args; // Default to true
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
             const vectorDb = memoryManager.getVectorDb(); // Get the DB instance
             console.log(`[CleanUpTool] Tool is using database at: ${(vectorDb as any).name}`); // Log the DB path, casting to any to bypass TS error

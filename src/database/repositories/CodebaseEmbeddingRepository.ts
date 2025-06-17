@@ -152,6 +152,16 @@ export class CodebaseEmbeddingRepository {
         return { summary: result ? result.ai_summary_text : null, latencyMs: endTime - startTime, callCount: 1 };
     }
 
+    /**
+     * Retrieves all unique relative file paths associated with a given agent ID.
+     * @param agentId The ID of the agent.
+     * @returns A promise that resolves to an array of unique file paths.
+     */
+    public async getAllFilePathsForAgent(agentId: string): Promise<string[]> {
+        const sql = `SELECT DISTINCT file_path_relative FROM ${this.metadataTable} WHERE agent_id = ?`;
+        const rows = this.db.prepare(sql).all(agentId) as { file_path_relative: string }[];
+        return rows.map(row => row.file_path_relative);
+    }
 
     /**
      * Finds semantically similar embeddings to a given query vector.

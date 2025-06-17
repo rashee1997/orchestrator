@@ -305,6 +305,16 @@ export class CodebaseEmbeddingService {
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const absoluteDirectoryPath = path.resolve(directoryPath);
 
+        // Get all existing file paths for the agent within the project root
+        const allExistingEmbeddedFilePaths = await this.repository.getAllFilePathsForAgent(agentId);
+        const existingEmbeddedFilePathsInDirectory = new Set<string>();
+        for (const filePath of allExistingEmbeddedFilePaths) {
+            if (filePath.startsWith(path.relative(absoluteProjectRootPath, absoluteDirectoryPath).replace(/\\/g, '/') + '/')) {
+                existingEmbeddedFilePathsInDirectory.add(filePath);
+            }
+        }
+        console.log(`[CodebaseEmbeddingService] Found ${existingEmbeddedFilePathsInDirectory.size} existing embedded files in directory: ${directoryPath}`);
+
         const scannedItems = await this.introspectionService.scanDirectoryRecursive(agentId, absoluteDirectoryPath, absoluteProjectRootPath);
         
         await this.embeddingCache.loadCacheState(); // Load cache once for the entire directory processing
@@ -321,6 +331,7 @@ export class CodebaseEmbeddingService {
         const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const processedFilePaths = new Set<string>(); // Keep track of files processed in this ingestion
 
         const concurrencyLimit = 5; // Limit concurrent file processing
         const fileProcessingPromises: Promise<void>[] = [];
@@ -352,6 +363,7 @@ export class CodebaseEmbeddingService {
                         newEmbeddings.push(...result.newEmbeddings);
                         reusedEmbeddings.push(...result.reusedEmbeddings);
                         deletedEmbeddings.push(...result.deletedEmbeddings);
+                        processedFilePaths.add(path.relative(absoluteProjectRootPath, item.path).replace(/\\/g, '/'));
                     } catch (fileError) {
                         console.error(`Error processing file ${item.path} for embeddings:`, fileError);
                     }
@@ -372,6 +384,20 @@ export class CodebaseEmbeddingService {
 
         await Promise.all(fileProcessingPromises); // Wait for all promises to settle
         await this.embeddingCache.flushToDb(); // Flush cache once after all files in the directory are processed
+
+        // Identify and delete embeddings for files that no longer exist in the directory
+        const deletedFilePaths: string[] = [];
+        for (const existingFilePath of existingEmbeddedFilePathsInDirectory) {
+            if (!processedFilePaths.has(existingFilePath)) {
+                deletedFilePaths.push(existingFilePath);
+            }
+        }
+
+        if (deletedFilePaths.length > 0) {
+            console.log(`[CodebaseEmbeddingService] Deleting embeddings for ${deletedFilePaths.length} stale files.`);
+            const cleanupResult = await this.cleanUpEmbeddingsByFilePaths(agentId, deletedFilePaths, absoluteProjectRootPath, true);
+            totalDeletedEmbeddings += cleanupResult.deletedCount;
+        }
 
         const endTime = Date.now();
         const totalTimeMs = endTime - startTime;
