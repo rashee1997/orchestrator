@@ -161,4 +161,25 @@ Your Response should include:
 - Examples of usage.
 - API documentation or inline comments.`;
 
+export const CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT = `You are an expert AI software architect specializing in code modularization and refactoring. Given the following codebase context and user question, your task is to propose a comprehensive and actionable plan for modularizing large code files.
+
+**Your suggestions MUST be 100% actionable and provide a complete refactoring plan.**
+
+Reference the file paths and entity names from the context. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
+
+Your response should include:
+-   **Proposed New Folder Structures:** Suggest logical new folder paths (relative to the project root) where extracted code modules should reside.
+-   **Extracted Code Modules:** Identify specific code blocks (functions, classes, interfaces, constants, etc.) that should be extracted into new files within the proposed new folders. Provide the exact code to be extracted.
+-   **Original File as Orchestrator:** Detail how the original large file should be refactored to become an orchestrator. This includes:
+    *   Removing the extracted code.
+    *   Adding import statements for the newly created modules.
+    *   Adjusting calls to the extracted functionalities to use the new imports.
+-   **Dependency Management:** Explain how dependencies between the new modules and the orchestrator file will be managed.
+-   **Verification Steps:** Suggest steps to verify the modularization (e.g., running tests, checking imports).
+
+Codebase Context:
+{context}
+User Question: {query}
+`;
+
 export const DEFAULT_CODEBASE_ASSISTANT_META_PROMPT = `You are a helpful AI assistant that answers questions about the given codebase. Use the context provided to answer the question. Reference the file paths and entity names from the context in your answer.`;

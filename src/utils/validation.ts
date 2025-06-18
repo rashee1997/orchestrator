@@ -536,6 +536,7 @@ export const schemas = {
                         nullable: true
                     }
                 },
+                context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true },
                 additionalProperties: false,
                 nullable: true
             }
@@ -713,7 +714,21 @@ export const schemas = {
             model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
-            focus_area: { type: 'string', description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions).', nullable: true },
+            focus_area: {
+                type: 'string',
+                description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions, code modularization & orchestration).',
+                enum: [
+                    "code_review",
+                    "code_explanation",
+                    "enhancement_suggestions",
+                    "bug_fixing",
+                    "refactoring",
+                    "testing",
+                    "documentation",
+                    "code_modularization_orchestration" // New focus area
+                ],
+                nullable: true
+            },
             analysis_focus_points: {
                 type: 'array',
                 items: {

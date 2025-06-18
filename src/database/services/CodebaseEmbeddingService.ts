@@ -48,13 +48,11 @@ export class CodebaseEmbeddingService {
     public async cleanUpEmbeddingsByFilePaths(agentId: string, filePaths: string[], projectRootPath: string, filterByAgentId?: boolean): Promise<{ deletedCount: number }> {
         let deletedCount = 0;
         const absoluteProjectRootPath = path.resolve(projectRootPath);
-
         const embeddingIdsToDelete: string[] = [];
-        for (const filePath of filePaths) {
-            // Normalize the input filePath to match the format stored in the database (relative, forward slashes)
-            const absoluteFilePath = path.resolve(filePath); // Ensure it's an absolute path first
-            const normalizedFilePath = path.relative(absoluteProjectRootPath, absoluteFilePath).replace(/\\/g, '/');
-            console.log(`[CleanUpEmbeddings] Processing file: ${filePath}`);
+        // filePaths are expected to be relative to projectRootPath and normalized (forward slashes)
+        // as they are passed from the tool handler.
+        for (const normalizedFilePath of filePaths) { // Use normalizedFilePath directly
+            console.log(`[CleanUpEmbeddings] Processing file: ${normalizedFilePath}`);
             console.log(`[CleanUpEmbeddings] Normalized path: "${normalizedFilePath}"`);
             
             const embeddings = await this.repository.getEmbeddingsForFile(normalizedFilePath, filterByAgentId ? agentId : undefined);
@@ -432,24 +430,29 @@ export class CodebaseEmbeddingService {
         agentId: string,
         queryText: string,
         topK: number = 5,
-        targetFilePaths?: string[]
+        targetFilePaths?: string[],
+        exclude_chunk_types?: string[] // Added this parameter
     ): Promise<Array<{ chunk_text: string; ai_summary_text?: string | null; file_path_relative: string; entity_name: string | null; score: number; metadata?: Record<string, any> | null }>> {
         const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText]);
         const queryEmbedding = embeddings[0];
         if (!queryEmbedding || !queryEmbedding.vector) {
             throw new Error("Failed to generate embedding for query text.");
         }
+        
+        // Fetch more results initially to allow for filtering and ensure we can still hit topK after filtering
+        const initialTopK = topK * 5; // Fetch more to account for potential filtering
 
-        const vecResults = await this.repository.findSimilarEmbeddings(queryEmbedding.vector, topK * 2);
-        const ids = vecResults.map(r => r.embedding_id);
-        const metadataRows = await this.repository.fetchMetadataByIds(ids);
+        // Directly fetch detailed embedding records from the repository, applying file path filtering
+        const rawResults = await this.repository.findSimilarEmbeddingsWithMetadata(
+            queryEmbedding.vector,
+            initialTopK, // Get more results to filter later
+            agentId, // Pass agentId for filtering if repository supports it
+            targetFilePaths // Pass target file paths to the repository
+        );
 
-        const fullFileChunks: Array<any> = [];
-        const summaryChunks: Array<any> = [];
+        let filteredResults: Array<{ chunk_text: string; ai_summary_text?: string | null; file_path_relative: string; entity_name: string | null; score: number; metadata?: Record<string, any> | null }> = [];
 
-        for (let i = 0; i < ids.length; i++) {
-            const id = ids[i];
-            const meta = metadataRows.find(row => row.embedding_id === id);
+        for (const meta of rawResults) {
             if (!meta) continue;
 
             let parsedMetadata: Record<string, any> | null = null;
@@ -457,33 +460,35 @@ export class CodebaseEmbeddingService {
                 try {
                     parsedMetadata = JSON.parse(meta.metadata_json);
                 } catch (e) {
-                    console.warn(`Failed to parse metadata_json for embedding ID ${id}:`, e);
+                    console.warn(`Failed to parse metadata_json for embedding ID ${meta.embedding_id}:`, e);
                 }
             }
 
             const chunk = {
-                chunk_text: meta.chunk_text || '',
-                ai_summary_text: meta.ai_summary_text || null,
-                file_path_relative: meta.file_path_relative || '',
-                entity_name: meta.entity_name || null,
-                score: vecResults[i]?.similarity ?? 0,
+                chunk_text: meta.chunk_text,
+                ai_summary_text: meta.ai_summary_text,
+                file_path_relative: meta.file_path_relative,
+                entity_name: meta.entity_name,
+                score: meta.similarity, // Use the similarity score from the repository result
                 metadata: parsedMetadata
             };
-            if (parsedMetadata && parsedMetadata.type === 'full_file') {
-                fullFileChunks.push(chunk);
-            } else {
-                summaryChunks.push(chunk);
+
+            // Apply exclude_chunk_types filtering here
+            if (exclude_chunk_types && Array.isArray(exclude_chunk_types) && exclude_chunk_types.length > 0) {
+                const chunkType = chunk.metadata?.type;
+                if (chunkType && exclude_chunk_types.includes(chunkType)) {
+                    continue; // Skip this chunk if its type is in the exclusion list
+                }
             }
+            filteredResults.push(chunk);
         }
 
-        const combinedChunks: Array<any> = [];
-        const maxLength = Math.max(fullFileChunks.length, summaryChunks.length);
-        for (let i = 0; i < maxLength; i++) {
-            if (i < fullFileChunks.length) combinedChunks.push(fullFileChunks[i]);
-            if (i < summaryChunks.length) combinedChunks.push(summaryChunks[i]);
-            if (combinedChunks.length >= topK) break;
-        }
+        // Re-sort the filtered results by score to ensure true top-K
+        // The raw results from the DB are typically sorted by similarity, but
+        // in-application filtering might disturb this order, so re-sorting ensures accuracy.
+        filteredResults.sort((a, b) => b.score - a.score);
 
-        return combinedChunks.slice(0, topK);
+        // Return the top K results after all filtering and sorting
+        return filteredResults.slice(0, topK);
     }
 }

@@ -164,6 +164,65 @@ export class CodebaseEmbeddingRepository {
     }
 
     /**
+     * Finds semantically similar embeddings to a given query vector,
+     * and directly fetches their metadata, applying optional filters.
+     * @param queryEmbedding The vector to find similar embeddings for.
+     * @param topK The number of similar embeddings to return.
+     * @param agentId Optional: The ID of the agent to filter by.
+     * @param targetFilePaths Optional: Array of relative file paths to restrict the search to.
+     * @returns A promise that resolves to an array of similar embeddings with full metadata and similarity scores.
+     */
+    public async findSimilarEmbeddingsWithMetadata(
+        queryEmbedding: number[],
+        topK: number,
+        agentId?: string,
+        targetFilePaths?: string[]
+    ): Promise<Array<CodebaseEmbeddingRecord & { similarity: number }>> {
+        // Step 1: Find similar embeddings using the vector DB function
+        const vecResults = await findSimilarVecEmbeddings(queryEmbedding, topK * 5, this.vectorTable); // Fetch more to allow for filtering
+
+        if (vecResults.length === 0) {
+            return [];
+        }
+
+        const embeddingIds = vecResults.map(r => r.embedding_id);
+        const similarityMap = new Map<string, number>();
+        vecResults.forEach(r => similarityMap.set(r.embedding_id, r.similarity));
+
+        // Step 2: Fetch metadata for these embedding IDs
+        const placeholders = embeddingIds.map(() => '?').join(',');
+        let sql = `SELECT * FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`;
+        const params: (string | string[])[] = [...embeddingIds];
+
+        if (agentId) {
+            sql += ` AND agent_id = ?`;
+            params.push(agentId);
+        }
+
+        if (targetFilePaths && targetFilePaths.length > 0) {
+            const filePlaceholders = targetFilePaths.map(() => '?').join(',');
+            sql += ` AND file_path_relative IN (${filePlaceholders})`;
+            params.push(...targetFilePaths);
+        }
+
+        const metadataRows = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
+
+        // Step 3: Combine metadata with similarity scores and filter/sort
+        const combinedResults: Array<CodebaseEmbeddingRecord & { similarity: number }> = [];
+        for (const meta of metadataRows) {
+            const similarity = similarityMap.get(meta.embedding_id);
+            if (similarity !== undefined) {
+                combinedResults.push({ ...meta, similarity });
+            }
+        }
+
+        // Sort by similarity in descending order and take topK
+        combinedResults.sort((a, b) => b.similarity - a.similarity);
+
+        return combinedResults.slice(0, topK);
+    }
+
+    /**
      * Finds semantically similar embeddings to a given query vector.
      * @param queryEmbedding The vector to find similar embeddings for.
      * @param topK The number of similar embeddings to return.

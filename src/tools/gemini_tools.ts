@@ -5,7 +5,7 @@ import { ContextInformationManager } from '../database/managers/ContextInformati
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 
 
 export const askGeminiToolDefinition: InternalToolDefinition = {
@@ -18,7 +18,21 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
-            focus_area: { type: 'string', description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions).', nullable: true },
+            focus_area: {
+                type: 'string',
+                description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions, code modularization & orchestration).',
+                enum: [
+                    "code_review",
+                    "code_explanation",
+                    "enhancement_suggestions",
+                    "bug_fixing",
+                    "refactoring",
+                    "testing",
+                    "documentation",
+                    "code_modularization_orchestration" // New focus area
+                ],
+                nullable: true
+            },
             context_snippet_length: { type: 'number', description: 'Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.', default: 200, nullable: true },
             analysis_focus_points: {
                 type: 'array',
@@ -115,6 +129,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     case "documentation":
                         metaPromptTemplate = DOCUMENTATION_META_PROMPT;
                         break;
+                    case "code_modularization_orchestration": // New case
+                        metaPromptTemplate = CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT;
+                        break;
                     default:
                         metaPromptTemplate = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
                         break;
@@ -132,7 +149,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{context}', contextText)
                     .replace('{query}', query);
                 
-                if (focus_area && ["code_review", "enhancement_suggestions", "bug_fixing", "refactoring", "testing", "documentation"].includes(focus_area)) {
+                if (focus_area && ["code_review", "enhancement_suggestions", "bug_fixing", "refactoring", "testing", "documentation", "code_modularization_orchestration"].includes(focus_area)) {
                     augmentedQuery = `${focusString}\n\n${augmentedQuery}`;
                 }
 

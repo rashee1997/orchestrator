@@ -264,15 +264,9 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     agent_id,
                     query_text,
                     top_k || 5,
-                    target_file_paths
+                    target_file_paths,
+                    exclude_chunk_types // Pass exclusion types to service
                 );
-
-                if (exclude_chunk_types && Array.isArray(exclude_chunk_types) && exclude_chunk_types.length > 0) {
-                    results = results.filter(res => {
-                        const chunkType = res.metadata?.type;
-                        return chunkType ? !exclude_chunk_types.includes(chunkType) : true;
-                    });
-                }
 
                 if (results.length === 0) {
                     return { content: [{ type: 'text', text: formatSimpleMessage(`No similar code chunks found for query: "${query_text}" (after filtering).`, "Embedding Query Results") }] };

@@ -7,7 +7,45 @@ export const promptRefinementToolDefinitions = [
     {
         name: 'refine_user_prompt',
         description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.refineUserPrompt
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
+                raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
+                target_ai_persona: {
+                  type: ['string', 'null'],
+                  description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer').",
+                  default: null
+                },
+                conversation_context_ids: {
+                  type: ['array', 'null'],
+                  items: { type: 'string' },
+                  description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
+                  default: null
+                },
+                context_options: {
+                    type: 'object',
+                    properties: {
+                        topKEmbeddings: { type: 'number', default: 3 },
+                        topKKgResults: { type: 'number', default: 3 },
+                        embeddingScoreThreshold: { type: 'number', default: 0.5 },
+                        kgQueryDepth: { type: 'number', description: "Optional: Depth for Knowledge Graph queries.", nullable: true },
+                        includeFileContent: { type: 'boolean', description: "Optional: Whether to include full file content for retrieved files.", nullable: true },
+                        targetFilePaths: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: "Optional: Array of relative file paths to restrict context retrieval to.",
+                            nullable: true
+                        },
+                        context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true }
+                    },
+                    additionalProperties: false,
+                    nullable: true
+                }
+            },
+            required: ['agent_id', 'raw_user_prompt'],
+            additionalProperties: false,
+        }
     },
     {
         name: 'get_refined_prompt',
