@@ -116,7 +116,12 @@ Your Response should include:
 
 export const CODE_EXPLANATION_META_PROMPT = `You are an expert AI code explainer. Given the following codebase context and user question, provide a detailed and comprehensive explanation of the code. Reference the file paths and entity names from the context in your explanation.`;
 
-export const ENHANCEMENT_SUGGESTIONS_META_PROMPT = `You are an expert AI enhancement suggester. Given the following codebase context and user question, provide suggestions for code improvements. Reference the file paths and entity names from the context in your suggestions. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
+export const ENHANCEMENT_SUGGESTIONS_META_PROMPT = `You are an expert AI enhancement suggester. Given the following codebase context and user question, provide suggestions for code improvements and refactoring.
+
+**Your suggestions MUST be 100% accurate and provide a complete refactoring plan if applicable.**
+
+Reference the file paths and entity names from the context in your suggestions. If you suggest code changes, format them using the apply_diff tool's diff format, including the file path and starting line number.
+
 Codebase Context:
 {context}
 User Question: {query}
@@ -143,7 +148,12 @@ Your Response should include:
 - Proposed refactoring strategies and code examples.
 - Explanation of the benefits of the refactoring.`;
 
-export const TESTING_META_PROMPT = `You are an expert AI testing assistant. Given the following codebase context and user question, suggest test cases, testing strategies, or ways to improve test coverage. Reference the file paths and entity names from the context.
+export const TESTING_META_PROMPT = `You are an expert AI testing assistant. Given the following codebase context and user question, suggest comprehensive and actionable test cases, testing strategies, or ways to improve test coverage.
+
+**Your suggestions MUST be highly accurate and provide a complete plan for testing.**
+
+Reference the file paths and entity names from the context.
+
 Codebase Context:
 {context}
 User Question: {query}
