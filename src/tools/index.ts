@@ -10,7 +10,6 @@ import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './
 import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from './mode_instruction_tools.js';
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
-import { gitToolDefinitions, getGitToolHandlers } from './git_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
 import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 
@@ -122,7 +121,6 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(reviewLogToolDefinitions),
         ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
         ...stripFuncFromDefs(geminiToolDefinitions),
-        ...stripFuncFromDefs(gitToolDefinitions),
         ...stripFuncFromDefs(embeddingToolDefinitions), 
         ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions), 
         stripFuncFromDefs([listToolsToolDefinition])[0] 
@@ -164,7 +162,6 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getModeInstructionToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
-        ...getGitToolHandlers(), 
         ...getEmbeddingToolHandlers(memoryManager), 
         ...getAiTaskEnhancementToolHandlers(memoryManager), 
         ...loggingHandlers,
