@@ -79,13 +79,107 @@ export class KnowledgeGraphManagerV2 {
 
     async createRelations(agentId: string, relations: Array<{ from: string; to: string; relationType: string }>): Promise<any[]> {
         console.log(`[KGManagerV2.createRelations] Agent: ${agentId}, Relations count: ${relations.length}`);
-        const createdRelations = [];
+        const createdRelations: any[] = [];
         const nodes = await this.jsonlStorage.readAllLines(this.getAgentNodesPath(agentId));
-        const nameToIdMap = new Map(nodes.filter((n:any) => n && !n.deleted).map((node: any) => [node.name, node.id]));
+        const activeNodes = nodes.filter((n: any) => n && !n.deleted);
+
+        // Build primary map (exact name) and auxiliary indexes for normalization
+        const nameToIdMap = new Map<string, string>(activeNodes.map((node: any) => [String(node.name), String(node.id)]));
+        const allNames: string[] = activeNodes.map((n: any) => String(n.name));
+
+        // Helper: strip file prefix like "path/to/file.php::Name" -> "Name" (or "Name::member")
+        const stripFilePrefix = (s: string): string => {
+            const idx = s.indexOf('::');
+            if (idx === -1) return s;
+            const before = s.substring(0, idx);
+            // if "before" looks like a path (contains '/' or '\') then treat as file prefix
+            if (before.includes('/') || before.includes('\\')) {
+                return s.substring(idx + 2);
+            }
+            return s;
+        };
+
+        // Helper: normalize leading backslash and backslash escaping
+        const normalizeNs = (s: string): string => {
+            let t = s.trim();
+            if (t.startsWith('\\')) t = t.slice(1);
+            // unify double backslashes to single for matching purposes
+            t = t.replace(/\\\\/g, '\\');
+            return t;
+        };
+
+        // Try to resolve a relation endpoint to an existing node.id using robust heuristics
+        const resolveEndpoint = (raw: string): string | undefined => {
+            if (!raw) return undefined;
+            const original = raw;
+
+            // 1) Exact match first
+            let id = nameToIdMap.get(original);
+            if (id) return id;
+
+            // 2) Strip file prefix "path::Name" and retry
+            const noFilePrefix = stripFilePrefix(original);
+            if (noFilePrefix !== original) {
+                id = nameToIdMap.get(noFilePrefix);
+                if (id) return id;
+            }
+
+            // 3) Normalize namespace slashes/leading slash and retry
+            const nsNorm = normalizeNs(original);
+            if (nsNorm !== original) {
+                id = nameToIdMap.get(nsNorm);
+                if (id) return id;
+            }
+
+            // 4) If looks like "Class::member" with short class, try to expand by suffix matching
+            const memberMatch = noFilePrefix.match(/^([^:]+)::(.+)$/);
+            if (memberMatch) {
+                const shortClass = normalizeNs(memberMatch[1]);
+                const member = memberMatch[2];
+                // prefer exact FQCN::member names
+                const candidates = allNames.filter(n =>
+                    n.endsWith(`\\${shortClass}::${member}`) || n === `${shortClass}::${member}`
+                );
+                if (candidates.length === 1) {
+                    return nameToIdMap.get(candidates[0]);
+                }
+                // fallback: try exact member without class if unique (rare)
+                const memberOnly = allNames.filter(n => n.endsWith(`::${member}`));
+                if (memberOnly.length === 1) {
+                    return nameToIdMap.get(memberOnly[0]);
+                }
+            }
+
+            // 5) If it's a short class/function name, try unique suffix match on FQCN or namespaced function
+            const short = normalizeNs(noFilePrefix);
+            const suffixCandidates = allNames.filter(n =>
+                n.endsWith(`\\${short}`) || n === short
+            );
+            if (suffixCandidates.length === 1) {
+                return nameToIdMap.get(suffixCandidates[0]);
+            }
+
+            // 6) As a last attempt, if input had file prefix stripped, try matching "FQCN::member" assembled from unique class FQCN
+            if (memberMatch) {
+                const shortClass = normalizeNs(memberMatch[1]);
+                const member = memberMatch[2];
+                const classCandidates = allNames.filter(n =>
+                    // match class entities (not members) that end with \ShortClass
+                    (n.endsWith(`\\${shortClass}`) || n === shortClass) && !n.includes('::')
+                );
+                if (classCandidates.length === 1) {
+                    const attempt = `${classCandidates[0]}::${member}`;
+                    id = nameToIdMap.get(attempt);
+                    if (id) return id;
+                }
+            }
+
+            return undefined;
+        };
 
         for (const relation of relations) {
-            const fromNodeId = nameToIdMap.get(relation.from);
-            const toNodeId = nameToIdMap.get(relation.to);
+            const fromNodeId = resolveEndpoint(relation.from);
+            const toNodeId = resolveEndpoint(relation.to);
 
             if (!fromNodeId || !toNodeId) {
                 console.warn(`[KGManagerV2.createRelations] Skipping relation: One or both nodes not found for ${relation.from} --${relation.relationType}--> ${relation.to}`);

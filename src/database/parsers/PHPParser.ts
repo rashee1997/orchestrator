@@ -51,6 +51,33 @@ interface EnhancedCodeEntity extends ExtractedCodeEntity {
     };
 }
 
+class NameResolver {
+    private namespace = '';
+    private uses: Map<string, string> = new Map();
+
+    setNamespace(namespace: string): void {
+        this.namespace = namespace;
+    }
+
+    addUse(fullPath: string, alias: string | null): void {
+        const key = alias || fullPath.split('\\').pop() || fullPath;
+        this.uses.set(key, fullPath);
+    }
+
+    resolve(name: string): string {
+        if (name.startsWith('\\')) {
+            return name.substring(1);
+        }
+        if (this.uses.has(name)) {
+            return this.uses.get(name)!;
+        }
+        if (this.namespace) {
+            return `${this.namespace}\\${name}`;
+        }
+        return name;
+    }
+}
+
 export class PHPParser extends BaseLanguageParser {
     private parser: phpParser.Engine;
     private htmlParser: HTMLParser;
@@ -333,9 +360,31 @@ export class PHPParser extends BaseLanguageParser {
         const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
         const relativeFilePath = path.relative(projectRootPath, absoluteFilePath).replace(/\\/g, '/');
         const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
+        const nameResolver = new NameResolver();
 
         try {
             const ast = this.parser.parseCode(fileContent, filePath);
+
+            // Pre-scan for namespace and use statements
+            const preScan = (node: any) => {
+                if (!node) return;
+                if (node.kind === 'namespace') {
+                    nameResolver.setNamespace(node.name?.name || '');
+                    if (node.children) node.children.forEach(preScan);
+                } else if (node.kind === 'usegroup') {
+                    const prefix = node.name?.name || '';
+                    node.items.forEach((item: any) => {
+                        const fullPath = prefix ? `${prefix}\\${item.name}` : item.name;
+                        nameResolver.addUse(fullPath, item.alias?.name || null);
+                    });
+                } else if (node.kind === 'useitem' && typeof node.name === 'string') {
+                    nameResolver.addUse(node.name, node.alias?.name || null);
+                } else if (Array.isArray(node.children)) {
+                    node.children.forEach(preScan);
+                }
+            };
+            preScan(ast);
+
             let currentNamespace = '';
             let currentClass: string | null = null;
             let currentClassFullName: string | null = null;
@@ -365,18 +414,19 @@ export class PHPParser extends BaseLanguageParser {
                 };
 
                 if (node.kind === 'namespace') {
-                    currentNamespace = node.name || '';
+                    currentNamespace = node.name?.name || '';
                     if (Array.isArray(node.children)) {
                         node.children.forEach(traverse);
                     }
                     return;
                 }
 
-                const getFullName = (name: string | null | undefined, parentName?: string | null): string => {
-                    const safeName = name ?? '';
+                const getFullName = (name: string, parentName?: string | null): string => {
                     let fullName = currentNamespace ? `${currentNamespace}\\` : '';
-                    if (parentName) fullName += `${parentName}::`;
-                    return fullName + safeName;
+                    if (parentName) {
+                        fullName = `${parentName}::`;
+                    }
+                    return fullName + name;
                 };
 
                 switch (node.kind) {
@@ -384,16 +434,19 @@ export class PHPParser extends BaseLanguageParser {
                     case 'interface':
                     case 'trait':
                         currentClass = node.name?.name || '';
-                        currentClassFullName = getFullName(currentClass);
+                        currentClassFullName = currentClass ? getFullName(currentClass) : null;
                         
+                        const parentClassName = node.extends ? nameResolver.resolve(node.extends.name) : '';
+                        const implementedInterfaces = (node.implements || []).map((i: any) => nameResolver.resolve(i.name));
+
                         entities.push({
                             ...baseEntity,
                             type: (node.kind as ExtractedCodeEntity['type']),
                             name: currentClass || '',
                             fullName: currentClassFullName || '',
                             isExported: true,
-                            parentClass: node.extends?.name || '',
-                            implementedInterfaces: (node.implements || []).map((i: any) => i.name),
+                            parentClass: parentClassName,
+                            implementedInterfaces: implementedInterfaces,
                             // Enhanced-only info retained on the object under non-conflicting keys
                             // @ts-ignore
                             attributes: this.extractAttributes(node),
