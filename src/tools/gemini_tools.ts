@@ -14,11 +14,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
     inputSchema: {
         type: 'object',
         properties: {
+            agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
             model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
             focus_area: {
+
                 type: 'string',
                 description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions, code modularization & orchestration).',
                 enum: [
@@ -69,17 +71,19 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 nullable: true
             }
         },
-        required: ['query']
+        required: ['agent_id', 'query']
     },
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) {
+
             const errorMsg = "MemoryManager instance is required for ask_gemini";
             console.error(errorMsg);
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
 
-        const { query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length } = args;
+        const { agent_id, query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length } = args;
         const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
+
 
         // Access dbService and contextManager via memoryManagerInstance's public getters or properties
         // This assumes MemoryManager exposes these, or provides a method to get GeminiIntegrationService
@@ -137,8 +141,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         break;
                 }
 
-                const contextResults = await contextRetrieverService.retrieveContextForPrompt("cline", query, context_options || {});
+                const contextResults = await contextRetrieverService.retrieveContextForPrompt(agent_id, query, context_options || {});
                 const contextText = contextResults.map(res => {
+
                     const filePath = res.sourcePath;
                     const entityName = res.entityName ? ` (${res.entityName})` : '';
                     const contentPreview = res.content.substring(0, snippetLength);
