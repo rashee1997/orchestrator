@@ -10,7 +10,7 @@ import { EmbeddingCache } from './embeddings/EmbeddingCache.js';
 import { AIEmbeddingProvider } from './embeddings/AIEmbeddingProvider.js';
 import { CodeChunkingService } from './embeddings/CodeChunkingService.js';
 import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRepository.js';
-import { ChunkingStrategy, CodebaseEmbeddingRecord } from '../../types/codebase_embeddings.js';
+import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
 import { DEFAULT_EMBEDDING_MODEL, VECTOR_FLOAT_SIZE } from '../../constants/embedding_constants.js';
 
 
@@ -98,22 +98,7 @@ export class CodebaseEmbeddingService {
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
-    ): Promise<{
-        newEmbeddingsCount: number;
-        reusedEmbeddingsCount: number;
-        deletedEmbeddingsCount: number;
-        newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        aiSummary?: string;
-        embeddingRequestCount: number;
-        embeddingRetryCount: number;
-        namingApiCallCount: number;
-        summarizationApiCallCount: number;
-        dbCallCount: number;
-        dbCallLatencyMs: number;
-        totalTimeMs: number;
-    }> {
+    ): Promise<EmbeddingIngestionResult> {
         const startTime = Date.now();
         console.log(`[CodebaseEmbeddingService] Starting embedding generation for file: ${filePath}`);
 
@@ -283,22 +268,7 @@ export class CodebaseEmbeddingService {
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
-    ): Promise<{
-        newEmbeddingsCount: number;
-        reusedEmbeddingsCount: number;
-        deletedEmbeddingsCount: number;
-        newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-        aiSummary?: string;
-        totalEmbeddingRequests: number;
-        totalEmbeddingRetries: number;
-        totalNamingApiRequests: number;
-        totalSummarizationApiRequests: number;
-        totalDbCallCount: number;
-        totalDbCallLatencyMs: number;
-        totalTimeMs: number;
-    }> {
+    ): Promise<EmbeddingIngestionResult> {
         const startTime = Date.now();
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const absoluteDirectoryPath = path.resolve(directoryPath);
@@ -320,12 +290,12 @@ export class CodebaseEmbeddingService {
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
         let totalDeletedEmbeddings = 0;
-        let totalEmbeddingRequests = 0;
-        let totalEmbeddingRetries = 0;
-        let totalNamingApiRequests = 0;
-        let totalSummarizationApiRequests = 0;
-        let totalDbCallCount = 0;
-        let totalDbCallLatencyMs = 0;
+        let embeddingRequestCount = 0;
+        let embeddingRetryCount = 0;
+        let namingApiCallCount = 0;
+        let summarizationApiCallCount = 0;
+        let dbCallCount = 0;
+        let dbCallLatencyMs = 0;
         const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
         const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
@@ -352,12 +322,12 @@ export class CodebaseEmbeddingService {
                         totalNewEmbeddings += result.newEmbeddingsCount;
                         totalReusedEmbeddings += result.reusedEmbeddingsCount;
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;
-                        totalEmbeddingRequests += result.embeddingRequestCount;
-                        totalEmbeddingRetries += result.embeddingRetryCount;
-                        totalNamingApiRequests += result.namingApiCallCount;
-                        totalSummarizationApiRequests += result.summarizationApiCallCount;
-                        totalDbCallCount += result.dbCallCount;
-                        totalDbCallLatencyMs += result.dbCallLatencyMs;
+                        embeddingRequestCount += result.embeddingRequestCount;
+                        embeddingRetryCount += result.embeddingRetryCount;
+                        namingApiCallCount += result.namingApiCallCount;
+                        summarizationApiCallCount += result.summarizationApiCallCount;
+                        dbCallCount += result.dbCallCount;
+                        dbCallLatencyMs += result.dbCallLatencyMs;
                         newEmbeddings.push(...result.newEmbeddings);
                         reusedEmbeddings.push(...result.reusedEmbeddings);
                         deletedEmbeddings.push(...result.deletedEmbeddings);
@@ -408,12 +378,12 @@ export class CodebaseEmbeddingService {
             reusedEmbeddings,
             deletedEmbeddings,
             aiSummary: '',
-            totalEmbeddingRequests,
-            totalEmbeddingRetries,
-            totalNamingApiRequests,
-            totalSummarizationApiRequests,
-            totalDbCallCount,
-            totalDbCallLatencyMs,
+            embeddingRequestCount,
+            embeddingRetryCount,
+            namingApiCallCount,
+            summarizationApiCallCount,
+            dbCallCount,
+            dbCallLatencyMs,
             totalTimeMs
         };
     }

@@ -30,3 +30,20 @@ export interface CachedChunk {
     file_path_relative: string;
     full_file_path: string;
 }
+
+export interface EmbeddingIngestionResult {
+    newEmbeddingsCount: number;
+    reusedEmbeddingsCount: number;
+    deletedEmbeddingsCount: number;
+    newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+    reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+    deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+    aiSummary?: string;
+    embeddingRequestCount: number;
+    embeddingRetryCount: number;
+    namingApiCallCount: number;
+    summarizationApiCallCount: number;
+    dbCallCount: number;
+    dbCallLatencyMs: number;
+    totalTimeMs: number;
+}
