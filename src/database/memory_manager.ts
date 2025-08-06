@@ -362,6 +362,25 @@ export class MemoryManager {
     async storeRefinedPrompt(...args: Parameters<GeminiIntegrationService['storeRefinedPrompt']>) {
         return this.geminiIntegrationService.storeRefinedPrompt(...args);
     }
+
+    // --- Plan Task Accessors for tools ---
+
+    /**
+     * Retrieve a single task by ID for an agent.
+     * Thin wrapper over PlanTaskManager/db layer to support get_task_details tool.
+     */
+    async getPlanTaskById(agent_id: string, task_id: string) {
+        // Ensure the PlanTaskManager is available
+        if (!this.planTaskManager) {
+            throw new Error('PlanTaskManager not initialized in MemoryManager.');
+        }
+
+        // Use DatabaseService to fetch the row to avoid tight coupling to manager internals.
+        const sql = 'SELECT * FROM plan_tasks WHERE agent_id = ? AND task_id = ?';
+        const db = await this.dbService.getDb();
+        const row = await db.get(sql, agent_id, task_id);
+        return row ?? null;
+    }
     async getRefinedPrompt(...args: Parameters<GeminiIntegrationService['getRefinedPrompt']>) {
         return this.geminiIntegrationService.getRefinedPrompt(...args);
     }

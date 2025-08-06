@@ -766,6 +766,52 @@ export const schemas = {
             }
         },
         required: ['query']
+    },
+
+    // New: Retrieve full details for a single task by ID
+    getTaskDetails: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            task_id: { type: 'string', description: 'The ID of the task to retrieve.' }
+        },
+        required: ['agent_id', 'task_id'],
+        additionalProperties: false
+    },
+
+    // New: Update details for a specific task by ID (partial updates allowed)
+    updateTask: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            task_id: { type: 'string', description: 'The ID of the task to update.' },
+            title: { type: ['string', 'null'] },
+            description: { type: ['string', 'null'] },
+            purpose: { type: ['string', 'null'] },
+            status: { type: ['string', 'null'] },
+            estimated_effort_hours: { type: ['number', 'null'] },
+            files_involved: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            dependencies_task_ids: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            tools_required_list: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            inputs_summary: { type: ['string', 'null'] },
+            outputs_summary: { type: ['string', 'null'] },
+            success_criteria_text: { type: ['string', 'null'] },
+            assigned_to: { type: ['string', 'null'] },
+            verification_method: { type: ['string', 'null'] },
+            notes: { type: ['object', 'null'] },
+            completion_timestamp: { type: ['number', 'null'], description: 'Unix timestamp for completion (optional).' }
+        },
+        required: ['agent_id', 'task_id'],
+        additionalProperties: false
     }
 };
 
