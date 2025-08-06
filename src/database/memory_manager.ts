@@ -10,7 +10,6 @@ import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphFactory, IKnowledgeGraphManager } from './factories/KnowledgeGraphFactory.js';
-
 import { ToolExecutionLogManager } from './managers/ToolExecutionLogManager.js';
 import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
 import { ErrorLogManager } from './managers/ErrorLogManager.js';
@@ -35,7 +34,6 @@ export class MemoryManager {
     public planTaskManager!: PlanTaskManager;
     public subtaskManager!: SubtaskManager;
     public knowledgeGraphManager!: IKnowledgeGraphManager;
-
     public toolExecutionLogManager!: ToolExecutionLogManager;
     public taskProgressLogManager!: TaskProgressLogManager;
     public errorLogManager!: ErrorLogManager;
@@ -111,7 +109,6 @@ export class MemoryManager {
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
         // Knowledge graph manager will be created later after GeminiIntegrationService is ready
-
         this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
         this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
         this.errorLogManager = new ErrorLogManager(this.dbService);
@@ -408,5 +405,3 @@ export class MemoryManager {
     async updateFinalPlanReviewLog(final_review_log_id: string, updates: any) { return this.finalPlanReviewLogManager.updateFinalPlanReviewLog(final_review_log_id, updates); }
     async deleteFinalPlanReviewLog(final_review_log_id: string) { return this.finalPlanReviewLogManager.deleteFinalPlanReviewLog(final_review_log_id); }
 }
-
-

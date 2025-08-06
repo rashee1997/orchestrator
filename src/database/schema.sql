@@ -244,7 +244,6 @@ CREATE TABLE IF NOT EXISTS agents (
     creation_timestamp_iso TEXT NOT NULL -- ISO8601 format (e.g., YYYY-MM-DDTHH:MM:SS.sssZ)
 );
 
--- New table for Mode Instructions
 -- New Dedicated Table for Tool Execution Logs
 CREATE TABLE IF NOT EXISTS tool_execution_logs (
     log_id TEXT PRIMARY KEY,
@@ -399,5 +398,3 @@ INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_un
 VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
 INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
 VALUES ('test_agent', 'Test AI Agent', 'Agent for testing purposes.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
-
-
