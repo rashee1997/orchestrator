@@ -16,3 +16,5 @@ vector_store.db
 vector_store.db-shm
 vector_store.db-wal
 .blackboxrules
+.vincent/
+.vscode/
