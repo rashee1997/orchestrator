@@ -166,11 +166,7 @@ export const schemas = {
         required: ['agent_id', 'sender', 'message_content'],
         additionalProperties: false,
     },
-    modeInstruction: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            mode_name: { type: 'string', description: 'The name of the operational mode.' },
+mode_name: { type: 'string', description: 'The name of the operational mode.' },
             instruction_content: { type: 'string', description: 'The detailed instruction content for the specified mode.' },
             instruction_version: { type: ['number', 'null'], description: 'Optional: Version of the instruction.' },
         },
@@ -836,3 +832,5 @@ export function validate(schemaName: string, data: any) {
     }
     return { valid: true, errors: null };
 }
+
+

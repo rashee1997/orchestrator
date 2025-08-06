@@ -245,20 +245,6 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 -- New table for Mode Instructions
-CREATE TABLE IF NOT EXISTS mode_instructions (
-    instruction_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    mode_name TEXT NOT NULL,
-    instruction_content TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1,
-    creation_timestamp INTEGER NOT NULL,
-    last_updated_timestamp INTEGER NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
-    UNIQUE (agent_id, mode_name, version)
-);
-
-CREATE INDEX IF NOT EXISTS idx_mode_instructions_agent_mode ON mode_instructions (agent_id, mode_name);
-
 -- New Dedicated Table for Tool Execution Logs
 CREATE TABLE IF NOT EXISTS tool_execution_logs (
     log_id TEXT PRIMARY KEY,
@@ -413,3 +399,5 @@ INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_un
 VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
 INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
 VALUES ('test_agent', 'Test AI Agent', 'Agent for testing purposes.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+

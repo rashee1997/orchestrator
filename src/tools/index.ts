@@ -7,7 +7,7 @@ import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } 
 import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './plan_management_tools.js';
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './knowledge_graph_tools.js';
-import { getModeInstructionToolHandlers, modeInstructionToolDefinitions } from './mode_instruction_tools.js';
+
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
@@ -117,7 +117,7 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(planManagementToolDefinitions),
         ...stripFuncFromDefs(promptRefinementToolDefinitions),
         ...stripFuncFromDefs(knowledgeGraphToolDefinitions),
-        ...stripFuncFromDefs(modeInstructionToolDefinitions),
+        
         ...stripFuncFromDefs(reviewLogToolDefinitions),
         ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
         ...stripFuncFromDefs(geminiToolDefinitions),
@@ -159,7 +159,6 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getPlanManagementToolHandlers(memoryManager),
         ...getPromptRefinementToolHandlers(memoryManager),
         ...getKnowledgeGraphToolHandlers(memoryManager),
-        ...getModeInstructionToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
         ...getEmbeddingToolHandlers(memoryManager), 
@@ -167,3 +166,5 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...loggingHandlers,
     };
 }
+
+
