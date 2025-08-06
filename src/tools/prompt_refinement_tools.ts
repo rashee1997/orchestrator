@@ -176,6 +176,10 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
                 args.conversation_context_ids as string[] | undefined,
                 enhancedContextOptions
             );
+            // Ensure agent_id is present for DB insert (refined_prompts.agent_id is NOT NULL)
+            if (!refinedPromptObject.agent_id) {
+                refinedPromptObject.agent_id = effective_agent_id;
+            }
             await memoryManager.storeRefinedPrompt(refinedPromptObject);
             // The refinedPromptObject itself is the full structured data.
             return { content: [{ type: 'text', text: formatRefinedPromptToMarkdown(refinedPromptObject, effective_agent_id) }] };

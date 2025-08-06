@@ -534,9 +534,10 @@ export const schemas = {
                         items: { type: 'string' },
                         description: "Optional: Array of relative file paths to restrict context retrieval to.",
                         nullable: true
-                    }
+                    },
+                    // Moved here to be a valid schema property for context_options
+                    context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true }
                 },
-                context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true },
                 additionalProperties: false,
                 nullable: true
             }
