@@ -11,7 +11,8 @@ import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
 import { EnhancedPHPParser } from '../parsers/EnhancedPHPParser.js';
 import { JSONLParser } from '../parsers/JSONLParser.js';
-import { MarkdownParser } from '../parsers/MarkdownParser.js'; // Import MarkdownParser
+import { MarkdownParser } from '../parsers/MarkdownParser.js';
+import { TailwindCSSParser } from '../parsers/TailwindCSSParser.js';
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
 
 // ... (ScannedItem, ExtractedImport interfaces remain unchanged)
@@ -35,7 +36,7 @@ export interface ExtractedImport {
 
 // MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown';
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown' | 'html_element' | 'html_id_selector' | 'html_class_selector' | 'html_attribute_selector' | 'html_text_content' | 'comment' | 'tailwind_utility_class';
     name?: string; // Made optional
     fullName?: string; // Made optional
     signature?: string; // e.g., "function process(data: string): number"
@@ -89,7 +90,8 @@ export class CodebaseIntrospectionService {
             new CSSParser(this.projectRootPath),
             new EnhancedPHPParser(this.projectRootPath),
             new JSONLParser(this),
-            new MarkdownParser(this.projectRootPath) // Add MarkdownParser
+            new MarkdownParser(this.projectRootPath),
+            new TailwindCSSParser(this.projectRootPath)
         ].forEach(parser => this.registerParser(parser));
     }
 
