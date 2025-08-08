@@ -5,16 +5,16 @@ import { parseDocument } from 'htmlparser2';
 import * as DomHandler from 'domhandler';
 import * as DomUtils from 'domutils';
 import path from 'path';
-import { TypeScriptParser } from './TypeScriptParser.js'; // Import TypeScriptParser
+import { EnhancedTypeScriptParser } from './EnhancedTypeScriptParser.js';
 import { CSSParser } from './CSSParser.js'; // Import CSSParser
 
 export class HTMLParser extends BaseLanguageParser {
-    private tsParser: TypeScriptParser;
+    private tsParser: EnhancedTypeScriptParser;
     private cssParser: CSSParser;
 
     constructor(projectRootPath: string = process.cwd()) {
         super(projectRootPath);
-        this.tsParser = new TypeScriptParser(projectRootPath);
+    this.tsParser = new EnhancedTypeScriptParser(projectRootPath);
         this.cssParser = new CSSParser(projectRootPath);
     }
 

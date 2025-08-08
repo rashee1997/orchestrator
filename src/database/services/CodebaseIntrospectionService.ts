@@ -5,11 +5,11 @@ import path from 'path';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Import all language parsers
-import { TypeScriptParser } from '../parsers/TypeScriptParser.js';
+import { EnhancedTypeScriptParser } from '../parsers/EnhancedTypeScriptParser.js';
 import { PythonParser } from '../parsers/PythonParser.js';
 import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
-import { PHPParser } from '../parsers/PHPParser.js';
+import { EnhancedPHPParser } from '../parsers/EnhancedPHPParser.js';
 import { JSONLParser } from '../parsers/JSONLParser.js';
 import { MarkdownParser } from '../parsers/MarkdownParser.js'; // Import MarkdownParser
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
@@ -52,7 +52,7 @@ export interface ExtractedCodeEntity {
     containingDirectory: string; // NEW: Relative path of the containing directory
     // The `className` property is redundant, as `parentClass` provides the same information with better context.
     metadata?: any;
-    calls?: Array<{ name: string; type: 'function' | 'method' | 'unknown'; }>; // New property
+    calls?: Array<{ name: string; type?: string; }>; // Updated to be more flexible
     accessibility?: 'public' | 'private' | 'protected' | null; // New property for method/property accessibility
 }
 
@@ -83,11 +83,11 @@ export class CodebaseIntrospectionService {
         // Register all language parsers
         this.languageParsers = new Map();
         [
-            new TypeScriptParser(this.projectRootPath),
+            new EnhancedTypeScriptParser(this.projectRootPath),
             new PythonParser(this.projectRootPath),
             new HTMLParser(this.projectRootPath),
             new CSSParser(this.projectRootPath),
-            new PHPParser(this.projectRootPath),
+            new EnhancedPHPParser(this.projectRootPath),
             new JSONLParser(this),
             new MarkdownParser(this.projectRootPath) // Add MarkdownParser
         ].forEach(parser => this.registerParser(parser));
