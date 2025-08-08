@@ -6,7 +6,8 @@ import { EventStore, KnowledgeGraphEvent } from '../storage/EventStore.js';
 import { IndexManager } from '../storage/IndexManager.js';
 // import { LRUCache }s from 'lru-cache'; // Not used directly, but this.cache might use it
 import { randomUUID } from 'crypto';
-import { QueryEngine, QueryAST } from '../query/QueryEngine.js'; // Import QueryAST
+import { QueryEngine } from '../query/QueryEngine.js'; // Import QueryEngine
+import { QueryAST } from '../../types/query.js'; // Import QueryAST from types
 import { FuzzySearchEngine } from '../search/FuzzySearchEngine.js';
 import { KnowledgeGraphCache } from '../cache/KnowledgeGraphCache.js';
 import { EntityResolver } from '../ai/EntityResolver.js';
