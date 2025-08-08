@@ -1,251 +1,215 @@
 import { tokenize } from '../utils/string-similarity.js';
 
+// ------------------------------------------------------------------
+// Types
+// ------------------------------------------------------------------
 export interface ExtractedEntity {
     text: string;
-    type: 'file' | 'class' | 'function' | 'module' | 'variable' | 'unknown';
+    type: EntityType;
     confidence: number;
+    qualifiers?: string[]; // e.g. "abstract", "deprecated", "async"
 }
+
+export type EntityType = 'file' | 'class' | 'interface' | 'struct' | 'enum' | 'function' | 'method' | 'module' | 'package' | 'namespace' | 'variable' | 'constant' | 'unknown';
 
 export interface QueryIntent {
-    type: 'search' | 'traverse' | 'filter' | 'aggregate' | 'relationship' | 'unknown';
+    type: IntentType;
     action?: string;
     modifiers?: string[];
+    negations?: string[];
 }
 
+export type IntentType = 'search' | 'traverse' | 'filter' | 'aggregate' | 'relationship' | 'semantic' | 'unknown';
+
 export interface StructuredQuery {
-    type: string;
+    type: IntentType;
     entities?: string[];
-    entityTypes?: string[];
+    entityTypes?: EntityType[];
     relationTypes?: string[];
     filters?: Record<string, any>;
     depth?: number;
     limit?: number;
+    sortBy?: string;
+    groupBy?: string;
     originalQuery?: string;
 }
 
+// ------------------------------------------------------------------
+// Main Class
+// ------------------------------------------------------------------
 export class NLPQueryProcessor {
-    private entityPatterns = {
-        file: /\b(\w+\.(ts|js|tsx|jsx|py|java|cpp|c|h|hpp|cs|go|rs|rb|php|swift|kt|scala|r|m|mm|sql|json|xml|yaml|yml|md|txt|css|scss|sass|less|html|htm))\b/gi,
-        class: /\b(class|interface|struct|enum)\s+(\w+)|(\w+)(Class|Interface|Struct|Enum)\b/gi,
-        function: /\b(function|method|func|def)\s+(\w+)|(\w+)(Function|Method|Handler|Callback)\b/gi,
-        module: /\b(module|package|namespace)\s+(\w+)|(@\w+\/\w+|\w+\/\w+)\b/gi,
-        variable: /\b(const|let|var|val)\s+(\w+)|(\$\w+|_\w+)\b/gi
+    private patterns = {
+        file: /\b([\w\-]+\.(ts|js|tsx|jsx|py|java|cpp|c|h|hpp|cs|go|rs|rb|php|swift|kt|scala|r|m|mm|sql|json|xml|yaml|yml|md|txt|css|scss|sass|less|html|htm))\b/gi,
+        genericType: /\b(?:class|interface|struct|enum|trait|type)\s+(\w+)|(\w+)(?:Class|Interface|Struct|Enum|Trait|Type)\b/gi,
+        function: /\b(?:function|method|func|def|lambda)\s+(\w+)|(\w+)(?:Function|Method|Handler|Callback|Lambda)\b/gi,
+        module: /\b(?:module|package|namespace|library)\s+([\w\/\-@]+)|(@?[\w\-]+\/[\w\-]+)\b/gi,
+        variable: /\b(?:const|let|var|val)\s+(\w+)|(\$\w+|_\w+)\b/gi,
+        constant: /\b[A-Z_][A-Z0-9_]+\b/g
     };
 
-    private intentKeywords = {
-        search: ['find', 'search', 'look for', 'locate', 'where', 'which', 'what', 'show'],
-        traverse: ['from', 'to', 'connected', 'related', 'linked', 'path', 'between', 'traverse'],
-        filter: ['with', 'having', 'containing', 'matching', 'like', 'type', 'kind'],
-        aggregate: ['count', 'how many', 'total', 'sum', 'average', 'group', 'statistics'],
-        relationship: ['imports', 'exports', 'uses', 'calls', 'extends', 'implements', 'depends', 'references']
-    };
+    private intentLexicon = new Map<IntentType, string[]>([
+        ['search', ['find', 'search', 'locate', 'show', 'list', 'give me', 'what', 'which']],
+        ['traverse', ['from', 'to', 'between', 'path', 'connected', 'related', 'linked', 'depends']],
+        ['filter', ['with', 'having', 'containing', 'matching', 'like', 'of type', 'kind']],
+        ['aggregate', ['count', 'how many', 'total', 'sum', 'average', 'min', 'max', 'group']],
+        ['relationship', ['imports', 'exports', 'extends', 'implements', 'calls', 'uses', 'references']],
+        ['semantic', ['explain', 'describe', 'usage', 'purpose', 'why', 'when to use']]
+    ]);
 
-    // Extract entities from a natural language query
+    private qualifiers = new Set(['abstract', 'async', 'deprecated', 'private', 'public', 'internal', 'static', 'final', 'override', 'test', 'spec']);
+
+    // ------------------------------------------------------------------
+    // 1. Entity Extraction
+    // ------------------------------------------------------------------
     extractEntities(query: string): ExtractedEntity[] {
         const entities: ExtractedEntity[] = [];
-        const processedTexts = new Set<string>();
+        const seen = new Set<string>();
 
-        // Check for file patterns
-        let match;
-        while ((match = this.entityPatterns.file.exec(query)) !== null) {
-            const text = match[1];
-            if (!processedTexts.has(text.toLowerCase())) {
-                entities.push({ text, type: 'file', confidence: 0.9 });
-                processedTexts.add(text.toLowerCase());
+        const add = (text: string, type: EntityType, confidence: number, qualifiers: string[]) => {
+            const key = `${text}:${type}`.toLowerCase();
+            if (!seen.has(key)) {
+                entities.push({ text, type, confidence, qualifiers });
+                seen.add(key);
             }
-        }
-        this.entityPatterns.file.lastIndex = 0;
+        };
 
-        // Check for class patterns
-        const classRegex = /\b(?:class|interface|struct|enum)\s+(\w+)|(\w+)(?:Class|Interface|Struct|Enum)\b/gi;
-        while ((match = classRegex.exec(query)) !== null) {
-            const text = match[1] || match[2];
-            if (text && !processedTexts.has(text.toLowerCase())) {
-                entities.push({ text, type: 'class', confidence: 0.8 });
-                processedTexts.add(text.toLowerCase());
+        // Patterns
+        for (const [type, regex] of Object.entries(this.patterns)) {
+            let m;
+            while ((m = regex.exec(query)) !== null) {
+                const text = m[1] || m[2] || m[0];
+                add(text, type as EntityType, 0.9, []);
             }
+            regex.lastIndex = 0;
         }
 
-        // Check for function patterns
-        const funcRegex = /\b(?:function|method|func|def)\s+(\w+)|(\w+)(?:Function|Method|Handler|Callback)\b/gi;
-        while ((match = funcRegex.exec(query)) !== null) {
-            const text = match[1] || match[2];
-            if (text && !processedTexts.has(text.toLowerCase())) {
-                entities.push({ text, type: 'function', confidence: 0.8 });
-                processedTexts.add(text.toLowerCase());
-            }
+        // Qualifiers
+        const tokens = query.toLowerCase().split(/\s+/);
+        const foundQualifiers = tokens.filter(t => this.qualifiers.has(t));
+
+        // CamelCase / PascalCase
+        const camelRegex = /\b[A-Z][a-z]+[A-Z]\w*\b/g;
+        let m;
+        while ((m = camelRegex.exec(query)) !== null) {
+            add(m[0], 'unknown', 0.5, foundQualifiers);
         }
 
-        // Check for module patterns
-        const moduleRegex = /\b(?:module|package|namespace)\s+(\w+)|(@?\w+\/\w+)\b/gi;
-        while ((match = moduleRegex.exec(query)) !== null) {
-            const text = match[1] || match[2];
-            if (text && !processedTexts.has(text.toLowerCase())) {
-                entities.push({ text, type: 'module', confidence: 0.7 });
-                processedTexts.add(text.toLowerCase());
-            }
-        }
-
-        // Extract potential entity names (capitalized words or camelCase)
-        const potentialEntities = query.match(/\b[A-Z]\w+\b|\b[a-z]+(?:[A-Z]\w+)+\b/g) || [];
-        for (const text of potentialEntities) {
-            if (!processedTexts.has(text.toLowerCase())) {
-                entities.push({ text, type: 'unknown', confidence: 0.5 });
-                processedTexts.add(text.toLowerCase());
-            }
-        }
+        // Adjust confidence for qualifiers
+        entities.forEach(e => {
+            if (e.qualifiers?.length) e.confidence += 0.1;
+        });
 
         return entities;
     }
 
-    // Identify the intent of a query
+    // ------------------------------------------------------------------
+    // 2. Intent Detection
+    // ------------------------------------------------------------------
     identifyIntent(query: string): QueryIntent {
-        const lowerQuery = query.toLowerCase();
+        const lower = query.toLowerCase();
         const tokens = tokenize(query);
-        
-        let bestIntent: QueryIntent = { type: 'unknown' };
+        let best: QueryIntent = { type: 'unknown' };
         let bestScore = 0;
 
-        for (const [intentType, keywords] of Object.entries(this.intentKeywords)) {
+        for (const [intent, keywords] of this.intentLexicon) {
             let score = 0;
-            const matchedKeywords: string[] = [];
-            
-            for (const keyword of keywords) {
-                if (lowerQuery.includes(keyword)) {
+            const matched: string[] = [];
+            const negated: string[] = [];
+
+            for (const kw of keywords) {
+                if (lower.includes(kw)) {
                     score += 2;
-                    matchedKeywords.push(keyword);
-                }
-                
-                // Check tokens for partial matches
-                for (const token of tokens) {
-                    if (token.includes(keyword) || keyword.includes(token)) {
-                        score += 1;
-                    }
+                    matched.push(kw);
                 }
             }
-            
+
+            // Negations
+            const negationWords = ['no', 'not', 'without', 'exclude', 'except'];
+            for (const n of negationWords) {
+                if (lower.includes(n)) negated.push(n);
+            }
+
+            // Boost for question marks
+            if (query.includes('?')) score += 1;
+
             if (score > bestScore) {
                 bestScore = score;
-                bestIntent = {
-                    type: intentType as any,
-                    action: matchedKeywords[0],
-                    modifiers: matchedKeywords.slice(1)
-                };
+                best = { type: intent, action: matched[0], modifiers: matched.slice(1), negations: negated };
             }
         }
-
-        // Additional intent detection based on query structure
-        if (lowerQuery.includes('?')) {
-            bestIntent.modifiers = bestIntent.modifiers || [];
-            bestIntent.modifiers.push('question');
-        }
-
-        if (lowerQuery.includes(' all ')) {
-            bestIntent.modifiers = bestIntent.modifiers || [];
-            bestIntent.modifiers.push('all');
-        }
-
-        return bestIntent;
+        return best;
     }
 
-    // Generate a structured query from natural language
+    // ------------------------------------------------------------------
+    // 3. Structured Query Generation
+    // ------------------------------------------------------------------
     generateStructuredQuery(query: string): StructuredQuery {
         const intent = this.identifyIntent(query);
         const entities = this.extractEntities(query);
-        const lowerQuery = query.toLowerCase();
+        const lower = query.toLowerCase();
+        const sq: StructuredQuery = { type: intent.type, originalQuery: query };
 
-        const structuredQuery: StructuredQuery = {
-            type: intent.type
-        };
-
-        // Extract entity names and types
-        if (entities.length > 0) {
-            structuredQuery.entities = entities.map(e => e.text);
-            const uniqueTypes = [...new Set(entities.map(e => e.type).filter(t => t !== 'unknown'))];
-            if (uniqueTypes.length > 0) {
-                structuredQuery.entityTypes = uniqueTypes;
-            }
+        // Entities & types
+        if (entities.length) {
+            sq.entities = entities.map(e => e.text);
+            sq.entityTypes = [...new Set(entities.map(e => e.type).filter(t => t !== 'unknown'))];
+            const qualifiers = [...new Set(entities.flatMap(e => e.qualifiers || []))];
+            if (qualifiers.length) sq.filters = { qualifiers };
         }
 
-        // Extract relationship types
-        const relationKeywords = ['imports', 'exports', 'extends', 'implements', 'calls', 'uses', 'depends on', 'references'];
-        const foundRelations = relationKeywords.filter(rel => lowerQuery.includes(rel));
-        if (foundRelations.length > 0) {
-            structuredQuery.relationTypes = foundRelations.map(rel => rel.replace(' ', '_'));
-        }
+        // Relations
+        const relations = ['imports', 'exports', 'extends', 'implements', 'calls', 'uses', 'depends', 'references'];
+        const found = relations.filter(r => lower.includes(r));
+        if (found.length) sq.relationTypes = found;
 
-        // Extract depth for traversal queries
-        const depthMatch = query.match(/\b(?:depth|level|deep)\s*(?:of\s*)?(\d+)\b/i);
-        if (depthMatch) {
-            structuredQuery.depth = parseInt(depthMatch[1]);
-        }
+        // Numeric parameters
+        const depthMatch = query.match(/\b(?:depth|level)\s*(\d+)\b/i);
+        if (depthMatch) sq.depth = parseInt(depthMatch[1]);
 
-        // Extract limit
         const limitMatch = query.match(/\b(?:top|first|limit)\s*(\d+)\b/i);
-        if (limitMatch) {
-            structuredQuery.limit = parseInt(limitMatch[1]);
-        }
+        if (limitMatch) sq.limit = parseInt(limitMatch[1]);
 
-        // Build filters based on query modifiers
-        const filters: Record<string, any> = {};
-        
-        if (lowerQuery.includes('test') || lowerQuery.includes('spec')) {
-            filters.isTest = true;
-        }
-        
-        if (lowerQuery.includes('interface')) {
-            filters.entityType = 'interface';
-        }
-        
-        if (lowerQuery.includes('class')) {
-            filters.entityType = 'class';
-        }
-        
-        if (Object.keys(filters).length > 0) {
-            structuredQuery.filters = filters;
-        }
+        // Filters
+        const filters: Record<string, any> = { ...(sq.filters || {}) };
+        if (lower.includes('test')) filters.isTest = true;
+        if (lower.includes('interface')) filters.entityType = 'interface';
+        if (lower.includes('abstract')) filters.modifiers = [...(filters.modifiers || []), 'abstract'];
+        if (intent.negations?.includes('test')) filters.isTest = false;
+        sq.filters = filters;
 
-        // If we couldn't determine a specific structure, return unstructured
-        if (structuredQuery.type === 'unknown') {
-            if (structuredQuery.entities && structuredQuery.entities.length > 0) {
-                // Default to a search operation if we have at least one entity
-                return {
-                    type: 'search',
-                    entities: structuredQuery.entities,
-                    entityTypes: structuredQuery.entityTypes,
-                    originalQuery: query
-                };
-            }
-            if (!structuredQuery.entities && !structuredQuery.relationTypes) {
-                return { type: 'unstructured', originalQuery: query };
-            }
-        }
+        // Sorting / grouping
+        const sortMatch = query.match(/\bsort by (\w+)\b/i);
+        if (sortMatch) sq.sortBy = sortMatch[1];
+        const groupMatch = query.match(/\bgroup by (\w+)\b/i);
+        if (groupMatch) sq.groupBy = groupMatch[1];
 
-        return structuredQuery;
+        return sq;
     }
 
-    // Fallback to AI for complex queries
+    // ------------------------------------------------------------------
+    // 4. Semantic / AI Fallback
+    // ------------------------------------------------------------------
     async fallbackToAI(query: string): Promise<StructuredQuery> {
-        // In a real implementation, this would call an AI service
-        // For now, we'll try to extract as much as we can
-        const basicStructure = this.generateStructuredQuery(query);
-        
-        if (basicStructure.type === 'unstructured') {
-            // Try to at least identify if it's asking about specific code patterns
-            const codePatterns = [
-                { pattern: /singleton\s+pattern/i, suggestion: { type: 'search', filters: { pattern: 'singleton' } } },
-                { pattern: /factory\s+pattern/i, suggestion: { type: 'search', filters: { pattern: 'factory' } } },
-                { pattern: /observer\s+pattern/i, suggestion: { type: 'search', filters: { pattern: 'observer' } } },
-                { pattern: /dependency\s+injection/i, suggestion: { type: 'search', filters: { pattern: 'dependency_injection' } } }
-            ];
-            
-            for (const { pattern, suggestion } of codePatterns) {
-                if (pattern.test(query)) {
-                    return { ...basicStructure, ...suggestion };
-                }
+        const base = this.generateStructuredQuery(query);
+        if (base.type !== 'unknown') return base;
+
+        // Pattern libraries
+        const patterns = [
+            { rx: /singleton pattern/i, cfg: { type: 'search', filters: { pattern: 'singleton' } } },
+            { rx: /factory pattern/i, cfg: { type: 'search', filters: { pattern: 'factory' } } },
+            { rx: /observer pattern/i, cfg: { type: 'search', filters: { pattern: 'observer' } } },
+            { rx: /dependency injection/i, cfg: { type: 'search', filters: { pattern: 'dependency_injection' } } },
+            { rx: /explain (.*)/i, cfg: { type: 'semantic', entities: ['$1'] } }
+        ];
+
+        for (const { rx, cfg } of patterns) {
+            const m = query.match(rx);
+            if (m) {
+                const entities = cfg.entities?.map((e: string) => e === '$1' ? m[1] : e);
+                return { ...base, ...cfg, type: cfg.type as IntentType, entities };
             }
         }
-        
-        return basicStructure;
+
+        return base;
     }
 }
