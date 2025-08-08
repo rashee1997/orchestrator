@@ -12,6 +12,7 @@ export interface NlpStructuredQuery {
     limit?: number; // Added based on error
     intent?: string;
     sentiment?: 'positive' | 'negative' | 'neutral';
+    confidence?: number; // Added to resolve error in NLPQueryProcessor.ts
 }
 
 /**
