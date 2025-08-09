@@ -719,10 +719,20 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       const start = node.range[0];
       let end = node.range[1];
 
-      const bodyNode = (node as any).body;
-      if (bodyNode) {
-        // Get signature up to the opening brace of the body
-        end = bodyNode.range[0];
+      // Handle arrow functions with concise bodies
+      if (node.type === 'ArrowFunctionExpression') {
+        // Find the position of the arrow (=>) in the source code
+        const arrowIndex = fileContent.indexOf('=>', start);
+        if (arrowIndex !== -1 && arrowIndex < end) {
+          // Signature up to and including the arrow
+          end = arrowIndex + 2;
+        }
+      } else {
+        const bodyNode = (node as any).body;
+        if (bodyNode) {
+          // Get signature up to the opening brace of the body
+          end = bodyNode.range[0];
+        }
       }
 
       return fileContent.substring(start, end).replace(/\s*{?$/, '').trim();
