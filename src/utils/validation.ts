@@ -102,9 +102,15 @@ export const schemas = {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Agent ID to associate the embeddings with." },
-            path_to_embed: { type: 'string', description: "The absolute path to the file or directory to embed." },
+            path_to_embed: { type: 'string', nullable: true, description: "The absolute path to a single file or directory to embed." },
+            paths_to_embed: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Array of absolute paths to the files to embed. Use this or 'path_to_embed', but not both."
+            },
             project_root_path: {type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings."},
-            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory, false if it's a single file."},
+            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory. Ignored if 'paths_to_embed' is used."},
             chunking_strategy: {
                 type: 'string',
                 enum: ['file', 'function', 'class', 'auto'],
@@ -126,8 +132,12 @@ export const schemas = {
             },
             storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." }
         },
-        required: ['agent_id', 'path_to_embed', 'project_root_path'],
+        required: ['agent_id', 'project_root_path'],
         additionalProperties: false,
+        oneOf: [
+            { required: ["path_to_embed"] },
+            { required: ["paths_to_embed"] }
+        ]
     },
     ingestFileCodeEntities: {
         type: 'object',

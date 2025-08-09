@@ -144,34 +144,51 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_embeddings: ${errorDetails}`);
             }
 
-            const { path_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
-
-            const absoluteProjectRootPath = path.resolve(project_root_path);
-            const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
-
-            if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {
-                throw new McpError(ErrorCode.InvalidParams, `Path to embed (${absolutePathToEmbed}) must be within the project root path (${absoluteProjectRootPath}).`);
-            }
-
-            try {
-                await fs.access(absolutePathToEmbed);
-            } catch (e) {
-                throw new McpError(ErrorCode.InvalidParams, `Path not found or inaccessible: ${absolutePathToEmbed}`);
-            }
-
+            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
+            const absoluteProjectRootPath = path.resolve(project_root_path);
+            let resultCounts;
+            let outputMessage: string;
 
-            const resultCounts = is_directory
-                ? await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries)
-                : await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+            if (paths_to_embed && paths_to_embed.length > 0) {
+                // Mode 1: Process an array of files
+                resultCounts = await embeddingService.generateAndStoreEmbeddingsForMultipleFiles(
+                    agent_id,
+                    paths_to_embed,
+                    absoluteProjectRootPath,
+                    chunking_strategy as ChunkingStrategy,
+                    include_summary_patterns,
+                    exclude_summary_patterns,
+                    storeEntitySummaries
+                );
+                outputMessage = `Codebase embedding ingestion for ${paths_to_embed.length} specified files complete.`;
 
-            if (!is_directory) {
-                await embeddingService.embeddingCache.flushToDb(); // Ensure flush after single file ingestion
+            } else {
+                // Mode 2 & 3: Process a single path (file or directory)
+                const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
+
+                if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {
+                    throw new McpError(ErrorCode.InvalidParams, `Path to embed (${absolutePathToEmbed}) must be within the project root path (${absoluteProjectRootPath}).`);
+                }
+                try {
+                    await fs.access(absolutePathToEmbed);
+                } catch (e) {
+                    throw new McpError(ErrorCode.InvalidParams, `Path not found or inaccessible: ${absolutePathToEmbed}`);
+                }
+
+                if (is_directory) {
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                } else {
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                }
+                const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
+                outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
             }
 
-            const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
+            await embeddingService.embeddingCache.flushToDb(); // Ensure cache is flushed after all ingestion operations.
+
             const outputLines = [
-                `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`,
+                outputMessage,
                 `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}`,
                 `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}`,
                 `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}`,
@@ -186,6 +203,9 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 const dbCallLatencySeconds = (resultCounts.dbCallLatencyMs / 1000).toFixed(2);
                 outputLines.push(`- Database Call Latency (for existing hashes/summaries): ${dbCallLatencySeconds} seconds`);
             }
+            if (resultCounts.totalTokensProcessed !== undefined) {
+                outputLines.push(`- Tokens Processed (est.): ${resultCounts.totalTokensProcessed}`);
+            }
             if (resultCounts.totalTimeMs !== undefined) {
                 const totalTimeMinutes = (resultCounts.totalTimeMs / 60000).toFixed(2);
                 outputLines.push(`- Total Time Taken: ${totalTimeMinutes} minutes`);
@@ -194,9 +214,14 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             let detailedOutput = outputLines.join('\n');
 
             if (!disable_ai_output_summary) {
-                detailedOutput += await _generateAiSummary(memoryManager, resultCounts.newEmbeddings, 'new');
-                detailedOutput += await _generateAiSummary(memoryManager, resultCounts.reusedEmbeddings, 'reused');
-                detailedOutput += await _generateAiSummary(memoryManager, resultCounts.deletedEmbeddings, 'deleted');
+                const [newSummary, reusedSummary, deletedSummary] = await Promise.all([
+                    _generateAiSummary(memoryManager, resultCounts.newEmbeddings, 'new'),
+                    _generateAiSummary(memoryManager, resultCounts.reusedEmbeddings, 'reused'),
+                    _generateAiSummary(memoryManager, resultCounts.deletedEmbeddings, 'deleted')
+                ]);
+                detailedOutput += newSummary;
+                detailedOutput += reusedSummary;
+                detailedOutput += deletedSummary;
             }
 
             return { content: [{ type: 'text', text: detailedOutput }] };
@@ -278,6 +303,10 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 const absoluteFilePath = path.isAbsolute(fp)
                     ? fp
                     : path.resolve(absoluteProjectRootPath, fp);
+                if (!absoluteFilePath.startsWith(absoluteProjectRootPath)) {
+                    // Prevent path traversal. Path must be within the project root.
+                    throw new McpError(ErrorCode.InvalidParams, `File path to clean up (${fp}) must be within the project root path (${project_root_path}).`);
+                }
                 // Get the path relative to the project root.
                 const relativePath = path.relative(absoluteProjectRootPath, absoluteFilePath);
                 // Convert backslashes to forward slashes for OS-independent consistency.
