@@ -65,8 +65,27 @@ export class EntityResolver {
         if (allNames.includes(normName)) score += 100;
 
         // Partial / fuzzy match
-        const nameSim = Math.max(...allNames.map(n => 1 - levenshteinDistance(n, normName) / Math.max(n.length, normName.length)));
-        score += nameSim * 40;
+        // Partial / fuzzy match
+        // Helper: Jaccard similarity for sets of characters
+        function jaccardSimilarity(a: string, b: string): number {
+            const setA = new Set(a);
+            const setB = new Set(b);
+            const intersection = new Set([...setA].filter(x => setB.has(x)));
+            const union = new Set([...setA, ...setB]);
+            return intersection.size / union.size;
+        }
+
+        const nameSimRaw = Math.max(...allNames.map(n => 1 - levenshteinDistance(n, normName) / Math.max(n.length, normName.length)));
+        const jaccardSim = Math.max(...allNames.map(n => jaccardSimilarity(n, normName)));
+
+        // Penalize short matches: reduce score if either string is short
+        const minLen = Math.min(normName.length, ...allNames.map(n => n.length));
+        const lengthPenalty = minLen < 5 ? 0.5 : 1; // 50% penalty for short strings
+
+        // Combine metrics (weighted average)
+        const combinedSim = (nameSimRaw * 0.7 + jaccardSim * 0.3) * lengthPenalty;
+
+        score += combinedSim * 40;
 
         // Type match (including hierarchy)
         if (ctx.entityType) {

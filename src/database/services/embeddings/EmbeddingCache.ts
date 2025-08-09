@@ -91,15 +91,22 @@ export class EmbeddingCache {
             await this.loadCacheState();
         }
 
-        // If cache is full, remove the oldest entry (LRU strategy)
+        // If cache is full, remove the least recently used entry (true LRU strategy)
         if (this.inMemoryCache.size >= this.maxCacheSize) {
-            const oldestKey = this.inMemoryCache.keys().next().value;
-            if (oldestKey) {
-                this.inMemoryCache.delete(oldestKey);
+            const lruKey = this.inMemoryCache.keys().next().value;
+            if (lruKey) {
+                this.inMemoryCache.delete(lruKey);
             }
         }
 
-        if (!this.inMemoryCache.has(chunk_hash)) {
+        // Update usage order for LRU: if chunk_hash is already in cache, move it to the end
+        if (this.inMemoryCache.has(chunk_hash)) {
+            const value = this.inMemoryCache.get(chunk_hash);
+            this.inMemoryCache.delete(chunk_hash);
+            if (value) {
+                this.inMemoryCache.set(chunk_hash, value);
+            }
+        } else {
             const newChunk: CachedChunk = {
                 embedding_id: chunk_hash,
                 agent_id: agentId,
@@ -131,9 +138,14 @@ export class EmbeddingCache {
         const chunksToInsert: CodebaseEmbeddingRecord[] = [];
 
         for (const chunk of this.inMemoryCache.values()) {
-            const vectorBuffer = Buffer.alloc(chunk.vector!.length * 4);
-            for (let i = 0; i < chunk.vector!.length; i++) {
-                vectorBuffer.writeFloatLE(chunk.vector![i], i * 4);
+            if (!chunk.vector) {
+                // Skip this chunk if vector is undefined
+                console.warn(`[EmbeddingCache] Skipping chunk ${chunk.chunk_hash} due to undefined vector.`);
+                continue;
+            }
+            const vectorBuffer = Buffer.alloc(chunk.vector.length * 4);
+            for (let i = 0; i < chunk.vector.length; i++) {
+                vectorBuffer.writeFloatLE(chunk.vector[i], i * 4);
             }
 
             chunksToInsert.push({

@@ -179,6 +179,8 @@ export class NLPQueryProcessor {
                     e.confidence += 0.05;
                 }
             }
+            // Ensure confidence does not exceed 1.0
+            e.confidence = Math.min(1.0, e.confidence);
         });
         
         return entities;

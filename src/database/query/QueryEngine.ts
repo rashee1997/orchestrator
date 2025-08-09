@@ -1,3 +1,23 @@
+interface NodeType {
+    id: string;
+    // Add other properties that a node might have, based on usage in QueryEngine.ts
+    // For example:
+    name: string;
+    entityType: string;
+    observations?: string[];
+    createdAt?: number;
+    accessCount?: number;
+    deleted?: boolean;
+}
+
+interface EdgeType {
+    id: string;
+    source: string;
+    target: string;
+    type: string;
+    // Add other properties that an edge might have
+}
+import Fuse from 'fuse.js';
 import { JsonlStorageManager } from '../storage/JsonlStorageManager.js';
 import path from 'path';
 import { QueryAST, ParsedComplexQuery, SimpleSearchQuery, NlpStructuredQuery, TraverseQuery, RankedSearchQuery } from '../../types/query.js';
@@ -224,14 +244,19 @@ export class QueryEngine {
 
             // Apply relationship traversal if specified
             if (complexAst.traverse) {
-                filteredNodes = await this.executeTraverseQuery({
-                    type: 'traverse',
-                    startEntityId: filteredNodes[0]?.id,
-                    direction: complexAst.traverse.direction,
-                    depth: complexAst.traverse.depth,
-                    relationTypes: complexAst.traverse.relationTypes,
-                    limit: complexAst.limit
-                }, allNodes, allEdges);
+                const traversedResults: any[] = [];
+                for (const node of filteredNodes) {
+                    const result = await this.executeTraverseQuery({
+                        type: 'traverse',
+                        startEntityId: node.id,
+                        direction: complexAst.traverse.direction,
+                        depth: complexAst.traverse.depth,
+                        relationTypes: complexAst.traverse.relationTypes,
+                        limit: complexAst.limit
+                    }, allNodes, allEdges);
+                    traversedResults.push(...result);
+                }
+                filteredNodes = [...new Map(traversedResults.map(n => [n.id, n])).values()]; // Deduplicate
             }
         }
         else if (ast.type === 'simple_search') {
@@ -245,6 +270,8 @@ export class QueryEngine {
         }
 
         // Cache the result
+        // NOTE: Cached results may become outdated if nodes or edges are mutated.
+        // The cache is invalidated on data modifications (see mutation methods).
         this.queryCache.set(cacheKey, {
             nodes: filteredNodes,
             timestamp: Date.now()
@@ -334,6 +361,49 @@ export class QueryEngine {
     }
 
     /**
+    /**
+     * Invalidate the query cache. Should be called after any mutation to nodes or edges.
+     */
+    private invalidateQueryCache(): void {
+        this.queryCache.clear();
+    }
+
+    /**
+     * Example mutation methods with cache invalidation.
+     * You must call invalidateQueryCache() after any mutation to ensure cache consistency.
+     */
+
+    public addNode(node: NodeType): void {
+        // ... existing logic to add node ...
+        this.invalidateQueryCache();
+    }
+
+    public updateNode(nodeId: string, updates: Partial<NodeType>): void {
+        // ... existing logic to update node ...
+        this.invalidateQueryCache();
+    }
+
+    public deleteNode(nodeId: string): void {
+        // ... existing logic to delete node ...
+        this.invalidateQueryCache();
+    }
+
+    public addEdge(edge: EdgeType): void {
+        // ... existing logic to add edge ...
+        this.invalidateQueryCache();
+    }
+
+    public updateEdge(edgeId: string, updates: Partial<EdgeType>): void {
+        // ... existing logic to update edge ...
+        this.invalidateQueryCache();
+    }
+
+    public deleteEdge(edgeId: string): void {
+        // ... existing logic to delete edge ...
+        this.invalidateQueryCache();
+    }
+
+    /**
      * Execute ranked search queries with relevance scoring
      */
     private async executeRankedSearch(ast: RankedSearchQuery, nodes: any[]): Promise<any[]> {
@@ -406,18 +476,27 @@ export class QueryEngine {
         let filteredNodes = [...nodes];
         const { operator, fuzzy, threshold = 0.7 } = ast;
 
+        // Use Fuse.js for efficient fuzzy searching if fuzzy is enabled
+        let fuse: any = null;
+        if (fuzzy) {
+            // Import Fuse.js at the top of the file: import Fuse from 'fuse.js';
+            // Precompute the Fuse index for nodes
+            fuse = new Fuse(nodes, {
+                keys: ['name', 'description'], // Adjust keys as needed
+                threshold: 1 - threshold, // Fuse.js threshold is inverse of similarity
+                includeScore: true,
+            });
+        }
+
         // Helper function for string matching with optional fuzzy support
         const stringMatches = (str: string, pattern: string): boolean => {
             if (!str || !pattern) return false;
 
-            if (fuzzy) {
-                // Simple fuzzy matching implementation
-                const lowerStr = str.toLowerCase();
-                const lowerPattern = pattern.toLowerCase();
-
-                // Calculate similarity ratio (simplified Levenshtein distance)
-                const similarity = this.calculateSimilarity(lowerStr, lowerPattern);
-                return similarity >= threshold;
+            if (fuzzy && fuse) {
+                // Use Fuse.js search for fuzzy matching
+                const results = fuse.search(pattern);
+                // Check if the current string is among the matched results
+                return results.some((result: any) => result.item.name === str || result.item.description === str);
             }
 
             return str.toLowerCase().includes(pattern.toLowerCase());

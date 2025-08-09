@@ -739,7 +739,6 @@ graph TD
 **CATEGORY: MODE & AGENT BEHAVIOR MANAGEMENT**
 
 59. add_mode: Stores a mode-specific instruction for an AI agent.
-60. get_mode: Retrieves a mode-specific instruction.
 61. delete_mode: Deletes a mode-specific instruction.
 62. update_mode: Updates an existing mode-specific instruction.
 

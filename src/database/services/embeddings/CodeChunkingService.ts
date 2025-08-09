@@ -11,16 +11,19 @@ export class CodeChunkingService {
     private knowledgeGraphCache: Map<string, any>;
     private maxChunkSize: number = 2000; // Maximum characters per chunk
     private contextWindow: number = 500; // Context characters to include before/after chunks
+    private largeFileThreshold: number;
 
     constructor(
         introspectionService: CodebaseIntrospectionService,
         aiProvider: AIEmbeddingProvider,
-        memoryManager: MemoryManager
+        memoryManager: MemoryManager,
+        largeFileThreshold: number = 50000
     ) {
         this.introspectionService = introspectionService;
         this.aiProvider = aiProvider;
         this.memoryManager = memoryManager;
         this.knowledgeGraphCache = new Map<string, any>();
+        this.largeFileThreshold = largeFileThreshold;
     }
 
     private generateChunkHash(text: string): string {
@@ -60,7 +63,7 @@ export class CodeChunkingService {
         let summaryDbCallLatencyMs = 0;
 
         // Handle very large files by splitting them into manageable chunks
-        if (fileContent.length > 50000) { // 50KB threshold
+        if (fileContent.length > this.largeFileThreshold) {
             return this.handleLargeFile(agentId, filePath, fileContent, relativeFilePath, language, strategy, storeEntitySummaries);
         }
 
@@ -249,45 +252,34 @@ export class CodeChunkingService {
         const chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }> = [];
         const lines = fileContent.split(/\r\n|\r|\n/);
         let currentChunk: string[] = [];
-        let currentLineCount = 0;
+        let currentEntityName: string | undefined = undefined;
         let chunkIndex = 0;
 
-        // Simple line-based chunking for very large files
+        // Chunking at logical boundaries (functions/classes)
+        const functionOrClassRegex = /^\s*(export\s+)?(async\s+)?(function|class)\s+([A-Za-z0-9_]+)\s*\(/;
         for (const line of lines) {
-            currentChunk.push(line);
-            currentLineCount++;
-
-            if (currentLineCount >= 500) { // Create chunks of ~500 lines
-                const chunkText = currentChunk.join('\n');
-                chunks.push({
-                    chunk_text: chunkText,
-                    entity_name: `large_file_chunk_${chunkIndex}`,
-                    metadata: {
-                        type: 'large_file_chunk',
-                        startLine: currentLineCount - 500,
-                        endLine: currentLineCount,
-                        language: language
-                    }
-                });
-
-                currentChunk = [];
-                currentLineCount = 0;
-                chunkIndex++;
-            }
-        }
-
-        // Add the last chunk if it has content
-        if (currentChunk.length > 0) {
-            const chunkText = currentChunk.join('\n');
-            chunks.push({
-                chunk_text: chunkText,
-                entity_name: `large_file_chunk_${chunkIndex}`,
-                metadata: {
-                    type: 'large_file_chunk',
-                    startLine: currentLineCount - currentChunk.length,
-                    endLine: currentLineCount,
-                    language: language
+            const match = line.match(functionOrClassRegex);
+            if (match) {
+                // If there's an existing chunk, push it before starting a new one
+                if (currentChunk.length > 0) {
+                    chunks.push({
+                        chunk_text: currentChunk.join('\n'),
+                        entity_name: currentEntityName,
+                        metadata: { chunkIndex }
+                    });
+                    chunkIndex++;
+                    currentChunk = [];
                 }
+                currentEntityName = match[4];
+            }
+            currentChunk.push(line);
+        }
+        // Push the last chunk if any
+        if (currentChunk.length > 0) {
+            chunks.push({
+                chunk_text: currentChunk.join('\n'),
+                entity_name: currentEntityName,
+                metadata: { chunkIndex }
             });
         }
 
