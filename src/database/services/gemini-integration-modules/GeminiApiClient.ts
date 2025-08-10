@@ -91,7 +91,7 @@ export class GeminiApiClient {
         }
 
         const batchSize = 10;
-        const delayBetweenBatches = 7000;
+        const delayBetweenBatches = 10000; // Increased delay to 10 seconds
 
         const allResults: Array<{ content: Part[], confidenceScore?: number }> = [];
 
@@ -145,8 +145,9 @@ export class GeminiApiClient {
                         attempt++;
                         if (attempt < maxRetries) {
                             this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length;
-                            console.warn(`Received 429 Too Many Requests. Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying batch...`);
-                            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                            const backoffTime = 2000 * Math.pow(2, attempt - 1); // Exponential backoff for API key rotation
+                            console.warn(`Received 429 Too Many Requests. Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying batch after ${backoffTime}ms...`);
+                            await new Promise(resolve => setTimeout(resolve, backoffTime));
                         } else {
                             console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. Skipping batch.`);
                             for (let j = 0; j < batchQueries.length; j++) {
@@ -156,14 +157,17 @@ export class GeminiApiClient {
                         }
                     } else {
                         console.error(`Non-retryable error for batch starting at index ${i}:`, error);
+                        // For non-retryable errors, we still want to log and move on,
+                        // but not mark as success if it was a critical failure.
                         for (let j = 0; j < batchQueries.length; j++) {
                             allResults.push({ content: [{ text: `Error: ${error.message}` }] });
                         }
-                        success = true;
+                        success = true; // Mark as success to break the while loop for this batch
                     }
                 }
             }
             if (!success) {
+                // This block will only be reached if an unhandled error occurred and success was never true
                 for (let j = 0; j < batchQueries.length; j++) {
                     allResults.push({ content: [{ text: `Error: Failed after all retries. Last error: ${lastError ? lastError.message : 'Unknown'}` }] });
                 }
