@@ -121,7 +121,7 @@ export class HTMLParser extends BaseLanguageParser {
                                 name = `[name=${element.attribs.name}]`;
                                 entityType = 'html_attribute_selector';
                             } else if (element.attribs.class) {
-                                name = `.${element.attribs.class.split(' ')[0]}`;
+                                name = `.${element.attribs.class.replace(/ /g, '.')}`; // Concatenate all classes with a dot
                                 entityType = 'html_class_selector';
                             } else {
                                 name = element.tagName;
@@ -158,10 +158,18 @@ export class HTMLParser extends BaseLanguageParser {
                         }
                     } else if (node.type === 'script') {
                         const element = node as DomHandler.Element;
-                        if (element.children && element.children.length > 0 && element.children[0].type === 'text') {
-                            const scriptContent = (element.children[0] as DomHandler.Text).data;
+                        if (element.children && element.children.length > 0) {
+                            let scriptContent = '';
+                            for (const child of element.children) {
+                                if (child.type === 'text') {
+                                    scriptContent += (child as DomHandler.Text).data;
+                                }
+                            }
                             if (scriptContent.trim()) {
                                 const start = this.getLineAndColumn(fileContent, element.startIndex!);
+                                // When parsing script content, we need to adjust the start and end lines
+                                // of the entities found within the script relative to the HTML file.
+                                // The tsParser will return lines relative to the scriptContent itself.
                                 const jsEntities = await this.tsParser.parseCodeEntities(filePath, scriptContent, projectRootPath);
                                 jsEntities.forEach(jsEntity => {
                                     jsEntity.startLine += start.line - 1;
@@ -192,7 +200,7 @@ export class HTMLParser extends BaseLanguageParser {
                             const end = this.getLineAndColumn(fileContent, textNode.endIndex!);
                             entities.push({
                                 type: 'html_text_content',
-                                name: `text_in_<${parent.tagName}>`,
+                                name: `text_content_of_${parent.tagName}`,
                                 fullName: `${relativeFilePath}::text_at_${start.line}:${start.column}`,
                                 startLine: start.line,
                                 endLine: end.line,

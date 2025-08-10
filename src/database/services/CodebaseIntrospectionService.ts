@@ -72,6 +72,46 @@ export class CodebaseIntrospectionService {
         '.sql', '.csv', '.xml'
     ]);
 
+    // Deny list for exact file and directory names (e.g., dot-files, common build/dependency folders)
+    // These are checked by basename, not extension, to handle cases like '.env' or 'node_modules'
+    private static readonly DENY_LIST_BASENAMES = new Set([
+        // Version control and IDE specific
+        '.git', '.svn', '.hg', '.bzr', '.vscode', '.idea', '.DS_Store',
+
+        // Node.js specific
+        'node_modules', 'package-lock.json', 'yarn.lock', '.npmignore',
+
+        // Environment files
+        '.env', '.env.local', '.env.development', '.env.production', '.env.test',
+
+        // Build artifacts and logs
+        'dist', 'build', 'out', 'coverage', 'log', 'logs', 'tmp', 'temp',
+
+        // Common ignore files (handled by .gitignore but good for explicit deny)
+        '.gitignore', '.gitattributes', '.editorconfig', '.prettierrc', '.eslintrc',
+
+        // Other common non-code files
+        'Thumbs.db', 'ehthumbs.db', 'desktop.ini', 'npm-debug.log', 'yarn-debug.log',
+        'yarn-error.log', '.project', '.classpath', '.settings', '.factorypath',
+        '.next', '.nuxt', '.parcel-cache', '.rollup.cache', '.webpack',
+        '.cache', '.expo', '.direnv', '.terraform', '.terraform.lock.hcl',
+        '.serverless', '.aws-sam', '.nyc_output', '.cpcache', '.pnp', '.pnpm-store',
+        '.npm', '.yarn', 'lerna.json', 'firebase.json', 'netlify.toml', 'vercel.json',
+        'aws-exports.js', 'amplify', 'serverless.yml', 'cloudformation.yaml',
+        'jest.config.js', 'babel.config.js', 'webpack.config.js', 'rollup.config.js',
+        'tailwind.config.js', 'postcss.config.js', 'tsconfig.json', 'jsconfig.json',
+        'tslint.json', 'nodemon.json', '.prettierignore', '.eslintignore', '.dockerignore',
+        'docker-compose.yml', 'Dockerfile', 'Vagrantfile', 'Makefile', 'CMakeLists.txt',
+        'Rakefile', 'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock',
+        'phpcs.xml', 'phpunit.xml', 'pyproject.toml', 'Pipfile', 'Pipfile.lock',
+        'requirements.txt', '.python-version', '.venv', 'venv', 'env',
+        '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+        'bin', 'obj', 'debug', 'release', '.vs', '.user', '.suo', '.bak', '.tmp',
+        '*.bak', '*.tmp', '*.swp', '*.swo', '*.swn', '*.exe', '*.dll', '*.obj', '*.lib',
+        '*.bin', '*.out', '*.log', '*.diff', '*.patch', '*.rej', '*.orig',
+        'package.json', 'package-lock.json', 'tsconfig.json', 'tslint.json', 'webpack.config.js'
+    ]);
+
     private memoryManager: MemoryManager;
     private geminiService: GeminiIntegrationService | null = null;
     private projectRootPath: string;
@@ -161,7 +201,14 @@ export class CodebaseIntrospectionService {
         }
 
         // If no specific parser, check our denylist of non-code extensions
-        if (CodebaseIntrospectionService.NON_CODE_EXTENSIONS.has(extension) || fileName.startsWith('.')) {
+        const basename = path.basename(filePath);
+        // Exclude based on exact basename match (for dot-files, node_modules, etc.)
+        if (CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename) ||
+            CodebaseIntrospectionService.NON_CODE_EXTENSIONS.has(extension) ||
+            // General check for dot-files/folders where path.extname might not work (e.g., .vscode, .git)
+            // This is a fallback and might be redundant with DENY_LIST_BASENAMES for some cases, but safer.
+            basename.startsWith('.') && basename.length > 1 && !CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename)
+        ) {
             return undefined; // Do not attempt to detect language for these
         }
 

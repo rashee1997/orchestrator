@@ -102,11 +102,11 @@ export const schemas = {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Agent ID to associate the embeddings with." },
-            path_to_embed: { type: 'string', nullable: true, description: "The absolute path to a single file or directory to embed." },
+            path_to_embed: { type: 'string', minLength: 1, description: "The absolute path to a single file or directory to embed." },
             paths_to_embed: {
                 type: 'array',
                 items: { type: 'string' },
-                nullable: true,
+                minItems: 1,
                 description: "Array of absolute paths to the files to embed. Use this or 'path_to_embed', but not both."
             },
             project_root_path: {type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings."},

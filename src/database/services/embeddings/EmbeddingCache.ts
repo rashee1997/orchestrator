@@ -8,14 +8,17 @@ export class EmbeddingCache {
     private repository: CodebaseEmbeddingRepository;
     private cacheFilePath: string = 'embedding_cache.json';
     private inMemoryCache: Map<string, CachedChunk>;
+    private dirtyQueue: Map<string, CachedChunk>; // Queue for evicted chunks to be flushed to DB
     private cacheLoaded: boolean = false;
     private maxCacheSize: number = 1000; // Maximum number of chunks to keep in memory
     private flushIntervalMs: number = 30000; // Auto-flush interval (30 seconds)
     private flushTimer: NodeJS.Timeout | null = null;
+    private isSavingCacheToFile: boolean = false; // Flag to prevent concurrent file writes
 
     constructor(vectorDb: Database) {
         this.repository = new CodebaseEmbeddingRepository(vectorDb);
         this.inMemoryCache = new Map<string, CachedChunk>();
+        this.dirtyQueue = new Map<string, CachedChunk>(); // Initialize dirty queue
         console.log(`[EmbeddingCache] Initializing with cache file path: ${this.cacheFilePath}`);
 
         // Set up auto-flush timer
@@ -26,11 +29,7 @@ export class EmbeddingCache {
      * Sets up automatic periodic flushing of the cache.
      */
     private setupAutoFlush(): void {
-        if (this.flushTimer) {
-            clearInterval(this.flushTimer);
-        }
-
-        this.flushTimer = setInterval(async () => {
+        const scheduleNextFlush = async () => {
             try {
                 const flushedCount = await this.flushToDb();
                 if (flushedCount > 0) {
@@ -38,8 +37,27 @@ export class EmbeddingCache {
                 }
             } catch (error) {
                 console.error('[EmbeddingCache] Error during auto-flush:', error);
+            } finally {
+                this.flushTimer = setTimeout(scheduleNextFlush, this.flushIntervalMs);
             }
-        }, this.flushIntervalMs);
+        };
+
+        // Clear any existing timer before setting a new one
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer);
+        }
+        this.flushTimer = setTimeout(scheduleNextFlush, this.flushIntervalMs);
+    }
+
+    /**
+     * Stops automatic periodic flushing of the cache.
+     */
+    public stopAutoFlush(): void {
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer);
+            this.flushTimer = null;
+            console.log('[EmbeddingCache] Auto-flush stopped.');
+        }
     }
 
     public async loadCacheState(): Promise<Map<string, CachedChunk>> {
@@ -95,7 +113,12 @@ export class EmbeddingCache {
         if (this.inMemoryCache.size >= this.maxCacheSize) {
             const lruKey = this.inMemoryCache.keys().next().value;
             if (lruKey) {
-                this.inMemoryCache.delete(lruKey);
+                const evictedChunk = this.inMemoryCache.get(lruKey);
+                if (evictedChunk) {
+                    this.dirtyQueue.set(lruKey, evictedChunk); // Move to dirty queue
+                    console.log(`[EmbeddingCache] Evicted chunk ${lruKey} moved to dirty queue.`);
+                }
+                this.inMemoryCache.delete(lruKey); // Delete from in-memory cache
             }
         }
 
@@ -130,7 +153,7 @@ export class EmbeddingCache {
             await this.loadCacheState();
         }
 
-        if (this.inMemoryCache.size === 0) {
+        if (this.inMemoryCache.size === 0 && this.dirtyQueue.size === 0) {
             return 0;
         }
 
@@ -141,6 +164,34 @@ export class EmbeddingCache {
             if (!chunk.vector) {
                 // Skip this chunk if vector is undefined
                 console.warn(`[EmbeddingCache] Skipping chunk ${chunk.chunk_hash} due to undefined vector.`);
+                continue;
+            }
+            const vectorBuffer = Buffer.alloc(chunk.vector.length * 4);
+            for (let i = 0; i < chunk.vector.length; i++) {
+                vectorBuffer.writeFloatLE(chunk.vector[i], i * 4);
+            }
+
+            chunksToInsert.push({
+                embedding_id: crypto.randomUUID(),
+                agent_id: chunk.agent_id,
+                file_path_relative: chunk.file_path_relative || '',
+                entity_name: chunk.entity_name ?? null,
+                chunk_text: chunk.chunk_text,
+                ai_summary_text: chunk.metadata?.ai_summary_text ?? null,
+                vector_blob: vectorBuffer,
+                vector_dimensions: chunk.vector_dimensions,
+                model_name: chunk.model_name,
+                chunk_hash: chunk.chunk_hash,
+                created_timestamp_unix: chunk.created_timestamp_unix,
+                metadata_json: chunk.metadata ? JSON.stringify(chunk.metadata) : null,
+                full_file_path: chunk.full_file_path || ''
+            });
+        }
+
+        // Process dirtyQueue entries
+        for (const chunk of this.dirtyQueue.values()) {
+            if (!chunk.vector) {
+                console.warn(`[EmbeddingCache] Skipping dirty chunk ${chunk.chunk_hash} due to undefined vector.`);
                 continue;
             }
             const vectorBuffer = Buffer.alloc(chunk.vector.length * 4);
@@ -179,6 +230,7 @@ export class EmbeddingCache {
 
                 // Save to file after successful DB flush
                 await this.saveCacheToFile();
+                this.dirtyQueue.clear(); // Clear dirty queue after successful flush
             } catch (error) {
                 console.error(`Failed to bulk flush chunks to DB:`, error);
                 throw error; // Re-throw to allow caller to handle
@@ -192,19 +244,31 @@ export class EmbeddingCache {
      * Saves the current in-memory cache to disk.
      */
     private async saveCacheToFile(): Promise<void> {
+        if (this.isSavingCacheToFile) {
+            console.log('[EmbeddingCache] saveCacheToFile: Another save operation is already in progress. Skipping.');
+            return;
+        }
+
+        this.isSavingCacheToFile = true;
         try {
             const cacheArray = Array.from(this.inMemoryCache.values());
             await fs.writeFile(this.cacheFilePath, JSON.stringify(cacheArray, null, 2), 'utf-8');
         } catch (error) {
             console.error('Failed to save cache to file:', error);
             throw error;
+        } finally {
+            this.isSavingCacheToFile = false;
         }
     }
 
     public async clearCache(): Promise<void> {
         try {
+            // Stop auto-flush to prevent unnecessary timer events
+            this.stopAutoFlush();
+
             // Clear in-memory cache
             this.inMemoryCache.clear();
+            this.dirtyQueue.clear(); // Also clear dirty queue on cache clear
 
             // Clear file cache
             await fs.unlink(this.cacheFilePath);

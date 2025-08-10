@@ -347,10 +347,10 @@ export class CodebaseEmbeddingService {
             const promise = processFile(item);
             fileProcessingPromises.push(promise);
 
-            if (activePromises >= concurrencyLimit) {
-                await Promise.race(fileProcessingPromises.filter(p => p !== null));
-            }
             activePromises++;
+            if (activePromises > concurrencyLimit) {
+                await Promise.race(fileProcessingPromises);
+            }
             promise.finally(() => activePromises--);
         }
 
@@ -470,10 +470,10 @@ export class CodebaseEmbeddingService {
             const promise = processFile(absoluteFilePath);
             fileProcessingPromises.push(promise);
 
-            if (activePromises >= concurrencyLimit) {
-                await Promise.race(fileProcessingPromises.filter(p => p !== null));
-            }
             activePromises++;
+            if (activePromises > concurrencyLimit) {
+                await Promise.race(fileProcessingPromises);
+            }
             promise.finally(() => activePromises--);
         }
 

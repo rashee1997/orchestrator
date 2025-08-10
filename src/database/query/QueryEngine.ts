@@ -20,7 +20,7 @@ interface EdgeType {
 import Fuse from 'fuse.js';
 import { JsonlStorageManager } from '../storage/JsonlStorageManager.js';
 import path from 'path';
-import { QueryAST, ParsedComplexQuery, SimpleSearchQuery, NlpStructuredQuery, TraverseQuery, RankedSearchQuery } from '../../types/query.js';
+import type { QueryAST, ParsedComplexQuery, SimpleSearchQuery, NlpStructuredQuery, TraverseQuery, RankedSearchQuery } from '../../types/query.js';
 
 export class QueryEngine {
     private jsonlStorage: JsonlStorageManager;
@@ -41,7 +41,7 @@ export class QueryEngine {
 
         if (typeof query === 'string') {
             // Check for traversal syntax: traverse:startId:direction:depth
-            const traverseMatch = query.match(/^traverse:(\w+):(outgoing|incoming|both):(\d+)(?:,(.*))?$/);
+            const traverseMatch = query.match(/^traverse:([^:]+):(outgoing|incoming|both):(\d+)(?:,(.*))?$/);
             if (traverseMatch) {
                 const [, startId, direction, depthStr, relationTypesStr] = traverseMatch;
                 const depth = parseInt(depthStr, 10);
@@ -71,7 +71,8 @@ export class QueryEngine {
             const complexQuery: ParsedComplexQuery = {
                 type: 'parsed_complex_search',
                 observationContains: [],
-                operator: 'AND' // Default operator
+                logicalOperator: 'AND', // Default logical operator
+                negated: false // Default negated state
             };
 
             let isComplex = false;
@@ -123,18 +124,21 @@ export class QueryEngine {
                         break;
                     // New operators
                     case 'operator':
-                        if (['AND', 'OR', 'NOT'].includes(value.toUpperCase())) {
-                            complexQuery.operator = value.toUpperCase() as 'AND' | 'OR' | 'NOT';
+                        if (['AND', 'OR'].includes(value.toUpperCase())) {
+                            complexQuery.logicalOperator = value.toUpperCase() as 'AND' | 'OR';
+                            complexQuery.negated = false;
+                        } else if (value.toUpperCase() === 'NOT') {
+                            complexQuery.negated = true;
                         }
                         break;
                     // Fuzzy matching
                     case 'fuzzy':
                         complexQuery.fuzzy = value.toLowerCase() === 'true';
                         break;
-                    case 'threshold':
-                        const threshold = parseFloat(value);
-                        if (!isNaN(threshold) && threshold >= 0 && threshold <= 1) {
-                            complexQuery.threshold = threshold;
+                    case 'similarity':
+                        const similarity = parseFloat(value);
+                        if (!isNaN(similarity) && similarity >= 0 && similarity <= 1) {
+                            complexQuery.similarity = similarity;
                         }
                         break;
                     // Relationship traversal
@@ -474,165 +478,145 @@ export class QueryEngine {
      */
     private executeComplexQuery(ast: ParsedComplexQuery, nodes: any[]): any[] {
         let filteredNodes = [...nodes];
-        const { operator, fuzzy, threshold = 0.7 } = ast;
+    const { logicalOperator, negated, fuzzy, similarity = 0.7 } = ast;
 
         // Use Fuse.js for efficient fuzzy searching if fuzzy is enabled
         let fuse: any = null;
+        const patternMatches = new Map<string, Set<string>>();
+        
         if (fuzzy) {
             // Import Fuse.js at the top of the file: import Fuse from 'fuse.js';
             // Precompute the Fuse index for nodes
             fuse = new Fuse(nodes, {
                 keys: ['name', 'description'], // Adjust keys as needed
-                threshold: 1 - threshold, // Fuse.js threshold is inverse of similarity
+                threshold: similarity, // Use similarity directly
                 includeScore: true,
             });
         }
 
+        // Helper function to pre-compute pattern matches
+        const getPatternMatches = (pattern: string): Set<string> => {
+            if (!pattern || !fuzzy || !fuse) {
+                return new Set<string>();
+            }
+            
+            if (patternMatches.has(pattern)) {
+                return patternMatches.get(pattern)!;
+            }
+            
+            const results = fuse.search(pattern);
+            const matchingIds = new Set<string>(
+                results.map((result: any) => result.item.id)
+            );
+            
+            patternMatches.set(pattern, matchingIds);
+            return matchingIds;
+        };
+
         // Helper function for string matching with optional fuzzy support
-        const stringMatches = (str: string, pattern: string): boolean => {
+        const stringMatches = (str: string, pattern: string, nodeId?: string): boolean => {
             if (!str || !pattern) return false;
 
-            if (fuzzy && fuse) {
-                // Use Fuse.js search for fuzzy matching
-                const results = fuse.search(pattern);
-                // Check if the current string is among the matched results
-                return results.some((result: any) => result.item.name === str || result.item.description === str);
+            if (fuzzy && fuse && nodeId) {
+                // Use pre-computed pattern matches for fuzzy matching
+                const matches = getPatternMatches(pattern);
+                return matches.has(nodeId);
             }
 
             return str.toLowerCase().includes(pattern.toLowerCase());
         };
 
-        // Apply filters based on the operator
-        const applyFilters = () => {
-            if (ast.targetEntityType) {
-                const entityTypeLower = ast.targetEntityType.toLowerCase();
-                filteredNodes = filteredNodes.filter(node =>
-                    node.entityType && node.entityType.toLowerCase() === entityTypeLower
-                );
-            }
 
-            if (ast.nameContains) {
-                filteredNodes = filteredNodes.filter(node =>
-                    node.name && stringMatches(node.name, ast.nameContains!)
-                );
-            }
-
-            if (ast.idEquals) {
-                filteredNodes = filteredNodes.filter(node => node.id === ast.idEquals);
-            }
-
-            if (ast.filePathCondition) {
-                const filePathLower = ast.filePathCondition.toLowerCase();
-                filteredNodes = filteredNodes.filter(node => {
-                    if (node.name && node.entityType === 'file' &&
-                        stringMatches(node.name, filePathLower)) return true;
-
-                    if (node.name && node.entityType === 'directory' &&
-                        stringMatches(node.name, filePathLower)) return true;
-
-                    if (node.observations && Array.isArray(node.observations)) {
-                        return node.observations.some((obs: string) =>
-                            obs && typeof obs === 'string' && stringMatches(obs, filePathLower)
-                        );
-                    }
-
-                    return false;
-                });
-            }
-
-            if (ast.definedInFilePath) {
-                const definedInFilePathLower = ast.definedInFilePath.toLowerCase();
-                filteredNodes = filteredNodes.filter(node =>
-                    node.observations && Array.isArray(node.observations) &&
-                    node.observations.some((obs: string) =>
-                        obs && typeof obs === 'string' &&
-                        obs.toLowerCase().startsWith('defined_in_file_path:') &&
-                        stringMatches(obs, definedInFilePathLower)
-                    )
-                );
-            }
-
-            if (ast.parentClassFullName) {
-                const parentClassFullNameLower = ast.parentClassFullName.toLowerCase();
-                filteredNodes = filteredNodes.filter(node =>
-                    node.observations && Array.isArray(node.observations) &&
-                    node.observations.some((obs: string) =>
-                        obs && typeof obs === 'string' &&
-                        obs.toLowerCase().startsWith('parent_class_full_name:') &&
-                        stringMatches(obs, parentClassFullNameLower)
-                    )
-                );
-            }
-
-            if (ast.observationContains && ast.observationContains.length > 0) {
-                ast.observationContains.forEach(obsQuery => {
-                    if (obsQuery && obsQuery.trim() !== "") {
-                        filteredNodes = filteredNodes.filter(node => {
-                            if (!node.observations || !Array.isArray(node.observations)) return false;
-
-                            // Special handling for "public" or "private" in signature
-                            if (obsQuery.toLowerCase() === 'public' || obsQuery.toLowerCase() === 'private') {
-                                const signatureObs = node.observations.find((obs: string) =>
-                                    obs.startsWith('signature:')
-                                );
-                                if (signatureObs && stringMatches(signatureObs, obsQuery)) {
-                                    return true;
-                                }
-                            }
-
-                            // General observation matching
-                            return node.observations.some((obs: string) =>
-                                obs && typeof obs === 'string' && stringMatches(obs, obsQuery)
-                            );
-                        });
-                    }
-                });
-            }
+        // Helper function to apply a single filter condition
+        const applyCondition = (conditionFunc: (node: any) => boolean, initialNodes: any[] = filteredNodes) => {
+            return initialNodes.filter(conditionFunc);
         };
 
-        // Apply filters based on the operator
-        if (operator === 'AND') {
-            applyFilters();
-        } else if (operator === 'OR') {
-            // For OR, we need to collect nodes that match any condition
-            const originalNodes = [...nodes];
-            filteredNodes = [];
+        const conditions: ((node: any) => boolean)[] = [];
 
-            // Reset the query conditions and apply each one separately
-            const conditions = [
-                () => {
-                    if (ast.targetEntityType) {
-                        const entityTypeLower = ast.targetEntityType.toLowerCase();
-                        return originalNodes.filter(node =>
-                            node.entityType && node.entityType.toLowerCase() === entityTypeLower
-                        );
-                    }
-                    return [];
-                },
-                () => {
-                    if (ast.nameContains) {
-                        return originalNodes.filter(node =>
-                            node.name && stringMatches(node.name, ast.nameContains!)
-                        );
-                    }
-                    return [];
-                },
-                // Add more conditions for other fields...
-            ];
+        if (ast.targetEntityType) {
+            const entityTypeLower = ast.targetEntityType.toLowerCase();
+            conditions.push(node => node.entityType && node.entityType.toLowerCase() === entityTypeLower);
+        }
 
-            // Combine results from all conditions
-            const conditionResults = conditions.map(fn => fn()).flat();
-            const uniqueNodes = new Map();
+        if (ast.nameContains) {
+            conditions.push(node => node.name && stringMatches(node.name, ast.nameContains!, node.id));
+        }
 
-            conditionResults.forEach(node => {
-                uniqueNodes.set(node.id, node);
+        if (ast.idEquals) {
+            conditions.push(node => node.id === ast.idEquals);
+        }
+
+        if (ast.filePathCondition) {
+            const filePathLower = ast.filePathCondition.toLowerCase();
+            conditions.push(node => {
+                if (node.name && node.entityType === 'file' && stringMatches(node.name, filePathLower, node.id)) return true;
+                if (node.name && node.entityType === 'directory' && stringMatches(node.name, filePathLower, node.id)) return true;
+                if (node.observations && Array.isArray(node.observations)) {
+                    return node.observations.some((obs: string) => obs && typeof obs === 'string' && stringMatches(obs, filePathLower, node.id));
+                }
+                return false;
             });
+        }
 
-            filteredNodes = Array.from(uniqueNodes.values());
-        } else if (operator === 'NOT') {
-            // For NOT, we apply filters and then take the complement
+        if (ast.definedInFilePath) {
+            const definedInFilePathLower = ast.definedInFilePath.toLowerCase();
+            conditions.push(node =>
+                node.observations && Array.isArray(node.observations) &&
+                node.observations.some((obs: string) =>
+                    obs && typeof obs === 'string' && obs.toLowerCase().startsWith('defined_in_file_path:') &&
+                    stringMatches(obs, definedInFilePathLower, node.id)
+                )
+            );
+        }
+
+        if (ast.parentClassFullName) {
+            const parentClassFullNameLower = ast.parentClassFullName.toLowerCase();
+            conditions.push(node =>
+                node.observations && Array.isArray(node.observations) &&
+                node.observations.some((obs: string) =>
+                    obs && typeof obs === 'string' && obs.toLowerCase().startsWith('parent_class_full_name:') &&
+                    stringMatches(obs, parentClassFullNameLower, node.id)
+                )
+            );
+        }
+
+        if (ast.observationContains && ast.observationContains.length > 0) {
+            ast.observationContains.forEach(obsQuery => {
+                if (obsQuery && obsQuery.trim() !== "") {
+                    conditions.push(node => {
+                        if (!node.observations || !Array.isArray(node.observations)) return false;
+
+                        // Special handling for "public" or "private" in signature
+                        if (obsQuery.toLowerCase() === 'public' || obsQuery.toLowerCase() === 'private') {
+                            const signatureObs = node.observations.find((obs: string) => obs.startsWith('signature:'));
+                            if (signatureObs && stringMatches(signatureObs, obsQuery, node.id)) {
+                                return true;
+                            }
+                        }
+
+                        // General observation matching
+                        return node.observations.some((obs: string) => obs && typeof obs === 'string' && stringMatches(obs, obsQuery, node.id));
+                    });
+                }
+            });
+        }
+
+        if (logicalOperator === 'AND') {
+            for (const condition of conditions) {
+                filteredNodes = applyCondition(condition);
+            }
+        } else if (logicalOperator === 'OR') {
+            const orMatchedNodes = new Map<string, any>();
+            for (const condition of conditions) {
+                const matched = applyCondition(condition, nodes); // Apply to all original nodes
+                matched.forEach(node => orMatchedNodes.set(node.id, node));
+            }
+            filteredNodes = Array.from(orMatchedNodes.values());
+        }
+
+        if (negated) {
             const originalNodes = [...nodes];
-            applyFilters();
             const excludedIds = new Set(filteredNodes.map(node => node.id));
             filteredNodes = originalNodes.filter(node => !excludedIds.has(node.id));
         }

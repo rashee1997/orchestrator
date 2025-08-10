@@ -52,7 +52,7 @@ export class EntityResolver {
         scores.sort((a, b) => b.score - a.score);
 
         const best = scores[0];
-        const threshold = ctx.threshold ?? 0.2;
+        const threshold = ctx.threshold ?? 50; // Updated default threshold to 50
         return best && best.score >= threshold ? best.candidate : null;
     }
 

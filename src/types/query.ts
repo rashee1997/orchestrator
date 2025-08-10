@@ -5,10 +5,10 @@ export interface SimpleSearchQuery {
 
 export interface NlpStructuredQuery {
     type: 'nlp_structured_query';
-    entities: { type: string; value: string }[];
-    relationships: { source: string; target: string; type: string }[];
-    entityTypes?: string[]; // Added based on error
-    filters?: Record<string, any>; // Added based on error
+    entities: readonly { entityType: string; value: string }[];
+    relationships: readonly { source: string; target: string; relationType: string }[];
+    entityTypes?: readonly string[]; // Added based on error
+    filters?: Record<string, unknown>; // Added based on error
     limit?: number; // Added based on error
     intent?: string;
     sentiment?: 'positive' | 'negative' | 'neutral';
@@ -29,29 +29,29 @@ export interface ParsedComplexQuery {
     definedInFilePath?: string;
     parentClassFullName?: string;
     // New fields for relationship traversal
-    traverse?: {
-        direction: 'outgoing' | 'incoming' | 'both';
-        depth: number;
-        relationTypes?: string[];
-    };
+    traverse?: TraverseSpec;
     // New fields for advanced operators
-    operator?: 'AND' | 'OR' | 'NOT';
+    logicalOperator?: 'AND' | 'OR';
+    negated?: boolean;
     // New fields for fuzzy matching
     fuzzy?: boolean;
-    threshold?: number; // For fuzzy matching (0-1)
+    similarity?: number; // For fuzzy matching (0-1)
+}
+
+export interface TraverseSpec {
+    direction: 'outgoing' | 'incoming' | 'both';
+    depth: number; // Must be non-negative
+    relationTypes?: string[];
+    limit?: number; // Must be non-negative
 }
 
 /**
  * Enhanced structure for relationship traversal queries
  */
-export interface TraverseQuery {
+export interface TraverseQuery extends TraverseSpec {
     type: 'traverse';
     startEntityId: string;
-    direction: 'outgoing' | 'incoming' | 'both';
-    depth: number;
-    relationTypes?: string[];
-    limit?: number;
-    filters?: Record<string, any>;
+    filters?: Record<string, unknown>;
 }
 
 /**
@@ -67,4 +67,6 @@ export interface RankedSearchQuery {
 /**
  * Union type for all possible query AST structures
  */
-export type QueryAST = ParsedComplexQuery | SimpleSearchQuery | NlpStructuredQuery | TraverseQuery | RankedSearchQuery | any;
+export type QueryAST = ParsedComplexQuery | SimpleSearchQuery | NlpStructuredQuery | TraverseQuery | RankedSearchQuery;
+
+export type QueryType = QueryAST["type"];

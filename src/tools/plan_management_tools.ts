@@ -430,7 +430,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
             validateToolArgs('getTaskDetails', args, toolName);
 
-            const task = await (memoryManager as any).planTaskManager.getTaskById?.(agent_id, args.task_id)
+            const task = await (memoryManager as any).planTaskManager?.getTaskById?.(agent_id, args.task_id)
                 ?? await memoryManager.getPlanTaskById?.(agent_id, args.task_id);
             if (!task) {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`Task with ID \`${args.task_id}\` not found for agent \`${agent_id}\`.`, "Task Not Found") }] };

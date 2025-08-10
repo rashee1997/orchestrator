@@ -131,7 +131,7 @@ npm test
 # Example for loading in your AI agent:
 # 1. Read the workflow.md file
 # 2. Include it in your system prompt or rules
-# 3. Follow the 6-mode operational structure
+# 3. Follow the 7-mode operational structure
 ```
 
 ### 🐳 Docker Installation (Alternative)
@@ -203,7 +203,7 @@ Adapt the configuration format according to your client's requirements. The key 
 
 The `workflow.md` file is **THE MOST IMPORTANT COMPONENT** of this system. It's not just documentation - it's the operational manual that AI agents must follow to use this server effectively.
 
-### 📋 The 6 Operational Modes
+### 📋 The 7 Operational Modes
 
 <div align="center">
 
@@ -474,7 +474,7 @@ npm run inspector
 ### 📖 Key Documents
 
 -   **🚨 [Workflow Rules](workflow.md)** - **CRITICAL: The AI Driver that makes everything work!**
-    -   Defines the 6 operational modes
+    -   Defines the 7 operational modes
     -   Enforces safety protocols
     -   Structures agent behavior
     -   **MUST be loaded into AI agent's system prompt**

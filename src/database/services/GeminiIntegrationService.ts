@@ -88,16 +88,43 @@ export class GeminiIntegrationService {
 
     // Helper method to extract text from context data
     private extractTextFromContextData(dataToUse: any): string {
+        const MAX_CONTEXT_STRING_LENGTH = 1000; // Define a reasonable maximum length
+    
+        if (dataToUse === null || dataToUse === undefined) {
+            return '';
+        }
+    
+        let resultString: string;
+    
         if (dataToUse && dataToUse.documentation_snippets && Array.isArray(dataToUse.documentation_snippets)) {
-            return dataToUse.documentation_snippets.map((s: any) =>
+            resultString = dataToUse.documentation_snippets.map((s: any) =>
                 `${s.TITLE || ''}: ${s.DESCRIPTION || ''} ${s.CODE || ''}`
             ).join('\n\n');
         } else if (typeof dataToUse === 'object') {
-            return JSON.stringify(dataToUse);
+            const cache = new Set(); // For circular reference detection
+            resultString = JSON.stringify(dataToUse, (key, value) => {
+                if (typeof value === 'object' && value !== null) {
+                    if (cache.has(value)) {
+                        // Circular reference found, discard key
+                        return '[Circular]';
+                    }
+                    // Store value in our collection
+                    cache.add(value);
+                }
+                return value;
+            });
         } else if (typeof dataToUse === 'string') {
-            return dataToUse;
+            resultString = dataToUse;
+        } else {
+            resultString = String(dataToUse); // Handle numbers, booleans, etc.
         }
-        return '';
+    
+        // Limit the length of the output string
+        if (resultString.length > MAX_CONTEXT_STRING_LENGTH) {
+            return resultString.substring(0, MAX_CONTEXT_STRING_LENGTH) + '... (truncated)';
+        }
+    
+        return resultString;
     }
 
     // Summarize a code chunk

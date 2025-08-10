@@ -35,7 +35,7 @@ export class TailwindCSSParser extends BaseLanguageParser {
      */
     public async parseClassString(classString: string, sourceFilePath: string, startLine: number): Promise<ExtractedCodeEntity[]> {
         const entities: ExtractedCodeEntity[] = [];
-        const classes = classString.split(/\s+/).filter(Boolean);
+        const classes = [...new Set(classString.split(/\s+/).filter(Boolean))];
         const projectRootPath = this.projectRootPath;
         const relativeFilePath = path.relative(projectRootPath, sourceFilePath).replace(/\\/g, '/');
         const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
@@ -46,7 +46,7 @@ export class TailwindCSSParser extends BaseLanguageParser {
             entities.push({
                 type: 'tailwind_utility_class',
                 name: cls,
-                fullName: `${relativeFilePath}::class:${cls}`,
+                fullName: `${relativeFilePath}::class:${cls}:${startLine}`,
                 startLine: startLine,
                 endLine: startLine,
                 filePath: sourceFilePath,

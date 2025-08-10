@@ -1,5 +1,18 @@
 // src/database/memory_manager.ts
 import { GoogleGenAI } from '@google/genai';
+
+// TypeScript interface for plan_tasks table
+export interface PlanTaskRow {
+    task_id: string;
+    agent_id: string;
+    plan_id: string;
+    title: string;
+    description: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    [key: string]: any; // For any additional columns
+}
 import { DatabaseService } from './services/DatabaseService.js';
 import { ConversationHistoryManager } from './managers/ConversationHistoryManager.js';
 import { ContextInformationManager } from './managers/ContextInformationManager.js';
@@ -366,7 +379,7 @@ export class MemoryManager {
      * Retrieve a single task by ID for an agent.
      * Thin wrapper over PlanTaskManager/db layer to support get_task_details tool.
      */
-    async getPlanTaskById(agent_id: string, task_id: string) {
+    async getPlanTaskById(agent_id: string, task_id: string): Promise<PlanTaskRow | null> {
         // Ensure the PlanTaskManager is available
         if (!this.planTaskManager) {
             throw new Error('PlanTaskManager not initialized in MemoryManager.');
@@ -376,7 +389,7 @@ export class MemoryManager {
         const sql = 'SELECT * FROM plan_tasks WHERE agent_id = ? AND task_id = ?';
         const db = await this.dbService.getDb();
         const row = await db.get(sql, agent_id, task_id);
-        return row ?? null;
+        return row ? (row as PlanTaskRow) : null;
     }
     async getRefinedPrompt(...args: Parameters<GeminiIntegrationService['getRefinedPrompt']>) {
         return this.geminiIntegrationService.getRefinedPrompt(...args);

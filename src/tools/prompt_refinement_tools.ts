@@ -176,6 +176,9 @@ export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
                 args.conversation_context_ids as string[] | undefined,
                 enhancedContextOptions
             );
+            if (refinedPromptObject.agent_id && refinedPromptObject.agent_id !== effective_agent_id) {
+                throw new Error(`Refined prompt's agent_id (${refinedPromptObject.agent_id}) does not match the effective agent_id (${effective_agent_id}). Data integrity violation.`);
+            }
             // Ensure agent_id is present for DB insert (refined_prompts.agent_id is NOT NULL)
             if (!refinedPromptObject.agent_id) {
                 refinedPromptObject.agent_id = effective_agent_id;

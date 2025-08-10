@@ -85,7 +85,7 @@ interface EnhancedCodeEntity extends ExtractedCodeEntity {
 class AdvancedNamespaceResolver {
     private namespace = '';
     private uses: Map<string, string> = new Map();
-    private groupUses: Map<string, Map<string, string>> = new Map();
+    private groupUses: Map<string, Map<'class' | 'function' | 'const', Map<string, string>>> = new Map();
     private aliases: Map<string, string> = new Map();
     private functionUses: Map<string, string> = new Map();
     private constantUses: Map<string, string> = new Map();
@@ -112,14 +112,20 @@ class AdvancedNamespaceResolver {
 
     addGroupUse(prefix: string, items: Array<{ name: string; alias?: string }>, type: 'class' | 'function' | 'const' = 'class'): void {
         if (!this.groupUses.has(prefix)) {
-            this.groupUses.set(prefix, new Map());
+            this.groupUses.set(prefix, new Map([
+                ['class', new Map()],
+                ['function', new Map()],
+                ['const', new Map()]
+            ]));
         }
 
-        const group = this.groupUses.get(prefix)!;
+        const typeMaps = this.groupUses.get(prefix)!;
+        const targetMap = typeMaps.get(type)!;
+
         items.forEach(item => {
             const key = item.alias || item.name;
             const fullPath = `${prefix}\\${item.name}`;
-            group.set(key, fullPath);
+            targetMap.set(key, fullPath);
         });
     }
 
@@ -133,19 +139,35 @@ class AdvancedNamespaceResolver {
         switch (type) {
             case 'function':
                 resolved = this.functionUses.get(name);
+                if (!resolved) {
+                    for (const [prefix, typeMaps] of this.groupUses) {
+                        const functionMap = typeMaps.get('function');
+                        if (functionMap && functionMap.has(name)) {
+                            resolved = functionMap.get(name);
+                            break;
+                        }
+                    }
+                }
                 break;
             case 'const':
                 resolved = this.constantUses.get(name);
-                break;
-            default:
-                // Check regular uses
-                resolved = this.uses.get(name);
-
-                // Check group uses
                 if (!resolved) {
-                    for (const [prefix, group] of this.groupUses) {
-                        if (group.has(name)) {
-                            resolved = group.get(name);
+                    for (const [prefix, typeMaps] of this.groupUses) {
+                        const constMap = typeMaps.get('const');
+                        if (constMap && constMap.has(name)) {
+                            resolved = constMap.get(name);
+                            break;
+                        }
+                    }
+                }
+                break;
+            default: // 'class'
+                resolved = this.uses.get(name);
+                if (!resolved) {
+                    for (const [prefix, typeMaps] of this.groupUses) {
+                        const classMap = typeMaps.get('class');
+                        if (classMap && classMap.has(name)) {
+                            resolved = classMap.get(name);
                             break;
                         }
                     }
@@ -176,6 +198,9 @@ class AdvancedNamespaceResolver {
 // Enhanced PHP parser with PHP 8+ support
 export class EnhancedPHPParser extends BaseLanguageParser {
     private parser: phpParser.Engine;
+private getIdentifierName(node: any): string {
+        return node?.name?.name || node?.name || '';
+    }
     private htmlParser: HTMLParser;
     private typeCache: Map<string, EnhancedTypeInfo> = new Map();
     private namespaceResolver: AdvancedNamespaceResolver;
@@ -514,8 +539,8 @@ export class EnhancedPHPParser extends BaseLanguageParser {
 
                     if (node.items) {
                         node.items.forEach((item: any) => {
-                            const fullPath = prefix ? `${prefix}\\${item.name}` : item.name;
-                            const alias = item.alias?.name || item.name.split('\\').pop();
+                            const fullPath = prefix ? `${prefix}\\${this.getIdentifierName(item.name)}` : this.getIdentifierName(item.name);
+                            const alias = this.getIdentifierName(item.alias) || this.getIdentifierName(item.name).split('\\').pop();
 
                             imports.push({
                                 type: 'module',

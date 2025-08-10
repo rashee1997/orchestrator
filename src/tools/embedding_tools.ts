@@ -151,17 +151,33 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             let outputMessage: string;
 
             if (paths_to_embed && paths_to_embed.length > 0) {
-                // Mode 1: Process an array of files
+                // Normalize and validate each path
+                const normalizedPaths = paths_to_embed.map((fp: string) => {
+                    const absoluteFilePath = path.isAbsolute(fp)
+                        ? fp
+                        : path.resolve(absoluteProjectRootPath, fp);
+                    if (!absoluteFilePath.startsWith(absoluteProjectRootPath)) {
+                        // Prevent path traversal. Path must be within the project root.
+                        console.warn(`Skipped path outside project root: ${fp}`);
+                        return null;
+                    }
+                    // Get the path relative to the project root.
+                    const relativePath = path.relative(absoluteProjectRootPath, absoluteFilePath).replace(/\\/g, '/');
+                    return relativePath;
+                }).filter(Boolean);
+                if (normalizedPaths.length === 0) {
+                    throw new McpError(ErrorCode.InvalidParams, `No valid file paths to embed within project root (${absoluteProjectRootPath}).`);
+                }
                 resultCounts = await embeddingService.generateAndStoreEmbeddingsForMultipleFiles(
                     agent_id,
-                    paths_to_embed,
+                    normalizedPaths,
                     absoluteProjectRootPath,
                     chunking_strategy as ChunkingStrategy,
                     include_summary_patterns,
                     exclude_summary_patterns,
                     storeEntitySummaries
                 );
-                outputMessage = `Codebase embedding ingestion for ${paths_to_embed.length} specified files complete.`;
+                outputMessage = `Codebase embedding ingestion for ${normalizedPaths.length} specified files complete.`;
 
             } else {
                 // Mode 2 & 3: Process a single path (file or directory)

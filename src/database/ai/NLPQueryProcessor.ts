@@ -1,6 +1,6 @@
 // @/src/database/ai/NLPQueryProcessor.ts
 import { tokenize } from '../utils/string-similarity.js';
-import { NlpStructuredQuery } from '../../types/query.js';
+
 // ------------------------------------------------------------------
 // Types
 // ------------------------------------------------------------------
@@ -127,7 +127,7 @@ export class NLPQueryProcessor {
                 start: m.index,
                 end: m.index + m[0].length
             };
-            add(m[0], 'unknown', 0.5, foundQualifiers, position);
+            add(m[0], 'unknown', 0.5, foundQualifiers, position); // Pass foundQualifiers
         }
         
         // Snake_case
@@ -291,32 +291,10 @@ export class NLPQueryProcessor {
         const lower = query.toLowerCase();
         const sq: StructuredQuery = { 
             type: intent.type, 
+            confidence: intent.confidence,
             originalQuery: query,
             context: this.extractQueryContext(query)
         };
-        
-        // Entities & types
-        if (entities.length) {
-            // Filter entities by confidence threshold
-            const highConfidenceEntities = entities.filter(e => e.confidence > 0.4);
-            
-            if (highConfidenceEntities.length) {
-                sq.entities = highConfidenceEntities.map(e => e.text);
-                sq.entityTypes = [...new Set(highConfidenceEntities.map(e => e.type).filter(t => t !== 'unknown'))];
-                
-                // Extract qualifiers
-                const qualifiers = [...new Set(highConfidenceEntities.flatMap(e => e.qualifiers || []))];
-                if (qualifiers.length) {
-                    sq.filters = { ...(sq.filters || {}), qualifiers };
-                }
-                
-                // Add entity positions as additional context
-                if (!sq.parameters) sq.parameters = {};
-                sq.parameters.entityPositions = highConfidenceEntities
-                    .filter(e => e.position)
-                    .map(e => ({ text: e.text, position: e.position }));
-            }
-        }
         
         // Relations
         const relations = ['imports', 'exports', 'extends', 'implements', 'calls', 'uses', 'depends', 'references', 'inherits', 'composes'];
@@ -368,13 +346,10 @@ export class NLPQueryProcessor {
             const [, comparison, size, unit] = sizeMatch;
             const sizeNum = parseInt(size);
             let multiplier = 1;
-            
             if (unit === 'kb') multiplier = 1024;
             if (unit === 'mb') multiplier = 1024 * 1024;
             if (unit === 'lines') multiplier = 1; // Assuming one line is roughly 100 bytes
-            
             const actualSize = sizeNum * multiplier;
-            
             if (!filters.size) filters.size = {};
             filters.size[comparison === 'larger' || comparison === 'bigger' || comparison === 'greater' ? '$gt' : '$lt'] = actualSize;
         }
@@ -401,7 +376,6 @@ export class NLPQueryProcessor {
                 sq.parameters.compareTargets = compareTargets;
             }
         }
-        
         if (intent.type === 'transform') {
             const transformType = this.extractTransformType(query);
             if (transformType) {

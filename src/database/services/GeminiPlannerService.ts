@@ -148,6 +148,7 @@ export class GeminiPlannerService {
         userQuery: string;
         refinedPromptIdForPlan: string | null;
         refinedPromptDetails: any;
+        originalGoalText: string | null; // Added to return type
     }> {
         let refinedPromptIdForPlan: string | null = null;
         let refinedPromptDetails: any = null;
@@ -175,7 +176,13 @@ export class GeminiPlannerService {
             userQuery = this.buildUserQueryForGoal(identifier, codebaseContext);
         }
 
-        return { systemInstruction, userQuery, refinedPromptIdForPlan, refinedPromptDetails };
+        return {
+            systemInstruction,
+            userQuery,
+            refinedPromptIdForPlan,
+            refinedPromptDetails,
+            originalGoalText: isRefinedPromptId ? null : identifier, // Conditionally add originalGoalText
+        };
     }
 
     private getSystemInstructionForRefinedPrompt(): string {
@@ -332,7 +339,9 @@ Return ONLY the JSON object.`;
     ): InitialDetailedPlanAndTasks['planData'] {
         return {
             title: resp.plan_title ?? refinedDetails?.overall_goal ?? 'Untitled Plan',
-            overall_goal: refinedDetails?.overall_goal ?? '',
+            overall_goal: refinedPromptId === null
+                ? refinedDetails?.originalGoalText ?? ''
+                : refinedDetails?.overall_goal ?? '',
             status: PLAN_STATUS_DRAFT,
             version: 1,
             refined_prompt_id_associated: refinedPromptId,
@@ -371,10 +380,14 @@ Return ONLY the JSON object.`;
             const safePurpose = rawPurpose ||
                 'Clarify intent and improve maintainability as part of the overall plan.';
 
-            const notes: TaskNotes = {
-                task_risks: t.task_risks,
-                micro_steps: t.micro_steps,
-            };
+            const notes: TaskNotes = {}; // Initialize as empty object
+
+            if (t.task_risks !== undefined) {
+                notes.task_risks = t.task_risks;
+            }
+            if (t.micro_steps !== undefined) {
+                notes.micro_steps = t.micro_steps;
+            }
 
             return {
                 task_number: taskNumber,

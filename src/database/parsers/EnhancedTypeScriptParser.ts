@@ -100,7 +100,8 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
   }
 
   private parseWithCache(fileContent: string, filePath: string, options: any) {
-    const cacheKey = `${filePath}:${Buffer.from(fileContent).toString('base64').slice(0, 32)}`;
+    const optionsString = JSON.stringify(options);
+    const cacheKey = `${filePath}:${Buffer.from(fileContent).toString('base64').slice(0, 32)}:${optionsString}`;
 
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey);
@@ -114,7 +115,6 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       loc: true,
       range: true,
       comment: true,
-      attachComment: true,
     });
 
     this.cache.set(cacheKey, ast);
@@ -151,8 +151,10 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
         for (const key in current) {
           if (Object.prototype.hasOwnProperty.call(current, key) && typeof current[key] === 'object') {
             if (Array.isArray(current[key])) {
-              nodesToVisit.push(...current[key]);
-            } else if (current[key] !== null) {
+              // Filter out non-node objects from arrays
+              nodesToVisit.push(...current[key].filter((child: any) => child !== null && typeof child === 'object' && 'type' in child));
+            } else if (current[key] !== null && 'type' in current[key]) {
+              // Only push if it's a valid node (has a 'type' property)
               nodesToVisit.push(current[key]);
             }
           }
@@ -247,7 +249,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     }];
   }
 
-  private extractImportedSymbols(specifier: TSESTree.ImportClause): string[] {
+  private extractImportedSymbols(specifier: TSESTree.ImportSpecifier | TSESTree.ImportDefaultSpecifier | TSESTree.ImportNamespaceSpecifier): string[] {
     if (specifier.type === AST_NODE_TYPES.ImportSpecifier) {
         if (specifier.imported.type === AST_NODE_TYPES.Identifier) {
             return [specifier.imported.name];
@@ -284,6 +286,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       parent?: TSESTree.Node;
       fullNamePrefix: string;
       className?: string;
+      isExported: boolean; // Add isExported flag
     };
 
     try {
@@ -292,6 +295,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       const visit = (node: TSESTree.Node, context: VisitorContext) => {
         if (!node || !node.type) return;
 
+        let isNodeExportedFlag = context.isExported; // Initialize with parent's exported status
         let entity: EnhancedExtractedCodeEntity | null = null;
         const docBlock = this.parseJSDoc(node);
 
@@ -317,16 +321,15 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
           } as EnhancedExtractedCodeEntity;
         };
 
-        const isNodeExported = (node: TSESTree.Node, parent?: TSESTree.Node) => {
-          if (!parent) return false;
-          return parent.type === AST_NODE_TYPES.ExportNamedDeclaration ||
-            parent.type === AST_NODE_TYPES.ExportDefaultDeclaration;
-        };
-
         switch (node.type) {
+          case AST_NODE_TYPES.ExportNamedDeclaration:
+          case AST_NODE_TYPES.ExportDefaultDeclaration:
+            isNodeExportedFlag = true; // This node itself is an export, so its children are exported
+            break;
+
           case AST_NODE_TYPES.ClassDeclaration:
             processEntity('class', node.id?.name || 'AnonymousClass', {
-              isExported: isNodeExported(node, context.parent),
+              isExported: isNodeExportedFlag, // Use the flag
               implementedInterfaces: (node.implements || []).map(impl => this.typeNodeToString(impl, fileContent)),
               extendedClasses: node.superClass ? [this.typeNodeToString(node.superClass, fileContent)] : [],
               genericTypes: this.extractGenericTypes(node.typeParameters, fileContent),
@@ -341,7 +344,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
           case AST_NODE_TYPES.FunctionExpression:
             if (node.id) {
               processEntity('function', node.id.name, {
-                isExported: isNodeExported(node, context.parent),
+                isExported: isNodeExportedFlag, // Use the flag
                 isAsync: node.async,
                 parameters: this.extractParameters(node.params, fileContent),
                 returnTypeInfo: this.parseTypeFromNode(node.returnType?.typeAnnotation, fileContent),
@@ -354,7 +357,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
           case AST_NODE_TYPES.ArrowFunctionExpression:
             if (context.parent?.type === AST_NODE_TYPES.VariableDeclarator && context.parent.id.type === AST_NODE_TYPES.Identifier) {
               processEntity('function', context.parent.id.name, {
-                isExported: isNodeExported(context.parent, context.parent?.parent),
+                isExported: isNodeExportedFlag, // Use the flag
                 isAsync: node.async,
                 parameters: this.extractParameters(node.params, fileContent),
                 returnTypeInfo: this.parseTypeFromNode(node.returnType?.typeAnnotation, fileContent),
@@ -378,7 +381,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
           case AST_NODE_TYPES.TSInterfaceDeclaration:
             processEntity('interface', node.id.name, {
-              isExported: isNodeExported(node, context.parent),
+              isExported: isNodeExportedFlag, // Use the flag
               extendedInterfaces: (node.extends || []).map(ext => this.typeNodeToString(ext, fileContent)),
               genericTypes: this.extractGenericTypes(node.typeParameters, fileContent),
             });
@@ -386,7 +389,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
           case AST_NODE_TYPES.TSTypeAliasDeclaration:
             processEntity('type_alias', node.id.name, {
-              isExported: isNodeExported(node, context.parent),
+              isExported: isNodeExportedFlag, // Use the flag
               genericTypes: this.extractGenericTypes(node.typeParameters, fileContent),
               typeInfo: this.parseTypeFromNode(node.typeAnnotation, fileContent),
             });
@@ -394,7 +397,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
           case AST_NODE_TYPES.TSEnumDeclaration:
             processEntity('enum', node.id.name, {
-              isExported: isNodeExported(node, context.parent),
+              isExported: isNodeExportedFlag, // Use the flag
               members: node.members.map(member => this.getIdentifierName(member.id)),
               isConst: node.const || false,
             });
@@ -405,7 +408,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
               const parentDeclaration = context.parent as TSESTree.VariableDeclaration | undefined;
               if (parentDeclaration) {
                 processEntity('variable', node.id.name, {
-                  isExported: isNodeExported(parentDeclaration, context.parent?.parent),
+                  isExported: isNodeExportedFlag, // Use the flag
                   isConst: parentDeclaration?.kind === 'const',
                   isReadonly: node.id.typeAnnotation ? this.typeNodeToString(node.id.typeAnnotation, fileContent).includes('readonly') : false,
                   typeInfo: node.id.typeAnnotation ? this.parseTypeFromNode(node.id.typeAnnotation.typeAnnotation, fileContent) : undefined,
@@ -430,7 +433,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
         }
 
         // --- CONTEXT UPDATE & RECURSION ---
-        const childContext = { ...context, parent: node };
+        const childContext = { ...context, parent: node, isExported: isNodeExportedFlag }; // Pass the flag
         if (entity) {
           const e = entity as EnhancedExtractedCodeEntity;
           if (['class', 'interface', 'enum', 'function', 'method'].includes(e.type as string)) {
@@ -455,7 +458,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
         }
       };
 
-      visit(ast, { fullNamePrefix: relativeFilePath });
+      visit(ast, { fullNamePrefix: relativeFilePath, isExported: false });
 
     } catch (error) {
       console.error(`Enhanced parser entity extraction error in ${filePath}:`, error);

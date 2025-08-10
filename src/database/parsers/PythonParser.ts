@@ -91,65 +91,94 @@ export class PythonParser extends BaseLanguageParser {
         try {
             const ast = filbert.parse(fileContent, { locations: true });
 
-            const traverse = (node: any) => {
+            const traverse = (node: any, conditionalContexts: string[] = []) => {
                 if (!node) return;
 
-                if (node.type === 'Import') {
-                    node.names.forEach((alias: any) => {
-                        const importInfo = this.analyzeImport(alias.name, filePath, 0);
+                switch (node.type) {
+                    case 'Import':
+                        node.names.forEach((alias: any) => {
+                            const importInfo = this.analyzeImport(alias.name, filePath, 0);
+                            imports.push({
+                                ...importInfo,
+                                type: 'module',
+                                targetPath: alias.name,
+                                originalImportString: fileContent.substring(node.start, node.end),
+                                importedSymbols: [alias.asname || alias.name],
+                                isDynamicImport: false,
+                                isTypeOnlyImport: false,
+                                startLine: node.loc.start.line,
+                                endLine: node.loc.end.line,
+                                starImport: false,
+                                conditionalImport: conditionalContexts.length > 0,
+                                importConditions: conditionalContexts.slice(),
+                            });
+                        });
+                        break;
+                    case 'ImportFrom':
+                        const moduleName = node.module || '';
+                        const resolvedPath = this.resolveImportPath(moduleName, filePath, node.level);
+                        const importedSymbols = node.names.map((alias: any) => alias.asname || alias.name);
+                        const importInfo = this.analyzeImport(moduleName, filePath, node.level);
+                        
                         imports.push({
                             ...importInfo,
                             type: 'module',
-                            targetPath: alias.name,
+                            targetPath: resolvedPath,
                             originalImportString: fileContent.substring(node.start, node.end),
-                            importedSymbols: [alias.asname || alias.name],
+                            importedSymbols: importedSymbols,
                             isDynamicImport: false,
                             isTypeOnlyImport: false,
                             startLine: node.loc.start.line,
                             endLine: node.loc.end.line,
-                            starImport: false,
+                            starImport: node.names.some((n: any) => n.name === '*'),
+                            conditionalImport: conditionalContexts.length > 0,
+                            importConditions: conditionalContexts.slice(),
                         });
-                    });
-                } else if (node.type === 'ImportFrom') {
-                    const moduleName = node.module || '';
-                    const resolvedPath = this.resolveImportPath(moduleName, filePath, node.level);
-                    const importedSymbols = node.names.map((alias: any) => alias.asname || alias.name);
-                    const importInfo = this.analyzeImport(moduleName, filePath, node.level);
-                    
-                    imports.push({
-                        ...importInfo,
-                        type: 'module',
-                        targetPath: resolvedPath,
-                        originalImportString: fileContent.substring(node.start, node.end),
-                        importedSymbols: importedSymbols,
-                        isDynamicImport: false,
-                        isTypeOnlyImport: false,
-                        startLine: node.loc.start.line,
-                        endLine: node.loc.end.line,
-                        starImport: node.names.some((n: any) => n.name === '*'),
-                    });
-                }
-
-                // Check for conditional imports
-                if (node.type === 'If' || node.type === 'Try') {
-                    this.extractConditionalImports(node, fileContent, imports);
-                }
-
-                // Generic traversal
-                for (const key in node) {
-                    if (node.hasOwnProperty(key)) {
-                        const child = node[key];
-                        if (child && typeof child === 'object') {
-                            if (Array.isArray(child)) {
-                                child.forEach(traverse);
-                            } else {
-                                traverse(child);
+                        break;
+                    case 'If':
+                        const ifCondition = fileContent.substring(node.test.start, node.test.end);
+                        const newIfConditionalContexts = [...conditionalContexts, ifCondition];
+                        if (Array.isArray(node.body)) {
+                            node.body.forEach((child: any) => traverse(child, newIfConditionalContexts));
+                        }
+                        if (Array.isArray(node.orelse)) {
+                            node.orelse.forEach((child: any) => traverse(child, newIfConditionalContexts));
+                        }
+                        break;
+                    case 'Try':
+                        const tryCondition = "try block"; // A generic indicator for try blocks
+                        const newTryConditionalContexts = [...conditionalContexts, tryCondition];
+                        if (Array.isArray(node.body)) {
+                            node.body.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.handlers)) {
+                            node.handlers.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.orelse)) {
+                            node.orelse.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.finalbody)) {
+                            node.finalbody.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        break;
+                    default:
+                        // Generic traversal for other nodes
+                        for (const key in node) {
+                            if (node.hasOwnProperty(key)) {
+                                const child = node[key];
+                                if (child && typeof child === 'object') {
+                                    if (Array.isArray(child)) {
+                                        child.forEach((c: any) => traverse(c, conditionalContexts));
+                                    } else {
+                                        traverse(child, conditionalContexts);
+                                    }
+                                }
                             }
                         }
-                    }
+                        break;
                 }
             };
-            traverse(ast);
+            traverse(ast, []);
         } catch (error) {
             console.error(`Error parsing Python imports in ${filePath}:`, error);
         }
@@ -187,11 +216,18 @@ export class PythonParser extends BaseLanguageParser {
     } {
         const isStandardLib = this.isStandardLibrary(moduleName);
         const isBuiltin = this.isBuiltinModule(moduleName);
-        const isThirdParty = !isStandardLib && !isBuiltin;
+        // isStandardLib is already defined at line 189
+
+        // Resolve the absolute path of the module to check if it's local
+        const resolvedAbsolutePath = this.resolvePythonModuleAbsolutePath(currentFilePath, moduleName, level);
+        const isLocal = this.isPathWithinProject(resolvedAbsolutePath);
+
+        // A module is third-party if it's not builtin, not standard, and not local.
+        const isThirdParty = !isBuiltin && !isStandardLib && !isLocal;
         
         return {
             resolutionStrategy: level > 0 ? 'relative' : 'absolute',
-            importType: isBuiltin ? 'builtin' : isStandardLib ? 'standard' : isThirdParty ? 'third-party' : 'local',
+            importType: isBuiltin ? 'builtin' : isStandardLib ? 'standard' : isLocal ? 'local' : 'third-party',
             importAlias: moduleName,
             conditionalImport: false,
             importConditions: [],
@@ -199,29 +235,6 @@ export class PythonParser extends BaseLanguageParser {
         };
     }
 
-    private extractConditionalImports(node: any, fileContent: string, imports: EnhancedImport[]) {
-        const traverse = (currentNode: any) => {
-            if (currentNode.type === 'Import' || currentNode.type === 'ImportFrom') {
-                const lastImport = imports[imports.length - 1];
-                if (lastImport) {
-                    lastImport.conditionalImport = true;
-                    lastImport.importConditions.push(fileContent.substring(node.start, node.end));
-                }
-            }
-            
-            for (const key in currentNode) {
-                if (currentNode.hasOwnProperty(key) && typeof currentNode[key] === 'object') {
-                    if (Array.isArray(currentNode[key])) {
-                        currentNode[key].forEach(traverse);
-                    } else {
-                        traverse(currentNode[key]);
-                    }
-                }
-            }
-        };
-        
-        traverse(node);
-    }
 
     private formatSignature(node: any, fileContent: string): string {
         if (!node.start || !node.end) return node.name || '';
@@ -294,6 +307,42 @@ export class PythonParser extends BaseLanguageParser {
         };
         traverse(node);
         return calls;
+    }
+
+    /**
+     * Checks if a given absolute path is within the project root directory.
+     * @param absolutePath The absolute path to check.
+     * @returns True if the path is within the project, false otherwise.
+     */
+    private isPathWithinProject(absolutePath: string): boolean {
+        const relativePath = path.relative(this.projectRootPath, absolutePath);
+        return !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+    }
+
+    /**
+     * Resolves a Python module name to its absolute file path.
+     * This considers relative imports and converts dot notation to file paths.
+     * @param currentFilePath The path of the file containing the import.
+     * @param moduleName The name of the module being imported (e.g., 'my_module.sub_module', '.utils').
+     * @param level The level for relative imports (e.g., 0 for absolute, 1 for '.').
+     * @returns The absolute path to the resolved module.
+     */
+    private resolvePythonModuleAbsolutePath(currentFilePath: string, moduleName: string, level: number): string {
+        const currentDir = path.dirname(currentFilePath);
+        let resolvedPath = currentDir;
+
+        // Move up the directory tree for each level of relative import
+        for (let i = 0; i < level; i++) {
+            resolvedPath = path.dirname(resolvedPath);
+        }
+
+        if (moduleName) {
+            // Convert dot notation to file path
+            resolvedPath = path.join(resolvedPath, moduleName.replace(/\./g, path.sep));
+        }
+
+        // Resolve to an absolute path
+        return path.resolve(resolvedPath);
     }
 
     async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {

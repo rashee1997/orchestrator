@@ -3,13 +3,19 @@ import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.
 
 export class AIEmbeddingProvider {
     public geminiService: GeminiIntegrationService;
-    private maxRetries: number = 3;
-    private baseDelay: number = 1000; // 1 second base delay for retries
-    private maxBatchSize: number = 100;
-    private maxTokensPerBatch: number = 20000; // Conservative token limit per batch
 
-    constructor(geminiService: GeminiIntegrationService) {
+    constructor(
+        geminiService: GeminiIntegrationService,
+        private maxRetries: number = 3,
+        private baseDelay: number = 1000, // 1 second base delay for retries
+        private maxBatchSize: number = 100,
+        private maxTokensPerBatch: number = 20000 // Conservative token limit per batch
+    ) {
         this.geminiService = geminiService;
+        this.maxRetries = maxRetries;
+        this.baseDelay = baseDelay;
+        this.maxBatchSize = maxBatchSize;
+        this.maxTokensPerBatch = maxTokensPerBatch;
     }
 
     /**
@@ -86,7 +92,7 @@ Concise Name:`);
 
         for (const batch of batches) {
             const contents = batch.map(text => ({ role: "user", parts: [{ text }] }));
-            const totalTokens = batch.reduce((acc, text) => acc + Math.round(text.length / 4), 0);
+            const totalTokens = batch.reduce((acc, text) => acc + this._estimateTokens(text), 0);
             totalTokensProcessed += totalTokens;
             console.log(`[AIEmbeddingProvider] Processing embedding batch with ${batch.length} texts and an estimated ${totalTokens} tokens.`);
 
@@ -94,7 +100,7 @@ Concise Name:`);
             let success = false;
             totalRequests++;
 
-            while (attempt <= this.maxRetries && !success) {
+            while (attempt < this.maxRetries && !success) {
                 try {
                     const result = await genAIInstance.models.embedContent({ model: modelName, contents });
                     const embeddings = result.embeddings;
@@ -152,6 +158,15 @@ Concise Name:`);
     }
 
     /**
+     * Estimates the number of tokens in a given text using a heuristic (characters / 4).
+     * @param text The input text.
+     * @returns The estimated token count.
+     */
+    private _estimateTokens(text: string): number {
+        return Math.round(text.length / 4);
+    }
+
+    /**
      * Creates optimized batches based on token count to maximize efficiency.
      * @param texts Array of texts to batch
      * @returns Array of batches
@@ -162,7 +177,7 @@ Concise Name:`);
         let currentTokenCount = 0;
 
         for (const text of texts) {
-            const tokenCount = text.length; // Simple approximation of tokens
+            const tokenCount = this._estimateTokens(text); // Consistent token approximation
 
             if (currentBatch.length >= this.maxBatchSize ||
                 (currentTokenCount + tokenCount > this.maxTokensPerBatch && currentBatch.length > 0)) {

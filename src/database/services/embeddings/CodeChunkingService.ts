@@ -12,6 +12,7 @@ export class CodeChunkingService {
     private maxChunkSize: number = 2000; // Maximum characters per chunk
     private contextWindow: number = 500; // Context characters to include before/after chunks
     private largeFileThreshold: number;
+    private recursiveContextFileCache: Map<string, string> = new Map();
 
     constructor(
         introspectionService: CodebaseIntrospectionService,
@@ -115,11 +116,11 @@ export class CodeChunkingService {
 
         const namingRequests: Array<{ codeChunk: string; language: string | undefined }> = [];
         const summarizationRequests: Array<{ codeChunk: string; entityType: string; language: string }> = [];
-        const entityCodeMap = new Map<string, string>();
+        const entityCodeMap = new Map<string, { original: string; enriched?: string }>();
 
         for (const entity of entitiesToProcess) {
             const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
-            entityCodeMap.set(entity.fullName!, entityCode);
+            entityCodeMap.set(entity.fullName!, { original: entityCode });
 
             if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
                 namingRequests.push({ codeChunk: entityCode, language: language });
@@ -134,14 +135,15 @@ export class CodeChunkingService {
                 summaryDbCallLatencyMs += summaryLatencyMs;
 
                 if (!existingSummary) {
-            const codeWithFullContext = await this.enhanceCodeWithContext(
+            let codeWithFullContextForSummarization = await this.enhanceCodeWithContext(
                 entityCode, entity, language, importContext, functionCodeMap, agentId
             );
                     summarizationRequests.push({
-                        codeChunk: codeWithFullContext,
+                        codeChunk: codeWithFullContextForSummarization,
                         entityType: entity.type,
                         language: language!
                     });
+                    entityCodeMap.get(entity.fullName!)!.enriched = codeWithFullContextForSummarization; // Store enriched code
                 }
             }
         }
@@ -164,13 +166,14 @@ export class CodeChunkingService {
         let summaryIndex = 0;
 
         for (const entity of entitiesToProcess) {
-            const entityCode = entity.fullName !== undefined ? entityCodeMap.get(entity.fullName) : undefined;
+            const entityCode = entity.fullName !== undefined ? entityCodeMap.get(entity.fullName)?.original : undefined;
             if (entityCode === undefined) {
                 console.warn(`Could not retrieve entity code for ${entity.fullName} from map.`);
                 continue;
             }
-
-            const codeWithFullContext = await this.enhanceCodeWithContext(
+ 
+            const cachedEnrichedCode = entityCodeMap.get(entity.fullName!)?.enriched;
+            let codeWithFullContextForChunk = cachedEnrichedCode || await this.enhanceCodeWithContext(
                 entityCode, entity, language, importContext, functionCodeMap, agentId
             );
 
@@ -180,7 +183,7 @@ export class CodeChunkingService {
             }
 
             chunks.push({
-                chunk_text: codeWithFullContext,
+                chunk_text: codeWithFullContextForChunk,
                 entity_name: entityNameForChunk,
                 metadata: {
                     type: entity.type,
@@ -191,7 +194,7 @@ export class CodeChunkingService {
                     language: language
                 }
             });
-
+ 
             if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
                 const originalCodeHash = this.generateChunkHash(entityCode);
                 const { summary: fetchedSummary, latencyMs: fetchedLatency, callCount: fetchedCallCount } =
@@ -256,21 +259,46 @@ export class CodeChunkingService {
         let chunkIndex = 0;
 
         // Chunking at logical boundaries (functions/classes)
-        const functionOrClassRegex = /^\s*(export\s+)?(async\s+)?(function|class)\s+([A-Za-z0-9_]+)\s*\(/;
+        const functionRegex = /^\s*(export\s+)?(async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
+        const classRegex = /^\s*(export\s+)?class\s+([A-Za-z0-9_]+)/;
+
         for (const line of lines) {
-            const match = line.match(functionOrClassRegex);
-            if (match) {
+            let match: RegExpMatchArray | null = null;
+            let entityType: 'function' | 'class' | undefined;
+
+            if ((match = line.match(functionRegex))) {
+                entityType = 'function';
+            } else if ((match = line.match(classRegex))) {
+                entityType = 'class';
+            }
+
+            if (match && entityType) {
                 // If there's an existing chunk, push it before starting a new one
                 if (currentChunk.length > 0) {
                     chunks.push({
                         chunk_text: currentChunk.join('\n'),
                         entity_name: currentEntityName,
-                        metadata: { chunkIndex }
+                        metadata: { chunkIndex: chunkIndex++ }
                     });
-                    chunkIndex++;
-                    currentChunk = [];
+                    currentChunk = []; // Reset current chunk
                 }
-                currentEntityName = match[4];
+
+                // Extract the entity name based on the type
+                const nameIndex = entityType === 'function' ? 3 : 2;
+                currentEntityName = `${entityType}:${match[nameIndex]}`;
+            }
+            // Check if adding the current line would exceed maxChunkSize
+            const potentialChunkLength = currentChunk.join('\n').length + line.length + 1; // +1 for the newline character
+            if (potentialChunkLength > this.maxChunkSize) {
+                // If it exceeds, push the currentChunk as a completed chunk
+                if (currentChunk.length > 0) {
+                    chunks.push({
+                        chunk_text: currentChunk.join('\n'),
+                        entity_name: currentEntityName, // Keep the last entity name for continuation
+                        metadata: { chunkIndex: chunkIndex++ }
+                    });
+                    currentChunk = []; // Reset current chunk
+                }
             }
             currentChunk.push(line);
         }
@@ -279,7 +307,7 @@ export class CodeChunkingService {
             chunks.push({
                 chunk_text: currentChunk.join('\n'),
                 entity_name: currentEntityName,
-                metadata: { chunkIndex }
+                metadata: { chunkIndex: chunkIndex++ }
             });
         }
 
@@ -345,8 +373,9 @@ export class CodeChunkingService {
             }
 
             if (relations && relations.length > 0) {
-                const relatedNodes = relations.map((r: any) => r.name);
-                graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                // Truncate relatedNodes to avoid excessive context size
+                const truncatedRelatedNodes = relations.map((r: any) => r.name).slice(0, 5); // Limit to 5 related nodes
+                graphContext += `/* This entity is related to: ${truncatedRelatedNodes.join(', ')} */\n`;
             }
 
             if (entity.parentClass) {
@@ -356,19 +385,49 @@ export class CodeChunkingService {
             console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
         }
 
-        let recursiveContext = '/* Recursively included function calls */\n';
-        if (entity.type === 'function' || entity.type === 'method') {
-            for (const [funcName, funcCode] of functionCodeMap.entries()) {
-                if (funcName !== entity.name && entityCode.includes(funcName)) {
-                    // Include a truncated version of the function to avoid overly large chunks
-                    const truncatedFuncCode = funcCode.length > 500
-                        ? funcCode.substring(0, 500) + "\n// ... (truncated)"
-                        : funcCode;
-                    recursiveContext += `/* Included from internal call to ${funcName} */\n${truncatedFuncCode}\n\n`;
+        let recursiveContext = '';
+        const cacheKey = entity.fullName; // Using entity.fullName as a unique identifier for the file/entity
+        if (this.recursiveContextFileCache.has(cacheKey)) {
+            recursiveContext = this.recursiveContextFileCache.get(cacheKey)!;
+        } else {
+            let tempRecursiveContext = '/* Recursively included function calls */\n';
+            if (entity.type === 'function' || entity.type === 'method') {
+                for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                    if (funcName !== entity.name && entityCode.includes(funcName)) {
+                        // Include a truncated version of the function to avoid overly large chunks
+                        const truncatedFuncCode = funcCode.length > 500
+                            ? funcCode.substring(0, 500) + "\n// ... (truncated)"
+                            : funcCode;
+                        tempRecursiveContext += `/* Included from internal call to ${funcName} */\n${truncatedFuncCode}\n\n`;
+                    }
                 }
+            }
+            recursiveContext = tempRecursiveContext;
+            this.recursiveContextFileCache.set(cacheKey, recursiveContext);
+        }
+
+        let combinedContext = '';
+        const contextBudget = this.maxChunkSize - entityCode.length;
+
+        // Prioritize importContext, then graphContext, then recursiveContext
+        if (importContext.length <= contextBudget) {
+            combinedContext += importContext;
+        }
+
+        if ((combinedContext.length + graphContext.length) <= contextBudget) {
+            combinedContext += graphContext;
+        }
+
+        if ((combinedContext.length + recursiveContext.length) <= contextBudget) {
+            combinedContext += recursiveContext;
+        } else {
+            // If recursiveContext is too large even on its own after other contexts, truncate it
+            const remainingBudget = contextBudget - combinedContext.length;
+            if (remainingBudget > 0) {
+                combinedContext += recursiveContext.substring(0, remainingBudget) + "\n// ... (truncated)";
             }
         }
 
-        return `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+        return `${combinedContext}\n\n${entityCode}`;
     }
 }

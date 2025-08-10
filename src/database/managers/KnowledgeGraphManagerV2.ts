@@ -7,7 +7,7 @@ import { IndexManager } from '../storage/IndexManager.js';
 // import { LRUCache }s from 'lru-cache'; // Not used directly, but this.cache might use it
 import { randomUUID } from 'crypto';
 import { QueryEngine } from '../query/QueryEngine.js'; // Import QueryEngine
-import { QueryAST } from '../../types/query.js'; // Import QueryAST from types
+import type { QueryAST, NlpStructuredQuery } from '../../types/query.js'; // Import QueryAST and NlpStructuredQuery as type-only
 import { FuzzySearchEngine } from '../search/FuzzySearchEngine.js';
 import { KnowledgeGraphCache } from '../cache/KnowledgeGraphCache.js';
 import { EntityResolver } from '../ai/EntityResolver.js';
@@ -532,7 +532,20 @@ export class KnowledgeGraphManagerV2 {
             console.warn("[KGManagerV2.queryNaturalLanguage] GeminiService not available. Using NLPQueryProcessor as fallback.");
             const structuredQueryByNlp = this.nlpQueryProcessor.generateStructuredQuery(naturalLanguageQuery);
             console.log("[KGManagerV2.queryNaturalLanguage] NLP Fallback - Structured Query:", JSON.stringify(structuredQueryByNlp));
-            const queryResult = await this.queryEngine.executeQuery(structuredQueryByNlp, agentId);
+            const nlpStructuredQuery: NlpStructuredQuery = {
+                type: 'nlp_structured_query',
+                // Map StructuredQuery.entities (string[]) to NlpStructuredQuery.entities ({ entityType: string; value: string }[])
+                entities: structuredQueryByNlp.entities?.map(entityValue => ({ entityType: 'unknown', value: entityValue })) || [],
+                // Map StructuredQuery.relationTypes (string[]) to NlpStructuredQuery.relationships ({ source: string; target: string; relationType: string }[])
+                // Since StructuredQuery doesn't provide source/target for relationships, we'll use empty strings.
+                relationships: structuredQueryByNlp.relationTypes?.map(relType => ({ source: '', target: '', relationType: relType })) || [],
+                filters: structuredQueryByNlp.filters,
+                limit: structuredQueryByNlp.limit,
+                intent: structuredQueryByNlp.type,
+                sentiment: undefined, // StructuredQuery does not have sentiment
+                confidence: structuredQueryByNlp.confidence,
+            };
+            const queryResult = await this.queryEngine.executeQuery(nlpStructuredQuery, agentId);
             console.log("[KGManagerV2.queryNaturalLanguage] NLP Fallback - Query Result Count:", queryResult.nodes.length);
             return JSON.stringify({
                 metadata: {
