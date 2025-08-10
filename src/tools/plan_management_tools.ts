@@ -77,6 +77,16 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.addSubtaskToPlan,
     },
     {
+        name: 'get_task_details',
+        description: 'Retrieve full details for a single plan task by its ID, including parsed JSON fields.',
+        inputSchema: schemas.getTaskDetails
+    },
+    {
+        name: 'update_task',
+        description: 'Update one or more fields for a specific plan task by its ID. Partial updates supported.',
+        inputSchema: schemas.updateTask
+    },
+    {
         name: 'get_subtasks',
         description: 'Retrieves subtasks for a given plan or parent task, optionally filtered by status. This tool strictly requires the agent_id parameter. Output is Markdown formatted as a table.',
         inputSchema: schemas.getSubtasks,
@@ -412,6 +422,83 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 : `Failed to delete subtasks \`${args.subtask_ids.join(', ')}\`.`;
 
             return createToolResponse(formatSimpleMessage(message, "Delete Subtasks"));
+        },
+
+        // Retrieve a single task's full details by ID
+        'get_task_details': async (args: any, agent_id_from_server: string) => {
+            const toolName = 'get_task_details';
+            const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
+            validateToolArgs('getTaskDetails', args, toolName);
+
+            const task = await (memoryManager as any).planTaskManager?.getTaskById?.(agent_id, args.task_id)
+                ?? await memoryManager.getPlanTaskById?.(agent_id, args.task_id);
+            if (!task) {
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Task with ID \`${args.task_id}\` not found for agent \`${agent_id}\`.`, "Task Not Found") }] };
+            }
+
+            // Safely parse JSON fields if present
+            const parseJsonSafe = (val: any) => {
+                if (val == null) return null;
+                if (typeof val !== 'string') return val;
+                try { return JSON.parse(val); } catch { return val; }
+            };
+
+            const detailed = {
+                ...task,
+                files_involved: parseJsonSafe(task.files_involved_json),
+                dependencies_task_ids: parseJsonSafe(task.dependencies_task_ids_json),
+                tools_required_list: parseJsonSafe(task.tools_required_list_json),
+                notes: parseJsonSafe(task.notes_json),
+            };
+
+            // Build a detailed markdown
+            let md = `## Task Details\n`;
+            md += `- **Task ID:** \`${detailed.task_id}\`\n`;
+            if (detailed.plan_id) md += `- **Plan ID:** \`${detailed.plan_id}\`\n`;
+            md += `- **Agent ID:** \`${agent_id}\`\n`;
+            md += `- **Title:** ${detailed.title || '*N/A*'}\n`;
+            md += `- **Status:** ${detailed.status || '*N/A*'}\n`;
+            if (typeof detailed.task_number !== 'undefined') md += `- **Task Number:** ${detailed.task_number}\n`;
+            if (detailed.purpose) md += `- **Purpose:** ${detailed.purpose}\n`;
+            if (detailed.description) md += `\n**Description:**\n${detailed.description}\n`;
+            if (detailed.inputs_summary) md += `\n**Inputs Summary:**\n${detailed.inputs_summary}\n`;
+            if (detailed.outputs_summary) md += `\n**Outputs Summary:**\n${detailed.outputs_summary}\n`;
+            if (detailed.success_criteria_text) md += `\n**Success Criteria:**\n${detailed.success_criteria_text}\n`;
+            if (typeof detailed.estimated_effort_hours !== 'undefined' && detailed.estimated_effort_hours !== null) {
+                md += `\n**Estimated Effort (hours):** ${detailed.estimated_effort_hours}\n`;
+            }
+            if (detailed.assigned_to) md += `\n**Assigned To:** ${detailed.assigned_to}\n`;
+            if (detailed.verification_method) md += `\n**Verification Method:** ${detailed.verification_method}\n`;
+
+            if (detailed.files_involved) md += `\n**Files Involved:**\n${formatJsonToMarkdownCodeBlock(detailed.files_involved)}\n`;
+            if (detailed.dependencies_task_ids) md += `\n**Dependencies (Task IDs):**\n${formatJsonToMarkdownCodeBlock(detailed.dependencies_task_ids)}\n`;
+            if (detailed.tools_required_list) md += `\n**Tools Required:**\n${formatJsonToMarkdownCodeBlock(detailed.tools_required_list)}\n`;
+            if (detailed.notes) md += `\n**Notes:**\n${formatJsonToMarkdownCodeBlock(detailed.notes)}\n`;
+
+            return { content: [{ type: 'text', text: md }] };
+        },
+
+        // Update a single task by ID (partial update)
+        'update_task': async (args: any, agent_id_from_server: string) => {
+            const toolName = 'update_task';
+            const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
+            validateToolArgs('updateTask', args, toolName);
+
+            const { task_id, completion_timestamp, files_involved, dependencies_task_ids, tools_required_list, notes, ...rest } = args;
+
+            // Serialize JSON/list fields if provided
+            const updates: Record<string, any> = { ...rest };
+            if (typeof files_involved !== 'undefined') updates.files_involved = files_involved;
+            if (typeof dependencies_task_ids !== 'undefined') updates.dependencies_task_ids = dependencies_task_ids;
+            if (typeof tools_required_list !== 'undefined') updates.tools_required_list = tools_required_list;
+            if (typeof notes !== 'undefined') updates.notes = notes;
+
+            const success = await memoryManager.updateTaskDetails(agent_id, task_id, updates, completion_timestamp);
+
+            const message = success
+                ? `Task \`${task_id}\` updated successfully.`
+                : `Failed to update task \`${task_id}\`.`;
+            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Task") }] };
         },
     };
 }

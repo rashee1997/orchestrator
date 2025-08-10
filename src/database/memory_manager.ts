@@ -1,5 +1,18 @@
 // src/database/memory_manager.ts
 import { GoogleGenAI } from '@google/genai';
+
+// TypeScript interface for plan_tasks table
+export interface PlanTaskRow {
+    task_id: string;
+    agent_id: string;
+    plan_id: string;
+    title: string;
+    description: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    [key: string]: any; // For any additional columns
+}
 import { DatabaseService } from './services/DatabaseService.js';
 import { ConversationHistoryManager } from './managers/ConversationHistoryManager.js';
 import { ContextInformationManager } from './managers/ContextInformationManager.js';
@@ -10,7 +23,6 @@ import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphFactory, IKnowledgeGraphManager } from './factories/KnowledgeGraphFactory.js';
-import { ModeInstructionManager } from './managers/ModeInstructionManager.js';
 import { ToolExecutionLogManager } from './managers/ToolExecutionLogManager.js';
 import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
 import { ErrorLogManager } from './managers/ErrorLogManager.js';
@@ -35,7 +47,6 @@ export class MemoryManager {
     public planTaskManager!: PlanTaskManager;
     public subtaskManager!: SubtaskManager;
     public knowledgeGraphManager!: IKnowledgeGraphManager;
-    public modeInstructionManager!: ModeInstructionManager;
     public toolExecutionLogManager!: ToolExecutionLogManager;
     public taskProgressLogManager!: TaskProgressLogManager;
     public errorLogManager!: ErrorLogManager;
@@ -111,7 +122,6 @@ export class MemoryManager {
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
         // Knowledge graph manager will be created later after GeminiIntegrationService is ready
-        this.modeInstructionManager = new ModeInstructionManager(this.dbService);
         this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
         this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
         this.errorLogManager = new ErrorLogManager(this.dbService);
@@ -361,6 +371,25 @@ export class MemoryManager {
     }
     async storeRefinedPrompt(...args: Parameters<GeminiIntegrationService['storeRefinedPrompt']>) {
         return this.geminiIntegrationService.storeRefinedPrompt(...args);
+    }
+
+    // --- Plan Task Accessors for tools ---
+
+    /**
+     * Retrieve a single task by ID for an agent.
+     * Thin wrapper over PlanTaskManager/db layer to support get_task_details tool.
+     */
+    async getPlanTaskById(agent_id: string, task_id: string): Promise<PlanTaskRow | null> {
+        // Ensure the PlanTaskManager is available
+        if (!this.planTaskManager) {
+            throw new Error('PlanTaskManager not initialized in MemoryManager.');
+        }
+
+        // Use DatabaseService to fetch the row to avoid tight coupling to manager internals.
+        const sql = 'SELECT * FROM plan_tasks WHERE agent_id = ? AND task_id = ?';
+        const db = await this.dbService.getDb();
+        const row = await db.get(sql, agent_id, task_id);
+        return row ? (row as PlanTaskRow) : null;
     }
     async getRefinedPrompt(...args: Parameters<GeminiIntegrationService['getRefinedPrompt']>) {
         return this.geminiIntegrationService.getRefinedPrompt(...args);

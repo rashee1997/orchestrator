@@ -4,8 +4,18 @@ import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.
 export class AIEmbeddingProvider {
     public geminiService: GeminiIntegrationService;
 
-    constructor(geminiService: GeminiIntegrationService) {
+    constructor(
+        geminiService: GeminiIntegrationService,
+        private maxRetries: number = 3,
+        private baseDelay: number = 1000, // 1 second base delay for retries
+        private maxBatchSize: number = 100,
+        private maxTokensPerBatch: number = 20000 // Conservative token limit per batch
+    ) {
         this.geminiService = geminiService;
+        this.maxRetries = maxRetries;
+        this.baseDelay = baseDelay;
+        this.maxBatchSize = maxBatchSize;
+        this.maxTokensPerBatch = maxTokensPerBatch;
     }
 
     /**
@@ -29,7 +39,10 @@ export class AIEmbeddingProvider {
     ): Promise<string[]> {
         if (chunks.length === 0) return [];
 
-        const prompts = chunks.map(chunk => `You are an expert software engineer. Analyze the following code snippet and provide a very concise (2-5 words) and meaningful name that describes its primary purpose or functionality. The name should be suitable for an entity identifier and should not include any punctuation or special characters, only alphanumeric and underscores.
+        // Enhanced prompt with more specific instructions
+        const prompts = chunks.map(chunk => `You are an expert software engineer. Analyze the following code snippet and provide a very concise (2-5 words) and meaningful name that describes its primary purpose or functionality. 
+The name should be suitable for an entity identifier and should not include any punctuation or special characters, only alphanumeric and underscores.
+Focus on the core functionality rather than implementation details.
 Code snippet (language: ${chunk.language || 'unknown'}):
 \`\`\`${chunk.language || ''}
 ${chunk.codeChunk}
@@ -40,8 +53,10 @@ Concise Name:`);
             const nameResults = await this.geminiService.batchAskGemini(prompts, this.geminiService.summarizationModelName);
             return nameResults.map(result => {
                 let extractedName = result.content[0]?.text ?? '';
-                extractedName = extractedName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+                // Enhanced cleaning to ensure valid entity names
+                extractedName = extractedName.replace(/[^a-zA-Z0-9\s_]/g, '').trim();
                 extractedName = extractedName.replace(/\s+/g, '_');
+                extractedName = extractedName.replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
                 return extractedName.length > 0 ? extractedName : 'anonymous_chunk';
             });
         } catch (error) {
@@ -51,47 +66,46 @@ Concise Name:`);
     }
 
     /**
-     * Generates embeddings for an array of text chunks.
+     * Generates embeddings for an array of text chunks with enhanced error handling and batching.
      * @param texts An array of strings to embed.
      * @param modelName The name of the embedding model to use.
      * @returns A promise that resolves to an object containing the embeddings, request count, and retry count.
      */
-    public async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<{ embeddings: Array<{ vector: number[], dimensions: number } | null>, requestCount: number, retryCount: number }> {
-        if (texts.length === 0) return { embeddings: [], requestCount: 0, retryCount: 0 };
-
+    public async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<{ embeddings: Array<{ vector: number[], dimensions: number } | null>, requestCount: number, retryCount: number, totalTokensProcessed: number }> {
+        if (texts.length === 0) return { embeddings: [], requestCount: 0, retryCount: 0, totalTokensProcessed: 0 };
         if (!this.geminiService) {
             throw new Error(`GeminiIntegrationService not available in AIEmbeddingProvider.`);
         }
 
         let totalRequests = 0;
         let totalRetries = 0;
-
+        let totalTokensProcessed = 0;
         const genAIInstance = this.geminiService.getGenAIInstance();
         if (!genAIInstance) {
             throw new Error(`Gemini API not initialized in GeminiIntegrationService.`);
         }
 
         const results: Array<{ vector: number[], dimensions: number } | null> = [];
-        const batchSize = 100; // This batching is for the embedding model specifically
-        const maxRetries = 2;
-        const delayBetweenBatches = 7000;
 
+        // Dynamic batching based on content length
+        const batches = this.createOptimizedBatches(texts);
 
-        for (let i = 0; i < texts.length; i += batchSize) {
-            const batchTexts = texts.slice(i, i + batchSize);
-            const contents = batchTexts.map(text => ({ role: "user", parts: [{ text }] }));
-            const totalTokens = batchTexts.reduce((acc, text) => acc + text.length, 0);
-            console.log(`[AIEmbeddingProvider] Processing embedding batch with ${batchTexts.length} texts and ${totalTokens} tokens.`);
+        for (const batch of batches) {
+            const contents = batch.map(text => ({ role: "user", parts: [{ text }] }));
+            const totalTokens = batch.reduce((acc, text) => acc + this._estimateTokens(text), 0);
+            totalTokensProcessed += totalTokens;
+            console.log(`[AIEmbeddingProvider] Processing embedding batch with ${batch.length} texts and an estimated ${totalTokens} tokens.`);
 
             let attempt = 0;
             let success = false;
             totalRequests++;
-            while (attempt <= maxRetries && !success) {
+
+            while (attempt < this.maxRetries && !success) {
                 try {
                     const result = await genAIInstance.models.embedContent({ model: modelName, contents });
                     const embeddings = result.embeddings;
 
-                    if (embeddings && embeddings.length === batchTexts.length) {
+                    if (embeddings && embeddings.length === batch.length) {
                         for (const embedding of embeddings) {
                             if (embedding.values) {
                                 results.push({ vector: embedding.values, dimensions: embedding.values.length });
@@ -101,40 +115,86 @@ Concise Name:`);
                         }
                         success = true;
                     } else {
-                        for (let j = 0; j < batchTexts.length; j++) {
+                        for (let j = 0; j < batch.length; j++) {
                             results.push(null);
                         }
                         success = true;
                     }
                 } catch (error: any) {
-                    if (error?.message?.includes('429') || error?.message?.includes('Too Many Requests') || (error?.cause && error.cause.message && error.cause.message.includes('429'))) {
-                        attempt++;
-                        totalRetries++;
-                        if (attempt <= maxRetries) {
-                            const backoffTime = 6000 * attempt;
-                            console.warn(`Received 429 Too Many Requests. Retry attempt ${attempt} after ${backoffTime}ms.`);
+                    attempt++;
+
+                    if (attempt <= this.maxRetries) {
+                        const isRateLimitError = error?.message?.includes('429') ||
+                            error?.message?.includes('Too Many Requests') ||
+                            (error?.cause && error.cause.message && error.cause.message.includes('429'));
+
+                        if (isRateLimitError) {
+                            totalRetries++;
+                            const backoffTime = this.baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+                            console.warn(`Rate limit hit. Retry attempt ${attempt} after ${backoffTime}ms.`);
                             await new Promise(resolve => setTimeout(resolve, backoffTime));
                         } else {
-                            console.error(`Max retries (${maxRetries}) reached for embedding batch starting at index ${i}. Skipping batch.`);
-                            for (let j = 0; j < batchTexts.length; j++) {
-                                results.push(null);
-                            }
-                            success = true;
+                            console.error(`Error embedding batch:`, error);
+                            // For non-rate limit errors, wait a bit before retrying
+                            await new Promise(resolve => setTimeout(resolve, this.baseDelay));
                         }
                     } else {
-                        console.error(`Error embedding batch starting at index ${i}:`, error);
-                        for (let j = 0; j < batchTexts.length; j++) {
+                        console.error(`Max retries (${this.maxRetries}) reached for embedding batch. Skipping batch.`);
+                        for (let j = 0; j < batch.length; j++) {
                             results.push(null);
                         }
                         success = true;
                     }
                 }
             }
-            if (i + batchSize < texts.length) {
-                 await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+
+            // Add delay between batches to avoid rate limiting
+            if (batches.indexOf(batch) < batches.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, this.baseDelay));
             }
         }
-        return { embeddings: results, requestCount: totalRequests, retryCount: totalRetries };
+
+        return { embeddings: results, requestCount: totalRequests, retryCount: totalRetries, totalTokensProcessed };
+    }
+
+    /**
+     * Estimates the number of tokens in a given text using a heuristic (characters / 4).
+     * @param text The input text.
+     * @returns The estimated token count.
+     */
+    private _estimateTokens(text: string): number {
+        return Math.round(text.length / 4);
+    }
+
+    /**
+     * Creates optimized batches based on token count to maximize efficiency.
+     * @param texts Array of texts to batch
+     * @returns Array of batches
+     */
+    private createOptimizedBatches(texts: string[]): string[][] {
+        const batches: string[][] = [];
+        let currentBatch: string[] = [];
+        let currentTokenCount = 0;
+
+        for (const text of texts) {
+            const tokenCount = this._estimateTokens(text); // Consistent token approximation
+
+            if (currentBatch.length >= this.maxBatchSize ||
+                (currentTokenCount + tokenCount > this.maxTokensPerBatch && currentBatch.length > 0)) {
+                batches.push(currentBatch);
+                currentBatch = [];
+                currentTokenCount = 0;
+            }
+
+            currentBatch.push(text);
+            currentTokenCount += tokenCount;
+        }
+
+        if (currentBatch.length > 0) {
+            batches.push(currentBatch);
+        }
+
+        return batches;
     }
 
     /**
@@ -159,16 +219,15 @@ Concise Name:`);
     ): Promise<string[]> {
         if (chunks.length === 0) return [];
 
+        // Enhanced prompt with more specific instructions
         const prompts = chunks.map(chunk => `You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
-Do not describe the code line-by-line. Focus on the high-level goal and functionality.
-
+Focus on the high-level goal and functionality, not implementation details.
 Language: ${chunk.language}
 Entity Type: ${chunk.entityType}
 Code Snippet:
 \`\`\`${chunk.language}
 ${chunk.codeChunk}
 \`\`\`
-
 One-sentence summary:
 `);
 
@@ -176,7 +235,9 @@ One-sentence summary:
             const summaryResults = await this.geminiService.batchAskGemini(prompts, this.geminiService.summarizationModelName);
             return summaryResults.map(result => {
                 let summary = result.content[0]?.text ?? 'Could not generate summary.';
+                // Enhanced cleaning to ensure clean summaries
                 summary = summary.replace(/[\r\n]+/g, ' ').replace(/`/g, '').trim();
+                summary = summary.replace(/\s+/g, ' '); // Normalize whitespace
                 return summary;
             });
         } catch (error) {

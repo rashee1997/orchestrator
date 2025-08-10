@@ -79,6 +79,8 @@ export class CodebaseEmbeddingRepository {
         try {
             insertTransaction(embeddings);
             console.log(`[CodebaseEmbeddingRepository] Successfully bulk inserted ${embeddings.length} embeddings.`);
+            this.db.pragma('wal_checkpoint(FULL)'); // Force a checkpoint to ensure data is written to disk
+            console.log(`[CodebaseEmbeddingRepository] WAL checkpoint performed after bulk insert.`);
         } catch (error) {
             console.error(`[CodebaseEmbeddingRepository] Error bulk inserting embeddings:`, error);
             throw error;

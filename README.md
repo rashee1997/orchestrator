@@ -9,22 +9,9 @@
 
 **🚀 Your AI Agent's Persistent Brain - A Comprehensive Memory & Task Management System**
 
-[Features](#-features) • [Installation](#-installation) • [Configuration](#️-configuration) • [Workflow](#-the-ai-driver-understanding-workflowmd) • [Tools](#️-available-tools) • [Architecture](#️-architecture) • [Development](#-development)
+[Overview](#-overview) • [Features](#-features) • [Installation](#-installation) • [Configuration](#️-configuration) • [Workflow](#-the-ai-driver-understanding-workflowmd) • [Tools](#️-available-tools) • [Architecture](#️-architecture) • [Development](#-development)
 
 </div>
-
----
-
-> ### 🚨 **CRITICAL: This MCP Server requires `workflow.md` to function properly!**
-> 
-> The `workflow.md` file is not optional - it's the **AI Driver** that transforms this collection of tools into an intelligent system. Without it, your AI agent will have tools but no structured way to use them effectively.
-> 
-> **Before using this server:**
-> 1. ✅ Install and configure the MCP server
-> 2. ✅ **Load `workflow.md` into your AI agent's system prompt**
-> 3. ✅ Ensure your agent follows the 6-mode operational structure
-> 
-> 📖 [Jump to workflow.md documentation](#-the-ai-driver-understanding-workflowmd)
 
 ---
 
@@ -48,26 +35,26 @@
 
 The **Memory MCP Server (Orchestrator)** is a powerful Model Context Protocol (MCP) server that provides AI agents with persistent memory, advanced task planning, and comprehensive knowledge management capabilities. Built with TypeScript and SQLite, it transforms your AI agents from stateless assistants into intelligent systems with long-term memory and structured workflows.
 
-### 🚨 Critical Component: The AI Driver (workflow.md)
+### 🚨 The AI Driver (`workflow.md`)
 
-**The `workflow.md` file is the brain of this system!** It contains the operational protocols and behavioral rules that transform a collection of tools into an intelligent, coordinated system. Think of it as the "AI Driver" that:
+**The `workflow.md` file is the most critical component of this system.** It's not optional documentation; it's the operational manual that turns this server into an intelligent agent. Your AI agent **must** load `workflow.md` into its system prompt to function correctly.
 
-- 🎯 **Defines 6 Operational Modes**: From prompt refinement to task execution
-- 🛡️ **Enforces Safety Protocols**: Prevents unauthorized actions and overager behavior
-- 📋 **Structures Workflows**: Ensures systematic approach to every task
-- 🔄 **Manages State Transitions**: Controls how the AI moves between different modes
-- ✅ **Validates Actions**: Requires user approval before executing changes
+- 🎯 **Defines 7 Operational Modes**: Guides the agent from prompt refinement to task execution and review.
+- 🛡️ **Enforces Safety Protocols**: Prevents unauthorized actions and ensures user approval.
+- 📋 **Structures Workflows**: Guarantees a systematic approach to every task.
+- 🔄 **Manages State Transitions**: Controls how the AI moves between different modes.
 
-**Without `workflow.md`, this is just a toolbox. With it, it becomes an intelligent agent system.**
+📖 **[Jump to workflow.md documentation](#-the-ai-driver-understanding-workflowmd)**
 
-### 🎯 Key Benefits
+### 🚀 Key Capabilities
 
 - **🧠 Persistent Memory**: Never lose context between sessions
 - **📊 Structured Planning**: Break complex tasks into manageable steps
-- **🔍 Knowledge Graph**: Build and query relationships between entities
+- **🔍 Knowledge Graph**: Create, query, manage, and infer relationships between entities with a powerful dual-backend (SQLite/JSONL) system.
 - **🤖 AI-Enhanced**: Leverage Gemini AI for intelligent task suggestions
-- **📈 Performance Tracking**: Monitor success metrics and learn from corrections
-- **🔗 External Integrations**: Connect with web search and AI services
+- **🏗️ Automated Codebase Analysis**: Automatically parse various languages (TS/JS, Python, PHP, etc.) to build a comprehensive knowledge graph of your codebase.
+- **💡 Semantic Search**: Perform vector-based semantic search across your code and documentation for powerful context retrieval.
+- **📈 Performance & Correction Tracking**: Monitor success metrics and log corrections to learn and improve over time.
 
 ---
 
@@ -76,8 +63,8 @@ The **Memory MCP Server (Orchestrator)** is a powerful Model Context Protocol (M
 ### 💾 Memory Management
 - **Conversation History**: Track multi-turn dialogues with full context
 - **Dynamic Context Storage**: Version-controlled storage for agent state, preferences, and parameters
-- **Knowledge Graph**: Create, query, and manage entity relationships
-- **Vector Embeddings**: Semantic search capabilities for code and documentation
+- **Knowledge Graph**: Create, query, manage, and infer relationships between entities with a powerful dual-backend (SQLite/JSONL) system.
+- **Vector Embeddings**: Generate embeddings for code and documentation for advanced semantic search.
 
 ### 📝 Task & Planning System
 - **AI-Powered Planning**: Generate comprehensive plans from refined prompts
@@ -131,7 +118,7 @@ npm install
 npm run build
 
 # 4. Verify installation
-npm run test
+npm test
 ```
 
 ### 🎯 Quick Start for AI Agents
@@ -144,7 +131,7 @@ npm run test
 # Example for loading in your AI agent:
 # 1. Read the workflow.md file
 # 2. Include it in your system prompt or rules
-# 3. Follow the 6-mode operational structure
+# 3. Follow the 7-mode operational structure
 ```
 
 ### 🐳 Docker Installation (Alternative)
@@ -174,12 +161,12 @@ The server requires API keys for external services. These should be configured i
 
 #### For VS Code Cline Extension
 
-1. **Locate the settings file**:
-   - **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-   - **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-   - **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+1.  **Locate the settings file**:
+    -   **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+    -   **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+    -   **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 
-2. **Add the server configuration**:
+2.  **Add the server configuration**:
 
 ```json
 {
@@ -205,10 +192,10 @@ The server requires API keys for external services. These should be configured i
 #### For Other MCP Clients
 
 Adapt the configuration format according to your client's requirements. The key parameters are:
-- **Command**: `node`
-- **Arguments**: `["path/to/build/index.js"]`
-- **Transport**: `stdio`
-- **Environment**: API keys
+-   **Command**: `node`
+-   **Arguments**: `["path/to/build/index.js"]`
+-   **Transport**: `stdio`
+-   **Environment**: API keys
 
 ---
 
@@ -216,7 +203,7 @@ Adapt the configuration format according to your client's requirements. The key 
 
 The `workflow.md` file is **THE MOST IMPORTANT COMPONENT** of this system. It's not just documentation - it's the operational manual that AI agents must follow to use this server effectively.
 
-### 📋 The 6 Operational Modes
+### 📋 The 7 Operational Modes
 
 <div align="center">
 
@@ -252,23 +239,23 @@ graph TD
 
 ### 🛡️ Critical Safety Rules
 
-1. **No Unauthorized Actions**: The agent CANNOT modify files or execute commands without an approved plan
-2. **Mandatory Mode Declaration**: Every response MUST start with `[MODE: MODE_NAME]`
-3. **Tool-Centric Operations**: All significant actions MUST use official tools
-4. **No Post-Task Solicitation**: Agent must NOT ask "what's next?" after completing tasks
+1.  **No Unauthorized Actions**: The agent CANNOT modify files or execute commands without an approved plan
+2.  **Mandatory Mode Declaration**: Every response MUST start with `[MODE: MODE_NAME]`
+3.  **Tool-Centric Operations**: All significant actions MUST use official tools
+4.  **No Post-Task Solicitation**: Agent must NOT ask "what's next?" after completing tasks
 
 ### 🚀 How to Use workflow.md
 
 **For AI Agents:**
-1. Load `workflow.md` into your system prompt or rules
-2. Follow the mode progression strictly
-3. Use only the tools allowed in each mode
-4. Respect user authorization requirements
+1.  Load `workflow.md` into your system prompt or rules
+2.  Follow the mode progression strictly
+3.  Use only the tools allowed in each mode
+4.  Respect user authorization requirements
 
 **For Developers:**
-1. Review `workflow.md` to understand the intended agent behavior
-2. Ensure your prompts align with the workflow structure
-3. Monitor agent compliance with the protocols
+1.  Review `workflow.md` to understand the intended agent behavior
+2.  Ensure your prompts align with the workflow structure
+3.  Monitor agent compliance with the protocols
 
 > ⚠️ **Warning**: AI agents may not always follow these rules perfectly. The workflow.md provides guidelines, not guarantees. Monitor agent behavior and provide corrections as needed.
 
@@ -283,24 +270,24 @@ The server provides **65+ tools** organized into categories:
 <details>
 <summary><b>Conversation Management (4 tools)</b></summary>
 
-- `store_conversation_message` - Store messages in conversation history
-- `get_conversation_history` - Retrieve past conversations
-- `search_conversation_by_keywords` - Search conversations by keywords
-- `summarize_conversation` - AI-powered conversation summarization
+-   `store_conversation_message` - Store messages in conversation history
+-   `get_conversation_history` - Retrieve past conversations
+-   `search_conversation_by_keywords` - Search conversations by keywords
+-   `summarize_conversation` - AI-powered conversation summarization
 
 </details>
 
 <details>
 <summary><b>Context Management (9 tools)</b></summary>
 
-- `store_context` - Store dynamic contextual data
-- `get_context` - Retrieve stored context
-- `get_all_contexts` - Get all contexts for an agent
-- `search_context_by_keywords` - Keyword search in contexts
-- `prune_old_context` - Clean up old context entries
-- `summarize_context` - AI summarization of context
-- `extract_entities` - Extract entities from context
-- `semantic_search_context` - Vector-based semantic search
+-   `store_context` - Store dynamic contextual data
+-   `get_context` - Retrieve stored context
+-   `get_all_contexts` - Get all contexts for an agent
+-   `search_context_by_keywords` - Keyword search in contexts
+-   `prune_old_context` - Clean up old context entries
+-   `summarize_context` - AI summarization of context
+-   `extract_entities` - Extract entities from context
+-   `semantic_search_context` - Vector-based semantic search
 
 </details>
 
@@ -309,15 +296,15 @@ The server provides **65+ tools** organized into categories:
 <details>
 <summary><b>Plan Management (15 tools)</b></summary>
 
-- `create_task_plan` - Create plans (manual or AI-generated)
-- `get_task_plan_details` - Get detailed plan information
-- `list_task_plans` - List all plans
-- `update_task_plan_status` - Update plan status
-- `delete_task_plan` - Remove plans
-- `ai_analyze_plan` - AI analysis of plan quality
-- `ai_suggest_subtasks` - AI-generated subtask suggestions
-- `ai_suggest_task_details` - AI-enhanced task details
-- `ai_summarize_task_progress` - AI progress summaries
+-   `create_task_plan` - Create plans (manual or AI-generated)
+-   `get_task_plan_details` - Get detailed plan information
+-   `list_task_plans` - List all plans
+-   `update_task_plan_status` - Update plan status
+-   `delete_task_plan` - Remove plans
+-   `ai_analyze_plan` - AI analysis of plan quality
+-   `ai_suggest_subtasks` - AI-generated subtask suggestions
+-   `ai_suggest_task_details` - AI-enhanced task details
+-   `ai_summarize_task_progress` - AI progress summaries
 
 </details>
 
@@ -326,13 +313,13 @@ The server provides **65+ tools** organized into categories:
 <details>
 <summary><b>Knowledge Graph (9 operations)</b></summary>
 
-- `knowledge_graph_memory` - Comprehensive KG operations
-  - Create/read/update/delete entities
-  - Manage relationships
-  - Add observations
-  - Natural language queries
-  - Infer relationships
-  - Generate visualizations
+-   `knowledge_graph_memory` - Comprehensive KG operations
+    -   Create/read/update/delete entities
+    -   Manage relationships
+    -   Add observations
+    -   Natural language queries
+    -   Infer relationships
+    -   Generate visualizations
 
 </details>
 
@@ -341,12 +328,12 @@ The server provides **65+ tools** organized into categories:
 <details>
 <summary><b>Comprehensive Logging (23 tools)</b></summary>
 
-- Tool execution logging
-- Task progress tracking
-- Error logging and management
-- Correction tracking
-- Success metrics
-- Review logs (task and plan level)
+-   Tool execution logging
+-   Task progress tracking
+-   Error logging and management
+-   Correction tracking
+-   Success metrics
+-   Review logs (task and plan level)
 
 </details>
 
@@ -355,22 +342,22 @@ The server provides **65+ tools** organized into categories:
 <details>
 <summary><b>Git Operations (16 tools)</b></summary>
 
-- Complete Git workflow support
-- Clone, pull, push, commit
-- Branch management
-- Stash operations
-- Remote management
+-   Complete Git workflow support
+-   Clone, pull, push, commit
+-   Branch management
+-   Stash operations
+-   Remote management
 
 </details>
 
 <details>
 <summary><b>External Services (5 tools)</b></summary>
 
-- `tavily_web_search` - Advanced web search
-- `ask_gemini` - Direct Gemini AI queries
-- `analyze_code_file_with_gemini` - AI code analysis
-- `refine_user_prompt` - AI prompt enhancement
-- `ingest_codebase_embeddings` - Vector embedding generation
+-   `tavily_web_search` - Advanced web search
+-   `ask_gemini` - Direct Gemini AI queries
+-   `analyze_code_file_with_gemini` - AI code analysis
+-   `refine_user_prompt` - AI prompt enhancement
+-   `ingest_codebase_embeddings` - Vector embedding generation
 
 </details>
 
@@ -406,16 +393,16 @@ memory-mcp-server/
 
 The server uses two SQLite databases:
 
-1. **Main Database** (`memory.db`):
-   - Conversation history
-   - Context information
-   - Task plans and progress
-   - Knowledge graph
-   - Logs and metrics
+1.  **Main Database** (`memory.db`):
+    -   Conversation history
+    -   Context information
+    -   Task plans and progress
+    -   Knowledge graph
+    -   Logs and metrics
 
-2. **Vector Store** (`vector_store.db`):
-   - Code embeddings
-   - Semantic search indices
+2.  **Vector Store** (`vector_store.db`):
+    -   Code embeddings
+    -   Semantic search indices
 
 ### 🔄 Data Flow
 
@@ -476,9 +463,9 @@ npm run inspector
 
 ### 📝 Code Style
 
-- **Language**: TypeScript 5.3+
-- **Style**: ESLint configuration included
-- **Format**: Prettier compatible
+-   **Language**: TypeScript 5.3+
+-   **Style**: ESLint configuration included
+-   **Format**: Prettier compatible
 
 ---
 
@@ -486,14 +473,14 @@ npm run inspector
 
 ### 📖 Key Documents
 
-- **🚨 [Workflow Rules](workflow.md)** - **CRITICAL: The AI Driver that makes everything work!**
-  - Defines the 6 operational modes
-  - Enforces safety protocols
-  - Structures agent behavior
-  - **MUST be loaded into AI agent's system prompt**
-- **[API Documentation](docs/api_documentation.md)** - Detailed tool schemas and parameters
-- **[Implementation Notes](docs/implementation_notes.md)** - Technical details
-- **[Future Implementations](docs/future_implementations.md)** - Roadmap
+-   **🚨 [Workflow Rules](workflow.md)** - **CRITICAL: The AI Driver that makes everything work!**
+    -   Defines the 7 operational modes
+    -   Enforces safety protocols
+    -   Structures agent behavior
+    -   **MUST be loaded into AI agent's system prompt**
+-   **[API Documentation](docs/api_documentation.md)** - Detailed tool schemas and parameters
+-   **[Implementation Notes](docs/implementation_notes.md)** - Technical details
+-   **[Future Implementations](docs/future_implementations.md)** - Roadmap
 
 ### 🎯 Quick Start Examples
 
@@ -557,18 +544,18 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 ### 🐛 Reporting Issues
 
-1. Check existing issues first
-2. Use issue templates
-3. Provide reproduction steps
-4. Include error logs
+1.  Check existing issues first
+2.  Use issue templates
+3.  Provide reproduction steps
+4.  Include error logs
 
 ### 🔧 Pull Requests
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new features
-4. Ensure all tests pass
-5. Submit PR with clear description
+1.  Fork the repository
+2.  Create a feature branch
+3.  Add tests for new features
+4.  Ensure all tests pass
+5.  Submit PR with clear description
 
 ---
 

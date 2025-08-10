@@ -1,116 +1,292 @@
-// Python parser module
+// Enhanced Python parser module with richer and deeper parsing capabilities
 import { BaseLanguageParser } from './ILanguageParser.js';
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
 import filbert from 'filbert';
 import path from 'path';
 
+// Enhanced interfaces for richer parsing
+interface TypeInformation {
+    inferredType: string;
+    declaredType?: string;
+    typeHints: string[];
+    genericParameters: string[];
+    returnType?: string;
+    unionTypes: string[];
+    optionalTypes: string[];
+}
+
+interface ComplexityMetrics {
+    cyclomaticComplexity: number;
+    cognitiveComplexity: number;
+    nestingDepth: number;
+    parameterCount: number;
+    lineCount: number;
+    halsteadMetrics: {
+        vocabulary: number;
+        length: number;
+        volume: number;
+        difficulty: number;
+        effort: number;
+    };
+}
+
+interface DecoratorInfo {
+    name: string;
+    arguments: any[];
+    isBuiltin: boolean;
+    isCustom: boolean;
+    category: 'validation' | 'transformation' | 'routing' | 'testing' | 'other';
+}
+
+interface DocstringAnalysis {
+    format: 'google' | 'numpy' | 'sphinx' | 'epydoc' | 'custom' | 'none';
+    sections: {
+        summary: string;
+        description: string;
+        parameters: Array<{name: string, type: string, description: string}>;
+        returns: Array<{type: string, description: string}>;
+        raises: Array<{exception: string, description: string}>;
+        examples: string[];
+        notes: string[];
+        todos: string[];
+    };
+    completeness: number;
+    qualityScore: number;
+}
+
+interface EnhancedImport extends ExtractedImport {
+    resolutionStrategy: 'absolute' | 'relative' | 'namespace' | 'conditional';
+    importType: 'standard' | 'third-party' | 'local' | 'builtin';
+    importAlias: string;
+    starImport: boolean;
+    conditionalImport: boolean;
+    importConditions: string[];
+    circularDependencyRisk: boolean;
+}
+
+interface EnhancedExtractedCodeEntity extends ExtractedCodeEntity {
+    typeInformation: TypeInformation;
+    complexityMetrics: ComplexityMetrics;
+    dependencies: string[];
+    inheritanceChain: string[];
+    mixins: string[];
+    protocols: string[];
+    decorators: DecoratorInfo[];
+    docstringAnalysis: DocstringAnalysis;
+    codeSmells: string[];
+    designPatterns: string[];
+}
+
 export class PythonParser extends BaseLanguageParser {
     getSupportedExtensions(): string[] {
         return ['.py'];
     }
+    
     getLanguageName(): string {
         return 'python';
     }
 
-    async parseImports(filePath: string, fileContent: string): Promise<ExtractedImport[]> {
-        const imports: ExtractedImport[] = [];
+    async parseImports(filePath: string, fileContent: string): Promise<EnhancedImport[]> {
+        const imports: EnhancedImport[] = [];
         try {
-            // filbert's 'locations' option provides line numbers
             const ast = filbert.parse(fileContent, { locations: true });
-            const traverse = (node: any) => {
-                if (!node) return;
-                
-                if (node.type === 'Import') { // Corresponds to `import foo, bar as b`
-                    node.names.forEach((alias: any) => {
-                         imports.push({
-                            type: 'module',
-                            targetPath: alias.name,
-                            originalImportString: fileContent.substring(node.start, node.end),
-                            importedSymbols: [alias.asname || alias.name],
-                            isDynamicImport: false,
-                            isTypeOnlyImport: false,
-                            startLine: node.loc.start.line,
-                            endLine: node.loc.end.line,
-                        });
-                    });
-                } else if (node.type === 'ImportFrom') { // Corresponds to `from foo import bar, baz as c`
-                    const modulePath = node.module || '';
-                    node.names.forEach((alias: any) => {
-                         imports.push({
-                            type: 'module',
-                            targetPath: modulePath,
-                            originalImportString: fileContent.substring(node.start, node.end),
-                            importedSymbols: [alias.asname || alias.name],
-                            isDynamicImport: false,
-                            isTypeOnlyImport: false,
-                            startLine: node.loc.start.line,
-                            endLine: node.loc.end.line,
-                        });
-                    });
-                }
 
-                // Generic traversal for other node types
-                 for (const key in node) {
-                    if (node.hasOwnProperty(key)) {
-                        const child = node[key];
-                        if (child && typeof child === 'object') {
-                            if (Array.isArray(child)) {
-                                child.forEach(traverse);
-                            } else {
-                                traverse(child);
+            const traverse = (node: any, conditionalContexts: string[] = []) => {
+                if (!node) return;
+
+                switch (node.type) {
+                    case 'Import':
+                        node.names.forEach((alias: any) => {
+                            const importInfo = this.analyzeImport(alias.name, filePath, 0);
+                            imports.push({
+                                ...importInfo,
+                                type: 'module',
+                                targetPath: alias.name,
+                                originalImportString: fileContent.substring(node.start, node.end),
+                                importedSymbols: [alias.asname || alias.name],
+                                isDynamicImport: false,
+                                isTypeOnlyImport: false,
+                                startLine: node.loc.start.line,
+                                endLine: node.loc.end.line,
+                                starImport: false,
+                                conditionalImport: conditionalContexts.length > 0,
+                                importConditions: conditionalContexts.slice(),
+                            });
+                        });
+                        break;
+                    case 'ImportFrom':
+                        const moduleName = node.module || '';
+                        const resolvedPath = this.resolveImportPath(moduleName, filePath, node.level);
+                        const importedSymbols = node.names.map((alias: any) => alias.asname || alias.name);
+                        const importInfo = this.analyzeImport(moduleName, filePath, node.level);
+                        
+                        imports.push({
+                            ...importInfo,
+                            type: 'module',
+                            targetPath: resolvedPath,
+                            originalImportString: fileContent.substring(node.start, node.end),
+                            importedSymbols: importedSymbols,
+                            isDynamicImport: false,
+                            isTypeOnlyImport: false,
+                            startLine: node.loc.start.line,
+                            endLine: node.loc.end.line,
+                            starImport: node.names.some((n: any) => n.name === '*'),
+                            conditionalImport: conditionalContexts.length > 0,
+                            importConditions: conditionalContexts.slice(),
+                        });
+                        break;
+                    case 'If':
+                        const ifCondition = fileContent.substring(node.test.start, node.test.end);
+                        const newIfConditionalContexts = [...conditionalContexts, ifCondition];
+                        if (Array.isArray(node.body)) {
+                            node.body.forEach((child: any) => traverse(child, newIfConditionalContexts));
+                        }
+                        if (Array.isArray(node.orelse)) {
+                            node.orelse.forEach((child: any) => traverse(child, newIfConditionalContexts));
+                        }
+                        break;
+                    case 'Try':
+                        const tryCondition = "try block"; // A generic indicator for try blocks
+                        const newTryConditionalContexts = [...conditionalContexts, tryCondition];
+                        if (Array.isArray(node.body)) {
+                            node.body.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.handlers)) {
+                            node.handlers.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.orelse)) {
+                            node.orelse.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        if (Array.isArray(node.finalbody)) {
+                            node.finalbody.forEach((child: any) => traverse(child, newTryConditionalContexts));
+                        }
+                        break;
+                    default:
+                        // Generic traversal for other nodes
+                        for (const key in node) {
+                            if (node.hasOwnProperty(key)) {
+                                const child = node[key];
+                                if (child && typeof child === 'object') {
+                                    if (Array.isArray(child)) {
+                                        child.forEach((c: any) => traverse(c, conditionalContexts));
+                                    } else {
+                                        traverse(child, conditionalContexts);
+                                    }
+                                }
                             }
                         }
-                    }
+                        break;
                 }
             };
-            traverse(ast);
+            traverse(ast, []);
         } catch (error) {
             console.error(`Error parsing Python imports in ${filePath}:`, error);
         }
         return imports;
     }
 
-    private formatSignature(node: any, fileContent: string): string {
-        if (!node.start || !node.end) return node.name || '';
-        // For functions/methods, capture up to the colon before the body
-        if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef') {
-            const endOfSignature = node.body?.[0]?.start ?? node.end;
-            let signature = fileContent.substring(node.start, endOfSignature).trim();
-            if (signature.endsWith(':')) {
-                signature = signature.slice(0, -1).trim();
-            }
-            return signature.replace(/\s+/g, ' ');
-        }
-        // For classes, just the class definition line
-        if (node.type === 'ClassDef') {
-            const endOfSignature = node.body?.[0]?.start ?? node.end;
-            let signature = fileContent.substring(node.start, endOfSignature).trim();
-            if (signature.endsWith(':')) {
-                signature = signature.slice(0, -1).trim();
-            }
-            return signature.replace(/\s+/g, ' ');
-        }
-        // For variables, just the assignment part
-        if (node.type === 'Assign' && node.targets && node.targets.length > 0) {
-            return fileContent.substring(node.targets[0].start, node.end).trim().replace(/\s+/g, ' ');
-        }
-        return node.name || '';
+    private isStandardLibrary(moduleName: string): boolean {
+        const stdLib = new Set([
+            // This is not an exhaustive list.
+            // Add more modules as needed.
+            'os', 'sys', 'math', 'json', 're', 'datetime', 'time', 'collections',
+            'itertools', 'functools', 'random', 'pickle', 'subprocess', 'multiprocessing',
+            'threading', 'logging', 'argparse', 'pathlib', 'shutil', 'glob', 'tempfile',
+            'unittest', 'doctest', 'typing', 'http', 'urllib', 'xml', 'csv', 'sqlite3', 'email'
+        ]);
+        return stdLib.has(moduleName.split('.')[0]);
     }
 
-    private extractCalls(node: any, fileContent: string): Array<{ name: string; type: 'function' | 'method' | 'unknown'; }> {
-        const calls: Array<{ name: string; type: 'function' | 'method' | 'unknown'; }> = [];
+    private isBuiltinModule(moduleName: string): boolean {
+        const builtins = new Set([
+            'builtins', 'sys', 'micropython',
+            // Not a real module, but often used to check for builtin functions
+            // This is not exhaustive.
+        ]);
+        return builtins.has(moduleName);
+    }
+
+    private analyzeImport(moduleName: string, currentFilePath: string, level: number): {
+        resolutionStrategy: 'absolute' | 'relative';
+        importType: 'standard' | 'third-party' | 'local' | 'builtin';
+        importAlias: string;
+        conditionalImport: boolean;
+        importConditions: string[];
+        circularDependencyRisk: boolean;
+    } {
+        const isStandardLib = this.isStandardLibrary(moduleName);
+        const isBuiltin = this.isBuiltinModule(moduleName);
+        // isStandardLib is already defined at line 189
+
+        // Resolve the absolute path of the module to check if it's local
+        const resolvedAbsolutePath = this.resolvePythonModuleAbsolutePath(currentFilePath, moduleName, level);
+        const isLocal = this.isPathWithinProject(resolvedAbsolutePath);
+
+        // A module is third-party if it's not builtin, not standard, and not local.
+        const isThirdParty = !isBuiltin && !isStandardLib && !isLocal;
+        
+        return {
+            resolutionStrategy: level > 0 ? 'relative' : 'absolute',
+            importType: isBuiltin ? 'builtin' : isStandardLib ? 'standard' : isLocal ? 'local' : 'third-party',
+            importAlias: moduleName,
+            conditionalImport: false,
+            importConditions: [],
+            circularDependencyRisk: false,
+        };
+    }
+
+
+    private formatSignature(node: any, fileContent: string): string {
+        if (!node.start || !node.end) return node.name || '';
+        
+        const extractText = (start: number, end: number) => fileContent.substring(start, end).trim();
+
+        let signatureText = '';
+        let endOfSignature = node.end;
+
+        if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' || node.type === 'ClassDef') {
+            // Include decorators in the signature
+            const startOfDecorators = node.decorator_list?.[0]?.start ?? node.start;
+            endOfSignature = node.body?.[0]?.start ?? node.end;
+            signatureText = extractText(startOfDecorators, endOfSignature);
+        } else if (node.type === 'Assign' && node.targets && node.targets.length > 0) {
+            signatureText = extractText(node.start, node.end);
+        } else if (node.type === 'AnnAssign' && node.target) { // For annotated assignments
+            signatureText = extractText(node.start, node.end);
+        } else {
+            signatureText = extractText(node.start, node.end);
+        }
+
+        if (signatureText.endsWith(':')) {
+            signatureText = signatureText.slice(0, -1).trim();
+        }
+
+        return signatureText.replace(/\s+/g, ' ');
+    }
+
+    private extractCalls(node: any, fileContent: string): Array<{ name: string; type: string; }> {
+        const calls: Array<{ name: string; type: string; }> = [];
         const traverse = (currentNode: any) => {
             if (!currentNode) return;
 
-            if (currentNode.type === 'CallExpression' && currentNode.callee) {
+            if (currentNode.type === 'Call' && currentNode.func) {
                 let callName: string | null = null;
-                let callType: 'function' | 'method' | 'unknown' = 'unknown';
+                let callType: string = 'unknown';
 
-                if (currentNode.callee.type === 'Name') {
-                    callName = currentNode.callee.id;
+                const getFullName = (expr: any): string => {
+                    if (!expr) return '';
+                    if (expr.type === 'Name') return expr.id;
+                    if (expr.type === 'Attribute') {
+                        const base = getFullName(expr.value);
+                        return base ? `${base}.${expr.attr}` : expr.attr;
+                    }
+                    return '';
+                };
+                
+                callName = getFullName(currentNode.func);
+                if (currentNode.func.type === 'Name') {
                     callType = 'function';
-                } else if (currentNode.callee.type === 'MemberExpression' && currentNode.callee.property) {
-                    callName = currentNode.callee.property.id;
+                } else if (currentNode.func.type === 'Attribute') {
                     callType = 'method';
                 }
 
@@ -133,6 +309,42 @@ export class PythonParser extends BaseLanguageParser {
         return calls;
     }
 
+    /**
+     * Checks if a given absolute path is within the project root directory.
+     * @param absolutePath The absolute path to check.
+     * @returns True if the path is within the project, false otherwise.
+     */
+    private isPathWithinProject(absolutePath: string): boolean {
+        const relativePath = path.relative(this.projectRootPath, absolutePath);
+        return !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+    }
+
+    /**
+     * Resolves a Python module name to its absolute file path.
+     * This considers relative imports and converts dot notation to file paths.
+     * @param currentFilePath The path of the file containing the import.
+     * @param moduleName The name of the module being imported (e.g., 'my_module.sub_module', '.utils').
+     * @param level The level for relative imports (e.g., 0 for absolute, 1 for '.').
+     * @returns The absolute path to the resolved module.
+     */
+    private resolvePythonModuleAbsolutePath(currentFilePath: string, moduleName: string, level: number): string {
+        const currentDir = path.dirname(currentFilePath);
+        let resolvedPath = currentDir;
+
+        // Move up the directory tree for each level of relative import
+        for (let i = 0; i < level; i++) {
+            resolvedPath = path.dirname(resolvedPath);
+        }
+
+        if (moduleName) {
+            // Convert dot notation to file path
+            resolvedPath = path.join(resolvedPath, moduleName.replace(/\./g, path.sep));
+        }
+
+        // Resolve to an absolute path
+        return path.resolve(resolvedPath);
+    }
+
     async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {
         const entities: ExtractedCodeEntity[] = [];
         const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
@@ -142,6 +354,16 @@ export class PythonParser extends BaseLanguageParser {
         try {
             const ast = filbert.parse(fileContent, { locations: true, ranges: true });
             
+            const extractDocstringFromNode = (node: any) => {
+                if (Array.isArray(node.body) && node.body.length > 0) {
+                    const firstStmt = node.body[0];
+                    if (firstStmt.type === 'Expr' && firstStmt.value.type === 'Str') {
+                        return firstStmt.value.s;
+                    }
+                }
+                return this.extractDocstring(fileContent, node.range[0]);
+            };
+
             const traverse = (node: any, parentClass: any = null): void => {
                 if (!node || !node.type) return;
 
@@ -150,7 +372,7 @@ export class PythonParser extends BaseLanguageParser {
                     endLine: node.loc.end.line,
                     filePath: absoluteFilePath,
                     containingDirectory: containingDirectory,
-                    docstring: this.extractDocstring(fileContent, node.range[0]),
+                    docstring: extractDocstringFromNode(node),
                 };
                 
                 const getFullName = (name: string, parentName?: string) => {
@@ -161,29 +383,37 @@ export class PythonParser extends BaseLanguageParser {
                     return `${fullName}.${name}`;
                 };
 
+                const extractText = (subNode: any) => subNode ? fileContent.substring(subNode.start, subNode.end) : null;
+
                 switch (node.type) {
                     case 'FunctionDef':
                     case 'AsyncFunctionDef':
                         const functionName = node.name;
                         const parentName = parentClass?.name;
+                        const isConstructor = functionName === '__init__';
+                        const isGenerator = (node.body || []).some((n: any) => n.type === 'Yield' || n.type === 'YieldFrom');
+
                         entities.push({
                             ...baseEntity,
-                            type: parentClass ? 'method' : 'function',
+                            type: isConstructor ? 'construct_signature' : (parentClass ? 'method' : 'function'),
                             name: functionName,
                             fullName: getFullName(functionName, parentName),
                             signature: this.formatSignature(node, fileContent),
                             parentClass: parentName || null,
-                            isExported: !functionName.startsWith('_'), // Python convention for "private"
+                            isExported: !functionName.startsWith('_') || (isConstructor && !parentName?.startsWith('_')),
                             isAsync: node.type === 'AsyncFunctionDef',
                             parameters: node.args.args.map((arg: any) => ({
                                 name: arg.arg,
-                                type: arg.annotation ? fileContent.substring(arg.annotation.start, arg.annotation.end) : null,
-                                defaultValue: arg.value ? fileContent.substring(arg.value.start, arg.value.end) : null,
+                                type: extractText(arg.annotation),
+                                defaultValue: extractText(arg.default),
                             })),
-                            returnType: node.returns ? fileContent.substring(node.returns.start, node.returns.end) : null,
+                            returnType: extractText(node.returns),
                             calls: this.extractCalls(node.body, fileContent),
+                            metadata: {
+                                decorators: node.decorator_list.map((d: any) => this.formatSignature(d, fileContent)),
+                                is_generator: isGenerator,
+                            }
                         });
-                        // Recursively traverse function body for nested entities or calls
                         if (Array.isArray(node.body)) {
                             node.body.forEach((child: any) => traverse(child, parentClass));
                         }
@@ -198,16 +428,19 @@ export class PythonParser extends BaseLanguageParser {
                             fullName: getFullName(className),
                             signature: this.formatSignature(node, fileContent),
                             isExported: !className.startsWith('_'),
-                            parentClass: node.bases.length > 0 ? node.bases[0].id : null, // Simplified to first base
-                            implementedInterfaces: node.bases.map((b:any) => b.id), // Python doesn't have interfaces, but can use this for inheritance
+                            parentClass: null, // Top-level classes have no parent class in this context.
+                            implementedInterfaces: node.bases.map((b:any) => this.formatSignature(b, fileContent)),
+                            metadata: {
+                                decorators: node.decorator_list.map((d: any) => this.formatSignature(d, fileContent)),
+                            }
                         });
-                        // Traverse methods and properties inside the class
                         if (Array.isArray(node.body)) {
                             node.body.forEach((child: any) => traverse(child, node));
                         }
                         break;
                     
-                    case 'Assign': // For variable definitions
+                    case 'Assign':
+                    case 'AnnAssign': // Annotated assignment
                         if (node.targets && node.targets.length > 0 && node.targets[0].type === 'Name') {
                             const varName = node.targets[0].id;
                             entities.push({
@@ -217,57 +450,26 @@ export class PythonParser extends BaseLanguageParser {
                                 fullName: getFullName(varName, parentClass?.name),
                                 signature: this.formatSignature(node, fileContent),
                                 isExported: !varName.startsWith('_'),
+                                returnType: node.annotation ? extractText(node.annotation) : null,
                             });
                         }
                         break;
-
-                    case 'If':
-                    case 'For':
-                    case 'While':
-                    case 'Try':
-                    case 'With':
-                        entities.push({
-                            ...baseEntity,
-                            type: 'control_flow',
-                            name: node.type, // e.g., "If", "For"
-                            fullName: getFullName(node.type, parentClass?.name),
-                            signature: this.formatSignature(node, fileContent),
-                        });
-                        // Continue traversal into control flow bodies
-                        if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, parentClass));
-                        }
-                        if (node.orelse && Array.isArray(node.orelse)) { // For 'else' or 'elif' in If, or 'else' in For/While
-                            node.orelse.forEach((child: any) => traverse(child, parentClass));
-                        }
-                        if (node.handlers && Array.isArray(node.handlers)) { // For 'except' in Try
-                            node.handlers.forEach((child: any) => traverse(child, parentClass));
-                        }
-                        if (node.finalbody && Array.isArray(node.finalbody)) { // For 'finally' in Try
-                            node.finalbody.forEach((child: any) => traverse(child, parentClass));
-                        }
-                        break;
                     
-                    case 'Expr': // Often used for docstrings or standalone expressions
-                        if (node.value && node.value.type === 'Str') {
-                            // This is likely a docstring if it's the first statement in a function/class body
-                            // We already handle docstrings via extractDocstring, so this might be redundant or need refinement
-                        }
-                        break;
-                }
-                
-                // Generic traversal for all child nodes, unless handled specifically above
-                for (const key in node) {
-                    if (node.hasOwnProperty(key)) {
-                        const child = node[key];
-                        if (child && typeof child === 'object' && key !== 'body' && key !== 'orelse' && key !== 'handlers' && key !== 'finalbody') {
-                            if (Array.isArray(child)) {
-                                child.forEach(traverse);
-                            } else {
-                                traverse(child, parentClass);
+                    default:
+                        // Generic traversal for other nodes
+                        for (const key in node) {
+                            if (node.hasOwnProperty(key)) {
+                                const child = node[key];
+                                if (child && typeof child === 'object') {
+                                    if (Array.isArray(child)) {
+                                        child.forEach(c => traverse(c, parentClass));
+                                    } else {
+                                        traverse(child, parentClass);
+                                    }
+                                }
                             }
                         }
-                    }
+                        break;
                 }
             };
             
@@ -277,5 +479,26 @@ export class PythonParser extends BaseLanguageParser {
             console.error(`Error parsing Python code entities in ${filePath}:`, error);
         }
         return entities;
+    }
+    private resolveImportPath(moduleName: string, currentFilePath: string, level: number): string {
+        if (level === 0) {
+            // Absolute import
+            return moduleName;
+        }
+
+        const currentDir = path.dirname(currentFilePath);
+        let resolvedPath = currentDir;
+
+        // Move up the directory tree for each level
+        for (let i = 0; i < level; i++) {
+            resolvedPath = path.dirname(resolvedPath);
+        }
+
+        if (moduleName) {
+            resolvedPath = path.join(resolvedPath, moduleName.replace(/\./g, '/'));
+        }
+
+        // Make it relative to the project root
+        return path.relative(this.projectRootPath, resolvedPath).replace(/\\/g, '/');
     }
 }

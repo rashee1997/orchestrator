@@ -46,4 +46,5 @@ export interface EmbeddingIngestionResult {
     dbCallCount: number;
     dbCallLatencyMs: number;
     totalTimeMs: number;
+    totalTokensProcessed?: number;
 }

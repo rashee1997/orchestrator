@@ -2,7 +2,7 @@
 import { GeminiIntegrationService, GeminiApiNotInitializedError } from './GeminiIntegrationService.js';
 import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
-import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js'; // Corrected import path
+import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -74,10 +74,12 @@ export interface InitialDetailedPlanAndTasks {
     suggested_next_steps_for_agent?: string; // Add this for suggested next steps
 }
 
-// Constants for status and model names
+// -------------------------------------------------------------------------
+// Constants
+// -------------------------------------------------------------------------
 const PLAN_STATUS_DRAFT = 'DRAFT';
 const TASK_STATUS_PLANNED = 'PLANNED';
-const GEMINI_MODEL_PLANNER = "gemini-2.5-flash-preview-05-20";
+const GEMINI_MODEL_PLANNER = 'gemini-2.5-flash-preview-05-20';
 
 export class GeminiPlannerService {
     private geminiIntegrationService: GeminiIntegrationService;
@@ -95,6 +97,7 @@ export class GeminiPlannerService {
      * @param identifier The goal description (string) or refined_prompt_id (string).
      * @param isRefinedPromptId Boolean indicating if the identifier is a refined_prompt_id.
      * @param directRefinedPromptDetails Optional: Pre-fetched refined prompt details.
+     * @param codebaseContextSummary Optional: Summary of codebase context.
      * @returns A Promise resolving to an InitialDetailedPlanAndTasks object.
      * @throws Error if Gemini API call fails or response parsing fails.
      */
@@ -103,262 +106,326 @@ export class GeminiPlannerService {
         identifier: string,
         isRefinedPromptId: boolean,
         directRefinedPromptDetails?: any,
-        codebaseContextSummary?: string // Added optional codebaseContextSummary parameter
+        codebaseContextSummary?: string,
     ): Promise<InitialDetailedPlanAndTasks> {
+        // -----------------------------------------------------------------
+        // 1️⃣ Resolve refined prompt (if needed) and build the prompt payload
+        // -----------------------------------------------------------------
+        const { systemInstruction, userQuery, refinedPromptIdForPlan, refinedPromptDetails } =
+            await this.buildPromptPayload(agentId, identifier, isRefinedPromptId, directRefinedPromptDetails, codebaseContextSummary);
+
+        // -----------------------------------------------------------------
+        // 2️⃣ Call Gemini
+        // -----------------------------------------------------------------
+        const geminiResponseText = await this.callGemini(systemInstruction, userQuery);
+
+        // -----------------------------------------------------------------
+        // 3️⃣ Parse Gemini JSON response
+        // -----------------------------------------------------------------
+        const parsedResponse = this.parseGeminiResponse(geminiResponseText);
+
+        // -----------------------------------------------------------------
+        // 4️⃣ Transform to domain objects
+        // -----------------------------------------------------------------
+        const planData = this.buildPlanData(parsedResponse, refinedPromptDetails, refinedPromptIdForPlan);
+        const tasksData = this.buildTasksData(parsedResponse);
+        const suggestedNextSteps = this.buildSuggestedNextSteps(tasksData);
+
+        return { planData, tasksData, suggested_next_steps_for_agent: suggestedNextSteps };
+    }
+
+    // -----------------------------------------------------------------
+    // Helper: Build system instruction & user query
+    // -----------------------------------------------------------------
+    private async buildPromptPayload(
+        agentId: string,
+        identifier: string,
+        isRefinedPromptId: boolean,
+        directRefinedPromptDetails?: any,
+        codebaseContextSummary?: string,
+    ): Promise<{
+        systemInstruction: string;
+        userQuery: string;
+        refinedPromptIdForPlan: string | null;
+        refinedPromptDetails: any;
+        originalGoalText: string | null; // Added to return type
+    }> {
+        let refinedPromptIdForPlan: string | null = null;
+        let refinedPromptDetails: any = null;
         let systemInstruction: string;
         let userQuery: string;
-        let refinedPromptIdForPlan: string | null = null;
-        let refinedPromptDetails: any; // Declare it here
 
-        // Referencing prompts from gemini_plan_generation_prompts_v2
         if (isRefinedPromptId) {
-            refinedPromptDetails = directRefinedPromptDetails; // Assign here
+            // ---- Refined Prompt Path -------------------------------------------------
+            refinedPromptDetails = directRefinedPromptDetails ??
+                (await this.memoryManager.getRefinedPrompt(agentId, identifier));
+
             if (!refinedPromptDetails) {
-                refinedPromptDetails = await this.memoryManager.getRefinedPrompt(agentId, identifier);
-                if (!refinedPromptDetails) {
-                    throw new Error(`Refined prompt with ID '${identifier}' not found for agent '${agentId}'.`);
-                }
+                throw new Error(`Refined prompt with ID '${identifier}' not found for agent '${agentId}'.`);
             }
+
             refinedPromptIdForPlan = identifier;
+            systemInstruction = this.getSystemInstructionForRefinedPrompt();
+            const planGenerationRefinedPromptDetails = this.extractPlanGenerationPayload(refinedPromptDetails);
 
-            systemInstruction = "You are an expert project planning assistant. You will be given a structured 'Refined Prompt Object' that details a user's request. Your task is to generate a complete project plan including a concise title, estimated duration, placeholder start/end dates, and potential risks and their mitigations for the overall plan. The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.\n\nWhen generating tasks, pay close attention to the following:\n- **Consolidate Redundancy:** Identify and merge overlapping tasks, especially those related to entity extraction, into single, comprehensive tasks with clear sub-components.\n- **Explicit Dependencies:** Define clear dependencies between tasks to ensure logical flow. For example, foundational analysis tasks should precede implementation, and testing should follow implementation.\n- **Missing Critical Phases:** Include dedicated tasks for integration testing, performance benchmarking/optimization, formal code reviews, documentation updates (both internal and external), and a deployment/release plan.\n- **Refined Task Descriptions:** Ensure each task has a clear purpose, specific completion criteria, and suggested roles/skills required for execution.\n- **Comprehensive Details:** For each task, provide estimated effort, potential risks, micro-steps, and suggested files involved.";
-            // Create a copy of refinedPromptDetails and remove context_options before sending to Gemini
-            // context_options are for retrieval during refinement, not for plan generation content.
-            // Only send the essential fields to Gemini to avoid confusion
-            const planGenerationRefinedPromptDetails = {
-                original_prompt_text: refinedPromptDetails.original_prompt_text,
-                overall_goal: refinedPromptDetails.overall_goal,
-                decomposed_tasks: refinedPromptDetails.decomposed_tasks_parsed || refinedPromptDetails.decomposed_tasks,
-                key_entities_identified: refinedPromptDetails.key_entities_identified_parsed || refinedPromptDetails.key_entities_identified,
-                implicit_assumptions_made_by_refiner: refinedPromptDetails.implicit_assumptions_made_by_refiner_parsed || refinedPromptDetails.implicit_assumptions_made_by_refiner,
-                explicit_constraints_from_prompt: refinedPromptDetails.explicit_constraints_from_prompt_parsed || refinedPromptDetails.explicit_constraints_from_prompt,
-                suggested_ai_role_for_agent: refinedPromptDetails.suggested_ai_role_for_agent,
-                suggested_reasoning_strategy_for_agent: refinedPromptDetails.suggested_reasoning_strategy_for_agent,
-                desired_output_characteristics_inferred: refinedPromptDetails.desired_output_characteristics_inferred_parsed || refinedPromptDetails.desired_output_characteristics_inferred,
-                codebase_context_summary_by_ai: refinedPromptDetails.codebase_context_summary_by_ai // Include codebase context
-            };
+            userQuery = this.buildUserQueryForRefinedPrompt(planGenerationRefinedPromptDetails, refinedPromptDetails);
+        } else {
+            // ---- High-level Goal Path -------------------------------------------------
+            const codebaseContext = await this.resolveCodebaseContext(agentId, codebaseContextSummary);
+            systemInstruction = this.getSystemInstructionForGoal();
+            userQuery = this.buildUserQueryForGoal(identifier, codebaseContext);
+        }
 
-            // Debug logging
-            console.log('[DEBUG] Sending to Gemini for plan generation:', JSON.stringify(planGenerationRefinedPromptDetails, null, 2));
-            
-            userQuery = `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
+        return {
+            systemInstruction,
+            userQuery,
+            refinedPromptIdForPlan,
+            refinedPromptDetails,
+            originalGoalText: isRefinedPromptId ? null : identifier, // Conditionally add originalGoalText
+        };
+    }
+
+    private getSystemInstructionForRefinedPrompt(): string {
+        return `You are an expert project planning assistant. You will be given a structured 'Refined Prompt Object' that details a user's request. Your task is to generate a complete project plan including a concise title, estimated duration, placeholder start/end dates, and potential risks and their mitigations for the overall plan. The output MUST be a valid JSON object adhering to the specified schema. Do **not** include any explanatory text outside the JSON object.
+
+When generating tasks, obey the following rules:
+• **Each task MUST include a non‑empty \`title\` (≤ 10 words) and a non‑empty \`description\`.** Do not return empty strings or placeholders such as “Untitled”.  
+• Consolidate redundancy – merge overlapping tasks.  
+• Explicit dependencies – define clear ordering.  
+• Add missing critical phases – integration testing, performance benchmarking, code reviews, documentation updates, and a deployment plan.  
+• Refined task descriptions – include purpose, completion criteria, and suggested roles/skills.  
+• Comprehensive details – estimated effort, risks, micro‑steps, and suggested files involved.`;
+    }
+
+    private getSystemInstructionForGoal(): string {
+        return `You are an expert project planning assistant. Your task is to take a user's high‑level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY‑MM‑DD if specific dates are not inferable), potential risks and mitigations, and a list of actionable high‑level tasks.
+
+Each task **must** contain a non‑empty \`title\` (≤ 10 words) and a non‑empty \`description\`. Do not emit placeholders such as “Untitled Task”.
+
+Enhancements:
+• Consolidate redundancy.  
+• Explicit dependencies.  
+• Add missing critical phases (code review, integration testing, performance profiling, documentation, deployment).  
+• Refined task descriptions with completion criteria and required roles/skills.  
+• Comprehensive details for each task (estimated effort, risks, micro‑steps, suggested files).`;
+    }
+
+    private extractPlanGenerationPayload(refined: any): Record<string, unknown> {
+        return {
+            original_prompt_text: refined.original_prompt_text,
+            overall_goal: refined.overall_goal,
+            decomposed_tasks: refined.decomposed_tasks_parsed ?? refined.decomposed_tasks,
+            key_entities_identified: refined.key_entities_identified_parsed ?? refined.key_entities_identified,
+            implicit_assumptions_made_by_refiner:
+                refined.implicit_assumptions_made_by_refiner_parsed ?? refined.implicit_assumptions_made_by_refiner,
+            explicit_constraints_from_prompt:
+                refined.explicit_constraints_from_prompt_parsed ?? refined.explicit_constraints_from_prompt,
+            suggested_ai_role_for_agent: refined.suggested_ai_role_for_agent,
+            suggested_reasoning_strategy_for_agent: refined.suggested_reasoning_strategy_for_agent,
+            desired_output_characteristics_inferred:
+                refined.desired_output_characteristics_inferred_parsed ??
+                refined.desired_output_characteristics_inferred,
+            codebase_context_summary_by_ai: refined.codebase_context_summary_by_ai,
+        };
+    }
+
+    private buildUserQueryForRefinedPrompt(
+        payload: Record<string, unknown>,
+        refined: any,
+    ): string {
+        const today = new Date().toISOString().split('T')[0];
+        return `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
 
 Refined Prompt Object:
 \`\`\`json
-${JSON.stringify(planGenerationRefinedPromptDetails, null, 2)}
+${JSON.stringify(payload, null, 2)}
 \`\`\`
 
 Consider the following codebase context when generating the plan and tasks:
 \`\`\`
-${refinedPromptDetails.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
+${refined.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
 \`\`\`
 
-Based on this refined prompt, provide:
-1.  A concise \`plan_title\` that accurately describes the project (max 10 words).
-2.  An \`estimated_duration_days\` for the entire plan (integer).
-3.  A \`target_start_date\` (string, "YYYY-MM-DD" format, use today's date: ${new Date().toISOString().split('T')[0]}).
-4.  A \`target_end_date\` (string, "YYYY-MM-DD" format, calculate based on start date + estimated_duration_days).
-5.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
-6.  A list of high-level \`tasks\`. Each task should have:
-    * \`task_number\`: A unique number for the task (integer).
-    * \`title\`: A short, descriptive title (max 10 words).
-    * \`description\`: A brief explanation of what the task involves (1-2 sentences).
-    * \`purpose\`: The reason this task is necessary for the overall plan goal (1 sentence).
-    * \`estimated_effort_hours\`: Estimated effort for the task in hours (integer).
-    * \`task_risks\`: A list of potential risks specific to this task (array of strings).
-    * \`micro_steps\`: A list of 3-5 granular sub-actions or steps for completing the task (array of strings).
-    * \`suggested_files_involved\`: An array of strings listing suggested file paths relevant to this task.
-    * \`task_dependencies\`: Explicitly list task dependencies by task number or title (array of strings).
-    * \`roles_required\`: Specify the roles or skills required to complete the task (array of strings).
-    * \`completion_criteria\`: Define clear criteria for task completion (string).
+Provide a JSON object with:
+1. plan_title (max 10 words)
+2. estimated_duration_days (integer)
+3. target_start_date ("YYYY-MM-DD", today = ${today})
+4. target_end_date (calculated)
+5. plan_risks_and_mitigations
+6. tasks (see detailed schema in the original implementation)
 
-Output the result as a single JSON object with the following structure:
-{
-  "plan_title": "string",
-  "estimated_duration_days": "integer",
-  "target_start_date": "string",
-  "target_end_date": "string",
-  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ],
-  "tasks": [ { "task_number": "integer", "title": "string", "description": "string", "purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"], "suggested_files_involved": ["string"], "task_dependencies": ["string"], "roles_required": ["string"], "completion_criteria": "string" } ]
-}`;
-        } else { // Identifier is a high-level goal description
-            let currentCodebaseContext = codebaseContextSummary;
-            if (!currentCodebaseContext) {
-                // Attempt to retrieve a general codebase context summary if not provided
-                // This assumes a context type 'codebase_summary' might exist or can be generated
-                const generalContext = await this.memoryManager.getContext(agentId, 'codebase_summary');
-                if (generalContext && generalContext.context_data && generalContext.context_data.summary) {
-                    currentCodebaseContext = generalContext.context_data.summary;
-                }
-            }
+Return ONLY the JSON object.`;
+    }
 
-            systemInstruction = "You are an expert project planning assistant. Your task is to take a user's high-level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY-MM-DD if specific dates are not inferable from the goal, but indicate they are placeholders), potential risks and their mitigations for the overall plan. Also, generate a list of actionable high-level tasks. Each task should include a title, description, purpose, estimated effort in hours, potential risks specific to the task, and a few micro-steps (sub-actions). The output MUST be a valid JSON object adhering to the specified schema. Do not include any explanatory text outside the JSON object.\n\nAdditionally, ensure the following enhancements to improve plan quality and execution:\n- **Consolidate Redundancy:** Identify and merge overlapping tasks into single, comprehensive tasks with clear sub-components.\n- **Explicit Dependencies:** Define clear dependencies between tasks to ensure logical sequencing and prevent workflow blockages. Foundational analysis tasks should precede implementation, and testing should follow implementation.\n- **Missing Critical Phases:** Include dedicated tasks for:\n    - Code review and pull request submission after implementation and unit testing.\n    - Integration or end-to-end testing to validate the tool's behavior within the larger system context.\n    - Performance profiling or benchmarking to proactively identify bottlenecks.\n    - Documentation updates (both internal and external/user-facing).\n    - A deployment/release plan.\n- **Refined Task Descriptions:** Clearly state completion criteria (e.g., test coverage targets, documentation approval) and specify roles or skill requirements for each task.\n- **Comprehensive Details:** For each task, provide estimated effort, potential risks, micro-steps, and suggested files involved.\n\nAim for a plan that would score 10 out of 10 for overall coherence, clarity of goal, actionability of tasks, and completeness, addressing all the identified issues from the analysis report.";
-            userQuery = `Analyze the following user goal and generate a detailed project plan structure.
+    private async resolveCodebaseContext(agentId: string, fallback?: string): Promise<string | undefined> {
+        if (fallback) return fallback;
+        const ctx = await this.memoryManager.getContext(agentId, 'codebase_summary');
+        return ctx?.context_data?.summary;
+    }
+
+    private buildUserQueryForGoal(goal: string, codebaseContext?: string): string {
+        const today = new Date().toISOString().split('T')[0];
+        return `Analyze the following user goal and generate a detailed project plan.
 
 User Goal:
-"${identifier}"
+"${goal}"
 
-Consider the following codebase context when generating the plan and tasks:
+Codebase context:
 \`\`\`
-${currentCodebaseContext || 'No specific codebase context provided.'}
+${codebaseContext || 'No specific codebase context provided.'}
 \`\`\`
 
-Based on this goal, provide:
-1.  A concise \`plan_title\` (max 10 words).
-2.  An \`overall_plan_goal\` that rephrases or clarifies the user's goal for the project plan (1-2 sentences).
-3.  An \`estimated_duration_days\` for the entire plan (integer).
-4.  A \`target_start_date\` (string, "YYYY-MM-DD" format, use today's date: ${new Date().toISOString().split('T')[0]}).
-5.  A \`target_end_date\` (string, "YYYY-MM-DD" format, calculate based on start date + estimated_duration_days).
-6.  A list of \`plan_risks_and_mitigations\` (array of objects, each with \`risk_description\` and \`mitigation_strategy\`).
-7.  A list of high-level \`tasks\`. Each task should have:
-    * \`task_number\`: A unique number for the task (integer).
-    * \`title\`: A short, descriptive title (max 10 words).
-    * \`description\`: A brief explanation of what the task involves (1-2 sentences).
-    * \`purpose\`: The reason this task is necessary for the overall plan goal (1 sentence).
-    * \`estimated_effort_hours\`: Estimated effort for the task in hours (integer).
-    * \`task_risks\`: A list of potential risks specific to this task (array of strings).
-    * \`micro_steps\`: A list of 3-5 granular sub-actions or steps for completing the task (array of strings).
-    * \`suggested_files_involved\`: An array of strings listing suggested file paths relevant to this task.
-    * \`task_dependencies\`: Explicitly list task dependencies by task number or title (array of strings).
-    * \`roles_required\`: Specify the roles or skills required to complete the task (array of strings).
-    * \`completion_criteria\`: Define clear criteria for task completion (string).
+Provide a JSON object with:
+1. plan_title (max 10 words)
+2. overall_plan_goal (re-phrased)
+3. estimated_duration_days (integer)
+4. target_start_date ("YYYY-MM-DD", today = ${today})
+5. target_end_date (calculated)
+6. plan_risks_and_mitigations
+7. tasks (see detailed schema in the original implementation)
 
-Output the result as a single JSON object with the following structure:
-{
-  "plan_title": "string",
-  "overall_plan_goal": "string",
-  "estimated_duration_days": "integer",
-  "target_start_date": "string",
-  "target_end_date": "string",
-  "plan_risks_and_mitigations": [ { "risk_description": "string", "mitigation_strategy": "string" } ],
-  "tasks": [ { "task_number": "integer", "title": "string", "description": "string", "purpose": "string", "estimated_effort_hours": "integer", "task_risks": ["string"], "micro_steps": ["string"], "suggested_files_involved": ["string"], "task_dependencies": ["string"], "roles_required": ["string"], "completion_criteria": "string" } ]
-}`;
-        }
+Return ONLY the JSON object.`;
+    }
 
-        let geminiResponseText: string;
+    // -----------------------------------------------------------------
+    // Helper: Gemini call
+    // -----------------------------------------------------------------
+    private async callGemini(systemInstruction: string, userQuery: string): Promise<string> {
         try {
-            console.log('[DEBUG] Calling Gemini with system instruction:', systemInstruction);
-            console.log('[DEBUG] User query length:', userQuery.length);
-            // Include systemInstruction as part of the prompt text instead of separate parameter
-            const promptWithInstruction = systemInstruction + "\n\n" + userQuery;
-            const geminiResult = await this.geminiIntegrationService.askGemini(promptWithInstruction, this.geminiModel);
-            if (!geminiResult || !geminiResult.content || geminiResult.content.length === 0 || !geminiResult.content[0]?.text) {
-                throw new Error("Gemini returned no content or an unexpected format for plan generation.");
+            const prompt = `${systemInstruction}\n\n${userQuery}`;
+            const result = await this.geminiIntegrationService.askGemini(prompt, this.geminiModel);
+            const text = result?.content?.[0]?.text;
+            if (!text) {
+                throw new Error('Gemini returned empty content.');
             }
-            geminiResponseText = geminiResult.content[0].text;
-            console.log('[DEBUG] Gemini response:', geminiResponseText);
-        } catch (error) {
-            if (error instanceof GeminiApiNotInitializedError) {
-                throw error;
-            }
-            console.error("Error calling Gemini for detailed plan generation:", error);
-            throw new Error(`Failed to generate detailed plan structure via Gemini: ${error instanceof Error ? error.message : String(error)}`);
+            return text;
+        } catch (err) {
+            if (err instanceof GeminiApiNotInitializedError) throw err;
+            throw new Error(`Failed to generate plan via Gemini: ${err instanceof Error ? err.message : String(err)}`);
         }
+    }
 
-        let parsedResponse: GeminiDetailedPlanGenerationResponse;
+    // -----------------------------------------------------------------
+    // Helper: Robust JSON extraction & parsing
+    // -----------------------------------------------------------------
+    private parseGeminiResponse(raw: string): GeminiDetailedPlanGenerationResponse {
+        // 1️⃣ Find the outermost JSON object
+        const first = raw.indexOf('{');
+        const last = raw.lastIndexOf('}');
+        let jsonStr = first !== -1 && last !== -1 && last > first ? raw.slice(first, last + 1) : raw;
+
+        // 2️⃣ Strip markdown fences if present
+        const fenced = jsonStr.match(/```json\n([\s\S]*?)\n```/);
+        if (fenced) jsonStr = fenced[1];
+
+        // 3️⃣ Clean trailing commas & comments
+        jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1'); // trailing commas
+        jsonStr = jsonStr.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, ''); // comments
+
         try {
-            let jsonToParse = geminiResponseText;
-            // More robust JSON extraction: find the first '{' and the last '}'
-            const firstBrace = jsonToParse.indexOf('{');
-            const lastBrace = jsonToParse.lastIndexOf('}');
-
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                jsonToParse = jsonToParse.substring(firstBrace, lastBrace + 1);
-            } else {
-                // Fallback to original logic if braces not found or malformed
-                const jsonMatch = geminiResponseText.match(/```json\n([\s\S]*?)\n```/);
-                if (jsonMatch && jsonMatch[1]) {
-                    jsonToParse = jsonMatch[1].trim();
-                } else {
-                    jsonToParse = geminiResponseText.trim();
-                }
-            }
-
-            // Remove trailing commas before parsing
-            jsonToParse = jsonToParse.replace(/,(\s*[\]}])/g, '$1');
-            // Remove comments (single line // and multi-line /* */)
-            jsonToParse = jsonToParse.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '');
-
-            parsedResponse = JSON.parse(jsonToParse);
-        } catch (error) {
-            console.error("Error parsing Gemini's JSON response for detailed plan generation. Raw response:", geminiResponseText);
-            throw new Error(`Failed to parse detailed plan structure from Gemini response: ${error instanceof Error ? error.message : String(error)}. Raw response: ${geminiResponseText}`);
+            return JSON.parse(jsonStr) as GeminiDetailedPlanGenerationResponse;
+        } catch (e) {
+            throw new Error(`Unable to parse Gemini JSON response. Raw: ${raw}`);
         }
+    }
 
-        // Transform Gemini response to InitialDetailedPlanAndTasks structure
-        const planData: InitialDetailedPlanAndTasks['planData'] = {
-            title: parsedResponse.plan_title || refinedPromptDetails.overall_goal, // Use Gemini's title or fallback to overall_goal
-            overall_goal: refinedPromptDetails.overall_goal, // Keep overall_goal from refined prompt
+    // -----------------------------------------------------------------
+    // Helper: Build domain objects
+    // -----------------------------------------------------------------
+    private buildPlanData(
+        resp: GeminiDetailedPlanGenerationResponse,
+        refinedDetails: any,
+        refinedPromptId: string | null,
+    ): InitialDetailedPlanAndTasks['planData'] {
+        return {
+            title: resp.plan_title ?? refinedDetails?.overall_goal ?? 'Untitled Plan',
+            overall_goal: refinedPromptId === null
+                ? refinedDetails?.originalGoalText ?? ''
+                : refinedDetails?.overall_goal ?? '',
             status: PLAN_STATUS_DRAFT,
             version: 1,
-            refined_prompt_id_associated: refinedPromptIdForPlan,
+            refined_prompt_id_associated: refinedPromptId,
             metadata: {
-                estimated_duration_days: parsedResponse.estimated_duration_days,
-                target_start_date: parsedResponse.target_start_date,
-                target_end_date: parsedResponse.target_end_date,
-                plan_risks_and_mitigations: parsedResponse.plan_risks_and_mitigations,
-            }
+                estimated_duration_days: resp.estimated_duration_days,
+                target_start_date: resp.target_start_date,
+                target_end_date: resp.target_end_date,
+                plan_risks_and_mitigations: resp.plan_risks_and_mitigations,
+            },
         };
+    }
 
-        const tasksData: InitialDetailedPlanAndTasks['tasksData'] = parsedResponse.tasks?.map((task, index) => {
-            // Ensure task_number is present, use index + 1 as fallback
-            const taskNumber = task.task_number || (index + 1);
+    private buildTasksData(
+        resp: GeminiDetailedPlanGenerationResponse,
+    ): InitialDetailedPlanAndTasks['tasksData'] {
+        if (!resp.tasks?.length) return [];
+        return resp.tasks.map((t, idx) => {
+            // -----------------------------------------------------------------
+            // 1️⃣ Normalise / fallback title, description and purpose
+            // -----------------------------------------------------------------
+            const taskNumber = t.task_number ?? idx + 1;
 
-            // Handle task_dependencies, roles_required, and completion_criteria
-            const dependencies_task_ids_json = task.task_dependencies ? JSON.stringify(task.task_dependencies) : null;
-            const assigned_to = task.roles_required ? JSON.stringify(task.roles_required) : null; // Store as JSON string
-            const success_criteria_text = task.completion_criteria || null;
+            const rawTitle = (t.title || '').trim();
+            const rawDesc = (t.description || '').trim();
+            const rawPurpose = (t.purpose || '').trim();
 
-            const notes: TaskNotes = {
-                task_risks: task.task_risks,
-                micro_steps: task.micro_steps,
-            };
+            // If the model omitted the title, synthesize one from the description
+            const safeTitle = rawTitle ||
+                `Task ${taskNumber}: ${rawDesc ? rawDesc.split(/\s+/).slice(0, 6).join(' ') : 'Contextual refactor step'}`;
+
+            // If the description is missing, fall back to a generic sentence
+            const safeDescription = rawDesc ||
+                `Auto‑generated description for ${safeTitle.toLowerCase()}.`;
+
+            // If purpose is missing, provide a generic purpose
+            const safePurpose = rawPurpose ||
+                'Clarify intent and improve maintainability as part of the overall plan.';
+
+            const notes: TaskNotes = {}; // Initialize as empty object
+
+            if (t.task_risks !== undefined) {
+                notes.task_risks = t.task_risks;
+            }
+            if (t.micro_steps !== undefined) {
+                notes.micro_steps = t.micro_steps;
+            }
 
             return {
                 task_number: taskNumber,
-                title: task.title,
-                description: task.description,
-                purpose: task.purpose,
+                title: safeTitle,
+                description: safeDescription,
+                purpose: safePurpose,
                 status: TASK_STATUS_PLANNED,
-                estimated_effort_hours: task.estimated_effort_hours,
-                task_risks: task.task_risks,
-                micro_steps: task.micro_steps,
-                suggested_files_involved: task.suggested_files_involved || [],
-                dependencies_task_ids_json: dependencies_task_ids_json,
-                assigned_to: assigned_to,
-                success_criteria_text: success_criteria_text,
-                ...(Object.keys(notes).length > 0 && { notes_json: JSON.stringify(notes) }),
+                estimated_effort_hours: t.estimated_effort_hours,
+                task_risks: t.task_risks,
+                micro_steps: t.micro_steps,
+                suggested_files_involved: t.suggested_files_involved ?? [],
+                dependencies_task_ids_json: t.task_dependencies ? JSON.stringify(t.task_dependencies) : null,
+                assigned_to: t.roles_required ? JSON.stringify(t.roles_required) : null,
+                success_criteria_text: t.completion_criteria ?? null,
+                ...(Object.keys(notes).length && { notes_json: JSON.stringify(notes) }),
             };
-        }) || []; // Ensure tasksData is an array even if parsedResponse.tasks is undefined
+        });
+    }
 
-        const taskIds = tasksData.map(task => task.task_number);
-        const suggestedNextSteps = `### Next Suggested Steps for Agent:
+    // -----------------------------------------------------------------
+    // Helper: Suggested next-steps markdown generation
+    // -----------------------------------------------------------------
+    private buildSuggestedNextSteps(tasks: InitialDetailedPlanAndTasks['tasksData']): string {
+        const ids = tasks.map(t => t.task_number);
+        const idsList = ids.map(id => `\`[task_id_${id}]\``).join(', ');
+        return `### Next Suggested Steps for Agent
 
 The plan has been generated with explicit dependencies and comprehensive task details.
 
-For each task ID in the plan (e.g., ${taskIds.map(id => `\`[task_id_${id}]\``).join(', ')}):
-1.  **Review Task Details:** Examine the \`description\`, \`purpose\`, \`estimated_effort_hours\`, \`task_risks\`, \`micro_steps\`, \`suggested_files_involved\`, \`dependencies_task_ids_json\`, \`assigned_to\`, and \`success_criteria_text\` for accuracy and completeness.
-2.  **Break Down into Subtasks (if necessary):** If a task is still too broad, consider using the \`ai_suggest_subtasks\` tool to get a more granular breakdown. To avoid redundancies and ensure context-awareness, when calling \`ai_suggest_subtasks\`, ensure you provide:
-    *   \`agent_id\`: Your agent ID (\`[agent_id]\`) - **Replace \`[agent_id]\` with the actual agent ID.**
-    *   \`plan_id\`: The Plan ID created above (\`[plan_id]\`) - **Replace \`[plan_id]\` with the actual Plan ID.**
-    *   \`parent_task_id\`: The specific Task ID you are breaking down.
-    *   \`parent_task_title\` (optional): The title of the parent task.
-    *   \`parent_task_description\` (optional): The description of the parent task.
-    *   \`codebase_context_summary\` (optional but highly recommended): Provide a summary of relevant codebase context (e.g., related file names, function signatures, class definitions) to make the subtask suggestions code-aware. This could be from the refined prompt's \`codebase_context_summary_by_ai\` or by retrieving fresh context relevant to the parent task using tools like \`query_codebase_embeddings\` or \`kg_nl_query\`.
-    *   **Crucially, also provide a summary of *existing tasks and subtasks* within the current plan.** This helps Gemini understand what has already been planned and avoid suggesting redundant subtasks. You can achieve this by:
-        *   First, using \`get_plan_tasks\` and \`get_subtasks\` to retrieve all existing tasks and subtasks for the current plan.
-        *   Then, summarizing this information (e.g., "Existing tasks include: Task 1: 'Analyze AST', Task 2: 'Implement X', Subtask 2.1: 'Refactor Y'"). This summary should be included in the \`codebase_context_summary\` parameter or a new dedicated parameter if \`ai_suggest_subtasks\` is updated to accept it.
-3.  **Add Subtasks to Plan:** For each appropriate suggestion from \`ai_suggest_subtasks\`, use the \`add_subtask_to_plan\` tool to add it to the plan under the corresponding parent task.
-    *   **Input for \`add_subtask_to_plan\`**:
-        *   \`agent_id\`: Your agent ID (\`[agent_id]\`) - **Replace \`[agent_id]\` with the actual agent ID.**
-        *   \`plan_id\`: The Plan ID (\`[plan_id]\`) - **Replace \`[plan_id]\` with the actual Plan ID.**
-        *   \`parent_task_id\`: The specific Task ID.
-        *   \`subtaskData\`: { "title": "Suggested Subtask Title", "description": "Suggested Subtask Description", ... }
-4.  **Update Task Status:** As tasks are completed, use \`update_plan_task_status\` to reflect their progress.
-5.  **Log Progress:** Use \`log_task_progress\` after significant steps or tool executions.
-6.  **Review and Refine:** Periodically use \`ai_analyze_plan\` to review the overall plan's coherence and make adjustments as needed.
-`
-
-        return { planData, tasksData, suggested_next_steps_for_agent: suggestedNextSteps };
+For each task ID in the plan (e.g., ${idsList}):
+1️⃣ **Review Task Details** – verify description, purpose, effort, risks, micro-steps, suggested files, dependencies, assigned role, and success criteria.
+2️⃣ **Break Down into Sub-tasks** (if needed) – use the \`ai_suggest_subtasks\` tool, providing:
+   - \`agent_id\`, \`plan_id\`, \`parent_task_id\`
+   - Optional: \`parent_task_title\`, \`parent_task_description\`
+   - \`codebase_context_summary\` (include existing tasks summary to avoid duplication)
+3️⃣ **Add Sub-tasks** – call \`add_subtask_to_plan\` with the suggested sub-task data.
+4️⃣ **Update Status** – mark tasks as completed via \`update_plan_task_status\`.
+5️⃣ **Log Progress** – use \`log_task_progress\` after major actions.
+6️⃣ **Iterate** – periodically run \`ai_analyze_plan\` to refine the overall plan.`;
     }
 }

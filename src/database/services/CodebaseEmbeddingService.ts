@@ -107,11 +107,11 @@ export class CodebaseEmbeddingService {
                 fileContent = await fs.readFile(filePath, 'utf-8');
                 if (!fileContent.trim()) {
                     console.log(`Skipping empty file: ${filePath}`);
-                    return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0, newEmbeddings: [], reusedEmbeddings: [], deletedEmbeddings: [], embeddingRequestCount: 0, embeddingRetryCount: 0, namingApiCallCount: 0, summarizationApiCallCount: 0, dbCallCount: 0, dbCallLatencyMs: 0, totalTimeMs: Date.now() - startTime };
+                    return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0, newEmbeddings: [], reusedEmbeddings: [], deletedEmbeddings: [], embeddingRequestCount: 0, embeddingRetryCount: 0, namingApiCallCount: 0, summarizationApiCallCount: 0, dbCallCount: 0, dbCallLatencyMs: 0, totalTimeMs: Date.now() - startTime, totalTokensProcessed: 0 };
                 }
             } catch (e) {
                 console.error(`Skipping embedding for unreadable file ${filePath}:`, e);
-                return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0, newEmbeddings: [], reusedEmbeddings: [], deletedEmbeddings: [], embeddingRequestCount: 0, embeddingRetryCount: 0, namingApiCallCount: 0, summarizationApiCallCount: 0, dbCallCount: 0, dbCallLatencyMs: 0, totalTimeMs: Date.now() - startTime };
+                return { newEmbeddingsCount: 0, reusedEmbeddingsCount: 0, deletedEmbeddingsCount: 0, newEmbeddings: [], reusedEmbeddings: [], deletedEmbeddings: [], embeddingRequestCount: 0, embeddingRetryCount: 0, namingApiCallCount: 0, summarizationApiCallCount: 0, dbCallCount: 0, dbCallLatencyMs: 0, totalTimeMs: Date.now() - startTime, totalTokensProcessed: 0 };
             }
 
         const relativeFilePath = path.relative(projectRootPath, filePath).replace(/\\/g, '/');
@@ -149,7 +149,8 @@ export class CodebaseEmbeddingService {
                 summarizationApiCallCount,
                 dbCallCount: totalDbCallCount,
                 dbCallLatencyMs: totalDbCallLatencyMs,
-                totalTimeMs: Date.now() - startTime
+                totalTimeMs: Date.now() - startTime,
+                totalTokensProcessed: 0
             };
         }
 
@@ -171,7 +172,7 @@ export class CodebaseEmbeddingService {
 
 
         const textsToEmbed = chunksToEmbed.map(c => c.chunk_text);
-        const { embeddings: embeddingResultsWithNulls, requestCount, retryCount } = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
+        const { embeddings: embeddingResultsWithNulls, requestCount, retryCount, totalTokensProcessed } = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
 
         const validResults = embeddingResultsWithNulls
             .map((result: { vector: number[]; dimensions: number } | null, index: number) => ({ result, index }))
@@ -245,7 +246,8 @@ export class CodebaseEmbeddingService {
             summarizationApiCallCount,
             dbCallCount: totalDbCallCount,
             dbCallLatencyMs: totalDbCallLatencyMs,
-            totalTimeMs: Date.now() - startTime
+            totalTimeMs: Date.now() - startTime,
+            totalTokensProcessed
         };
     }
 
@@ -290,6 +292,7 @@ export class CodebaseEmbeddingService {
         let totalNewEmbeddings = 0;
         let totalReusedEmbeddings = 0;
         let totalDeletedEmbeddings = 0;
+        let totalTokensProcessed = 0;
         let embeddingRequestCount = 0;
         let embeddingRetryCount = 0;
         let namingApiCallCount = 0;
@@ -322,6 +325,7 @@ export class CodebaseEmbeddingService {
                         totalNewEmbeddings += result.newEmbeddingsCount;
                         totalReusedEmbeddings += result.reusedEmbeddingsCount;
                         totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                        totalTokensProcessed += result.totalTokensProcessed || 0;
                         embeddingRequestCount += result.embeddingRequestCount;
                         embeddingRetryCount += result.embeddingRetryCount;
                         namingApiCallCount += result.namingApiCallCount;
@@ -343,10 +347,10 @@ export class CodebaseEmbeddingService {
             const promise = processFile(item);
             fileProcessingPromises.push(promise);
 
-            if (activePromises >= concurrencyLimit) {
-                await Promise.race(fileProcessingPromises.filter(p => p !== null));
-            }
             activePromises++;
+            if (activePromises > concurrencyLimit) {
+                await Promise.race(fileProcessingPromises);
+            }
             promise.finally(() => activePromises--);
         }
 
@@ -384,7 +388,117 @@ export class CodebaseEmbeddingService {
             summarizationApiCallCount,
             dbCallCount,
             dbCallLatencyMs,
-            totalTimeMs
+            totalTimeMs,
+            totalTokensProcessed
+        };
+    }
+
+    /**
+     * Generates and stores embeddings for a given array of file paths.
+     * @param agentId The ID of the agent.
+     * @param filePaths An array of absolute paths to the files.
+     * @param projectRootPath The absolute path to the project root.
+     * @param strategy The chunking strategy to use.
+     * @param includeSummaryPatterns Glob patterns for files to include in AI summaries.
+     * @param excludeSummaryPatterns Glob patterns for files to exclude from AI summaries.
+     * @param storeEntitySummaries Whether to store AI-generated summaries for code entities.
+     * @returns A report of the embedding generation process for the files.
+     */
+    public async generateAndStoreEmbeddingsForMultipleFiles(
+        agentId: string,
+        filePaths: string[],
+        projectRootPath: string,
+        strategy: ChunkingStrategy = 'auto',
+        includeSummaryPatterns?: string[],
+        excludeSummaryPatterns?: string[],
+        storeEntitySummaries: boolean = true
+    ): Promise<EmbeddingIngestionResult> {
+        const startTime = Date.now();
+        const absoluteProjectRootPath = path.resolve(projectRootPath);
+
+        await this.embeddingCache.loadCacheState(); // Load cache once for the entire operation
+
+        let totalNewEmbeddings = 0;
+        let totalReusedEmbeddings = 0;
+        let totalDeletedEmbeddings = 0;
+        let totalTokensProcessed = 0;
+        let embeddingRequestCount = 0;
+        let embeddingRetryCount = 0;
+        let namingApiCallCount = 0;
+        let summarizationApiCallCount = 0;
+        let dbCallCount = 0;
+        let dbCallLatencyMs = 0;
+        const newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+        const deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }> = [];
+
+        const concurrencyLimit = 5;
+        const fileProcessingPromises: Promise<void>[] = [];
+        let activePromises = 0;
+
+        const processFile = async (filePath: string) => {
+            try {
+                const result = await this.generateAndStoreEmbeddingsForFile(
+                    agentId,
+                    filePath,
+                    absoluteProjectRootPath,
+                    strategy,
+                    includeSummaryPatterns,
+                    excludeSummaryPatterns,
+                    storeEntitySummaries
+                );
+                totalNewEmbeddings += result.newEmbeddingsCount;
+                totalReusedEmbeddings += result.reusedEmbeddingsCount;
+                totalDeletedEmbeddings += result.deletedEmbeddingsCount;
+                totalTokensProcessed += result.totalTokensProcessed || 0;
+                embeddingRequestCount += result.embeddingRequestCount;
+                embeddingRetryCount += result.embeddingRetryCount;
+                namingApiCallCount += result.namingApiCallCount;
+                summarizationApiCallCount += result.summarizationApiCallCount;
+                dbCallCount += result.dbCallCount;
+                dbCallLatencyMs += result.dbCallLatencyMs;
+                newEmbeddings.push(...result.newEmbeddings);
+                reusedEmbeddings.push(...result.reusedEmbeddings);
+                deletedEmbeddings.push(...result.deletedEmbeddings);
+            } catch (fileError) {
+                console.error(`Error processing file ${filePath} for embeddings:`, fileError);
+            }
+        };
+
+        for (const filePath of filePaths) {
+            const absoluteFilePath = path.resolve(absoluteProjectRootPath, filePath);
+            const promise = processFile(absoluteFilePath);
+            fileProcessingPromises.push(promise);
+
+            activePromises++;
+            if (activePromises > concurrencyLimit) {
+                await Promise.race(fileProcessingPromises);
+            }
+            promise.finally(() => activePromises--);
+        }
+
+        await Promise.all(fileProcessingPromises);
+        await this.embeddingCache.flushToDb();
+
+        const endTime = Date.now();
+        const totalTimeMs = endTime - startTime;
+
+        return {
+            newEmbeddingsCount: totalNewEmbeddings,
+            reusedEmbeddingsCount: totalReusedEmbeddings,
+            deletedEmbeddingsCount: totalDeletedEmbeddings,
+            newEmbeddings,
+            reusedEmbeddings,
+            deletedEmbeddings,
+            aiSummary: '',
+            embeddingRequestCount,
+            embeddingRetryCount,
+            namingApiCallCount,
+            summarizationApiCallCount,
+            dbCallCount,
+            dbCallLatencyMs,
+            totalTimeMs,
+            totalTokensProcessed
         };
     }
 

@@ -130,28 +130,28 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
 
 **MODE 1: THINK (Analysis & Strategy Formulation)**
 * **Purpose:** To build a comprehensive "mental model" of the task, codebase, and historical context. This is the primary information-gathering phase.
-* **Methodology:** The agent MUST retrieve its specific instructions for THINK mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'THINK_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must analyze available information and context to build a strategy for the task.
 * **Allowed Tools:** `read_file`, `list_files`, `search_files`, `use_mcp_tool`, `ask_followup_question`.
 * **Forbidden Actions:** Writing/modifying files, system commands, generating final plans/code.
 * **Exit:** Proposes next logical step (clarifying question, `ENTER CODE_ANALYSIS MODE`, `ENTER INNOVATE MODE`, or `ENTER PLAN MODE`).
 
 **MODE 2: CODE_ANALYSIS (Deep Code Examination)**
 * **Purpose:** To perform focused, in-depth examination of specified codebase areas to understand structure, logic, dependencies, quality, potential issues. Provides data for reasoning and RAG-like processes.
-* **Methodology:** The agent MUST retrieve its specific instructions for CODE_ANALYSIS mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'CODE_ANALYSIS_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must analyze codebase areas and synthesize findings for further reasoning.
 * **Allowed Actions:** `read_file`, `list_files`, `search_files`, `use_mcp_tool`, `ask_followup_question`.
 * **Forbidden Actions:** Modifying files, executing commands, generating plans.
 * **Exit:** Presents the complete `analysis_report` and proposes a return to `THINK` mode to synthesize the findings.
 
 **MODE 3: INNOVATE (Creative Problem Solving & Novel Approaches)**
 * **Purpose:** To generate novel solutions, explore alternative approaches, and break through impasses encountered during `THINK` or `CODE_ANALYSIS`.
-* **Methodology:** The agent MUST retrieve its specific instructions for INNOVATE mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'INNOVATE_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must propose creative solutions and approaches for the problem at hand.
 * **Allowed Tools:** `read_file`, `list_files`, `search_files`, `use_mcp_tool`, `ask_followup_question`.
 * **Forbidden Actions:** Modifying files, executing commands, generating final plans/code.
 * **Exit:** Presents innovative solutions/approaches and proposes a return to `THINK` mode for integration into the overall strategy.
 
 **MODE 4: PLAN (Detailed Plan Construction)**
 * **Purpose:** To convert the strategy from `THINK` mode into a detailed, sequential, and machine-readable plan. This plan is the definitive blueprint for `EXECUTE` mode.
-* **Methodology:** The agent MUST retrieve its specific instructions for PLAN mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'PLAN_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must construct a detailed plan using available tools and AI assistance.
 * **Enhanced Planning Workflow with AI Assistance:**
     1. Create initial plan using `create_task_plan` (can use `refined_prompt_id` for AI-generated plans)
     2. Use `ai_analyze_plan` to get AI analysis of plan coherence and completeness
@@ -309,7 +309,7 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
 
 **MODE 5: EXECUTE (Controlled Action & Rigorous Logging)**
 * **Purpose:** To implement the approved plan precisely, one step at a time, with comprehensive logging of every action.
-* **Methodology:** The agent MUST retrieve its specific instructions for EXECUTE mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'EXECUTE_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must execute the plan step-by-step, logging all actions and monitoring progress.
 * **Progress Monitoring:** During execution, use `ai_summarize_task_progress` periodically to get AI-generated summaries of progress and identify blockers.
 * **Sample Tool Usage (Logging Sequence):**
     ```xml
@@ -438,7 +438,7 @@ THE AGENT **MUST NOT** ASK THE USER FOR SUMMARIES OF COMPLETED WORK, NOR ASK FOR
 
 **MODE 6: REVIEW (Validation & Learning Synthesis)**
 * **Purpose:** To validate the final outcome against the plan's acceptance criteria, report deviations, and synthesize lessons learned. This is the primary learning and self-improvement phase.
-* **Methodology:** The agent MUST retrieve its specific instructions for REVIEW mode using `get_mode` tool from `memory-mcp-server` with `agent_id: 'cline'` and `mode_name: 'REVIEW_MODE'`. The agent must then act as per the retrieved instructions.
+* **Methodology:** The agent must validate the outcome, synthesize lessons learned, and report deviations.
 * **Sample Tool Usage:**
     ```xml
     <use_mcp_tool>
@@ -739,7 +739,6 @@ graph TD
 **CATEGORY: MODE & AGENT BEHAVIOR MANAGEMENT**
 
 59. add_mode: Stores a mode-specific instruction for an AI agent.
-60. get_mode: Retrieves a mode-specific instruction.
 61. delete_mode: Deletes a mode-specific instruction.
 62. update_mode: Updates an existing mode-specific instruction.
 

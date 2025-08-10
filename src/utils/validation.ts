@@ -102,9 +102,15 @@ export const schemas = {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Agent ID to associate the embeddings with." },
-            path_to_embed: { type: 'string', description: "The absolute path to the file or directory to embed." },
+            path_to_embed: { type: 'string', minLength: 1, description: "The absolute path to a single file or directory to embed." },
+            paths_to_embed: {
+                type: 'array',
+                items: { type: 'string' },
+                minItems: 1,
+                description: "Array of absolute paths to the files to embed. Use this or 'path_to_embed', but not both."
+            },
             project_root_path: {type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings."},
-            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory, false if it's a single file."},
+            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory. Ignored if 'paths_to_embed' is used."},
             chunking_strategy: {
                 type: 'string',
                 enum: ['file', 'function', 'class', 'auto'],
@@ -126,8 +132,12 @@ export const schemas = {
             },
             storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." }
         },
-        required: ['agent_id', 'path_to_embed', 'project_root_path'],
+        required: ['agent_id', 'project_root_path'],
         additionalProperties: false,
+        oneOf: [
+            { required: ["path_to_embed"] },
+            { required: ["paths_to_embed"] }
+        ]
     },
     ingestFileCodeEntities: {
         type: 'object',
@@ -164,17 +174,6 @@ export const schemas = {
             source_attribution_id: { type: ['string', 'null'] },
         },
         required: ['agent_id', 'sender', 'message_content'],
-        additionalProperties: false,
-    },
-    modeInstruction: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            mode_name: { type: 'string', description: 'The name of the operational mode.' },
-            instruction_content: { type: 'string', description: 'The detailed instruction content for the specified mode.' },
-            instruction_version: { type: ['number', 'null'], description: 'Optional: Version of the instruction.' },
-        },
-        required: ['agent_id', 'mode_name', 'instruction_content'],
         additionalProperties: false,
     },
     contextInformation: {
@@ -534,9 +533,10 @@ export const schemas = {
                         items: { type: 'string' },
                         description: "Optional: Array of relative file paths to restrict context retrieval to.",
                         nullable: true
-                    }
+                    },
+                    // Moved here to be a valid schema property for context_options
+                    context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true }
                 },
-                context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true },
                 additionalProperties: false,
                 nullable: true
             }
@@ -765,6 +765,52 @@ export const schemas = {
             }
         },
         required: ['query']
+    },
+
+    // New: Retrieve full details for a single task by ID
+    getTaskDetails: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            task_id: { type: 'string', description: 'The ID of the task to retrieve.' }
+        },
+        required: ['agent_id', 'task_id'],
+        additionalProperties: false
+    },
+
+    // New: Update details for a specific task by ID (partial updates allowed)
+    updateTask: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            task_id: { type: 'string', description: 'The ID of the task to update.' },
+            title: { type: ['string', 'null'] },
+            description: { type: ['string', 'null'] },
+            purpose: { type: ['string', 'null'] },
+            status: { type: ['string', 'null'] },
+            estimated_effort_hours: { type: ['number', 'null'] },
+            files_involved: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            dependencies_task_ids: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            tools_required_list: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            },
+            inputs_summary: { type: ['string', 'null'] },
+            outputs_summary: { type: ['string', 'null'] },
+            success_criteria_text: { type: ['string', 'null'] },
+            assigned_to: { type: ['string', 'null'] },
+            verification_method: { type: ['string', 'null'] },
+            notes: { type: ['object', 'null'] },
+            completion_timestamp: { type: ['number', 'null'], description: 'Unix timestamp for completion (optional).' }
+        },
+        required: ['agent_id', 'task_id'],
+        additionalProperties: false
     }
 };
 

@@ -5,13 +5,14 @@ import path from 'path';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Import all language parsers
-import { TypeScriptParser } from '../parsers/TypeScriptParser.js';
+import { EnhancedTypeScriptParser } from '../parsers/EnhancedTypeScriptParser.js';
 import { PythonParser } from '../parsers/PythonParser.js';
 import { HTMLParser } from '../parsers/HTMLParser.js';
 import { CSSParser } from '../parsers/CSSParser.js';
-import { PHPParser } from '../parsers/PHPParser.js';
+import { EnhancedPHPParser } from '../parsers/EnhancedPHPParser.js';
 import { JSONLParser } from '../parsers/JSONLParser.js';
-import { MarkdownParser } from '../parsers/MarkdownParser.js'; // Import MarkdownParser
+import { MarkdownParser } from '../parsers/MarkdownParser.js';
+import { TailwindCSSParser } from '../parsers/TailwindCSSParser.js';
 import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
 
 // ... (ScannedItem, ExtractedImport interfaces remain unchanged)
@@ -35,7 +36,7 @@ export interface ExtractedImport {
 
 // MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown';
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown' | 'html_element' | 'html_id_selector' | 'html_class_selector' | 'html_attribute_selector' | 'html_text_content' | 'comment' | 'tailwind_utility_class';
     name?: string; // Made optional
     fullName?: string; // Made optional
     signature?: string; // e.g., "function process(data: string): number"
@@ -50,14 +51,67 @@ export interface ExtractedCodeEntity {
     isExported?: boolean;
     filePath: string; // Absolute path to the file
     containingDirectory: string; // NEW: Relative path of the containing directory
-    className?: string; // Redundant? parentClass is better. Keep for now for compatibility.
+    // The `className` property is redundant, as `parentClass` provides the same information with better context.
     metadata?: any;
-    calls?: Array<{ name: string; type: 'function' | 'method' | 'unknown'; }>; // New property
+    calls?: Array<{ name: string; type?: string; }>; // Updated to be more flexible
     accessibility?: 'public' | 'private' | 'protected' | null; // New property for method/property accessibility
 }
 
 
 export class CodebaseIntrospectionService {
+    private static readonly IGNORED_DIRECTORIES = new Set([
+        'node_modules', '.git', '.vscode', 'dist', 'build', '.DS_Store', 'coverage', 'target', 'out'
+    ]);
+
+    private static readonly NON_CODE_EXTENSIONS = new Set([
+        '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
+        '.gitmodules', '.prettierrc', '.eslintrc', '.vscode', '.idea', '.env', '.sample',
+        '.example', '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
+        '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
+        '.sql', '.csv', '.xml'
+    ]);
+
+    // Deny list for exact file and directory names (e.g., dot-files, common build/dependency folders)
+    // These are checked by basename, not extension, to handle cases like '.env' or 'node_modules'
+    private static readonly DENY_LIST_BASENAMES = new Set([
+        // Version control and IDE specific
+        '.git', '.svn', '.hg', '.bzr', '.vscode', '.idea', '.DS_Store',
+
+        // Node.js specific
+        'node_modules', 'package-lock.json', 'yarn.lock', '.npmignore',
+
+        // Environment files
+        '.env', '.env.local', '.env.development', '.env.production', '.env.test',
+
+        // Build artifacts and logs
+        'dist', 'build', 'out', 'coverage', 'log', 'logs', 'tmp', 'temp',
+
+        // Common ignore files (handled by .gitignore but good for explicit deny)
+        '.gitignore', '.gitattributes', '.editorconfig', '.prettierrc', '.eslintrc',
+
+        // Other common non-code files
+        'Thumbs.db', 'ehthumbs.db', 'desktop.ini', 'npm-debug.log', 'yarn-debug.log',
+        'yarn-error.log', '.project', '.classpath', '.settings', '.factorypath',
+        '.next', '.nuxt', '.parcel-cache', '.rollup.cache', '.webpack',
+        '.cache', '.expo', '.direnv', '.terraform', '.terraform.lock.hcl',
+        '.serverless', '.aws-sam', '.nyc_output', '.cpcache', '.pnp', '.pnpm-store',
+        '.npm', '.yarn', 'lerna.json', 'firebase.json', 'netlify.toml', 'vercel.json',
+        'aws-exports.js', 'amplify', 'serverless.yml', 'cloudformation.yaml',
+        'jest.config.js', 'babel.config.js', 'webpack.config.js', 'rollup.config.js',
+        'tailwind.config.js', 'postcss.config.js', 'tsconfig.json', 'jsconfig.json',
+        'tslint.json', 'nodemon.json', '.prettierignore', '.eslintignore', '.dockerignore',
+        'docker-compose.yml', 'Dockerfile', 'Vagrantfile', 'Makefile', 'CMakeLists.txt',
+        'Rakefile', 'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock',
+        'phpcs.xml', 'phpunit.xml', 'pyproject.toml', 'Pipfile', 'Pipfile.lock',
+        'requirements.txt', '.python-version', '.venv', 'venv', 'env',
+        '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+        'bin', 'obj', 'debug', 'release', '.vs', '.user', '.suo', '.bak', '.tmp',
+        '*.bak', '*.tmp', '*.swp', '*.swo', '*.swn', '*.exe', '*.dll', '*.obj', '*.lib',
+        '*.bin', '*.out', '*.log', '*.diff', '*.patch', '*.rej', '*.orig',
+        'package.json', 'package-lock.json', 'tsconfig.json', 'tslint.json', 'webpack.config.js'
+    ]);
+
     private memoryManager: MemoryManager;
     private geminiService: GeminiIntegrationService | null = null;
     private projectRootPath: string;
@@ -69,24 +123,21 @@ export class CodebaseIntrospectionService {
         this.projectRootPath = projectRootPath || process.cwd();
         // Register all language parsers
         this.languageParsers = new Map();
-        const parsers: Array<ILanguageParser | BaseLanguageParser> = [
-            new TypeScriptParser(this.projectRootPath),
+        [
+            new EnhancedTypeScriptParser(this.projectRootPath),
             new PythonParser(this.projectRootPath),
             new HTMLParser(this.projectRootPath),
             new CSSParser(this.projectRootPath),
-            new PHPParser(this.projectRootPath),
+            new EnhancedPHPParser(this.projectRootPath),
             new JSONLParser(this),
-            new MarkdownParser(this.projectRootPath) // Add MarkdownParser
-        ];
-        for (const parser of parsers) {
-            // Handle both BaseLanguageParser and ILanguageParser
-            const extensions = parser.getSupportedExtensions();
-            for (const ext of extensions) {
-                this.languageParsers.set(ext, parser);
-            }
-            const langName = parser.getLanguageName();
-            this.languageParsers.set(langName, parser);
-        }
+            new MarkdownParser(this.projectRootPath),
+            new TailwindCSSParser(this.projectRootPath)
+        ].forEach(parser => this.registerParser(parser));
+    }
+
+    private registerParser(parser: ILanguageParser | BaseLanguageParser): void {
+        parser.getSupportedExtensions().forEach(ext => this.languageParsers.set(ext, parser));
+        this.languageParsers.set(parser.getLanguageName(), parser);
     }
 
     public setGeminiService(geminiService: GeminiIntegrationService): void {
@@ -106,9 +157,7 @@ export class CodebaseIntrospectionService {
                 const fullPath = path.resolve(directoryPath, item.name);
                 const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
                 if (item.isDirectory()) {
-                    if ([
-                        'node_modules', '.git', '.vscode', 'dist', 'build', '.DS_Store', 'coverage', 'target', 'out'
-                    ].includes(item.name) || item.name.startsWith('.')) {
+                    if (CodebaseIntrospectionService.IGNORED_DIRECTORIES.has(item.name) || item.name.startsWith('.')) {
                         continue;
                     }
                     const stats = await fs.stat(fullPath);
@@ -146,24 +195,20 @@ export class CodebaseIntrospectionService {
     ): Promise<string | undefined> {
         const extension = path.extname(fileName).toLowerCase();
 
-        // Explicitly skip known non-code files or files that are handled by specific parsers
-        // but should not be passed to generic code parsers like TypeScriptParser if misidentified.
-        const nonCodeOrNonParsableExtensions = new Set([
-            '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
-            '.gitmodules', '.prettierrc', '.eslintrc', '.vscode', '.idea', '.env', '.sample',
-            '.example', '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
-            '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
-            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
-            '.sql', '.csv', '.xml'
-        ]);
-
         // First, check if a specific parser is registered for the extension
         if (this.languageParsers.has(extension)) {
             return this.languageParsers.get(extension)!.getLanguageName();
         }
 
-        // If no specific parser, check if it's a known non-code file
-        if (nonCodeOrNonParsableExtensions.has(extension) || fileName.startsWith('.')) {
+        // If no specific parser, check our denylist of non-code extensions
+        const basename = path.basename(filePath);
+        // Exclude based on exact basename match (for dot-files, node_modules, etc.)
+        if (CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename) ||
+            CodebaseIntrospectionService.NON_CODE_EXTENSIONS.has(extension) ||
+            // General check for dot-files/folders where path.extname might not work (e.g., .vscode, .git)
+            // This is a fallback and might be redundant with DENY_LIST_BASENAMES for some cases, but safer.
+            basename.startsWith('.') && basename.length > 1 && !CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename)
+        ) {
             return undefined; // Do not attempt to detect language for these
         }
 
@@ -218,25 +263,42 @@ Language:`;
         return undefined;
     }
 
+    private async getParserAndCode(
+        agentId: string,
+        filePath: string,
+        fileLanguage?: string
+    ): Promise<{ parser: ILanguageParser, code: string } | null> {
+        const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
+        const ext = path.extname(filePath).toLowerCase();
+        const parser = this.languageParsers.get(ext) || (lang ? this.languageParsers.get(lang) : undefined);
+
+        if (!parser) {
+            // Only warn if a language was detected but no parser was found.
+            if (lang) {
+                console.warn(`Parsing for language '${lang}' in ${filePath} is not supported by any registered parser. Skipping.`);
+            }
+            return null;
+        }
+
+        try {
+            const code = await fs.readFile(filePath, 'utf-8');
+            return { parser, code };
+        } catch (readError) {
+            console.error(`Error reading file ${filePath} for parsing:`, readError);
+            return null;
+        }
+    }
+
     public async parseFileForImports(
         agentId: string,
         filePath: string,
         fileLanguage?: string
     ): Promise<ExtractedImport[]> {
-        const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
-        const ext = path.extname(filePath).toLowerCase();
-        const parser = this.languageParsers.get(ext) || (lang ? this.languageParsers.get(lang) : undefined);
-        if (!parser) {
-            console.warn(`Import parsing for language '${lang}' in ${filePath} is not supported by any registered parser. Skipping.`);
+        const parseInfo = await this.getParserAndCode(agentId, filePath, fileLanguage);
+        if (!parseInfo) {
             return [];
         }
-        let code: string;
-        try {
-            code = await fs.readFile(filePath, 'utf-8');
-        } catch (readError) {
-            console.error(`Error reading file ${filePath} for import parsing:`, readError);
-            return [];
-        }
+        const { parser, code } = parseInfo;
         return parser.parseImports(filePath, code);
     }
 
@@ -245,20 +307,11 @@ Language:`;
         filePath: string,
         fileLanguage?: string
     ): Promise<ExtractedCodeEntity[]> {
-        const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
-        const ext = path.extname(filePath).toLowerCase();
-        const parser = this.languageParsers.get(ext) || (lang ? this.languageParsers.get(lang) : undefined);
-        if (!parser) {
-            console.warn(`Code entity parsing for language '${lang}' in ${filePath} is not supported by any registered parser. Skipping.`);
+        const parseInfo = await this.getParserAndCode(agentId, filePath, fileLanguage);
+        if (!parseInfo) {
             return [];
         }
-        let code: string;
-        try {
-            code = await fs.readFile(filePath, 'utf-8');
-        } catch (readError) {
-            console.error(`Error reading file ${filePath} for entity parsing:`, readError);
-            return [];
-        }
+        const { parser, code } = parseInfo;
         return parser.parseCodeEntities(filePath, code, this.projectRootPath);
     }
 }
