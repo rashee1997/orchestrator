@@ -1,4 +1,3 @@
-// src/tools/knowledge_graph_tools.ts
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
@@ -7,25 +6,39 @@ import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCo
 import path from 'path';
 import fs from 'fs/promises';
 
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Creates a canonical absolute path key by normalizing path separators and converting to lowercase.
+ * @param absPath - The absolute path to normalize
+ * @returns A canonical path key
+ */
 export function createCanonicalAbsPathKey(absPath: string): string {
     // Normalize to POSIX separators first, then toLowerCase.
     return absPath.replace(/\\/g, '/').toLowerCase();
 }
 
-// Helper to find the actual file path on disk, considering common extensions
+/**
+ * Finds the actual file path on disk, considering common extensions.
+ * @param basePath - The base path to check
+ * @returns The actual file path if found, null otherwise
+ */
 async function findActualFilePath(basePath: string): Promise<string | null> {
     // First, try the basePath as is (could have an explicit extension or be extensionless)
     try {
         await fs.access(basePath);
         const stats = await fs.stat(basePath);
         if (stats.isFile()) {
-           return basePath.replace(/\\/g, '/');
+            return basePath.replace(/\\/g, '/');
         }
-    } catch (e) { /* ignore if exact path doesn't exist or is not a file */ }
+    } catch (e) {
+        /* ignore if exact path doesn't exist or is not a file */
+    }
 
     // If basePath had a common JS/TS extension, strip it to get the base for probing other extensions
     const pathWithoutKnownJsOrTsExtensions = basePath.replace(/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i, '');
-
     const possibleExtensions = [
         '.ts', '.tsx', '.mts', '.cts', // Prioritize TypeScript family
         '.js', '.jsx', '.mjs', '.cjs', // Then JavaScript family
@@ -38,21 +51,28 @@ async function findActualFilePath(basePath: string): Promise<string | null> {
         try {
             await fs.access(fullPath);
             const stats = await fs.stat(fullPath);
-            if (stats.isFile()){
-                 return fullPath.replace(/\\/g, '/');
+            if (stats.isFile()) {
+                return fullPath.replace(/\\/g, '/');
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+            /* ignore */
+        }
     }
+
     return null;
 }
 
-// Helper function to compare observation arrays
+/**
+ * Compares observation arrays to determine if they have changed.
+ * @param oldObs - The old observations array
+ * @param newObs - The new observations array
+ * @returns True if observations have changed, false otherwise
+ */
 function haveObservationsChanged(oldObs: string[] | undefined, newObs: string[]): boolean {
     if (!oldObs && newObs.length > 0) return true;
     if (oldObs && newObs.length === 0 && oldObs.length > 0) return true;
     if (!oldObs && newObs.length === 0) return false;
     if (!oldObs) return false;
-
     if (oldObs.length !== newObs.length) return true;
 
     const oldSet = new Set(oldObs);
@@ -63,12 +83,24 @@ function haveObservationsChanged(oldObs: string[] | undefined, newObs: string[])
     for (const obs of newObs) {
         if (!oldSet.has(obs)) return true;
     }
+
     for (const obs of oldObs) {
         if (!newSet.has(obs)) return true;
     }
+
     return false;
 }
 
+/**
+ * Type guard to check if an entity has required name and entityType as strings
+ */
+function isValidEntity(entity: any): entity is { name: string; entityType: string; observations?: string[] } {
+    return entity && typeof entity.name === 'string' && typeof entity.entityType === 'string';
+}
+
+// ============================================================================
+// Tool Definitions
+// ============================================================================
 
 export const knowledgeGraphToolDefinitions = [
     {
@@ -289,13 +321,16 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
     },
 ];
 
-export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
-    const codebaseIntrospectionService = new CodebaseIntrospectionService(memoryManager, memoryManager.getGeminiIntegrationService(), memoryManager.projectRootPath);
+// ============================================================================
+// Tool Handlers
+// ============================================================================
 
-    // Type guard to check if an entity has required name and entityType as strings
-    function isValidEntity(entity: any): entity is { name: string; entityType: string; observations?: string[] } {
-        return entity && typeof entity.name === 'string' && typeof entity.entityType === 'string';
-    }
+export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
+    const codebaseIntrospectionService = new CodebaseIntrospectionService(
+        memoryManager,
+        memoryManager.getGeminiIntegrationService(),
+        memoryManager.projectRootPath
+    );
 
     return {
         'ingest_codebase_structure': async (args: any, agent_id_from_server: string) => {
@@ -310,163 +345,81 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             }
 
             const { directory_path, project_root_path, parse_imports } = args;
-            // Resolve paths once and use consistently. path.resolve makes them absolute.
-            const resolvedProjectRootPath = path.resolve(project_root_path || directory_path);
-            const resolvedAbsoluteDirectoryPath = path.resolve(directory_path);
-
-            // Create canonical versions for comparison and map keys
-            const canonicalEffectiveRootPath = createCanonicalAbsPathKey(resolvedProjectRootPath);
-            const canonicalAbsoluteDirectoryPath = createCanonicalAbsPathKey(resolvedAbsoluteDirectoryPath);
-
-
-            if (!canonicalAbsoluteDirectoryPath.startsWith(canonicalEffectiveRootPath)) {
-                 throw new McpError(ErrorCode.InvalidParams, `Directory path (${resolvedAbsoluteDirectoryPath}) must be within the project root path (${resolvedProjectRootPath}).`);
-            }
-
-            let nodesCreatedCount = 0;
-            let nodesUpdatedCount = 0;
-            let relationsCreatedCount = 0;
-
-            // Maps to store node names by their canonical absolute paths for efficient lookup
-            const createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string } = {};
-            // Maps canonical absolute paths to their *relative* KG node names
-            const absolutePathToRelativeNameMap: { [canonicalAbsPathKey: string]: string } = {};
-
-            const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
-            const observationsToUpdateBatch: Array<{ entityName: string; contents: string[] }> = [];
-            // Store relation objects as JSON strings to ensure uniqueness correctly handles complex node names
-            const relationsToCreateSet = new Set<string>();
-            const moduleEntitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
-            const moduleNamesToProcessOrCreate = new Set<string>();
-
 
             try {
+                // Resolve paths once and use consistently
+                const resolvedProjectRootPath = path.resolve(project_root_path || directory_path);
+                const resolvedAbsoluteDirectoryPath = path.resolve(directory_path);
+
+                // Create canonical versions for comparison and map keys
+                const canonicalEffectiveRootPath = createCanonicalAbsPathKey(resolvedProjectRootPath);
+                const canonicalAbsoluteDirectoryPath = createCanonicalAbsPathKey(resolvedAbsoluteDirectoryPath);
+
+                if (!canonicalAbsoluteDirectoryPath.startsWith(canonicalEffectiveRootPath)) {
+                    throw new McpError(ErrorCode.InvalidParams, `Directory path (${resolvedAbsoluteDirectoryPath}) must be within the project root path (${resolvedProjectRootPath}).`);
+                }
+
+                // Initialize counters and collections
+                let nodesCreatedCount = 0;
+                let nodesUpdatedCount = 0;
+                let relationsCreatedCount = 0;
+
+                // Maps to store node names by their canonical absolute paths for efficient lookup
+                const createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string } = {};
+
+                // Maps canonical absolute paths to their *relative* KG node names
+                const absolutePathToRelativeNameMap: { [canonicalAbsPathKey: string]: string } = {};
+
+                const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+                const observationsToUpdateBatch: Array<{ entityName: string; contents: string[] }> = [];
+
+                // Store relation objects as JSON strings to ensure uniqueness correctly handles complex node names
+                const relationsToCreateSet = new Set<string>();
+
+                const moduleEntitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+                const moduleNamesToProcessOrCreate = new Set<string>();
+
                 console.log(`[ingest_codebase_structure] Scanning directory: ${resolvedAbsoluteDirectoryPath} relative to root: ${resolvedProjectRootPath}`);
+
                 // Pass resolvedProjectRootPath to scanDirectoryRecursive so it calculates relative paths correctly from the true project root.
-                const scannedItems: ScannedItem[] = await codebaseIntrospectionService.scanDirectoryRecursive(agent_id, resolvedAbsoluteDirectoryPath, resolvedProjectRootPath);
+                const scannedItems: ScannedItem[] = await codebaseIntrospectionService.scanDirectoryRecursive(
+                    agent_id,
+                    resolvedAbsoluteDirectoryPath,
+                    resolvedProjectRootPath
+                );
+
                 console.log(`[ingest_codebase_structure] Scanned ${scannedItems.length} items.`);
 
                 // Handle the root directory itself if it's part of the scan scope
                 if (resolvedAbsoluteDirectoryPath === resolvedProjectRootPath) {
-                    const rootNodeName = "."; // KG node name for the root
-                    const canonicalRootPathKey = createCanonicalAbsPathKey(resolvedProjectRootPath);
-                    try {
-                        const rootStats = await fs.stat(resolvedProjectRootPath);
-                        const rootObservations = [
-                            `absolute_path: ${canonicalRootPathKey}`,
-                            `type: directory`,
-                            `size_bytes: ${rootStats.size.toString()}`,
-                            `created_at: ${rootStats.birthtime.toISOString()}`,
-                            `modified_at: ${rootStats.mtime.toISOString()}`,
-                        ];
-                        const existingRootNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [rootNodeName]);
-                        const existingRootNode = existingRootNodes.find((n: any) => n.name === rootNodeName && n.entityType === 'directory');
-
-                        if (existingRootNode) {
-                            createdOrExistingNodeNamesByCanonicalAbsPath[canonicalRootPathKey] = rootNodeName;
-                            absolutePathToRelativeNameMap[canonicalRootPathKey] = rootNodeName;
-                            if (haveObservationsChanged(existingRootNode.observations, rootObservations)) {
-                                observationsToUpdateBatch.push({ entityName: rootNodeName, contents: rootObservations });
-                            }
-                        } else {
-                            entitiesToCreateBatch.push({ name: rootNodeName, entityType: 'directory', observations: rootObservations });
-                            createdOrExistingNodeNamesByCanonicalAbsPath[canonicalRootPathKey] = rootNodeName;
-                            absolutePathToRelativeNameMap[canonicalRootPathKey] = rootNodeName;
-                        }
-                    } catch (statError: any) {
-                        console.warn(`[ingest_codebase_structure] Could not stat project root path ${resolvedProjectRootPath}: ${statError.message}`);
-                    }
+                    await processRootDirectory(
+                        resolvedProjectRootPath,
+                        agent_id,
+                        memoryManager,
+                        createdOrExistingNodeNamesByCanonicalAbsPath,
+                        absolutePathToRelativeNameMap,
+                        entitiesToCreateBatch,
+                        observationsToUpdateBatch
+                    );
                 }
 
                 // Process scanned files and directories
                 for (const item of scannedItems) {
-                    // item.name is already relative (to resolvedProjectRootPath) and uses forward slashes from scanDirectoryRecursive
-                    const entityName = item.name === "" ? "." : item.name;
-                    const canonicalItemAbsPathKey = createCanonicalAbsPathKey(item.path); // item.path is absolute
-                    const currentObservations = [
-                        `absolute_path: ${canonicalItemAbsPathKey}`,
-                        `type: ${item.type}`,
-                        `size_bytes: ${item.stats.size.toString()}`,
-                        `created_at: ${item.stats.birthtime.toISOString()}`,
-                        `modified_at: ${item.stats.mtime.toISOString()}`,
-                    ];
-                    if (item.type === 'file' && item.language) {
-                        currentObservations.push(`language: ${item.language}`);
-                    }
-
-                    const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
-                    const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === item.type);
-
-                    if (existingNode) {
-                        createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey] = existingNode.name;
-                        absolutePathToRelativeNameMap[canonicalItemAbsPathKey] = existingNode.name;
-                        if (item.language === 'typescript' && item.path.endsWith('.ts')) {
-                            const jsPathKey = createCanonicalAbsPathKey(item.path.slice(0, -3) + '.js');
-                            absolutePathToRelativeNameMap[jsPathKey] = existingNode.name;
-                        }
-                        if (haveObservationsChanged(existingNode.observations, currentObservations)) {
-                            const newObsToAdd = currentObservations.filter(obs => !(existingNode.observations || []).includes(obs));
-                            if (newObsToAdd.length > 0) {
-                                observationsToUpdateBatch.push({ entityName: existingNode.name, contents: newObsToAdd });
-                            }
-                        }
-                    } else {
-                        entitiesToCreateBatch.push({ name: entityName, entityType: item.type, observations: currentObservations });
-                        createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey] = entityName;
-                        absolutePathToRelativeNameMap[canonicalItemAbsPathKey] = entityName;
-                        if (item.language === 'typescript' && item.path.endsWith('.ts')) {
-                            const jsPathKey = createCanonicalAbsPathKey(item.path.slice(0, -3) + '.js');
-                            absolutePathToRelativeNameMap[jsPathKey] = entityName;
-                        }
-                    }
-
-                    // Create 'contains_item' relation: ParentDir -> CurrentItem
-                    const parentDirAbsPath = path.dirname(item.path); // Absolute path of parent
-                    const canonicalParentDirAbsPathKey = createCanonicalAbsPathKey(parentDirAbsPath);
-
-                    // Ensure parent is within effective root and not the item itself
-                    if (canonicalParentDirAbsPathKey !== canonicalItemAbsPathKey && canonicalParentDirAbsPathKey.startsWith(canonicalEffectiveRootPath)) {
-                        let parentDirNodeName = createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey];
-
-                        if (!parentDirNodeName) {
-                             // Calculate relative path for the parent directory from the resolvedProjectRootPath
-                             let relativeParentPath = path.relative(resolvedProjectRootPath, parentDirAbsPath).replace(/\\/g, '/');
-                             parentDirNodeName = (relativeParentPath === "" || relativeParentPath === ".") ? "." : relativeParentPath;
-
-                             // Check if this parent is already in the batch or the maps
-                             // Use its canonical absolute path as the reliable key for this check.
-                             if (!createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] &&
-                                 !entitiesToCreateBatch.find(e => e.name === parentDirNodeName && e.entityType === 'directory')) {
-                                console.warn(`[ingest_codebase_structure] Parent directory node for '${parentDirNodeName}' (from path '${parentDirAbsPath}') not yet processed. Creating it.`);
-                                const parentStats = await fs.stat(parentDirAbsPath).catch(() => null);
-                                const parentObservations = parentStats ? [
-                                    `absolute_path: ${canonicalParentDirAbsPathKey}`,
-                                    `type: directory`,
-                                    `size_bytes: ${parentStats.size.toString()}`,
-                                    `created_at: ${parentStats.birthtime.toISOString()}`,
-                                    `modified_at: ${parentStats.mtime.toISOString()}`,
-                                ] : [`absolute_path: ${canonicalParentDirAbsPathKey}`, `type: directory`];
-                                entitiesToCreateBatch.push({ name: parentDirNodeName, entityType: 'directory', observations: parentObservations });
-                                // Immediately update maps for subsequent lookups within this run
-                                createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] = parentDirNodeName;
-                                absolutePathToRelativeNameMap[canonicalParentDirAbsPathKey] = parentDirNodeName;
-                             } else if (!createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] &&
-                                        entitiesToCreateBatch.find(e=> e.name === parentDirNodeName && e.entityType === 'directory')) {
-                                // It's already in the batch to be created, ensure maps are updated if they weren't already
-                                createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] = parentDirNodeName;
-                                absolutePathToRelativeNameMap[canonicalParentDirAbsPathKey] = parentDirNodeName;
-                             }
-                        }
-                        // `entityName` is the relative path of the current item
-                        // Use JSON stringify for relation keys to handle special characters in names
-                        const relationKeyObject = { from: parentDirNodeName, to: entityName, type: 'contains_item' };
-                        const relationString = JSON.stringify(relationKeyObject);
-                        if (!relationsToCreateSet.has(relationString)) {
-                            relationsToCreateSet.add(relationString);
-                        }
-                    }
+                    await processScannedItem(
+                        item,
+                        resolvedProjectRootPath,
+                        canonicalEffectiveRootPath,
+                        agent_id,
+                        memoryManager,
+                        createdOrExistingNodeNamesByCanonicalAbsPath,
+                        absolutePathToRelativeNameMap,
+                        entitiesToCreateBatch,
+                        observationsToUpdateBatch,
+                        relationsToCreateSet
+                    );
                 }
 
+                // Create entities and update observations
                 if (entitiesToCreateBatch.length > 0) {
                     console.log(`[ingest_codebase_structure] Batch creating ${entitiesToCreateBatch.length} file/directory nodes.`);
                     const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
@@ -479,73 +432,28 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     nodesUpdatedCount += Array.isArray(updateResult) ? updateResult.length : 0;
                 }
 
+                // Parse imports if requested
                 if (parse_imports) {
                     console.log(`[ingest_codebase_structure] Parsing imports...`);
                     for (const item of scannedItems) {
                         if (item.type === 'file' && item.language && ['typescript', 'javascript', 'python', 'php'].includes(item.language)) {
-                            const canonicalItemAbsPathKey = createCanonicalAbsPathKey(item.path);
-                            const fileNodeName = createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey]; // Use map for consistency
-                            if (!fileNodeName) {
-                                console.warn(`[ingest_codebase_structure] Could not find KG node name for file path: ${item.path} (key: ${canonicalItemAbsPathKey}) during import parsing. This might happen if the file itself was not processed into the map correctly.`);
-                                continue;
-                            }
-                            const extractedImports: ExtractedImport[] = await codebaseIntrospectionService.parseFileForImports(agent_id, item.path, item.language);
-                            for (const imp of extractedImports) {
-                                let toNodeName = imp.targetPath;
-                                let toNodeType = imp.type;
-
-                                if (imp.type === 'file') {
-                                    let resolvedAbsoluteImportPath = path.isAbsolute(imp.targetPath)
-                                        ? imp.targetPath
-                                        : path.resolve(path.dirname(item.path), imp.targetPath);
-                                    resolvedAbsoluteImportPath = resolvedAbsoluteImportPath.replace(/\\/g, '/');
-
-                                    let actualFilePathOnDisk = await findActualFilePath(resolvedAbsoluteImportPath);
-                                    let canonicalActualFilePathKey = actualFilePathOnDisk ? createCanonicalAbsPathKey(actualFilePathOnDisk) : null;
-
-                                    if (!actualFilePathOnDisk && resolvedAbsoluteImportPath.endsWith('.js')) {
-                                        const tsEquivalentBasePath = resolvedAbsoluteImportPath.slice(0, -3);
-                                        const foundTsFile = await findActualFilePath(tsEquivalentBasePath);
-                                        if (foundTsFile) {
-                                            actualFilePathOnDisk = foundTsFile;
-                                            canonicalActualFilePathKey = createCanonicalAbsPathKey(actualFilePathOnDisk);
-                                        }
-                                    }
-
-                                    if (canonicalActualFilePathKey && absolutePathToRelativeNameMap[canonicalActualFilePathKey]) {
-                                        toNodeName = absolutePathToRelativeNameMap[canonicalActualFilePathKey];
-                                    } else if (actualFilePathOnDisk && canonicalActualFilePathKey && canonicalActualFilePathKey.startsWith(canonicalEffectiveRootPath)) {
-                                        const relativeImportPath = path.relative(resolvedProjectRootPath, actualFilePathOnDisk).replace(/\\/g, '/');
-                                        toNodeName = (relativeImportPath === "" || relativeImportPath === ".") ? "." : relativeImportPath;
-                                        if (canonicalActualFilePathKey && !absolutePathToRelativeNameMap[canonicalActualFilePathKey]) {
-                                           // console.warn(`[ingest_codebase_structure] Import target ${actualFilePathOnDisk} resolved to relative path '${toNodeName}', but was not in pre-scan maps. Using relative path as node name.`);
-                                        }
-                                    } else {
-                                        console.warn(`[ingest_codebase_structure] Import target ${imp.targetPath} from ${fileNodeName} (resolved abs: ${resolvedAbsoluteImportPath}, found on disk: ${actualFilePathOnDisk || 'N/A'}) is outside project or not found in scan map. Treating as external module: ${imp.targetPath}`);
-                                        toNodeName = imp.targetPath;
-                                        toNodeType = 'module';
-                                    }
-                                }
-
-
-                                if (toNodeType === 'external_library' || toNodeType === 'module') {
-                                    if (!moduleNamesToProcessOrCreate.has(toNodeName)) {
-                                        moduleNamesToProcessOrCreate.add(toNodeName);
-                                        const existingModuleNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [toNodeName]);
-                                        const existingModuleNode = existingModuleNodes.find((n: any) => n.name === toNodeName && n.entityType === 'module');
-                                        if (!existingModuleNode) {
-                                            moduleEntitiesToCreateBatch.push({ name: toNodeName, entityType: 'module', observations: [`type: ${toNodeType}`] });
-                                        }
-                                    }
-                                }
-                                const relationKeyObjectImp = { from: fileNodeName, to: toNodeName, type: imp.type === 'file' ? 'imports_file' : 'imports_module' };
-                                const relationStringImp = JSON.stringify(relationKeyObjectImp);
-                                if (!relationsToCreateSet.has(relationStringImp)) {
-                                    relationsToCreateSet.add(relationStringImp);
-                                }
-                            }
+                            await processFileImports(
+                                item,
+                                agent_id,
+                                resolvedProjectRootPath,
+                                canonicalEffectiveRootPath,
+                                createdOrExistingNodeNamesByCanonicalAbsPath,
+                                absolutePathToRelativeNameMap,
+                                relationsToCreateSet,
+                                moduleNamesToProcessOrCreate,
+                                moduleEntitiesToCreateBatch,
+                                memoryManager,
+                                codebaseIntrospectionService
+                            );
                         }
                     }
+
+                    // Create module entities
                     if (moduleEntitiesToCreateBatch.length > 0) {
                         console.log(`[ingest_codebase_structure] Batch creating ${moduleEntitiesToCreateBatch.length} module nodes.`);
                         const moduleCreationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, moduleEntitiesToCreateBatch);
@@ -553,12 +461,12 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     }
                 }
 
+                // Create relations
                 const finalRelationsToCreate: Array<{ from: string; to: string; relationType: string }> = [];
                 let relationsSkippedCount = 0;
 
                 for (const relStr of relationsToCreateSet) {
                     const relObj = JSON.parse(relStr) as { from: string; to: string; type: string };
-
                     const existingRelation = await memoryManager.knowledgeGraphManager.getExistingRelation(agent_id, relObj.from, relObj.to, relObj.type);
                     if (existingRelation) {
                         relationsSkippedCount++;
@@ -572,24 +480,29 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, finalRelationsToCreate);
                     relationsCreatedCount += Array.isArray(relationResult) ? relationResult.length : 0;
                 }
+
                 if (relationsSkippedCount > 0) {
                     console.log(`[ingest_codebase_structure] Skipped ${relationsSkippedCount} existing relations as duplicates.`);
                 }
 
                 return {
                     content: [{
-                        type: 'text', text: formatSimpleMessage(
-                            `Codebase structure ingestion for directory "${directory_path}" complete.\n- Nodes Newly Created: ${nodesCreatedCount}\n- Nodes Updated (Observations): ${nodesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}`,
+                        type: 'text',
+                        text: formatSimpleMessage(
+                            `Codebase structure ingestion for directory "${directory_path}" complete.
+- Nodes Newly Created: ${nodesCreatedCount}
+- Nodes Updated (Observations): ${nodesUpdatedCount}
+- Relations Created: ${relationsCreatedCount}`,
                             "Codebase Ingestion Report"
                         )
                     }]
                 };
-
             } catch (error: any) {
                 console.error(`[ingest_codebase_structure] Error during codebase structure ingestion for agent ${agent_id}, path ${directory_path}:`, error);
                 throw new McpError(ErrorCode.InternalError, `Codebase ingestion failed: ${error.message}`);
             }
         },
+
         'ingest_file_code_entities': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
@@ -602,21 +515,23 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             }
 
             const { file_path, project_root_path, language: lang_arg } = args;
-            const effectiveRootPath = path.resolve(project_root_path || path.dirname(file_path));
-            const absoluteFilePath = path.resolve(file_path);
-
-            if (!createCanonicalAbsPathKey(absoluteFilePath).startsWith(createCanonicalAbsPathKey(effectiveRootPath))) {
-                 throw new McpError(ErrorCode.InvalidParams, `File path (${absoluteFilePath}) must be within the project root path (${effectiveRootPath}).`);
-            }
-
-            let entitiesCreatedCount = 0;
-            let entitiesUpdatedCount = 0;
-            let relationsCreatedCount = 0;
 
             try {
+                const effectiveRootPath = path.resolve(project_root_path || path.dirname(file_path));
+                const absoluteFilePath = path.resolve(file_path);
+
+                if (!createCanonicalAbsPathKey(absoluteFilePath).startsWith(createCanonicalAbsPathKey(effectiveRootPath))) {
+                    throw new McpError(ErrorCode.InvalidParams, `File path (${absoluteFilePath}) must be within the project root path (${effectiveRootPath}).`);
+                }
+
+                let entitiesCreatedCount = 0;
+                let entitiesUpdatedCount = 0;
+                let relationsCreatedCount = 0;
+
                 const fileNodeRelativeName = path.relative(effectiveRootPath, absoluteFilePath).replace(/\\/g, '/');
                 let fileNodeInKG: any;
 
+                // Get or create file node
                 const existingFileNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
                 fileNodeInKG = existingFileNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
 
@@ -641,103 +556,62 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     const newNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
                     fileNodeInKG = newNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
                 }
+
                 if (!fileNodeInKG) {
-                     throw new McpError(ErrorCode.InternalError, `Failed to create or find file node for ${fileNodeRelativeName}.`);
+                    throw new McpError(ErrorCode.InternalError, `Failed to create or find file node for ${fileNodeRelativeName}.`);
                 }
 
-                const langForParsing = lang_arg || fileNodeInKG.observations?.find((o:string) => o.startsWith("language:"))?.split(": ")[1] || await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
-
-                const extractedEntities: ExtractedCodeEntity[] = await codebaseIntrospectionService.parseFileForCodeEntities(agent_id, absoluteFilePath, langForParsing);
+                // Extract code entities
+                const langForParsing = lang_arg || fileNodeInKG.observations?.find((o: string) => o.startsWith("language:"))?.split(": ")[1] ||
+                    await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
+                const extractedEntities: ExtractedCodeEntity[] = await codebaseIntrospectionService.parseFileForCodeEntities(
+                    agent_id,
+                    absoluteFilePath,
+                    langForParsing
+                );
 
                 if (extractedEntities.length === 0) {
-                    return { content: [{ type: 'text', text: formatSimpleMessage(`No code entities found or extracted from file: ${file_path}`, "Code Entity Ingestion") }] };
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: formatSimpleMessage(`No code entities found or extracted from file: ${file_path}`, "Code Entity Ingestion")
+                        }]
+                    };
                 }
 
+                // Process extracted entities
                 const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
                 const observationsToUpdateBatchKG: Array<{ entityName: string; contents: string[] }> = [];
                 const relationsToCreateSetKG = new Set<string>();
 
                 for (const entity of extractedEntities) {
-                    const currentObservations = [
-                        `type: ${entity.type}`,
-                        `signature: ${entity.signature || 'N/A'}`,
-                        `lines: ${entity.startLine}-${entity.endLine}`,
-                        `exported: ${entity.isExported ? 'yes' : 'no'}`,
-                        `defined_in_file_path: ${fileNodeRelativeName}`
-                    ];
-                    if (entity.docstring) currentObservations.push(`docstring: ${entity.docstring.substring(0, 200)}${entity.docstring.length > 200 ? '...' : ''}`);
-                    if (entity.parameters && entity.parameters.length > 0) currentObservations.push(`parameters: ${JSON.stringify(entity.parameters)}`);
-                    if (entity.returnType) currentObservations.push(`return_type: ${entity.returnType}`);
-                    if (entity.parentClass && entity.filePath) currentObservations.push(`parent_class_full_name: ${entity.filePath}::${entity.parentClass}`);
-                    if (entity.implementedInterfaces && entity.implementedInterfaces.length > 0) currentObservations.push(`implements: ${entity.implementedInterfaces.join(', ')}`);
-                    if (entity.calls && entity.calls.length > 0) {
-                        currentObservations.push(`calls: ${JSON.stringify(entity.calls.map(c => c.name))}`);
-                    }
-
-                    const existingEntities = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.fullName || '']);
-                    const existingEntityNode = existingEntities.find((n:any) => n.name === entity.fullName && n.entityType === entity.type);
-
-                    if (existingEntityNode) {
-                        if (haveObservationsChanged(existingEntityNode.observations, currentObservations)) {
-                             const newObsToAdd = currentObservations.filter(obs => !(existingEntityNode.observations || []).includes(obs));
-                             if (newObsToAdd.length > 0) {
-                                observationsToUpdateBatchKG.push({ entityName: existingEntityNode.name, contents: newObsToAdd });
-                             }
-                        }
-                    } else {
-                        entitiesToCreateBatch.push({
-                            name: entity.fullName || '',
-                            entityType: entity.type as string,
-                            observations: currentObservations,
-                        });
-                    }
-
-                    if (entity.fullName && fileNodeRelativeName) {
-                        const defRelKey = { from: entity.fullName, to: fileNodeRelativeName, type: 'defined_in_file'};
-                        relationsToCreateSetKG.add(JSON.stringify(defRelKey));
-                    }
-
-
-                    if (entity.type === 'method' && entity.parentClass && entity.fullName && fileNodeRelativeName) {
-                        const classFullName = `${fileNodeRelativeName}::${entity.parentClass}`;
-                        const methodRelKey = {from: classFullName, to: entity.fullName, type: 'has_method'};
-                        relationsToCreateSetKG.add(JSON.stringify(methodRelKey));
-                    }
-
-                    // Infer 'calls_function' or 'calls_method' relations
-                    if (entity.calls && entity.calls.length > 0 && entity.fullName && fileNodeRelativeName) {
-                        for (const call of entity.calls) {
-                            // For now, assume called entities are within the same file or are global functions/methods.
-                            // A more advanced approach would involve resolving the full path of the called entity.
-                            const calledEntityFullName = `${fileNodeRelativeName}::${call.name}`;
-                            const callRelKey = { from: entity.fullName, to: calledEntityFullName, type: `calls_${call.type}` };
-                            relationsToCreateSetKG.add(JSON.stringify(callRelKey));
-                        }
-                    }
-
-                    // Infer 'implements_interface' relations
-                    if (entity.type === 'class' && entity.implementedInterfaces && entity.implementedInterfaces.length > 0 && entity.fullName && fileNodeRelativeName) {
-                        for (const implementedInterface of entity.implementedInterfaces) {
-                            const interfaceFullName = `${fileNodeRelativeName}::${implementedInterface}`; // Assuming interface is in the same file
-                            const implementsRelKey = { from: entity.fullName, to: interfaceFullName, type: 'implements_interface' };
-                            relationsToCreateSetKG.add(JSON.stringify(implementsRelKey));
-                        }
-                    }
+                    await processExtractedEntity(
+                        entity,
+                        fileNodeRelativeName,
+                        agent_id,
+                        memoryManager,
+                        entitiesToCreateBatch,
+                        observationsToUpdateBatchKG,
+                        relationsToCreateSetKG
+                    );
                 }
 
+                // Create entities and update observations
                 if (entitiesToCreateBatch.length > 0) {
-                   const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
-                   entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
+                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
+                    entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
                 }
+
                 if (observationsToUpdateBatchKG.length > 0) {
                     const updateResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateBatchKG);
                     entitiesUpdatedCount += Array.isArray(updateResult) ? updateResult.length : 0;
                 }
 
+                // Create relations
                 const finalRelationsToCreateKG: Array<{ from: string; to: string; relationType: string }> = [];
                 for (const relStr of relationsToCreateSetKG) {
-                     const relObj = JSON.parse(relStr) as { from: string; to: string; type: string };
-                    finalRelationsToCreateKG.push({ from: relObj.from, to: relObj.to, relationType: relObj.type});
+                    const relObj = JSON.parse(relStr) as { from: string; to: string; type: string };
+                    finalRelationsToCreateKG.push({ from: relObj.from, to: relObj.to, relationType: relObj.type });
                 }
 
                 if (finalRelationsToCreateKG.length > 0) {
@@ -747,23 +621,28 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
 
                 return {
                     content: [{
-                        type: 'text', text: formatSimpleMessage(
-                            `Code entity ingestion for file "${file_path}" complete.\n- Code Entities Newly Created: ${entitiesCreatedCount}\n- Code Entities Updated (Observations): ${entitiesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}`,
+                        type: 'text',
+                        text: formatSimpleMessage(
+                            `Code entity ingestion for file "${file_path}" complete.
+- Code Entities Newly Created: ${entitiesCreatedCount}
+- Code Entities Updated (Observations): ${entitiesUpdatedCount}
+- Relations Created: ${relationsCreatedCount}`,
                             "Code Entity Ingestion Report"
                         )
                     }]
                 };
-
             } catch (error: any) {
                 console.error(`Error during code entity ingestion for agent ${agent_id}, file ${file_path}:`, error);
                 throw new McpError(ErrorCode.InternalError, `Code entity ingestion failed for ${file_path}: ${error.message}`);
             }
         },
+
         'knowledge_graph_memory': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for knowledge_graph_memory operations.");
             }
+
             const operation = args.operation as string;
             let kgResultText: string;
             let title = `Knowledge Graph Operation: ${operation} for Agent: ${agent_id}`;
@@ -772,82 +651,75 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             try {
                 switch (operation) {
                     case 'create_entities':
-                        if (!args.entities || !Array.isArray(args.entities) || args.entities.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entities' array for 'create_entities' operation.");
-                const entitiesToCreateOp: any[] = [];
-                const observationsToUpdateOp: any[] = [];
-                let createdOpCount = 0;
-                let updatedOpCount = 0;
-
-                for (const entity of args.entities) {
-                    if (!isValidEntity(entity)) {
-                        throw new McpError(ErrorCode.InvalidParams, "Each entity must have a valid 'name' and 'entityType' of type string.");
-                    }
-                    const entityName: string = entity.name!;
-                    const entityType: string = entity.entityType!;
-                    const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
-                    const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === entityType);
-                    if (existingNode) {
-                        if (entity.observations && entity.observations.length > 0 && haveObservationsChanged(existingNode.observations, entity.observations)) {
-                             const newObsToAdd = entity.observations.filter((obs:string) => !(existingNode.observations || []).includes(obs));
-                             if(newObsToAdd.length > 0) {
-                                observationsToUpdateOp.push({ entityName: existingNode.name, contents: newObsToAdd });
-                             }
+                        if (!args.entities || !Array.isArray(args.entities) || args.entities.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entities' array for 'create_entities' operation.");
                         }
-                    } else {
-                        entitiesToCreateOp.push(entity);
-                    }
-                }
+                        resultData = await handleCreateEntitiesOperation(args, memoryManager, agent_id);
+                        break;
 
-                if (entitiesToCreateOp.length > 0) {
-                    const creationRes = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateOp);
-                    createdOpCount = Array.isArray(creationRes) ? creationRes.length : 0;
-                }
-                if (observationsToUpdateOp.length > 0) {
-                    const updateRes = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateOp);
-                    updatedOpCount = Array.isArray(updateRes) ? updateRes.length : 0;
-                }
-                resultData = { message: `Create entities operation: ${createdOpCount} created, ${updatedOpCount} updated.`, details: { created: entitiesToCreateOp, updated_observations_for: observationsToUpdateOp.map(o=>o.entityName) } };
-
-                break;
                     case 'create_relations':
-                        if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'create_relations' operation.");
-                         args.relations.forEach((relation: any) => {
-                            if (!relation.from || !relation.to || !relation.relationType) throw new McpError(ErrorCode.InvalidParams, "Each relation must have 'from', 'to', and 'relationType'.");
+                        if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'create_relations' operation.");
+                        }
+                        args.relations.forEach((relation: any) => {
+                            if (!relation.from || !relation.to || !relation.relationType) {
+                                throw new McpError(ErrorCode.InvalidParams, "Each relation must have 'from', 'to', and 'relationType'.");
+                            }
                         });
                         resultData = await memoryManager.knowledgeGraphManager.createRelations(agent_id, args.relations);
                         break;
+
                     case 'add_observations':
-                        if (!args.observations || !Array.isArray(args.observations) || args.observations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'observations' array for 'add_observations' operation.");
+                        if (!args.observations || !Array.isArray(args.observations) || args.observations.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'observations' array for 'add_observations' operation.");
+                        }
                         resultData = await memoryManager.knowledgeGraphManager.addObservations(agent_id, args.observations);
                         break;
+
                     case 'delete_entities':
-                        if (!args.entityNames || !Array.isArray(args.entityNames) || args.entityNames.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entityNames' array for 'delete_entities' operation.");
+                        if (!args.entityNames || !Array.isArray(args.entityNames) || args.entityNames.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'entityNames' array for 'delete_entities' operation.");
+                        }
                         await memoryManager.knowledgeGraphManager.deleteEntities(agent_id, args.entityNames);
-                        resultData = { message: `Delete entities operation completed for names: ${args.entityNames.join(', ')}.`};
+                        resultData = { message: `Delete entities operation completed for names: ${args.entityNames.join(', ')}.` };
                         break;
+
                     case 'delete_observations':
-                        if (!args.deletions || !Array.isArray(args.deletions) || args.deletions.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'deletions' array for 'delete_observations' operation.");
+                        if (!args.deletions || !Array.isArray(args.deletions) || args.deletions.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'deletions' array for 'delete_observations' operation.");
+                        }
                         resultData = await memoryManager.knowledgeGraphManager.deleteObservations(agent_id, args.deletions);
                         break;
+
                     case 'delete_relations':
-                        if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'delete_relations' operation.");
+                        if (!args.relations || !Array.isArray(args.relations) || args.relations.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'relations' array for 'delete_relations' operation.");
+                        }
                         await memoryManager.knowledgeGraphManager.deleteRelations(agent_id, args.relations);
-                        resultData = { message: `Delete relations operation completed.`};
+                        resultData = { message: `Delete relations operation completed.` };
                         break;
+
                     case 'read_graph':
                         resultData = await memoryManager.knowledgeGraphManager.readGraph(agent_id);
                         title = `Full Knowledge Graph for Agent: ${agent_id}`;
                         break;
+
                     case 'search_nodes':
-                        if (!args.query) throw new McpError(ErrorCode.InvalidParams, "Missing 'query' argument for 'search_nodes' operation.");
+                        if (!args.query) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing 'query' argument for 'search_nodes' operation.");
+                        }
                         resultData = await memoryManager.knowledgeGraphManager.searchNodes(agent_id, args.query as string);
                         title = `Knowledge Graph Node Search (Query: "${args.query}") for Agent: ${agent_id}`;
                         break;
+
                     case 'open_nodes':
-                        if (!args.names || !Array.isArray(args.names) || args.names.length === 0) throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'names' array for 'open_nodes' operation.");
+                        if (!args.names || !Array.isArray(args.names) || args.names.length === 0) {
+                            throw new McpError(ErrorCode.InvalidParams, "Missing or empty 'names' array for 'open_nodes' operation.");
+                        }
                         resultData = await memoryManager.knowledgeGraphManager.openNodes(agent_id, args.names as string[]);
                         title = `Knowledge Graph Nodes (Names: ${args.names.join(', ')}) for Agent: ${agent_id}`;
                         break;
+
                     default:
                         throw new McpError(
                             ErrorCode.MethodNotFound,
@@ -855,62 +727,89 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         );
                 }
 
+                // Format the response based on the operation
                 if (operation === 'read_graph' || operation === 'search_nodes' || operation === 'open_nodes') {
-                     kgResultText = `## ${title}\n\n`;
-                     if ((Array.isArray(resultData) && resultData.length === 0) ||
-                         (typeof resultData === 'object' && resultData !== null && resultData.nodes && Array.isArray(resultData.nodes) && resultData.nodes.length === 0 && (!resultData.relations || resultData.relations.length === 0) ) ){
-                        kgResultText += `*No results found or graph is empty.*\n`;
-                     } else {
+                    kgResultText = `## ${title}
+`;
+                    if ((Array.isArray(resultData) && resultData.length === 0) ||
+                        (typeof resultData === 'object' && resultData !== null && resultData.nodes && Array.isArray(resultData.nodes) && resultData.nodes.length === 0 && (!resultData.relations || resultData.relations.length === 0))) {
+                        kgResultText += `*No results found or graph is empty.*
+`;
+                    } else {
                         kgResultText += formatJsonToMarkdownCodeBlock(resultData);
-                     }
+                    }
                 } else if (resultData && typeof resultData.message === 'string') {
-                     kgResultText = `## ${title}\n\n**Status:** ${resultData.message}\n`;
-                     if(resultData.details) kgResultText += `\n**Details:**\n${formatJsonToMarkdownCodeBlock(resultData.details)}\n`;
+                    kgResultText = `## ${title}
+**Status:** ${resultData.message}
+`;
+                    if (resultData.details) kgResultText += `
+**Details:**
+${formatJsonToMarkdownCodeBlock(resultData.details)}
+`;
                 } else {
-                    kgResultText = `## ${title}\n\nOperation completed. Result:\n${formatJsonToMarkdownCodeBlock(resultData)}\n`;
+                    kgResultText = `## ${title}
+Operation completed. Result:
+${formatJsonToMarkdownCodeBlock(resultData)}
+`;
                 }
-
             } catch (error: any) {
-                 console.error(`Error in knowledge_graph_memory tool (operation: ${operation}, agent: ${agent_id}):`, error);
-                 if (error instanceof McpError) throw error;
-                 throw new McpError(ErrorCode.InternalError, `Knowledge graph operation '${operation}' failed: ${error.message}`);
+                console.error(`Error in knowledge_graph_memory tool (operation: ${operation}, agent: ${agent_id}):`, error);
+                if (error instanceof McpError) throw error;
+                throw new McpError(ErrorCode.InternalError, `Knowledge graph operation '${operation}' failed: ${error.message}`);
             }
+
             return { content: [{ type: 'text', text: kgResultText }] };
         },
+
         'kg_nl_query': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_nl_query.");
             }
+
             try {
                 const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
                 const result = JSON.parse(resultJsonString);
 
-                let md = `## Natural Language Query Result for Agent: \`${agent_id}\`\n\n`;
-                md += `**Query:** "${args.query}"\n\n`;
+                let md = `## Natural Language Query Result for Agent: \`${agent_id}\`
+`;
+                md += `**Query:** "${args.query}"
+`;
 
                 if (result.metadata) {
-                    md += `### Query Translation\n`;
-                    md += `- **Operation:** \`${result.metadata.translatedOperation}\`\n`;
-                    md += `- **Arguments:**\n${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}\n`;
-                    if (result.metadata.assumptions) md += `- **Assumptions:** ${result.metadata.assumptions}\n`;
-                    md += `- **Used Gemini for Translation:** ${result.metadata.usedGemini ? 'Yes' : 'No'}\n\n`;
+                    md += `### Query Translation
+`;
+                    md += `- **Operation:** \`${result.metadata.translatedOperation}\`
+`;
+                    md += `- **Arguments:**
+${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}
+`;
+                    if (result.metadata.assumptions) md += `- **Assumptions:** ${result.metadata.assumptions}
+`;
+                    md += `- **Used Gemini for Translation:** ${result.metadata.usedGemini ? 'Yes' : 'No'}
+`;
                 } else {
-                    md += `*Query translation metadata not available.*\n\n`;
+                    md += `*Query translation metadata not available.*
+`;
                 }
 
-                md += `### Results\n`;
+                md += `### Results
+`;
+
                 if (result.results) {
                     if (result.results.error) {
-                         md += `**Error from Query Execution:** ${result.results.error}\n`;
+                        md += `**Error from Query Execution:** ${result.results.error}
+`;
                     } else if ((Array.isArray(result.results) && result.results.length === 0) ||
-                               (typeof result.results === 'object' && result.results.nodes && Array.isArray(result.results.nodes) && result.results.nodes.length === 0 && (!result.results.relations || result.results.relations.length === 0))) {
-                        md += `*No results found matching the query.*\n`;
+                        (typeof result.results === 'object' && result.results.nodes && Array.isArray(result.results.nodes) && result.results.nodes.length === 0 && (!result.results.relations || result.results.relations.length === 0))) {
+                        md += `*No results found matching the query.*
+`;
                     } else {
                         md += formatJsonToMarkdownCodeBlock(result.results);
                     }
                 } else {
-                     md += `*No results data in the response.*\n`;
+                    md += `*No results data in the response.*
+`;
                 }
 
                 return { content: [{ type: 'text', text: md }] };
@@ -920,22 +819,35 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InternalError, `Natural language query failed: ${error.message}`);
             }
         },
+
         'kg_infer_relations': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_infer_relations.");
             }
+
             try {
                 const result = await memoryManager.knowledgeGraphManager.inferRelations(agent_id, args.entity_names, args.context);
-                let md = `## Relation Inference Result for Agent: \`${agent_id}\`\n\n`;
-                if(args.entity_names && args.entity_names.length > 0) md += `**Focused Entities:** ${args.entity_names.map((e:string) => `\`${e}\``).join(', ')}\n`;
-                if(args.context) md += `**Additional Context:** ${args.context}\n`;
-                md += `\n**Status:** ${result.message}\n\n`;
 
-                if(result.details && result.details.length > 0){
-                    md += `### Proposed/Added Relations:\n\n`;
-                    md += `| From | To | Relation Type | Confidence | Evidence | Status |\n`;
-                    md += `|------|----|---------------|------------|----------|--------|\n`;
+                let md = `## Relation Inference Result for Agent: \`${agent_id}\`
+`;
+
+                if (args.entity_names && args.entity_names.length > 0) md += `**Focused Entities:** ${args.entity_names.map((e: string) => `\`${e}\``).join(', ')}
+`;
+                if (args.context) md += `**Additional Context:** ${args.context}
+`;
+
+                md += `
+**Status:** ${result.message}
+`;
+
+                if (result.details && result.details.length > 0) {
+                    md += `### Proposed/Added Relations:
+`;
+                    md += `| From | To | Relation Type | Confidence | Evidence | Status |
+`;
+                    md += `|------|----|---------------|------------|----------|--------|
+`;
 
                     result.details.forEach((rel: any) => {
                         const confidence = rel.confidence ? `${(rel.confidence * 100).toFixed(0)}%` : 'N/A';
@@ -943,16 +855,24 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         const status = rel.status || 'proposed_by_ai';
                         const statusEmoji = status.startsWith('added') ? '✅' : status.startsWith('failed') ? '❌' : '🔍';
 
-                        md += `| \`${rel.from}\` | \`${rel.to}\` | \`${rel.relationType}\` | ${confidence} | ${evidence.substring(0, 50)}${evidence.length > 50 ? '...' : ''} | ${statusEmoji} ${status} |\n`;
+                        md += `| \`${rel.from}\` | \`${rel.to}\` | \`${rel.relationType}\` | ${confidence} | ${evidence.substring(0, 50)}${evidence.length > 50 ? '...' : ''} | ${statusEmoji} ${status} |
+`;
                     });
 
-                    md += `\n### Legend:\n`;
-                    md += `- ✅ **added_by_ai**: High-confidence relation automatically added.\n`;
-                    md += `- 🔍 **proposed_by_ai**: Relation proposed by AI, requires review.\n`;
-                    md += `- ❌ **failed**: Relation could not be added.\n`;
+                    md += `
+### Legend:
+`;
+                    md += `- ✅ **added_by_ai**: High-confidence relation automatically added.
+`;
+                    md += `- 🔍 **proposed_by_ai**: Relation proposed by AI, requires review.
+`;
+                    md += `- ❌ **failed**: Relation could not be added.
+`;
                 } else {
-                    md += `*No new relations were inferred or added.*\n`;
+                    md += `*No new relations were inferred or added.*
+`;
                 }
+
                 return { content: [{ type: 'text', text: md }] };
             } catch (error: any) {
                 console.error(`Error in kg_infer_relations tool (agent: ${agent_id}):`, error);
@@ -960,17 +880,22 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InternalError, `Relation inference failed: ${error.message}`);
             }
         },
+
         'kg_visualize': async (args: any, agent_id_from_server: string) => {
             const agent_id = args.agent_id || agent_id_from_server;
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_visualize.");
             }
+
             try {
                 let mermaidGraph: string;
-                let md = `## Knowledge Graph Visualization for Agent: \`${agent_id}\`\n`;
+                let md = `## Knowledge Graph Visualization for Agent: \`${agent_id}\`
+`;
 
                 if (args.natural_language_query) {
-                    md += `**Based on Natural Language Query:** "${args.natural_language_query}"\n`;
+                    md += `**Based on Natural Language Query:** "${args.natural_language_query}"
+`;
+
                     const visualizationOptions = {
                         query: args.query,
                         natural_language_query: args.natural_language_query,
@@ -983,12 +908,15 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         excludeImports: args.exclude_imports,
                         excludeRelationTypes: args.exclude_relation_types
                     };
-                     mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
+
+                    mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
                         agent_id,
                         visualizationOptions
                     );
                 } else {
-                    if (args.query) md += `**Based on Direct Query:** "${args.query}"\n`;
+                    if (args.query) md += `**Based on Direct Query:** "${args.query}"
+`;
+
                     const visualizationOptions = {
                         query: args.query,
                         layoutDirection: args.layout_direction || 'TD',
@@ -1000,15 +928,24 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         excludeImports: args.exclude_imports,
                         excludeRelationTypes: args.exclude_relation_types
                     };
+
                     mermaidGraph = await memoryManager.knowledgeGraphManager.generateMermaidGraph(
                         agent_id,
                         visualizationOptions
                     );
                 }
 
-                if (args.layout_direction && args.layout_direction !== 'TD') md += `**Layout:** ${args.layout_direction}\n`;
-                if (args.group_by_directory) md += `**Grouping:** By directory\n`;
-                md += `\n\`\`\`mermaid\n${mermaidGraph}\n\`\`\`\n`;
+                if (args.layout_direction && args.layout_direction !== 'TD') md += `**Layout:** ${args.layout_direction}
+`;
+                if (args.group_by_directory) md += `**Grouping:** By directory
+`;
+
+                md += `
+\`\`\`mermaid
+${mermaidGraph}
+\`\`\`
+`;
+
                 return { content: [{ type: 'text', text: md }] };
             } catch (error: any) {
                 console.error(`Error in kg_visualize tool (agent: ${agent_id}):`, error);
@@ -1017,4 +954,382 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
             }
         },
     };
+}
+
+// ============================================================================
+// Helper Functions for Codebase Structure Ingestion
+// ============================================================================
+
+/**
+ * Processes the root directory for codebase structure ingestion.
+ */
+async function processRootDirectory(
+    resolvedProjectRootPath: string,
+    agent_id: string,
+    memoryManager: MemoryManager,
+    createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string },
+    absolutePathToRelativeNameMap: { [canonicalAbsPathKey: string]: string },
+    entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }>,
+    observationsToUpdateBatch: Array<{ entityName: string; contents: string[] }>
+) {
+    const rootNodeName = "."; // KG node name for the root
+    const canonicalRootPathKey = createCanonicalAbsPathKey(resolvedProjectRootPath);
+
+    try {
+        const rootStats = await fs.stat(resolvedProjectRootPath);
+        const rootObservations = [
+            `absolute_path: ${canonicalRootPathKey}`,
+            `type: directory`,
+            `size_bytes: ${rootStats.size.toString()}`,
+            `created_at: ${rootStats.birthtime.toISOString()}`,
+            `modified_at: ${rootStats.mtime.toISOString()}`,
+        ];
+
+        const existingRootNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [rootNodeName]);
+        const existingRootNode = existingRootNodes.find((n: any) => n.name === rootNodeName && n.entityType === 'directory');
+
+        if (existingRootNode) {
+            createdOrExistingNodeNamesByCanonicalAbsPath[canonicalRootPathKey] = rootNodeName;
+            absolutePathToRelativeNameMap[canonicalRootPathKey] = rootNodeName;
+
+            if (haveObservationsChanged(existingRootNode.observations, rootObservations)) {
+                observationsToUpdateBatch.push({ entityName: rootNodeName, contents: rootObservations });
+            }
+        } else {
+            entitiesToCreateBatch.push({ name: rootNodeName, entityType: 'directory', observations: rootObservations });
+            createdOrExistingNodeNamesByCanonicalAbsPath[canonicalRootPathKey] = rootNodeName;
+            absolutePathToRelativeNameMap[canonicalRootPathKey] = rootNodeName;
+        }
+    } catch (statError: any) {
+        console.warn(`[ingest_codebase_structure] Could not stat project root path ${resolvedProjectRootPath}: ${statError.message}`);
+    }
+}
+
+/**
+ * Processes a scanned item (file or directory) for codebase structure ingestion.
+ */
+async function processScannedItem(
+    item: ScannedItem,
+    resolvedProjectRootPath: string,
+    canonicalEffectiveRootPath: string,
+    agent_id: string,
+    memoryManager: MemoryManager,
+    createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string },
+    absolutePathToRelativeNameMap: { [canonicalAbsPathKey: string]: string },
+    entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }>,
+    observationsToUpdateBatch: Array<{ entityName: string; contents: string[] }>,
+    relationsToCreateSet: Set<string>
+) {
+    // item.name is already relative (to resolvedProjectRootPath) and uses forward slashes from scanDirectoryRecursive
+    const entityName = item.name === "" ? "." : item.name;
+    const canonicalItemAbsPathKey = createCanonicalAbsPathKey(item.path); // item.path is absolute
+
+    const currentObservations = [
+        `absolute_path: ${canonicalItemAbsPathKey}`,
+        `type: ${item.type}`,
+        `size_bytes: ${item.stats.size.toString()}`,
+        `created_at: ${item.stats.birthtime.toISOString()}`,
+        `modified_at: ${item.stats.mtime.toISOString()}`,
+    ];
+
+    if (item.type === 'file' && item.language) {
+        currentObservations.push(`language: ${item.language}`);
+    }
+
+    const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
+    const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === item.type);
+
+    if (existingNode) {
+        createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey] = existingNode.name;
+        absolutePathToRelativeNameMap[canonicalItemAbsPathKey] = existingNode.name;
+
+        if (item.language === 'typescript' && item.path.endsWith('.ts')) {
+            const jsPathKey = createCanonicalAbsPathKey(item.path.slice(0, -3) + '.js');
+            absolutePathToRelativeNameMap[jsPathKey] = existingNode.name;
+        }
+
+        if (haveObservationsChanged(existingNode.observations, currentObservations)) {
+            const newObsToAdd = currentObservations.filter(obs => !(existingNode.observations || []).includes(obs));
+            if (newObsToAdd.length > 0) {
+                observationsToUpdateBatch.push({ entityName: existingNode.name, contents: newObsToAdd });
+            }
+        }
+    } else {
+        entitiesToCreateBatch.push({ name: entityName, entityType: item.type, observations: currentObservations });
+        createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey] = entityName;
+        absolutePathToRelativeNameMap[canonicalItemAbsPathKey] = entityName;
+
+        if (item.language === 'typescript' && item.path.endsWith('.ts')) {
+            const jsPathKey = createCanonicalAbsPathKey(item.path.slice(0, -3) + '.js');
+            absolutePathToRelativeNameMap[jsPathKey] = entityName;
+        }
+    }
+
+    // Create 'contains_item' relation: ParentDir -> CurrentItem
+    const parentDirAbsPath = path.dirname(item.path); // Absolute path of parent
+    const canonicalParentDirAbsPathKey = createCanonicalAbsPathKey(parentDirAbsPath);
+
+    // Ensure parent is within effective root and not the item itself
+    if (canonicalParentDirAbsPathKey !== canonicalItemAbsPathKey && canonicalParentDirAbsPathKey.startsWith(canonicalEffectiveRootPath)) {
+        let parentDirNodeName = createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey];
+
+        if (!parentDirNodeName) {
+            // Calculate relative path for the parent directory from the resolvedProjectRootPath
+            let relativeParentPath = path.relative(resolvedProjectRootPath, parentDirAbsPath).replace(/\\/g, '/');
+            parentDirNodeName = (relativeParentPath === "" || relativeParentPath === ".") ? "." : relativeParentPath;
+
+            // Check if this parent is already in the batch or the maps
+            if (!createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] &&
+                !entitiesToCreateBatch.find(e => e.name === parentDirNodeName && e.entityType === 'directory')) {
+                console.warn(`[ingest_codebase_structure] Parent directory node for '${parentDirNodeName}' (from path '${parentDirAbsPath}') not yet processed. Creating it.`);
+                const parentStats = await fs.stat(parentDirAbsPath).catch(() => null);
+                const parentObservations = parentStats ? [
+                    `absolute_path: ${canonicalParentDirAbsPathKey}`,
+                    `type: directory`,
+                    `size_bytes: ${parentStats.size.toString()}`,
+                    `created_at: ${parentStats.birthtime.toISOString()}`,
+                    `modified_at: ${parentStats.mtime.toISOString()}`,
+                ] : [`absolute_path: ${canonicalParentDirAbsPathKey}`, `type: directory`];
+
+                entitiesToCreateBatch.push({ name: parentDirNodeName, entityType: 'directory', observations: parentObservations });
+
+                // Immediately update maps for subsequent lookups within this run
+                createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] = parentDirNodeName;
+                absolutePathToRelativeNameMap[canonicalParentDirAbsPathKey] = parentDirNodeName;
+            } else if (!createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] &&
+                entitiesToCreateBatch.find(e => e.name === parentDirNodeName && e.entityType === 'directory')) {
+                // It's already in the batch to be created, ensure maps are updated if they weren't already
+                createdOrExistingNodeNamesByCanonicalAbsPath[canonicalParentDirAbsPathKey] = parentDirNodeName;
+                absolutePathToRelativeNameMap[canonicalParentDirAbsPathKey] = parentDirNodeName;
+            }
+        }
+
+        // `entityName` is the relative path of the current item
+        // Use JSON stringify for relation keys to handle special characters in names
+        const relationKeyObject = { from: parentDirNodeName, to: entityName, type: 'contains_item' };
+        const relationString = JSON.stringify(relationKeyObject);
+
+        if (!relationsToCreateSet.has(relationString)) {
+            relationsToCreateSet.add(relationString);
+        }
+    }
+}
+
+/**
+ * Processes file imports for codebase structure ingestion.
+ */
+async function processFileImports(
+    item: ScannedItem,
+    agent_id: string,
+    resolvedProjectRootPath: string,
+    canonicalEffectiveRootPath: string,
+    createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string },
+    absolutePathToRelativeNameMap: { [canonicalAbsPathKey: string]: string },
+    relationsToCreateSet: Set<string>,
+    moduleNamesToProcessOrCreate: Set<string>,
+    moduleEntitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }>,
+    memoryManager: MemoryManager,
+    codebaseIntrospectionService: CodebaseIntrospectionService
+) {
+    const canonicalItemAbsPathKey = createCanonicalAbsPathKey(item.path);
+    const fileNodeName = createdOrExistingNodeNamesByCanonicalAbsPath[canonicalItemAbsPathKey]; // Use map for consistency
+
+    if (!fileNodeName) {
+        console.warn(`[ingest_codebase_structure] Could not find KG node name for file path: ${item.path} (key: ${canonicalItemAbsPathKey}) during import parsing. This might happen if the file itself was not processed into the map correctly.`);
+        return;
+    }
+
+    const extractedImports: ExtractedImport[] = await codebaseIntrospectionService.parseFileForImports(agent_id, item.path, item.language);
+
+    for (const imp of extractedImports) {
+        let toNodeName = imp.targetPath;
+        let toNodeType = imp.type;
+
+        if (imp.type === 'file') {
+            let resolvedAbsoluteImportPath = path.isAbsolute(imp.targetPath)
+                ? imp.targetPath
+                : path.resolve(path.dirname(item.path), imp.targetPath);
+            resolvedAbsoluteImportPath = resolvedAbsoluteImportPath.replace(/\\/g, '/');
+
+            let actualFilePathOnDisk = await findActualFilePath(resolvedAbsoluteImportPath);
+            let canonicalActualFilePathKey = actualFilePathOnDisk ? createCanonicalAbsPathKey(actualFilePathOnDisk) : null;
+
+            if (!actualFilePathOnDisk && resolvedAbsoluteImportPath.endsWith('.js')) {
+                const tsEquivalentBasePath = resolvedAbsoluteImportPath.slice(0, -3);
+                const foundTsFile = await findActualFilePath(tsEquivalentBasePath);
+                if (foundTsFile) {
+                    actualFilePathOnDisk = foundTsFile;
+                    canonicalActualFilePathKey = createCanonicalAbsPathKey(actualFilePathOnDisk);
+                }
+            }
+
+            if (canonicalActualFilePathKey && absolutePathToRelativeNameMap[canonicalActualFilePathKey]) {
+                toNodeName = absolutePathToRelativeNameMap[canonicalActualFilePathKey];
+            } else if (actualFilePathOnDisk && canonicalActualFilePathKey && canonicalActualFilePathKey.startsWith(canonicalEffectiveRootPath)) {
+                const relativeImportPath = path.relative(resolvedProjectRootPath, actualFilePathOnDisk).replace(/\\/g, '/');
+                toNodeName = (relativeImportPath === "" || relativeImportPath === ".") ? "." : relativeImportPath;
+
+                if (canonicalActualFilePathKey && !absolutePathToRelativeNameMap[canonicalActualFilePathKey]) {
+                    // console.warn(`[ingest_codebase_structure] Import target ${actualFilePathOnDisk} resolved to relative path '${toNodeName}', but was not in pre-scan maps. Using relative path as node name.`);
+                }
+            } else {
+                console.warn(`[ingest_codebase_structure] Import target ${imp.targetPath} from ${fileNodeName} (resolved abs: ${resolvedAbsoluteImportPath}, found on disk: ${actualFilePathOnDisk || 'N/A'}) is outside project or not found in scan map. Treating as external module: ${imp.targetPath}`);
+                toNodeName = imp.targetPath;
+                toNodeType = 'module';
+            }
+        }
+
+        if (toNodeType === 'external_library' || toNodeType === 'module') {
+            if (!moduleNamesToProcessOrCreate.has(toNodeName)) {
+                moduleNamesToProcessOrCreate.add(toNodeName);
+                const existingModuleNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [toNodeName]);
+                const existingModuleNode = existingModuleNodes.find((n: any) => n.name === toNodeName && n.entityType === 'module');
+
+                if (!existingModuleNode) {
+                    moduleEntitiesToCreateBatch.push({ name: toNodeName, entityType: 'module', observations: [`type: ${toNodeType}`] });
+                }
+            }
+        }
+
+        const relationKeyObjectImp = { from: fileNodeName, to: toNodeName, type: imp.type === 'file' ? 'imports_file' : 'imports_module' };
+        const relationStringImp = JSON.stringify(relationKeyObjectImp);
+
+        if (!relationsToCreateSet.has(relationStringImp)) {
+            relationsToCreateSet.add(relationStringImp);
+        }
+    }
+}
+
+// ============================================================================
+// Helper Functions for Knowledge Graph Operations
+// ============================================================================
+
+/**
+ * Handles the create_entities operation for the knowledge graph memory tool.
+ */
+async function handleCreateEntitiesOperation(args: any, memoryManager: MemoryManager, agent_id: string) {
+    const entitiesToCreateOp: any[] = [];
+    const observationsToUpdateOp: any[] = [];
+    let createdOpCount = 0;
+    let updatedOpCount = 0;
+
+    for (const entity of args.entities) {
+        if (!isValidEntity(entity)) {
+            throw new McpError(ErrorCode.InvalidParams, "Each entity must have a valid 'name' and 'entityType' of type string.");
+        }
+
+        const entityName: string = entity.name!;
+        const entityType: string = entity.entityType!;
+        const existingNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entityName]);
+        const existingNode = existingNodes.find((n: any) => n.name === entityName && n.entityType === entityType);
+
+        if (existingNode) {
+            if (entity.observations && entity.observations.length > 0 && haveObservationsChanged(existingNode.observations, entity.observations)) {
+                const newObsToAdd = entity.observations.filter((obs: string) => !(existingNode.observations || []).includes(obs));
+                if (newObsToAdd.length > 0) {
+                    observationsToUpdateOp.push({ entityName: existingNode.name, contents: newObsToAdd });
+                }
+            }
+        } else {
+            entitiesToCreateOp.push(entity);
+        }
+    }
+
+    if (entitiesToCreateOp.length > 0) {
+        const creationRes = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateOp);
+        createdOpCount = Array.isArray(creationRes) ? creationRes.length : 0;
+    }
+
+    if (observationsToUpdateOp.length > 0) {
+        const updateRes = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateOp);
+        updatedOpCount = Array.isArray(updateRes) ? updateRes.length : 0;
+    }
+
+    return {
+        message: `Create entities operation: ${createdOpCount} created, ${updatedOpCount} updated.`,
+        details: {
+            created: entitiesToCreateOp,
+            updated_observations_for: observationsToUpdateOp.map(o => o.entityName)
+        }
+    };
+}
+
+/**
+ * Processes an extracted code entity for file code entity ingestion.
+ */
+async function processExtractedEntity(
+    entity: ExtractedCodeEntity,
+    fileNodeRelativeName: string,
+    agent_id: string,
+    memoryManager: MemoryManager,
+    entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }>,
+    observationsToUpdateBatchKG: Array<{ entityName: string; contents: string[] }>,
+    relationsToCreateSetKG: Set<string>
+) {
+    const currentObservations = [
+        `type: ${entity.type}`,
+        `signature: ${entity.signature || 'N/A'}`,
+        `lines: ${entity.startLine}-${entity.endLine}`,
+        `exported: ${entity.isExported ? 'yes' : 'no'}`,
+        `defined_in_file_path: ${fileNodeRelativeName}`
+    ];
+
+    if (entity.docstring) currentObservations.push(`docstring: ${entity.docstring.substring(0, 200)}${entity.docstring.length > 200 ? '...' : ''}`);
+    if (entity.parameters && entity.parameters.length > 0) currentObservations.push(`parameters: ${JSON.stringify(entity.parameters)}`);
+    if (entity.returnType) currentObservations.push(`return_type: ${entity.returnType}`);
+    if (entity.parentClass && entity.filePath) currentObservations.push(`parent_class_full_name: ${entity.filePath}::${entity.parentClass}`);
+    if (entity.implementedInterfaces && entity.implementedInterfaces.length > 0) currentObservations.push(`implements: ${entity.implementedInterfaces.join(', ')}`);
+
+    if (entity.calls && entity.calls.length > 0) {
+        currentObservations.push(`calls: ${JSON.stringify(entity.calls.map(c => c.name))}`);
+    }
+
+    const existingEntities = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [entity.fullName || '']);
+    const existingEntityNode = existingEntities.find((n: any) => n.name === entity.fullName && n.entityType === entity.type);
+
+    if (existingEntityNode) {
+        if (haveObservationsChanged(existingEntityNode.observations, currentObservations)) {
+            const newObsToAdd = currentObservations.filter(obs => !(existingEntityNode.observations || []).includes(obs));
+            if (newObsToAdd.length > 0) {
+                observationsToUpdateBatchKG.push({ entityName: existingEntityNode.name, contents: newObsToAdd });
+            }
+        }
+    } else {
+        entitiesToCreateBatch.push({
+            name: entity.fullName || '',
+            entityType: entity.type as string,
+            observations: currentObservations,
+        });
+    }
+
+    if (entity.fullName && fileNodeRelativeName) {
+        const defRelKey = { from: entity.fullName, to: fileNodeRelativeName, type: 'defined_in_file' };
+        relationsToCreateSetKG.add(JSON.stringify(defRelKey));
+    }
+
+    if (entity.type === 'method' && entity.parentClass && entity.fullName && fileNodeRelativeName) {
+        const classFullName = `${fileNodeRelativeName}::${entity.parentClass}`;
+        const methodRelKey = { from: classFullName, to: entity.fullName, type: 'has_method' };
+        relationsToCreateSetKG.add(JSON.stringify(methodRelKey));
+    }
+
+    // Infer 'calls_function' or 'calls_method' relations
+    if (entity.calls && entity.calls.length > 0 && entity.fullName && fileNodeRelativeName) {
+        for (const call of entity.calls) {
+            // For now, assume called entities are within the same file or are global functions/methods.
+            // A more advanced approach would involve resolving the full path of the called entity.
+            const calledEntityFullName = `${fileNodeRelativeName}::${call.name}`;
+            const callRelKey = { from: entity.fullName, to: calledEntityFullName, type: `calls_${call.type}` };
+            relationsToCreateSetKG.add(JSON.stringify(callRelKey));
+        }
+    }
+
+    // Infer 'implements_interface' relations
+    if (entity.type === 'class' && entity.implementedInterfaces && entity.implementedInterfaces.length > 0 && entity.fullName && fileNodeRelativeName) {
+        for (const implementedInterface of entity.implementedInterfaces) {
+            const interfaceFullName = `${fileNodeRelativeName}::${implementedInterface}`; // Assuming interface is in the same file
+            const implementsRelKey = { from: entity.fullName, to: interfaceFullName, type: 'implements_interface' };
+            relationsToCreateSetKG.add(JSON.stringify(implementsRelKey));
+        }
+    }
 }
