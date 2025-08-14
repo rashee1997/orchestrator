@@ -21,7 +21,6 @@ export class CodebaseEmbeddingRepository {
                 console.log(`[CodebaseEmbeddingRepository] Inserting metadata into ${this.metadataTable} for ID: ${metadata.embedding_id}`);
                 this.db.prepare(sql).run(...columns.map(k => (metadata as any)[k]));
                 console.log(`[CodebaseEmbeddingRepository] Successfully inserted metadata for ID: ${metadata.embedding_id}`);
-
                 const vector: number[] = [];
                 for (let i = 0; i < metadata.vector_blob.length; i += 4) {
                     vector.push(metadata.vector_blob.readFloatLE(i));
@@ -40,17 +39,13 @@ export class CodebaseEmbeddingRepository {
 
     public async bulkInsertEmbeddings(embeddings: CodebaseEmbeddingRecord[]): Promise<void> {
         if (embeddings.length === 0) return;
-
         const insertMetadataSql = `INSERT OR REPLACE INTO ${this.metadataTable} (
             embedding_id, agent_id, chunk_text, entity_name, model_name, chunk_hash, metadata_json, created_timestamp_unix, file_path_relative, full_file_path, ai_summary_text
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
         const insertVectorSql = `INSERT OR REPLACE INTO ${this.vectorTable} (embedding_id, embedding) VALUES (?, ?);`;
-
         const insertTransaction = this.db.transaction((records: CodebaseEmbeddingRecord[]) => {
             const stmtMetadata = this.db.prepare(insertMetadataSql);
             const stmtVector = this.db.prepare(insertVectorSql);
-
             for (const metadata of records) {
                 stmtMetadata.run(
                     metadata.embedding_id,
@@ -65,7 +60,6 @@ export class CodebaseEmbeddingRepository {
                     metadata.full_file_path,
                     metadata.ai_summary_text
                 );
-
                 const vector: number[] = [];
                 for (let i = 0; i < metadata.vector_blob.length; i += 4) {
                     vector.push(metadata.vector_blob.readFloatLE(i));
@@ -75,7 +69,6 @@ export class CodebaseEmbeddingRepository {
                 stmtVector.run(metadata.embedding_id, vectorString);
             }
         });
-
         try {
             insertTransaction(embeddings);
             console.log(`[CodebaseEmbeddingRepository] Successfully bulk inserted ${embeddings.length} embeddings.`);
@@ -95,15 +88,13 @@ export class CodebaseEmbeddingRepository {
     }
 
     public async getEmbeddingsForFile(filePathRelative: string, agentId?: string): Promise<CodebaseEmbeddingRecord[]> {
-        // Use LIKE with wildcards for more robust matching, in case of subtle path differences
-        let sql = `SELECT * FROM ${this.metadataTable} WHERE file_path_relative LIKE ?`;
-        const params: (string | undefined)[] = [`%${filePathRelative}%`];
-
+        // Use exact matching instead of LIKE for more precise file path matching
+        let sql = `SELECT * FROM ${this.metadataTable} WHERE file_path_relative = ?`;
+        const params: (string | undefined)[] = [filePathRelative];
         if (agentId) {
             sql += ` AND agent_id = ?`;
             params.push(agentId);
         }
-
         return this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
     }
 
@@ -115,7 +106,6 @@ export class CodebaseEmbeddingRepository {
         return { hashes: new Set(rows.map(row => row.chunk_hash)), latencyMs: endTime - startTime, callCount: 1 };
     }
 
-
     public async deleteEmbedding(embeddingId: string): Promise<void> {
         this.db.prepare(`DELETE FROM ${this.vectorTable} WHERE embedding_id = ?`).run(embeddingId);
         this.db.prepare(`DELETE FROM ${this.metadataTable} WHERE embedding_id = ?`).run(embeddingId);
@@ -123,13 +113,11 @@ export class CodebaseEmbeddingRepository {
 
     public async bulkDeleteEmbeddings(embeddingIds: string[]): Promise<void> {
         if (embeddingIds.length === 0) return;
-
         const deleteTransaction = this.db.transaction((ids: string[]) => {
             const placeholders = ids.map(() => '?').join(',');
             this.db.prepare(`DELETE FROM ${this.vectorTable} WHERE embedding_id IN (${placeholders})`).run(...ids);
             this.db.prepare(`DELETE FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`).run(...ids);
         });
-
         try {
             deleteTransaction(embeddingIds);
             console.log(`[CodebaseEmbeddingRepository] Successfully bulk deleted ${embeddingIds.length} embeddings.`);
@@ -154,11 +142,6 @@ export class CodebaseEmbeddingRepository {
         return { summary: result ? result.ai_summary_text : null, latencyMs: endTime - startTime, callCount: 1 };
     }
 
-    /**
-     * Retrieves all unique relative file paths associated with a given agent ID.
-     * @param agentId The ID of the agent.
-     * @returns A promise that resolves to an array of unique file paths.
-     */
     public async getAllFilePathsForAgent(agentId: string): Promise<string[]> {
         const sql = `SELECT DISTINCT file_path_relative FROM ${this.metadataTable} WHERE agent_id = ?`;
         const rows = this.db.prepare(sql).all(agentId) as { file_path_relative: string }[];
@@ -166,12 +149,12 @@ export class CodebaseEmbeddingRepository {
     }
 
     /**
-     * Finds semantically similar embeddings to a given query vector,
+     * Finds semantically similar embeddings, re-ranks them based on heuristics,
      * and directly fetches their metadata, applying optional filters.
      * @param queryEmbedding The vector to find similar embeddings for.
      * @param topK The number of similar embeddings to return.
      * @param agentId Optional: The ID of the agent to filter by.
-     * @param targetFilePaths Optional: Array of relative file paths to restrict the search to.
+     * @param targetFilePaths Optional: Array of relative file paths to boost in ranking.
      * @returns A promise that resolves to an array of similar embeddings with full metadata and similarity scores.
      */
     public async findSimilarEmbeddingsWithMetadata(
@@ -181,8 +164,9 @@ export class CodebaseEmbeddingRepository {
         targetFilePaths?: string[]
     ): Promise<Array<CodebaseEmbeddingRecord & { similarity: number }>> {
         // Step 1: Find similar embeddings using the vector DB function
-        const vecResults = await findSimilarVecEmbeddings(queryEmbedding, topK * 5, this.vectorTable); // Fetch more to allow for filtering
-
+        // Fetch a larger pool of candidates to allow for effective re-ranking.
+        const initialFetchK = topK * 10;
+        const vecResults = await findSimilarVecEmbeddings(queryEmbedding, initialFetchK, this.vectorTable);
         if (vecResults.length === 0) {
             return [];
         }
@@ -191,55 +175,59 @@ export class CodebaseEmbeddingRepository {
         const similarityMap = new Map<string, number>();
         vecResults.forEach(r => similarityMap.set(r.embedding_id, r.similarity));
 
-        // Step 2: Fetch metadata for these embedding IDs
+        // Step 2: Fetch metadata for these embedding IDs with basic SQL filtering
         const placeholders = embeddingIds.map(() => '?').join(',');
+        const params: (string)[] = [...embeddingIds];
         let sql = `SELECT * FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`;
-        const params: (string | string[])[] = [...embeddingIds];
 
         if (agentId) {
             sql += ` AND agent_id = ?`;
             params.push(agentId);
         }
 
-        if (targetFilePaths && targetFilePaths.length > 0) {
-            // Normalize all incoming paths to use forward slashes for consistent matching
-            const normalizedPaths = targetFilePaths.map(p => p.replace(/\\/g, '/'));
-
-            // Create a series of LIKE clauses to robustly handle both absolute and relative paths
-            const likeClauses = normalizedPaths.map(() => `file_path_relative LIKE ?`).join(' OR ');
-            sql += ` AND (${likeClauses})`;
-
-            // The LIKE pattern should match if the stored relative path ENDS with the provided (normalized) path.
-            // This handles cases where the user provides a relative path ('src/...') or a full path ('.../src/...')
-            const likeParams = normalizedPaths.map(p => `%${p}`);
-            params.push(...likeParams);
-        }
-
         const metadataRows = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
 
-        // Step 3: Combine metadata with similarity scores and filter/sort
-        const combinedResults: Array<CodebaseEmbeddingRecord & { similarity: number }> = [];
+        // Step 3: Combine metadata with scores, apply re-ranking, and sort
+        const combinedResults: Array<CodebaseEmbeddingRecord & { similarity: number; finalScore: number }> = [];
+        const now_unix = Math.floor(Date.now() / 1000);
+        const TIME_DECAY_LAMBDA = 0.005; // Smaller value = slower decay, giving older items more of a chance
+
         for (const meta of metadataRows) {
             const similarity = similarityMap.get(meta.embedding_id);
-            if (similarity !== undefined) {
-                combinedResults.push({ ...meta, similarity });
+            if (similarity === undefined) continue;
+
+            // --- Re-ranking Logic ---
+            let finalScore = similarity;
+
+            // 1. Boost for being in a target file path
+            const FILE_PATH_BOOST = 1.25; // 25% score boost
+            if (targetFilePaths && targetFilePaths.length > 0) {
+                const normalizedMetaPath = meta.file_path_relative.replace(/\\/g, '/');
+                const normalizedTargetPaths = targetFilePaths.map(p => p.replace(/\\/g, '/'));
+                if (normalizedTargetPaths.some(p => normalizedMetaPath === p || normalizedMetaPath.endsWith('/' + p))) {
+                    finalScore *= FILE_PATH_BOOST;
+                }
             }
+
+            // 2. Time-based decay (boost for recency)
+            if (meta.created_timestamp_unix) {
+                const age_in_days = Math.max(0, (now_unix - meta.created_timestamp_unix) / (60 * 60 * 24));
+                // Recency boost gives up to 10% bonus, decaying over time
+                const recencyBoost = 0.1 * Math.exp(-TIME_DECAY_LAMBDA * age_in_days);
+                finalScore *= (1 + recencyBoost);
+            }
+
+            combinedResults.push({ ...meta, similarity, finalScore });
         }
 
-        // Sort by similarity in descending order and take topK
-        combinedResults.sort((a, b) => b.similarity - a.similarity);
+        // Sort by the new finalScore in descending order
+        combinedResults.sort((a, b) => b.finalScore - a.finalScore);
 
-        return combinedResults.slice(0, topK);
+        // Return topK results, removing the temporary finalScore from the output object
+        return combinedResults.slice(0, topK).map(({ finalScore, ...rest }) => rest);
     }
 
-    /**
-     * Finds semantically similar embeddings to a given query vector.
-     * @param queryEmbedding The vector to find similar embeddings for.
-     * @param topK The number of similar embeddings to return.
-     * @returns A promise that resolves to an array of similar embeddings with their IDs and similarity scores.
-     */
     public async findSimilarEmbeddings(queryEmbedding: number[], topK: number): Promise<Array<{ embedding_id: string; similarity: number }>> {
-
         return findSimilarVecEmbeddings(queryEmbedding, topK, this.vectorTable);
     }
 }
