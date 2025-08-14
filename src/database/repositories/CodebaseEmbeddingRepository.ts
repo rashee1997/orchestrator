@@ -202,9 +202,17 @@ export class CodebaseEmbeddingRepository {
         }
 
         if (targetFilePaths && targetFilePaths.length > 0) {
-            const filePlaceholders = targetFilePaths.map(() => '?').join(',');
-            sql += ` AND file_path_relative IN (${filePlaceholders})`;
-            params.push(...targetFilePaths);
+            // Normalize all incoming paths to use forward slashes for consistent matching
+            const normalizedPaths = targetFilePaths.map(p => p.replace(/\\/g, '/'));
+
+            // Create a series of LIKE clauses to robustly handle both absolute and relative paths
+            const likeClauses = normalizedPaths.map(() => `file_path_relative LIKE ?`).join(' OR ');
+            sql += ` AND (${likeClauses})`;
+
+            // The LIKE pattern should match if the stored relative path ENDS with the provided (normalized) path.
+            // This handles cases where the user provides a relative path ('src/...') or a full path ('.../src/...')
+            const likeParams = normalizedPaths.map(p => `%${p}`);
+            params.push(...likeParams);
         }
 
         const metadataRows = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];

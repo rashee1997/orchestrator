@@ -1,4 +1,6 @@
 import { MemoryManager } from '../database/memory_manager.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
 import { DatabaseService } from '../database/services/DatabaseService.js';
 import { ContextInformationManager } from '../database/managers/ContextInformationManager.js';
@@ -19,6 +21,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-1.5-flash-latest"). Defaults to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
+            live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Optional: Provide an array of full file paths for live chunking and review, bypassing RAG.', nullable: true },
             focus_area: {
 
                 type: 'string',
@@ -75,75 +78,98 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
     },
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) {
-
             const errorMsg = "MemoryManager instance is required for ask_gemini";
             console.error(errorMsg);
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
 
-        const { agent_id, query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length } = args;
+        const { agent_id, query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length, live_review_file_paths } = args;
         const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
 
-
-        // Access dbService and contextManager via memoryManagerInstance's public getters or properties
-        // This assumes MemoryManager exposes these, or provides a method to get GeminiIntegrationService
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
         const contextManager = (memoryManagerInstance as any).contextInformationManager as ContextInformationManager | undefined;
 
         if (!dbService || !contextManager) {
             const errorMsg = "dbService or contextInformationManager not available through MemoryManager for GeminiIntegrationService. Update access pattern in MemoryManager or tool.";
             console.error(errorMsg);
-            // It's better to throw an McpError for the MCP server to handle
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
 
-        const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
+        if (!process.env.GEMINI_API_KEY) {
+            const errorMsg = "Gemini API key (GEMINI_API_KEY) is not set in environment variables.";
+            console.error(errorMsg);
+            throw new McpError(ErrorCode.InternalError, errorMsg);
+        }
 
+        const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
         let augmentedQuery = query;
-        if (enable_rag) {
+
+        // New "Live Review" Path
+        if (live_review_file_paths && Array.isArray(live_review_file_paths) && live_review_file_paths.length > 0) {
             try {
+                let fullContextText = `Here is the content of the requested files, broken into chunks for review:\n\n`;
+                
+                const embeddingService = memoryManagerInstance.getCodebaseEmbeddingService();
+                const chunkingService = embeddingService.chunkingService;
+                const introspectionService = embeddingService.introspectionService;
+
+                for (const filePath of live_review_file_paths) {
+                    const fileContent = await fs.readFile(filePath, 'utf-8');
+                    const language = await introspectionService.detectLanguage(agent_id, filePath, path.basename(filePath));
+                    const chunks = chunkingService.chunkFileContentLive(fileContent, language);
+                    
+                    fullContextText += `========================================\n`;
+                    fullContextText += `FILE: ${path.basename(filePath)}\n`;
+                    fullContextText += `========================================\n\n`;
+                    fullContextText += chunks.map((chunk: string, index: number) => `--- Chunk ${index + 1} ---\n${chunk}`).join('\n\n');
+                    fullContextText += `\n\n`;
+                }
+
+                augmentedQuery = `${fullContextText}\n\nBased on the file content provided above, please respond to the following query: "${query}"`;
+                
+                // Use the existing focusString logic for reviews
+                let focusString = "";
+                if (focus_area === 'code_review') {
+                    if (analysis_focus_points && analysis_focus_points.length > 0) {
+                        focusString = "Focus on the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
+                    } else {
+                        focusString = "Focus on all aspects including:\n1.  **Potential Bugs & Errors**\n2.  **Best Practices & Conventions**\n3.  **Performance**\n4.  **Security Vulnerabilities**\n5.  **Readability & Maintainability**";
+                    }
+                    augmentedQuery = `${focusString}\n\n${augmentedQuery}`;
+                }
+
+
+            } catch (fileError: any) {
+                console.error(`Error during live file review for paths ${live_review_file_paths.join(', ')}:`, fileError);
+                throw new McpError(ErrorCode.InternalError, `Failed to read or chunk one or more live files: ${fileError.message}`);
+            }
+        // Existing RAG and no-RAG logic
+        } else if (enable_rag) {
+            try {
+                const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
                 let metaPromptTemplate = "";
                 let focusString = "";
 
                 if (analysis_focus_points && analysis_focus_points.length > 0) {
                     focusString = "Focus on the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
                 } else {
-                    focusString = "Focus on all aspects including:\n1.  **Potential Bugs & Errors**: Identify any logical errors, runtime exceptions, or edge cases that might not be handled.\n2.  **Best Practices & Conventions**: Check for adherence to common coding standards and language-specific best practices.\n3.  **Performance**: Suggest optimizations for speed or resource usage, if applicable.\n4.  **Security Vulnerabilities**: Point out any potential security risks (e.g., XSS, SQL injection, insecure handling of secrets).\n5.  **Readability & Maintainability**: Comment on code clarity, naming conventions, and overall structure. Suggest improvements for easier understanding and future maintenance.";
+                    focusString = "Focus on all aspects including:\n1.  **Potential Bugs & Errors**\n2.  **Best Practices & Conventions**\n3.  **Performance**\n4.  **Security Vulnerabilities**\n5.  **Readability & Maintainability**";
                 }
 
                 switch (focus_area) {
-                    case "code_review":
-                        metaPromptTemplate = CODE_REVIEW_META_PROMPT;
-                        break;
-                    case "code_explanation":
-                        metaPromptTemplate = CODE_EXPLANATION_META_PROMPT;
-                        break;
-                    case "enhancement_suggestions":
-                        metaPromptTemplate = ENHANCEMENT_SUGGESTIONS_META_PROMPT;
-                        break;
-                    case "bug_fixing":
-                        metaPromptTemplate = BUG_FIXING_META_PROMPT;
-                        break;
-                    case "refactoring":
-                        metaPromptTemplate = REFACTORING_META_PROMPT;
-                        break;
-                    case "testing":
-                        metaPromptTemplate = TESTING_META_PROMPT;
-                        break;
-                    case "documentation":
-                        metaPromptTemplate = DOCUMENTATION_META_PROMPT;
-                        break;
-                    case "code_modularization_orchestration": // New case
-                        metaPromptTemplate = CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT;
-                        break;
-                    default:
-                        metaPromptTemplate = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
-                        break;
+                    case "code_review": metaPromptTemplate = CODE_REVIEW_META_PROMPT; break;
+                    case "code_explanation": metaPromptTemplate = CODE_EXPLANATION_META_PROMPT; break;
+                    case "enhancement_suggestions": metaPromptTemplate = ENHANCEMENT_SUGGESTIONS_META_PROMPT; break;
+                    case "bug_fixing": metaPromptTemplate = BUG_FIXING_META_PROMPT; break;
+                    case "refactoring": metaPromptTemplate = REFACTORING_META_PROMPT; break;
+                    case "testing": metaPromptTemplate = TESTING_META_PROMPT; break;
+                    case "documentation": metaPromptTemplate = DOCUMENTATION_META_PROMPT; break;
+                    case "code_modularization_orchestration": metaPromptTemplate = CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT; break;
+                    default: metaPromptTemplate = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT; break;
                 }
 
                 const contextResults = await contextRetrieverService.retrieveContextForPrompt(agent_id, query, context_options || {});
                 const contextText = contextResults.map(res => {
-
                     const filePath = res.sourcePath;
                     const entityName = res.entityName ? ` (${res.entityName})` : '';
                     const contentPreview = res.content.substring(0, snippetLength);
@@ -157,66 +183,30 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 if (focus_area && ["code_review", "enhancement_suggestions", "bug_fixing", "refactoring", "testing", "documentation", "code_modularization_orchestration"].includes(focus_area)) {
                     augmentedQuery = `${focusString}\n\n${augmentedQuery}`;
                 }
-
-                // It's good practice to ensure Gemini API key is available before proceeding
-                if (!process.env.GEMINI_API_KEY) {
-                    const errorMsg = "Gemini API key (GEMINI_API_KEY) is not set in environment variables.";
-                    console.error(errorMsg);
-                    throw new McpError(ErrorCode.InternalError, errorMsg);
-                }
-
-                const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
-                const response = await geminiService.askGemini(augmentedQuery, model, systemInstruction, contextResults);
-                const geminiText = response.content?.[0]?.text ?? '';
-                const confidenceScore = response.confidenceScore;
-
-                let markdownOutput = `## Gemini Response for Query:\n`;
-                markdownOutput += `> "${query}"\n\n`;
-                if (confidenceScore !== undefined) {
-                    markdownOutput += `**Confidence Score:** ${confidenceScore.toFixed(4)}\n\n`;
-                }
-                markdownOutput += `### AI Answer:\n`;
-
-                if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
-                    markdownOutput += formatJsonToMarkdownCodeBlock(geminiText, 'text') + '\n';
-                } else {
-                    markdownOutput += `> ${geminiText.replace(/\n/g, '\n> ')}\n`;
-                }
-                return { content: [{ type: 'text', text: markdownOutput }] };
-
             } catch (error: any) {
-                console.error(`Error asking Gemini:`, error);
-                const errorMd = formatSimpleMessage(`Failed to get response from Gemini: ${error.message}`, "Gemini API Error");
-                throw new McpError(ErrorCode.InternalError, `Gemini API Error: ${error.message}`);
+                console.error(`Error in RAG process:`, error);
+                throw new McpError(ErrorCode.InternalError, `Error during RAG context retrieval: ${error.message}`);
             }
-        } else {
-             // It's good practice to ensure Gemini API key is available before proceeding
-            if (!process.env.GEMINI_API_KEY) {
-                const errorMsg = "Gemini API key (GEMINI_API_KEY) is not set in environment variables.";
-                console.error(errorMsg);
-                throw new McpError(ErrorCode.InternalError, errorMsg);
+        }
+
+        // Common final execution path for all scenarios
+        try {
+            const response = await geminiService.askGemini(augmentedQuery, model, systemInstruction);
+            const geminiText = response.content?.[0]?.text ?? '';
+
+            let markdownOutput = `## Gemini Response for Query:\n`;
+            markdownOutput += `> "${query}"\n\n`;
+            markdownOutput += `### AI Answer:\n`;
+
+            if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
+                markdownOutput += formatJsonToMarkdownCodeBlock(geminiText, 'text') + '\n';
+            } else {
+                markdownOutput += `> ${geminiText.replace(/\n/g, '\n> ')}\n`;
             }
-
-            const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
-            try {
-                const response = await geminiService.askGemini(augmentedQuery, model, systemInstruction);
-                const geminiText = response.content?.[0]?.text ?? '';
-
-                let markdownOutput = `## Gemini Response for Query:\n`;
-                markdownOutput += `> "${query}"\n\n`;
-                markdownOutput += `### AI Answer:\n`;
-
-                if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
-                    markdownOutput += formatJsonToMarkdownCodeBlock(geminiText, 'text') + '\n';
-                } else {
-                    markdownOutput += `> ${geminiText.replace(/\n/g, '\n> ')}\n`;
-                }
-                return { content: [{ type: 'text', text: markdownOutput }] };
-            } catch (error: any) {
-                console.error(`Error asking Gemini:`, error);
-                const errorMd = formatSimpleMessage(`Failed to get response from Gemini: ${error.message}`, "Gemini API Error");
-                throw new McpError(ErrorCode.InternalError, `Gemini API Error: ${error.message}`);
-            }
+            return { content: [{ type: 'text', text: markdownOutput }] };
+        } catch (error: any) {
+            console.error(`Error asking Gemini:`, error);
+            throw new McpError(ErrorCode.InternalError, `Gemini API Error: ${error.message}`);
         }
     }
 };

@@ -430,4 +430,66 @@ export class CodeChunkingService {
 
         return `${combinedContext}\n\n${entityCode}`;
     }
+
+    /**
+     * Performs a "live" chunking of file content without database lookups or AI summarization.
+     * Ideal for on-the-fly context generation for reviews.
+     * @param fileContent The raw content of the file.
+     * @param language The programming language of the file.
+     * @returns An array of string chunks.
+     */
+    public chunkFileContentLive(fileContent: string, language?: string): string[] {
+        const chunks: string[] = [];
+        const lines = fileContent.split(/\r\n|\r|\n/);
+        let currentChunkLines: string[] = [];
+        let currentEntityName: string | undefined = undefined;
+
+        // Simplified regex for logical boundaries
+        const functionRegex = /^\s*(public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
+        const classRegex = /^\s*(export\s+|abstract\s+)?class\s+([A-Za-z0-9_]+)/;
+
+        for (const line of lines) {
+            let match: RegExpMatchArray | null = null;
+            let entityType: 'function' | 'class' | undefined;
+
+            if ((match = line.match(classRegex))) {
+                entityType = 'class';
+            } else if ((match = line.match(functionRegex))) {
+                entityType = 'function';
+            }
+
+            // If a new logical block starts, push the previous chunk
+            if (match && entityType) {
+                if (currentChunkLines.length > 0) {
+                    chunks.push(currentChunkLines.join('\n'));
+                }
+                currentChunkLines = []; // Start a new chunk
+            }
+            
+            // Check if adding the current line would exceed maxChunkSize
+            const potentialChunkLength = currentChunkLines.join('\n').length + line.length + 1;
+            if (currentChunkLines.length > 0 && potentialChunkLength > this.maxChunkSize) {
+                chunks.push(currentChunkLines.join('\n'));
+                currentChunkLines = []; // Start a new chunk
+            }
+
+            currentChunkLines.push(line);
+        }
+
+        // Push the last remaining chunk
+        if (currentChunkLines.length > 0) {
+            chunks.push(currentChunkLines.join('\n'));
+        }
+
+        // If chunking resulted in a single chunk, and it's too large, split it by size
+        if (chunks.length === 1 && chunks[0].length > this.maxChunkSize) {
+            const bigChunk = chunks[0];
+            chunks.length = 0; // Clear the array
+            for (let i = 0; i < bigChunk.length; i += this.maxChunkSize) {
+                chunks.push(bigChunk.substring(i, i + this.maxChunkSize));
+            }
+        }
+
+        return chunks;
+    }
 }

@@ -18,9 +18,9 @@ export class CodebaseEmbeddingService {
     public repository: CodebaseEmbeddingRepository;
     private aiProvider: AIEmbeddingProvider;
 
-    private chunkingService: CodeChunkingService;
+    public chunkingService: CodeChunkingService;
     public embeddingCache: EmbeddingCache; // Made public to allow access from embedding_tools.ts
-    private introspectionService: CodebaseIntrospectionService;
+    public introspectionService: CodebaseIntrospectionService;
 
     constructor(
         memoryManager: MemoryManager,
