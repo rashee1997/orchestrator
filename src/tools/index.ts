@@ -6,11 +6,12 @@ import { sourceAttributionToolDefinitions, getSourceAttributionToolHandlers } fr
 import { successMetricsToolDefinitions, getSuccessMetricsToolHandlers } from './success_metrics_tools.js';
 import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } from './database_management_tools.js';
 import { planManagementToolDefinitions, getPlanManagementToolHandlers } from './plan_management_tools.js';
-import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
+
 import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './knowledge_graph_tools.js';
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
+import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 
 import {
     getLoggingToolDefinitions,
@@ -115,9 +116,9 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(successMetricsToolDefinitions),
         ...stripFuncFromDefs(databaseManagementToolDefinitions),
         ...stripFuncFromDefs(planManagementToolDefinitions),
-        ...stripFuncFromDefs(promptRefinementToolDefinitions),
         ...stripFuncFromDefs(knowledgeGraphToolDefinitions),
         ...stripFuncFromDefs(reviewLogToolDefinitions),
+        ...stripFuncFromDefs(promptRefinementToolDefinitions),
         ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
         ...stripFuncFromDefs(geminiToolDefinitions),
         ...stripFuncFromDefs(embeddingToolDefinitions),
@@ -156,9 +157,9 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getSuccessMetricsToolHandlers(memoryManager),
         ...getDatabaseManagementToolHandlers(memoryManager),
         ...getPlanManagementToolHandlers(memoryManager),
-        ...getPromptRefinementToolHandlers(memoryManager),
         ...getKnowledgeGraphToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
+        ...getPromptRefinementToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
         ...getEmbeddingToolHandlers(memoryManager),
         ...loggingHandlers,

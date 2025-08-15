@@ -366,9 +366,7 @@ export class MemoryManager {
     async semanticSearchContext(...args: Parameters<GeminiIntegrationService['semanticSearchContext']>) {
         return this.geminiIntegrationService.semanticSearchContext(...args);
     }
-    async processAndRefinePrompt(...args: Parameters<GeminiIntegrationService['processAndRefinePrompt']>) {
-        return this.geminiIntegrationService.processAndRefinePrompt(...args);
-    }
+   
     async storeRefinedPrompt(...args: Parameters<GeminiIntegrationService['storeRefinedPrompt']>) {
         return this.geminiIntegrationService.storeRefinedPrompt(...args);
     }

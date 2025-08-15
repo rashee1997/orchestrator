@@ -74,13 +74,12 @@ export class CodebaseContextRetrieverService {
         console.log(`Query Intent Classified as: ${queryIntent}`);
         const keywords = await this._extractKeywordsAndEntitiesWithGemini(prompt);
 
-        // Step 2: Parallel Retrieval from Multiple Sources
-        const [semanticResults, kgResults, docResults, taskLogResults] = await Promise.all([
-            this.performSemanticSearch(agentId, prompt, options, queryIntent),
-            this.performKgSearch(agentId, prompt, options),
-            this.searchDocumentation(agentId, prompt, options),
-            this.searchTaskLogs(agentId, keywords, options)
-        ]);
+        // Step 2: Intent-Driven Parallel Retrieval from Multiple Sources
+        const retrievalPromises = this.getRetrievalPromisesByIntent(queryIntent, agentId, prompt, keywords, options);
+        const retrievalResults = await Promise.all(retrievalPromises);
+
+        const [semanticResults, kgResults, docResults, taskLogResults] = retrievalResults;
+
 
         // Step 3: Reciprocal Rank Fusion to combine results robustly
         console.log(`[Context Retrieval] Fusing results: ${semanticResults.length} semantic, ${kgResults.length} KG, ${docResults.length} docs, ${taskLogResults.length} logs.`);
@@ -150,8 +149,44 @@ export class CodebaseContextRetrieverService {
         return 'general_query';
     }
 
-    private async performSemanticSearch(agentId: string, prompt: string, options: ContextRetrievalOptions, intent: QueryIntent): Promise<RetrievedCodeContext[]> {
+    private getRetrievalPromisesByIntent(
+        intent: QueryIntent,
+        agentId: string,
+        prompt: string,
+        keywords: string[],
+        options: ContextRetrievalOptions
+    ): Promise<RetrievedCodeContext[]>[] {
+        // Define retrieval weights based on intent [semantic, kg, docs, logs]
+        const weights: Record<QueryIntent, number[]> = {
+            'debug_error': [1.0, 0.6, 0.4, 1.0],
+            'refactor_code': [0.9, 1.0, 0.5, 0.2],
+            'add_feature': [0.8, 0.9, 0.7, 0.3],
+            'understand_code': [0.7, 1.0, 0.8, 0.1],
+            'find_example': [1.0, 0.5, 0.6, 0.1],
+            'general_query': [1.0, 0.7, 0.9, 0.2],
+        };
+
+        const currentWeights = weights[intent];
+
+        const semanticOptions = { ...options, topKEmbeddings: Math.round((options.topKEmbeddings ?? 15) * currentWeights[0]) };
+        const kgOptions = { ...options, topKKgResults: Math.round((options.topKKgResults ?? 10) * currentWeights[1]) };
+        // Assuming docs and logs have their own limits or we can apply a default
+        const docOptions = { ...options };
+        const logOptions = { ...options };
+
+        console.log(`[Intent-Driven Retrieval] Intent: ${intent}, Weights: [Sem: ${currentWeights[0]}, KG: ${currentWeights[1]}, Doc: ${currentWeights[2]}, Log: ${currentWeights[3]}]`);
+
+        return [
+            currentWeights[0] > 0 ? this.performSemanticSearch(agentId, prompt, semanticOptions) : Promise.resolve([]),
+            currentWeights[1] > 0 ? this.performKgSearch(agentId, prompt, kgOptions) : Promise.resolve([]),
+            currentWeights[2] > 0 ? this.searchDocumentation(agentId, prompt, docOptions) : Promise.resolve([]),
+            currentWeights[3] > 0 ? this.searchTaskLogs(agentId, keywords, logOptions) : Promise.resolve([])
+        ];
+    }
+
+    private async performSemanticSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         const topK = options.topKEmbeddings ?? 15;
+        if (topK === 0) return [];
         try {
             const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(agentId, prompt, topK, options.targetFilePaths);
             return embeddingResults.map(res => ({
@@ -169,12 +204,14 @@ export class CodebaseContextRetrieverService {
     }
 
     private async performKgSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        const topK = options.topKKgResults ?? 10;
+        if (topK === 0) return [];
         try {
             const rawKgResults = await this.kgManager.queryNaturalLanguage(agentId, prompt);
             const kgQueryResults = JSON.parse(rawKgResults);
 
             if (kgQueryResults && kgQueryResults.results && Array.isArray(kgQueryResults.results)) {
-                return kgQueryResults.results.slice(0, options.topKKgResults ?? 10).map((node: any, index: number) => ({
+                return kgQueryResults.results.slice(0, topK).map((node: any, index: number) => ({
                     type: 'kg_node_info',
                     sourcePath: node.name,
                     entityName: node.entityType !== 'file' ? node.name : undefined,

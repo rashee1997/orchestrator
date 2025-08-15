@@ -5,15 +5,8 @@ import path from 'path';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 // Import all language parsers
-import { EnhancedTypeScriptParser } from '../parsers/EnhancedTypeScriptParser.js';
-import { PythonParser } from '../parsers/PythonParser.js';
-import { HTMLParser } from '../parsers/HTMLParser.js';
-import { CSSParser } from '../parsers/CSSParser.js';
-import { EnhancedPHPParser } from '../parsers/EnhancedPHPParser.js';
-import { JSONLParser } from '../parsers/JSONLParser.js';
-import { MarkdownParser } from '../parsers/MarkdownParser.js';
-import { TailwindCSSParser } from '../parsers/TailwindCSSParser.js';
-import type { ILanguageParser, BaseLanguageParser } from '../parsers/ILanguageParser.js';
+import type { ILanguageParser } from '../parsers/ILanguageParser.js';
+import { ParserFactory } from '../parsers/ParserFactory.js';
 
 // ... (ScannedItem, ExtractedImport interfaces remain unchanged)
 export interface ScannedItem {
@@ -116,28 +109,27 @@ export class CodebaseIntrospectionService {
     private geminiService: GeminiIntegrationService | null = null;
     private projectRootPath: string;
     private languageParsers: Map<string, ILanguageParser>;
+    private parserFactory: ParserFactory;
 
     constructor(memoryManager: MemoryManager, geminiService?: GeminiIntegrationService, projectRootPath?: string) {
         this.memoryManager = memoryManager;
         this.geminiService = geminiService || null;
         this.projectRootPath = projectRootPath || process.cwd();
-        // Register all language parsers
+        
+        this.parserFactory = new ParserFactory(this.projectRootPath);
+
         this.languageParsers = new Map();
-        [
-            new EnhancedTypeScriptParser(this.projectRootPath),
-            new PythonParser(this.projectRootPath),
-            new HTMLParser(this.projectRootPath),
-            new CSSParser(this.projectRootPath),
-            new EnhancedPHPParser(this.projectRootPath),
-            new JSONLParser(this),
-            new MarkdownParser(this.projectRootPath),
-            new TailwindCSSParser(this.projectRootPath)
-        ].forEach(parser => this.registerParser(parser));
+        this.parserFactory.getAllParsers(this)
+            .forEach(parser => this.registerParser(parser));
     }
 
-    private registerParser(parser: ILanguageParser | BaseLanguageParser): void {
-        parser.getSupportedExtensions().forEach(ext => this.languageParsers.set(ext, parser));
-        this.languageParsers.set(parser.getLanguageName(), parser);
+    private registerParser(parser: ILanguageParser): void {
+        parser.getSupportedExtensions().forEach(ext => {
+            if (this.languageParsers.has(ext)) {
+                console.warn(`Warning: Duplicate parser registration for extension '${ext}'. Overwriting.`);
+            }
+            this.languageParsers.set(ext, parser);
+        });
     }
 
     public setGeminiService(geminiService: GeminiIntegrationService): void {

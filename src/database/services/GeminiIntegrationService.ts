@@ -278,65 +278,6 @@ export class GeminiIntegrationService {
         }
     }
 
-    // Process and refine a user prompt using context and conversation history
-    async processAndRefinePrompt(
-        agent_id: string,
-        raw_user_prompt: string,
-        target_ai_persona: string | null = null,
-        conversation_context_ids: string[] | null = null,
-        context_options?: ContextRetrievalOptions
-    ): Promise<any> {
-        const modelToUse = this.refinementModelName;
-
-        let retrievedCodeContextParts: Part[] = [{ text: "No codebase context was actively retrieved for this refinement iteration." }];
-        try {
-            const retrievalOptions: ContextRetrievalOptions = context_options || {
-                topKEmbeddings: 5,
-                topKKgResults: 5,
-                embeddingScoreThreshold: 0.6
-            };
-            console.log('[DEBUG] processAndRefinePrompt retrievalOptions:', retrievalOptions);
-            const codeContexts = await this.codebaseContextRetrieverService.retrieveContextForPrompt(
-                agent_id,
-                raw_user_prompt,
-                retrievalOptions
-            );
-            retrievedCodeContextParts = formatRetrievedContextForPrompt(codeContexts);
-        } catch (contextError: any) {
-            console.error(`Error retrieving codebase context for prompt refinement (agent: ${agent_id}):`, contextError);
-            retrievedCodeContextParts = [{ text: `Error retrieving codebase context: ${contextError.message}` }];
-        }
-
-        const metaPromptContent = META_PROMPT
-            .replace('{modelToUse}', modelToUse)
-            .replace('{raw_user_prompt}', raw_user_prompt)
-            .replace('{retrievedCodeContextString}', retrievedCodeContextParts[0].text || '');
-
-        try {
-            const result = await this.askGemini(metaPromptContent, modelToUse);
-            const textResponse = result.content[0].text ?? '';
-
-            const parsedResponse = parseGeminiJsonResponse(textResponse);
-
-            // Ensure agent_id is always present in the refined prompt output
-            parsedResponse.agent_id = parsedResponse.agent_id || agent_id;
-
-            // Add server-side generated fields BEFORE storing
-            parsedResponse.refinement_timestamp = new Date().toISOString();
-            parsedResponse.original_prompt_text = raw_user_prompt;
-
-            // Now store the complete object and get the ID
-            parsedResponse.refined_prompt_id = await this.geminiDbUtils.storeRefinedPrompt(parsedResponse);
-
-            return parsedResponse;
-
-
-        } catch (error: any) {
-            console.error(`Error calling Gemini API for prompt refinement (agent: ${agent_id}):`, error);
-            throw new Error(`Failed to refine prompt using Gemini API: ${error.message}`);
-        }
-    }
-
     // Store a refined prompt in the database
     async storeRefinedPrompt(refinedPrompt: any): Promise<string> {
         return this.geminiDbUtils.storeRefinedPrompt(refinedPrompt);

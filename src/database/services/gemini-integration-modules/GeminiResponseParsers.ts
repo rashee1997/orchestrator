@@ -21,8 +21,12 @@ export function parseGeminiJsonResponse(textResponse: string): any {
         // It looks for unescaped newlines or tabs within double-quoted strings and escapes them.
         jsonString = jsonString.replace(/\"([^\"\\]*(?:\\.[^\"\\]*)*)\"/g, (match, p1) => {
             // p1 is the content inside the quotes
-            return '"' + p1.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + '"';
+        return '"' + p1.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + '"';
         });
+
+        // Remove any remaining invalid control characters that JSON.parse would reject
+        // (ASCII 0-31, excluding tab \t, newline \n, carriage return \r which are handled by JSON.parse when escaped)
+        jsonString = jsonString.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 
         return JSON.parse(jsonString);
     } catch (parseError: any) {

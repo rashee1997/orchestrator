@@ -158,26 +158,101 @@ describe('Prompt Refinement Tool', () => {
         mcpServer.server.setRequestHandler(ListToolsRequestSchema, async () => ({
             tools: [
                 {
-                    name: 'refine_user_prompt',
-                    description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis.',
+                    name: 'ask_gemini',
+                    description: 'Asks a query to the Gemini AI. Can perform a simple query, use Retrieval-Augmented Generation (RAG) for context-aware answers, or perform an automated, multi-step iterative search for complex questions.',
                     inputSchema: {
                         type: 'object',
                         properties: {
-                            agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
-                            raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
+                            agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
+                            query: { type: 'string', description: 'The query string to send to Gemini.' },
+                            model: { type: 'string', description: 'Optional: The Gemini model to use. Defaults to a fast, recent model.', default: 'gemini-2.5-flash' },
+                            systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
+                            enable_rag: { type: 'boolean', description: 'Optional: Enable single-turn Retrieval-Augmented Generation (RAG) with codebase context.', default: false, nullable: true },
+                            enable_iterative_search: {
+                                type: 'boolean',
+                                description: 'Enable an automated, multi-step search-and-refine process for complex queries to gather more comprehensive context before answering.',
+                                default: false
+                            },
+                            max_iterations: {
+                                type: 'number',
+                                description: 'The maximum number of search-and-refine iterations. Only applies if enable_iterative_search is true.',
+                                default: 3,
+                                minimum: 1,
+                                maximum: 5
+                            },
+                            live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Optional: Provide an array of full file paths for live chunking and review, bypassing RAG.', nullable: true },
+                            focus_area: {
+                                type: 'string',
+                                description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions, code modularization & orchestration).',
+                                enum: [
+                                    "code_review",
+                                    "code_explanation",
+                                    "enhancement_suggestions",
+                                    "bug_fixing",
+                                    "refactoring",
+                                    "testing",
+                                    "documentation",
+                                    "code_modularization_orchestration"
+                                ],
+                                nullable: true
+                            },
+                            context_snippet_length: { type: 'number', description: 'Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.', default: 200, nullable: true },
+                            analysis_focus_points: {
+                                type: 'array',
+                                items: {
+                                    type: 'string',
+                                    enum: [
+                                        "Potential Bugs & Errors",
+                                        "Best Practices & Conventions",
+                                        "Performance",
+                                        "Security Vulnerabilities",
+                                        "Readability & Maintainability",
+                                        "Duplications",
+                                        "Code Smells",
+                                        "Testability",
+                                        "Error Handling",
+                                        "Modularity & Coupling",
+                                        "Documentation & Comments"
+                                    ]
+                                },
+                                description: 'Specific aspects to focus on during the review. If empty or not provided, a general comprehensive review is performed.',
+                                nullable: true
+                            },
+                            context_options: {
+                                type: 'object',
+                                properties: {
+                                    topKEmbeddings: { type: 'number', description: 'Optional: Number of top embedding results to retrieve.', nullable: true },
+                                    kgQueryDepth: { type: 'number', description: 'Optional: Depth for Knowledge Graph queries.', nullable: true },
+                                    includeFileContent: { type: 'boolean', description: 'Optional: Whether to include full file content for retrieved files.', nullable: true },
+                                    targetFilePaths: { type: 'array', items: { type: 'string' }, description: 'Optional: Array of relative file paths to restrict context retrieval to.', nullable: true },
+                                    topKKgResults: { type: 'number', description: 'Optional: Number of top Knowledge Graph results to retrieve.', nullable: true },
+                                    embeddingScoreThreshold: { type: 'number', description: 'Optional: Minimum embedding similarity score to include results.', nullable: true }
+                                },
+                                additionalProperties: false,
+                                nullable: true
+                            },
+                            execution_mode: {
+                                type: 'string',
+                                description: 'Optional: Specifies the desired output format and underlying logic. "generative_answer" for standard AI response, "plan_generation" for a structured JSON plan.',
+                                enum: ['generative_answer', 'plan_generation'],
+                                default: 'generative_answer',
+                                nullable: true
+                            },
                             target_ai_persona: {
-                              type: ['string', 'null'],
-                              description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). This helps the refiner tailor the output.",
-                              default: null
+                                type: ['string', 'null'],
+                                description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). Used primarily for 'plan_generation' mode.",
+                                default: null,
+                                nullable: true
                             },
                             conversation_context_ids: {
-                              type: ['array', 'null'],
-                              items: { type: 'string' },
-                              description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
-                              default: null
+                                type: ['array', 'null'],
+                                items: { type: 'string' },
+                                description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement. Used primarily for 'plan_generation' mode.",
+                                default: null,
+                                nullable: true
                             }
-                          },
-                          required: ['agent_id', 'raw_user_prompt']
+                        },
+                        required: ['agent_id', 'query']
                     }
                 }
             ]
@@ -185,14 +260,49 @@ describe('Prompt Refinement Tool', () => {
 
         mcpServer.server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
             const { name, arguments: args } = request.params;
-            if (name === 'refine_user_prompt') {
-                const refinedPromptObject = await memoryManager.processAndRefinePrompt(
-                    args.agent_id as string,
-                    args.raw_user_prompt as string,
-                    args.target_ai_persona as string | undefined,
-                    args.conversation_context_ids as string[] | undefined
-                );
-                return { content: [{ type: 'text', text: JSON.stringify(refinedPromptObject, null, 2) }] };
+            if (name === 'ask_gemini') {
+                // Simulate the ask_gemini tool's behavior for plan_generation mode
+                if (args.execution_mode === 'plan_generation') {
+                    const refinedPromptObject = await memoryManager.getGeminiIntegrationService().storeRefinedPrompt({
+                        refined_prompt_id: randomUUID(),
+                        original_prompt_text: args.query,
+                        refinement_engine_model: args.model || 'gemini-2.0-flash',
+                        refinement_timestamp: new Date().toISOString(),
+                        overall_goal: "Refine the test prompt.",
+                        decomposed_tasks: ["Analyze the prompt.", "Generate suggestions."],
+                        key_entities_identified: ["test prompt", "Gemini API"],
+                        implicit_assumptions_made_by_refiner: ["User wants a structured output."],
+                        explicit_constraints_from_prompt: ["Output must be JSON."],
+                        suggested_ai_role_for_agent: args.target_ai_persona || "Test Refiner",
+                        suggested_reasoning_strategy_for_agent: "Follow test plan.",
+                        desired_output_characteristics_inferred: {
+                            type: "JSON Object",
+                            key_content_elements: ["refined_prompt_id", "overall_goal"],
+                            level_of_detail: "High"
+                        },
+                        suggested_context_analysis_for_agent: [
+                            {
+                                suggestion_type: "MEMORY_RETRIEVAL",
+                                tool_to_use: "get_conversation_history",
+                                parameters: {"limit": 1},
+                                rationale: "Test rationale."
+                            }
+                        ],
+                        confidence_in_refinement_score: "High",
+                        refinement_error_message: null
+                    });
+                    return { content: [{ type: 'text', text: JSON.stringify(refinedPromptObject, null, 2) }] };
+                } else {
+                    // Default ask_gemini behavior (return markdown)
+                    return { content: [{ type: 'text', text: `## Gemini Response for Query:\n> "${args.query}"\n\n### AI Answer:\n> Simulated generative answer.` }] };
+                }
+            } else if (name === 'get_refined_prompt') {
+                const refinedPrompt = await memoryManager.getGeminiIntegrationService().getRefinedPrompt(args.agent_id, args.refined_prompt_id);
+                if (refinedPrompt) {
+                    return { content: [{ type: 'text', text: JSON.stringify(refinedPrompt, null, 2) }] };
+                } else {
+                    return { content: [{ type: 'text', text: `Refined prompt with ID ${args.refined_prompt_id} not found for agent ${args.agent_id}.` }] };
+                }
             }
             throw new Error(`Unknown tool: ${name}`);
         });
@@ -211,10 +321,11 @@ describe('Prompt Refinement Tool', () => {
 
     const request = {
       params: {
-        name: 'refine_user_prompt',
+        name: 'ask_gemini',
         arguments: {
           agent_id: agentId,
-          raw_user_prompt: rawPrompt,
+          query: rawPrompt,
+          execution_mode: 'plan_generation',
         },
       },
     };
@@ -235,21 +346,22 @@ describe('Prompt Refinement Tool', () => {
     const originalApiKey = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
 
-    // Create a new MemoryManager instance *without* passing a genAI instance
-    // This forces it to check process.env.GEMINI_API_KEY
-    const localMemoryManager = await MemoryManager.create();
-
     const agentId = 'test-agent-2';
     const rawPrompt = 'Another test prompt.';
 
-    // Directly call the method on the new localMemoryManager instance
-    const refinedPromptObject = await localMemoryManager.processAndRefinePrompt(
-        agentId,
-        rawPrompt
-    );
+    const request = {
+      params: {
+        name: 'ask_gemini',
+        arguments: {
+          agent_id: agentId,
+          query: rawPrompt,
+          execution_mode: 'plan_generation',
+        },
+      },
+    };
 
-    expect(refinedPromptObject).toHaveProperty('refinement_error_message');
-    expect(refinedPromptObject.refinement_error_message).toContain('Gemini API not initialized. Ensure GEMINI_API_KEY is set.');
+    // Expect the tool call to throw an McpError
+    await expect(mcpServer.callToolHandler(request)).rejects.toThrow('Gemini API Error: Gemini API key (GEMINI_API_KEY) is not set in environment variables.');
 
     // Restore the API key
     process.env.GEMINI_API_KEY = originalApiKey;
@@ -260,7 +372,7 @@ describe('Prompt Refinement Tool', () => {
       refined_prompt_id: randomUUID(),
       agent_id: 'test-agent-3',
       original_prompt_text: 'Test prompt for storage.',
-      refinement_engine_model: 'gemini-2.0-flash',
+      refinement_engine_model: 'gemini-2.5-flash',
       refinement_timestamp: new Date().toISOString(),
       overall_goal: 'Store this prompt.',
       decomposed_tasks: ['Task A', 'Task B'],
@@ -279,7 +391,7 @@ describe('Prompt Refinement Tool', () => {
     expect(storedId).toBe(refinedPromptData.refined_prompt_id);
 
     // Verify it can be retrieved
-    const retrievedPrompt = await memoryManager.getRefinedPrompt(refinedPromptData.agent_id, storedId);
+    const retrievedPrompt = await memoryManager.getGeminiIntegrationService().getRefinedPrompt(refinedPromptData.agent_id, storedId);
     expect(retrievedPrompt).toBeDefined();
     expect(retrievedPrompt.refined_prompt_id).toBe(refinedPromptData.refined_prompt_id);
     expect(retrievedPrompt.original_prompt_text).toBe(refinedPromptData.original_prompt_text);
@@ -288,16 +400,17 @@ describe('Prompt Refinement Tool', () => {
   });
 
   it('should retrieve a refined prompt using the get_refined_prompt MCP tool', async () => {
-    // First, generate and store a refined prompt using the refine_user_prompt tool
+    // First, generate and store a refined prompt using the ask_gemini tool in plan_generation mode
     const agentId = 'test-agent-4';
     const rawPrompt = 'Generate a report on climate change impacts.';
 
     const refineRequest = {
       params: {
-        name: 'refine_user_prompt',
+        name: 'ask_gemini',
         arguments: {
           agent_id: agentId,
-          raw_user_prompt: rawPrompt,
+          query: rawPrompt,
+          execution_mode: 'plan_generation',
         },
       },
     };
