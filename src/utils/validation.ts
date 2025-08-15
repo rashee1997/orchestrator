@@ -17,13 +17,13 @@ export const schemas = {
         required: ['agent_id', 'plan_id', 'task_id'],
         additionalProperties: false,
     },
-    aiSuggestSubtasks: { 
+    aiSuggestSubtasks: {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
             plan_id: { type: 'string', description: 'ID of the plan the parent task belongs to.' },
             parent_task_id: { type: 'string', description: 'The ID of the parent task for which subtasks are being suggested.' },
-            parent_task_title: { type: 'string', description: 'Optional: Title of the parent task (provides more context to AI). If not provided, it will be fetched.', nullable: true},
+            parent_task_title: { type: 'string', description: 'Optional: Title of the parent task (provides more context to AI). If not provided, it will be fetched.', nullable: true },
             parent_task_description: { type: 'string', description: 'Optional: Description of the parent task. If not provided, it will be fetched.', nullable: true },
             max_suggestions: { type: 'number', default: 5, minimum: 1, maximum: 10, description: 'Maximum number of subtasks to suggest.' },
             codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context (e.g., related file names, function signatures).', nullable: true },
@@ -36,11 +36,11 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
             plan_id: { type: 'string', description: 'The ID of the plan to analyze.' },
-            analysis_focus_areas: { 
-                type: 'array', 
-                items: { type: 'string' }, 
+            analysis_focus_areas: {
+                type: 'array',
+                items: { type: 'string' },
                 nullable: true,
-                description: 'Optional: Specific areas to focus the analysis on (e.g., "risk_assessment", "task_dependencies", "resource_allocation", "goal_alignment").' 
+                description: 'Optional: Specific areas to focus the analysis on (e.g., "risk_assessment", "task_dependencies", "resource_allocation", "goal_alignment").'
             },
             codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context to consider during plan analysis.', nullable: true },
         },
@@ -58,28 +58,28 @@ export const schemas = {
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
     },
-    queryCodebaseEmbeddings: { 
+    queryCodebaseEmbeddings: {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Agent ID associated with the embeddings." },
             query_text: { type: 'string', description: "The text to find similar code chunks for." },
             top_k: { type: 'number', default: 5, minimum: 1, description: "Number of top results to return." },
-                target_file_paths: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    nullable: true,
-                    description: "Optional: Array of relative file paths to restrict the search to."
-                },
-                exclude_chunk_types: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    nullable: true,
-                    description: "Optional: Array of chunk types to exclude from the results (e.g., 'full_file', 'function_summary')."
-                }
+            target_file_paths: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of relative file paths to restrict the search to."
             },
-            required: ['agent_id', 'query_text'],
-            additionalProperties: false,
+            exclude_chunk_types: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of chunk types to exclude from the results (e.g., 'full_file', 'function_summary')."
+            }
         },
+        required: ['agent_id', 'query_text'],
+        additionalProperties: false,
+    },
     cleanUpEmbeddings: {
         type: 'object',
         properties: {
@@ -109,8 +109,8 @@ export const schemas = {
                 minItems: 1,
                 description: "Array of absolute paths to the files to embed. Use this or 'path_to_embed', but not both."
             },
-            project_root_path: {type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings."},
-            is_directory: {type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory. Ignored if 'paths_to_embed' is used."},
+            project_root_path: { type: 'string', description: "The absolute root path of the project. Used to calculate relative paths for storing and linking embeddings." },
+            is_directory: { type: 'boolean', default: false, description: "Set to true if 'path_to_embed' is a directory. Ignored if 'paths_to_embed' is used." },
             chunking_strategy: {
                 type: 'string',
                 enum: ['file', 'function', 'class', 'auto'],
@@ -143,11 +143,17 @@ export const schemas = {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: "Agent ID to associate the KG data with." },
-            file_path: { type: 'string', description: "The absolute path to the code file to parse." },
-            project_root_path: {type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths for entities) relative and canonical. If not provided, file_path's directory might be used or behavior might be less predictable for relative naming."},
+            paths: {
+                oneOf: [
+                    { type: 'string', description: "A single absolute path to a code file to parse." },
+                    { type: 'array', items: { type: 'string' }, description: "An array of absolute paths to code files to parse." }
+                ],
+                description: "A single file path or an array of file paths to parse for code entities."
+            },
+            project_root_path: { type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths for entities) relative and canonical. If not provided, file_path's directory might be used or behavior might be less predictable for relative naming." },
             language: { type: 'string', nullable: true, description: "Optional: Programming language of the file (e.g., 'typescript', 'python'). Helps select the correct parser and can be auto-detected if not provided." }
         },
-        required: ['agent_id', 'file_path'],
+        required: ['agent_id', 'paths'],
         additionalProperties: false,
     },
     ingestCodebaseStructure: {
@@ -155,8 +161,9 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string', description: "Agent ID to associate the KG data with." },
             directory_path: { type: 'string', description: "The root path of the codebase directory to scan." },
-            project_root_path: {type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths) relative and canonical. If not provided, directory_path might be used as the base for relative naming."},
-            parse_imports: { type: 'boolean', default: true, description: "Whether to attempt to parse import statements from supported files." }
+            project_root_path: { type: 'string', nullable: true, description: "Optional: The explicit root path of the project, used to make KG node names (like file paths) relative and canonical. If not provided, directory_path might be used as the base for relative naming." },
+            parse_imports: { type: 'boolean', default: true, description: "Whether to attempt to parse import statements from supported files." },
+            perform_deep_entity_ingestion: { type: 'boolean', default: false, description: "If true, performs a full code entity parse on every valid file found in the scan." }
         },
         required: ['agent_id', 'directory_path'],
         additionalProperties: false,
@@ -169,7 +176,7 @@ export const schemas = {
             sender: { type: 'string' },
             message_content: { type: 'string' },
             message_type: { type: 'string', default: 'text' },
-            tool_info: { type: ['string', 'object', 'null'] }, 
+            tool_info: { type: ['string', 'object', 'null'] },
             context_snapshot_id: { type: ['string', 'null'] },
             source_attribution_id: { type: ['string', 'null'] },
         },
@@ -181,7 +188,7 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string' },
             context_type: { type: 'string' },
-            context_data: { type: 'object' }, 
+            context_data: { type: 'object' },
             parent_context_id: { type: ['string', 'null'] },
         },
         required: ['agent_id', 'context_type', 'context_data'],
@@ -369,18 +376,18 @@ export const schemas = {
                         status: { type: 'string', default: 'PLANNED' },
                         purpose: { type: ['string', 'null'] },
                         action_description: { type: ['string', 'null'] },
-                        files_involved_json: { type: ['string', 'null'] }, 
-                        dependencies_task_ids_json: { type: ['string', 'null'] }, 
-                        tools_required_list_json: { type: ['string', 'null'] }, 
+                        files_involved_json: { type: ['string', 'null'] },
+                        dependencies_task_ids_json: { type: ['string', 'null'] },
+                        tools_required_list_json: { type: ['string', 'null'] },
                         inputs_summary: { type: ['string', 'null'] },
                         outputs_summary: { type: ['string', 'null'] },
                         success_criteria_text: { type: ['string', 'null'] },
                         estimated_effort_hours: { type: ['number', 'null'] },
                         assigned_to: { type: ['string', 'null'] },
                         verification_method: { type: ['string', 'null'] },
-                        notes_json: { type: ['string', 'null'] } 
+                        notes_json: { type: ['string', 'null'] }
                     },
-                    additionalProperties: true, 
+                    additionalProperties: true,
                 },
             }
         },
@@ -498,7 +505,7 @@ export const schemas = {
                     notes: { type: ['object', 'null'] }
                 },
                 required: ['task_number', 'title'],
-                additionalProperties: true, 
+                additionalProperties: true,
             }
         },
         required: ['agent_id', 'plan_id', 'taskData'],
@@ -510,15 +517,15 @@ export const schemas = {
             agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
             raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
             target_ai_persona: {
-              type: ['string', 'null'],
-              description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer').",
-              default: null
+                type: ['string', 'null'],
+                description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer').",
+                default: null
             },
             conversation_context_ids: {
-              type: ['array', 'null'],
-              items: { type: 'string' },
-              description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
-              default: null
+                type: ['array', 'null'],
+                items: { type: 'string' },
+                description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
+                default: null
             },
             context_options: {
                 type: 'object',
@@ -626,9 +633,9 @@ export const schemas = {
             plan_id: { type: 'string' },
             task_id: { type: 'string' },
             reviewer: { type: ['string', 'null'] },
-            review_status: { type: 'string' }, 
+            review_status: { type: 'string' },
             review_notes_md: { type: ['string', 'null'] },
-            issues_found_json: { type: ['string', 'null'] }, 
+            issues_found_json: { type: ['string', 'null'] },
             resolution_notes_md: { type: ['string', 'null'] }
         },
         required: ['agent_id', 'plan_id', 'task_id', 'review_status'],
@@ -642,15 +649,15 @@ export const schemas = {
             task_id: { type: ['string', 'null'] },
             review_status: { type: ['string', 'null'] }
         },
-        additionalProperties: false 
+        additionalProperties: false
     },
     update_task_review_log: {
         type: 'object',
         properties: {
             review_log_id: { type: 'string' },
-            updates: { 
+            updates: {
                 type: 'object',
-                additionalProperties: true 
+                additionalProperties: true
             }
         },
         required: ['review_log_id', 'updates'],
@@ -691,9 +698,9 @@ export const schemas = {
         type: 'object',
         properties: {
             final_review_log_id: { type: 'string' },
-            updates: { 
+            updates: {
                 type: 'object',
-                additionalProperties: true 
+                additionalProperties: true
             }
         },
         required: ['final_review_log_id', 'updates'],
@@ -817,7 +824,7 @@ export const schemas = {
 // Compile schemas
 for (const key in schemas) {
     if (Object.prototype.hasOwnProperty.call(schemas, key)) {
-        if (!ajv.getSchema(key)) { 
+        if (!ajv.getSchema(key)) {
             ajv.addSchema((schemas as any)[key], key);
         }
     }

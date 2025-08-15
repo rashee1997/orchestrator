@@ -1,6 +1,7 @@
 // src/tools/index.ts
 import { conversationToolDefinitions, getConversationToolHandlers } from './conversation_tools.js';
 import { referenceToolDefinitions, getReferenceToolHandlers } from './reference_tools.js';
+import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 import { sourceAttributionToolDefinitions, getSourceAttributionToolHandlers } from './source_attribution_tools.js';
 import { successMetricsToolDefinitions, getSuccessMetricsToolHandlers } from './success_metrics_tools.js';
 import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } from './database_management_tools.js';
@@ -10,7 +11,6 @@ import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { reviewLogToolDefinitions, getReviewLogToolHandlers } from './review_log_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
-import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 
 import {
     getLoggingToolDefinitions,
@@ -47,7 +47,7 @@ export const geminiCorrectionSummarizerToolDefinition: InternalToolDefinition = 
 
         const geminiService = memoryManagerInstance.getGeminiIntegrationService();
         if (!geminiService) {
-             throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available via MemoryManager.");
+            throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available via MemoryManager.");
         }
 
         try {
@@ -56,7 +56,7 @@ export const geminiCorrectionSummarizerToolDefinition: InternalToolDefinition = 
             md += `${summary}\n`;
             return { content: [{ type: 'text', text: md }] };
         } catch (error: any) {
-             throw new McpError(ErrorCode.InternalError, `Failed to summarize correction logs via Gemini: ${error.message}`);
+            throw new McpError(ErrorCode.InternalError, `Failed to summarize correction logs via Gemini: ${error.message}`);
         }
     }
 };
@@ -84,7 +84,7 @@ export const listToolsToolDefinition: InternalToolDefinition = {
     },
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required for list_tools");
-        const allDefs = await getAllToolDefinitions(memoryManagerInstance); 
+        const allDefs = await getAllToolDefinitions(memoryManagerInstance);
         let md = '## Available Tools\n\n';
         for (const tool of allDefs) {
             md += `### \`${tool.name}\`\n`;
@@ -109,6 +109,7 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
     const allDefs: Tool[] = [
         ...stripFuncFromDefs(conversationToolDefinitions),
         ...stripFuncFromDefs(referenceToolDefinitions),
+        ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions),
         ...stripFuncFromDefs(sourceAttributionToolDefinitions),
         ...stripFuncFromDefs([geminiCorrectionSummarizerToolDefinition]),
         ...stripFuncFromDefs(successMetricsToolDefinitions),
@@ -119,9 +120,8 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(reviewLogToolDefinitions),
         ...stripFuncFromDefs(getLoggingToolDefinitions(memoryManager) as InternalToolDefinition[]),
         ...stripFuncFromDefs(geminiToolDefinitions),
-        ...stripFuncFromDefs(embeddingToolDefinitions), 
-        ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions), 
-        stripFuncFromDefs([listToolsToolDefinition])[0] 
+        ...stripFuncFromDefs(embeddingToolDefinitions),
+        stripFuncFromDefs([listToolsToolDefinition])[0]
     ];
 
     return allDefs;
@@ -149,6 +149,7 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
     return {
         ...getConversationToolHandlers(memoryManager),
         ...getReferenceToolHandlers(memoryManager),
+        ...getAiTaskEnhancementToolHandlers(memoryManager),
         ...getSourceAttributionToolHandlers(memoryManager),
         'summarize_correction_logs': summarizeCorrectionLogsHandler,
         'list_tools': listToolsHandler,
@@ -159,8 +160,7 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getKnowledgeGraphToolHandlers(memoryManager),
         ...getReviewLogToolHandlers(memoryManager),
         ...getGeminiToolHandlers(memoryManager),
-        ...getEmbeddingToolHandlers(memoryManager), 
-        ...getAiTaskEnhancementToolHandlers(memoryManager), 
+        ...getEmbeddingToolHandlers(memoryManager),
         ...loggingHandlers,
     };
 }

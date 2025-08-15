@@ -109,7 +109,13 @@ export const knowledgeGraphToolDefinitions = [
 It establishes 'contains_item' relationships. If 'parse_imports' is true, it parses import statements
 from supported files, creates/updates 'module' nodes, and creates 'imports_file' or 'imports_module' relationships.
 This tool aims to be idempotent, avoiding duplicate nodes for the same entities by updating existing ones if changes are detected. Output is Markdown formatted.`,
-        inputSchema: schemas.ingestCodebaseStructure,
+        inputSchema: {
+            ...schemas.ingestCodebaseStructure,
+            properties: {
+                ...schemas.ingestCodebaseStructure.properties,
+                perform_deep_entity_ingestion: { type: 'boolean', default: false, description: "If true, performs a full code entity parse on every valid file found in the scan." }
+            }
+        },
     },
     {
         name: 'ingest_file_code_entities',
@@ -117,7 +123,21 @@ This tool aims to be idempotent, avoiding duplicate nodes for the same entities 
 It populates these as nodes in the knowledge graph (creating or updating them if they exist by checking name and type)
 and creates 'defined_in_file' relationships linking them to their parent file node.
 It may also create 'has_method' relationships for classes. Output is Markdown formatted.`,
-        inputSchema: schemas.ingestFileCodeEntities,
+        inputSchema: {
+            ...schemas.ingestFileCodeEntities,
+            properties: {
+                ...schemas.ingestFileCodeEntities.properties,
+                file_path: undefined, // Remove old property
+                paths: {
+                    oneOf: [
+                        { type: 'string', description: "A single absolute path to a code file to parse." },
+                        { type: 'array', items: { type: 'string' }, description: "An array of absolute paths to code files to parse." }
+                    ],
+                    description: "A single file path or an array of file paths to parse for code entities."
+                }
+            },
+            required: ['agent_id', 'paths']
+        },
     },
     {
         name: 'knowledge_graph_memory',
@@ -325,6 +345,125 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
 // Tool Handlers
 // ============================================================================
 
+/**
+ * Internal batch processor for ingesting code entities from one or more files.
+ * This function contains the core logic and is reused by multiple tool handlers.
+ * @param args - The arguments for the operation, including agent_id, paths, etc.
+ * @param memoryManager - The MemoryManager instance.
+ * @param introspectionService - The CodebaseIntrospectionService instance.
+ * @returns A promise resolving to a structured MCP response object.
+ */
+async function _ingestFileEntitiesBatch(
+    args: { agent_id: string; paths: string | string[]; project_root_path?: string; language?: string },
+    memoryManager: MemoryManager,
+    introspectionService: CodebaseIntrospectionService
+): Promise<{ content: { type: 'text'; text: string }[] }> {
+    const { agent_id, paths, project_root_path: project_root_path_arg, language: lang_arg } = args;
+    const filesToProcess = Array.isArray(paths) ? paths : [paths];
+
+    if (filesToProcess.length === 0) {
+        return {
+            content: [{
+                type: 'text',
+                text: formatSimpleMessage(`No files provided for code entity ingestion.`, "Code Entity Ingestion Report")
+            }]
+        };
+    }
+
+    let entitiesCreatedCount = 0;
+    let entitiesUpdatedCount = 0;
+    let relationsCreatedCount = 0;
+    let relationsSkippedCount = 0;
+    const filesProcessed: string[] = [];
+
+    const allEntitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
+    const allObservationsToUpdateBatch: Array<{ entityName: string; contents: string[] }> = [];
+    const allRelationsToCreateSet = new Set<string>();
+
+    for (const filePath of filesToProcess) {
+        try {
+            const effectiveRootPath = path.resolve(project_root_path_arg || path.dirname(filePath));
+            const absoluteFilePath = path.resolve(filePath);
+
+            if (!createCanonicalAbsPathKey(absoluteFilePath).startsWith(createCanonicalAbsPathKey(effectiveRootPath))) {
+                console.warn(`Skipping file '${absoluteFilePath}' as it is outside the project root '${effectiveRootPath}'.`);
+                continue;
+            }
+
+            const fileNodeRelativeName = path.relative(effectiveRootPath, absoluteFilePath).replace(/\\/g, '/');
+
+            // Use openNodes which is more efficient for checking existence of one or more nodes
+            const existingFileNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
+            let fileNodeInKG = existingFileNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
+
+            if (!fileNodeInKG) {
+                console.log(`[ingest_file_code_entities] File node ${fileNodeRelativeName} not found, creating it.`);
+                // Since we don't have the file stats here, we create a minimal file node.
+                // ingest_codebase_structure is the preferred way to create fully detailed file nodes.
+                const fileEntityToCreate = { name: fileNodeRelativeName, entityType: 'file' as 'file', observations: [`absolute_path: ${createCanonicalAbsPathKey(absoluteFilePath)}`, `type: file`] };
+                await memoryManager.knowledgeGraphManager.createEntities(agent_id, [fileEntityToCreate]);
+            }
+
+            const langForParsing = lang_arg || await introspectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
+            const extractedEntities: ExtractedCodeEntity[] = await introspectionService.parseFileForCodeEntities(agent_id, absoluteFilePath, langForParsing);
+
+            if (extractedEntities.length > 0) {
+                for (const entity of extractedEntities) {
+                    await processExtractedEntity(
+                        entity,
+                        fileNodeRelativeName,
+                        agent_id,
+                        memoryManager,
+                        allEntitiesToCreateBatch,
+                        allObservationsToUpdateBatch,
+                        allRelationsToCreateSet
+                    );
+                }
+            }
+            filesProcessed.push(filePath);
+        } catch (error: any) {
+            console.error(`Error during code entity ingestion for file ${filePath}:`, error.message);
+            // Continue processing other files
+        }
+    }
+
+    // Perform batch DB operations after processing all files
+    if (allEntitiesToCreateBatch.length > 0) {
+        const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, allEntitiesToCreateBatch);
+        entitiesCreatedCount += (creationResult.details || []).filter((d: any) => d.success).length;
+    }
+
+    if (allObservationsToUpdateBatch.length > 0) {
+        const updateResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, allObservationsToUpdateBatch);
+        entitiesUpdatedCount += (updateResult.details || []).filter((d: any) => d.success).length;
+    }
+
+    const finalRelationsToCreate = [];
+    for (const relStr of allRelationsToCreateSet) {
+        const relObj = JSON.parse(relStr) as { from: string; to: string; type: string };
+        if (!(await memoryManager.knowledgeGraphManager.getExistingRelation(agent_id, relObj.from, relObj.to, relObj.type))) {
+            finalRelationsToCreate.push({ from: relObj.from, to: relObj.to, relationType: relObj.type });
+        } else {
+            relationsSkippedCount++;
+        }
+    }
+
+    if (finalRelationsToCreate.length > 0) {
+        const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, finalRelationsToCreate);
+        relationsCreatedCount += (relationResult.details || []).filter((d: any) => d.success).length;
+    }
+
+    return {
+        content: [{
+            type: 'text',
+            text: formatSimpleMessage(
+                `Code entity ingestion for ${filesProcessed.length} of ${filesToProcess.length} file(s) complete.\n- Code Entities Newly Created: ${entitiesCreatedCount}\n- Code Entities Updated (Observations): ${entitiesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}\n- Relations Skipped (Duplicates): ${relationsSkippedCount}`,
+                "Code Entity Ingestion Report"
+            )
+        }]
+    };
+}
+
 export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
     const codebaseIntrospectionService = new CodebaseIntrospectionService(
         memoryManager,
@@ -344,7 +483,7 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_structure: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { directory_path, project_root_path, parse_imports } = args;
+            const { directory_path, project_root_path, parse_imports, perform_deep_entity_ingestion } = args;
 
             try {
                 // Resolve paths once and use consistently
@@ -363,6 +502,7 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 let nodesCreatedCount = 0;
                 let nodesUpdatedCount = 0;
                 let relationsCreatedCount = 0;
+                const filesForDeepScan: string[] = [];
 
                 // Maps to store node names by their canonical absolute paths for efficient lookup
                 const createdOrExistingNodeNamesByCanonicalAbsPath: { [canonicalAbsPathKey: string]: string } = {};
@@ -417,6 +557,10 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                         observationsToUpdateBatch,
                         relationsToCreateSet
                     );
+
+                    if (item.type === 'file' && item.language) {
+                        filesForDeepScan.push(item.path);
+                    }
                 }
 
                 // Create entities and update observations
@@ -485,16 +629,32 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                     console.log(`[ingest_codebase_structure] Skipped ${relationsSkippedCount} existing relations as duplicates.`);
                 }
 
+                let structuralReport = `Codebase structure ingestion for directory "${directory_path}" complete.\n- Nodes Newly Created: ${nodesCreatedCount}\n- Nodes Updated (Observations): ${nodesUpdatedCount}\n- Relations Created: ${relationsCreatedCount}`;
+                let deepScanReport = "";
+
+                // --- DEEP SCAN EXECUTION ---
+                if (perform_deep_entity_ingestion && filesForDeepScan.length > 0) {
+                    console.log(`[ingest_codebase_structure] Performing deep entity scan on ${filesForDeepScan.length} files.`);
+                    const deepScanResult = await _ingestFileEntitiesBatch({
+                        agent_id,
+                        project_root_path: resolvedProjectRootPath,
+                        paths: filesForDeepScan
+                    }, memoryManager, codebaseIntrospectionService);
+
+                    // Extract the text from the result to append to our report
+                    const deepScanMessage = deepScanResult.content[0].text;
+                    // Remove the title from the deep scan report to avoid redundancy
+                    deepScanReport = deepScanMessage.substring(deepScanMessage.indexOf('\n') + 1).trim();
+                }
+
+                const finalReport = deepScanReport
+                    ? `${structuralReport}\n\n**Deep Scan Results:**\n${deepScanReport}`
+                    : structuralReport;
+
                 return {
                     content: [{
                         type: 'text',
-                        text: formatSimpleMessage(
-                            `Codebase structure ingestion for directory "${directory_path}" complete.
-- Nodes Newly Created: ${nodesCreatedCount}
-- Nodes Updated (Observations): ${nodesUpdatedCount}
-- Relations Created: ${relationsCreatedCount}`,
-                            "Codebase Ingestion Report"
-                        )
+                        text: formatSimpleMessage(finalReport, "Full Codebase Ingestion Report")
                     }]
                 };
             } catch (error: any) {
@@ -514,127 +674,17 @@ export function getKnowledgeGraphToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_file_code_entities: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
 
-            const { file_path, project_root_path, language: lang_arg } = args;
-
-            try {
-                const effectiveRootPath = path.resolve(project_root_path || path.dirname(file_path));
-                const absoluteFilePath = path.resolve(file_path);
-
-                if (!createCanonicalAbsPathKey(absoluteFilePath).startsWith(createCanonicalAbsPathKey(effectiveRootPath))) {
-                    throw new McpError(ErrorCode.InvalidParams, `File path (${absoluteFilePath}) must be within the project root path (${effectiveRootPath}).`);
-                }
-
-                let entitiesCreatedCount = 0;
-                let entitiesUpdatedCount = 0;
-                let relationsCreatedCount = 0;
-
-                const fileNodeRelativeName = path.relative(effectiveRootPath, absoluteFilePath).replace(/\\/g, '/');
-                let fileNodeInKG: any;
-
-                // Get or create file node
-                const existingFileNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
-                fileNodeInKG = existingFileNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
-
-                if (!fileNodeInKG) {
-                    console.log(`[ingest_file_code_entities] File node ${fileNodeRelativeName} not found, creating it.`);
-                    const stats = await fs.stat(absoluteFilePath);
-                    const detectedLang = lang_arg || await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
-                    const fileEntityToCreate = {
-                        name: fileNodeRelativeName,
-                        entityType: 'file' as 'file',
-                        observations: [
-                            `absolute_path: ${createCanonicalAbsPathKey(absoluteFilePath)}`,
-                            `type: file`,
-                            `language: ${detectedLang || 'unknown'}`,
-                            `size_bytes: ${stats.size.toString()}`,
-                            `created_at: ${stats.birthtime.toISOString()}`,
-                            `modified_at: ${stats.mtime.toISOString()}`,
-                        ]
-                    };
-                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, [fileEntityToCreate]);
-                    entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
-                    const newNodes = await memoryManager.knowledgeGraphManager.openNodes(agent_id, [fileNodeRelativeName]);
-                    fileNodeInKG = newNodes.find((n: any) => n.name === fileNodeRelativeName && n.entityType === 'file');
-                }
-
-                if (!fileNodeInKG) {
-                    throw new McpError(ErrorCode.InternalError, `Failed to create or find file node for ${fileNodeRelativeName}.`);
-                }
-
-                // Extract code entities
-                const langForParsing = lang_arg || fileNodeInKG.observations?.find((o: string) => o.startsWith("language:"))?.split(": ")[1] ||
-                    await codebaseIntrospectionService.detectLanguage(agent_id, absoluteFilePath, path.basename(absoluteFilePath));
-                const extractedEntities: ExtractedCodeEntity[] = await codebaseIntrospectionService.parseFileForCodeEntities(
+            // This handler now acts as a simple wrapper around the batch processor.
+            return _ingestFileEntitiesBatch(
+                {
                     agent_id,
-                    absoluteFilePath,
-                    langForParsing
-                );
-
-                if (extractedEntities.length === 0) {
-                    return {
-                        content: [{
-                            type: 'text',
-                            text: formatSimpleMessage(`No code entities found or extracted from file: ${file_path}`, "Code Entity Ingestion")
-                        }]
-                    };
-                }
-
-                // Process extracted entities
-                const entitiesToCreateBatch: Array<{ name: string; entityType: string; observations: string[] }> = [];
-                const observationsToUpdateBatchKG: Array<{ entityName: string; contents: string[] }> = [];
-                const relationsToCreateSetKG = new Set<string>();
-
-                for (const entity of extractedEntities) {
-                    await processExtractedEntity(
-                        entity,
-                        fileNodeRelativeName,
-                        agent_id,
-                        memoryManager,
-                        entitiesToCreateBatch,
-                        observationsToUpdateBatchKG,
-                        relationsToCreateSetKG
-                    );
-                }
-
-                // Create entities and update observations
-                if (entitiesToCreateBatch.length > 0) {
-                    const creationResult = await memoryManager.knowledgeGraphManager.createEntities(agent_id, entitiesToCreateBatch);
-                    entitiesCreatedCount += Array.isArray(creationResult) ? creationResult.length : 0;
-                }
-
-                if (observationsToUpdateBatchKG.length > 0) {
-                    const updateResult = await memoryManager.knowledgeGraphManager.addObservations(agent_id, observationsToUpdateBatchKG);
-                    entitiesUpdatedCount += Array.isArray(updateResult) ? updateResult.length : 0;
-                }
-
-                // Create relations
-                const finalRelationsToCreateKG: Array<{ from: string; to: string; relationType: string }> = [];
-                for (const relStr of relationsToCreateSetKG) {
-                    const relObj = JSON.parse(relStr) as { from: string; to: string; type: string };
-                    finalRelationsToCreateKG.push({ from: relObj.from, to: relObj.to, relationType: relObj.type });
-                }
-
-                if (finalRelationsToCreateKG.length > 0) {
-                    const relationResult = await memoryManager.knowledgeGraphManager.createRelations(agent_id, finalRelationsToCreateKG);
-                    relationsCreatedCount += Array.isArray(relationResult) ? relationResult.length : 0;
-                }
-
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage(
-                            `Code entity ingestion for file "${file_path}" complete.
-- Code Entities Newly Created: ${entitiesCreatedCount}
-- Code Entities Updated (Observations): ${entitiesUpdatedCount}
-- Relations Created: ${relationsCreatedCount}`,
-                            "Code Entity Ingestion Report"
-                        )
-                    }]
-                };
-            } catch (error: any) {
-                console.error(`Error during code entity ingestion for agent ${agent_id}, file ${file_path}:`, error);
-                throw new McpError(ErrorCode.InternalError, `Code entity ingestion failed for ${file_path}: ${error.message}`);
-            }
+                    paths: args.paths,
+                    project_root_path: args.project_root_path,
+                    language: args.language
+                },
+                memoryManager,
+                codebaseIntrospectionService
+            );
         },
 
         'knowledge_graph_memory': async (args: any, agent_id_from_server: string) => {
