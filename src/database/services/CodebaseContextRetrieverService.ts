@@ -139,7 +139,7 @@ export class CodebaseContextRetrieverService {
     private async classifyQueryIntent(prompt: string): Promise<QueryIntent> {
         const intentPrompt = `Classify the user's intent into one of the following categories: 'find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code', 'general_query'. User prompt: "${prompt}"`;
         try {
-            const response = await this.geminiService.askGemini(intentPrompt, 'gemini-1.5-flash-latest');
+            const response = await this.geminiService.askGemini(intentPrompt, 'gemini-2.5-flash');
             const classification = response.content[0].text?.trim().toLowerCase() as QueryIntent;
             if (['find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code'].includes(classification)) {
                 return classification;
@@ -252,13 +252,13 @@ export class CodebaseContextRetrieverService {
         if (targetPaths.length > 0) {
             filterPrompt += `\n\n**Special Instruction:** Prioritize items from the following target file paths: ${targetPaths.join(', ')}. Ensure that relevant content from these paths is included if it directly addresses the prompt.`;
         }
-        filterPrompt += `\n\nReturn a JSON array of the indices of the relevant items.\n\n`;
+        filterPrompt += `\n\nReturn a JSON array of the indices of the relevant items. ONLY respond with the JSON array, and nothing else.\n\n`;
 
         const contextSummary = contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 100)}...`).join('\n');
         filterPrompt += contextSummary;
 
         try {
-            const response = await this.geminiService.askGemini(filterPrompt, 'gemini-1.5-flash-latest');
+            const response = await this.geminiService.askGemini(filterPrompt, 'gemini-2.5-flash');
             const textResponse = response.content[0].text;
             const relevantIndices: number[] = JSON.parse(textResponse!.match(/\[(.*?)\]/s)![0]);
 
@@ -283,7 +283,7 @@ export class CodebaseContextRetrieverService {
         const contextSummary = currentContext.map(c => c.sourcePath).join(', ');
         const expansionPrompt = `Based on the prompt "${prompt}" and the currently retrieved context (${contextSummary}), what other specific functions, classes, or files might be essential to understand? Answer with a short list of names.`;
         try {
-            const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-1.5-flash-latest');
+            const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-2.5-flash');
             const suggestions = response.content[0].text?.split(',').map(s => s.trim()).filter(Boolean);
             if (suggestions && suggestions.length > 0) {
                 console.log("Proactive expansion suggestions:", suggestions);
@@ -317,7 +317,7 @@ export class CodebaseContextRetrieverService {
     private async _extractKeywordsAndEntitiesWithGemini(prompt: string): Promise<string[]> {
         const extractionPrompt = `Extract key technical keywords and specific code entity names (file paths, function names, class names) from the following prompt. Return a JSON array of strings. Prompt: "${prompt}"`;
         try {
-            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-1.5-flash-latest");
+            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash");
             const textResponse = result.content[0].text ?? '';
             const jsonMatch = textResponse.match(/\[.*?\]/s);
             if (jsonMatch) {

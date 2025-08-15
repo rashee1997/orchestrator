@@ -456,7 +456,7 @@ Instructions for translation:
 
 Translate the above NL Query into the structured JSON format. Provide only the JSON object.`;
 
-            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash-latest');
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
             if (!geminiResponseObject || !geminiResponseObject.content || geminiResponseObject.content.length === 0 || !geminiResponseObject.content[0].text) {
                 throw new McpError(ErrorCode.InternalError, "Gemini did not return a valid response structure for natural language query.");
             }
@@ -642,7 +642,7 @@ Example output:
   }
 ]`;
 
-            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash-latest');
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
             if (!geminiResponseObject || !geminiResponseObject.content || geminiResponseObject.content.length === 0 || !geminiResponseObject.content[0].text) {
                 throw new McpError(ErrorCode.InternalError, "Gemini did not return a valid response structure for relation inference.");
             }

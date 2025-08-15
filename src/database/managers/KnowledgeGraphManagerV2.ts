@@ -671,7 +671,7 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
                 .replace('${graphRepresentation}', graphContext)
                 .replace('${naturalLanguageQuery}', naturalLanguageQuery);
 
-            const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-1.5-flash-latest");
+            const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
             usedGemini = true;
             const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "";
             structuredQueryFromAI = this._parseGeminiJsonResponse(geminiResponseText);
@@ -755,7 +755,7 @@ If no new relations can be confidently inferred, return an empty array [].`;
         let proposedByAI: Array<{ from: string; to: string; relationType: string; confidence: number; evidence: string }> = [];
         if (this.geminiService) {
             try {
-                const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-1.5-flash-latest");
+                const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
                 proposedByAI = this._parseGeminiJsonResponse(geminiResponse.content[0]?.text?.trim() || "[]");
                 if (!Array.isArray(proposedByAI)) proposedByAI = [];
                 console.log(`[KGManagerV2.inferRelations] Gemini proposed ${proposedByAI.length} relations.`);
