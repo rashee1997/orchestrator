@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS codebase_embeddings (
     vector_dimensions INTEGER NOT NULL, -- Added vector_dimensions column
     model_name TEXT NOT NULL, -- e.g., "models/text-embedding-004"
     chunk_hash TEXT UNIQUE, -- SHA256 hash of chunk_text to detect changes and avoid re-embedding
+    file_hash TEXT NOT NULL, -- MODIFICATION: Added to track the hash of the entire file content for idempotency
     created_timestamp_unix INTEGER NOT NULL,
     metadata_json TEXT, -- Optional: for start/end lines of chunk, or other info
     full_file_path TEXT -- Added: absolute path to the original file
@@ -51,6 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_entity_name ON codebase_em
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_model_name ON codebase_embeddings (model_name);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_chunk_hash ON codebase_embeddings (chunk_hash);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_ai_summary ON codebase_embeddings (ai_summary_text);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_file_hash ON codebase_embeddings (file_hash); -- MODIFICATION: Index for the new file_hash column
 
 -- Note: The VSS virtual table and triggers will be created programmatically
 -- in the vector_db.ts file after checking if the VSS module is available

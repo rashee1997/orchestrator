@@ -9,6 +9,7 @@ export interface CodebaseEmbeddingRecord {
     vector_dimensions: number;
     model_name: string;
     chunk_hash?: string;
+    file_hash: string; // MODIFICATION: Added file_hash property
     created_timestamp_unix: number;
     metadata_json?: string | null;
     full_file_path?: string; // Added this property

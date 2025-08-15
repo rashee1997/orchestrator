@@ -8,23 +8,19 @@ export class CodeChunkingService {
     private introspectionService: CodebaseIntrospectionService;
     private aiProvider: AIEmbeddingProvider;
     private memoryManager: MemoryManager;
-    private knowledgeGraphCache: Map<string, any>;
-    private maxChunkSize: number = 2000; // Maximum characters per chunk
-    private contextWindow: number = 500; // Context characters to include before/after chunks
-    private largeFileThreshold: number;
-    private recursiveContextFileCache: Map<string, string> = new Map();
+    private knowledgeGraphCache: Map<string, any>; // Cache for knowledge graph search results
+    private chunkSizeLimit: number = 15000; // Maximum chunk size to prevent oversized embeddings
+    private overlapSize: number = 200; // Overlap size for sliding window chunking
 
     constructor(
         introspectionService: CodebaseIntrospectionService,
         aiProvider: AIEmbeddingProvider,
-        memoryManager: MemoryManager,
-        largeFileThreshold: number = 50000
+        memoryManager: MemoryManager
     ) {
         this.introspectionService = introspectionService;
         this.aiProvider = aiProvider;
         this.memoryManager = memoryManager;
         this.knowledgeGraphCache = new Map<string, any>();
-        this.largeFileThreshold = largeFileThreshold;
     }
 
     private generateChunkHash(text: string): string {
@@ -32,7 +28,86 @@ export class CodeChunkingService {
     }
 
     /**
-     * Creates intelligent, context-aware chunks from file content with enhanced strategies.
+     * Enhanced sliding window chunking for large files without semantic boundaries
+     * @param content The content to chunk
+     * @param maxChunkSize Maximum size of each chunk
+     * @param overlap Overlap size between chunks
+     * @returns Array of chunked content strings
+     */
+    private slidingWindowChunk(content: string, maxChunkSize: number = this.chunkSizeLimit, overlap: number = this.overlapSize): string[] {
+        const chunks: string[] = [];
+        const lines = content.split(/\r\n|\r|\n/);
+        let currentChunk: string[] = [];
+        let currentSize = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const lineSize = line.length + 1; // +1 for newline
+
+            if (currentSize + lineSize > maxChunkSize && currentChunk.length > 0) {
+                // Save current chunk
+                chunks.push(currentChunk.join('\n'));
+                
+                // Start new chunk with overlap
+                if (overlap > 0 && currentChunk.length > 0) {
+                    const overlapLines = Math.min(Math.floor(overlap / 50), currentChunk.length); // Approximate 50 chars per line
+                    currentChunk = currentChunk.slice(-overlapLines);
+                    currentSize = currentChunk.join('\n').length;
+                } else {
+                    currentChunk = [];
+                    currentSize = 0;
+                }
+            }
+
+            currentChunk.push(line);
+            currentSize += lineSize;
+        }
+
+        // Add final chunk if it has content
+        if (currentChunk.length > 0) {
+            chunks.push(currentChunk.join('\n'));
+        }
+
+        return chunks;
+    }
+
+    /**
+     * Intelligent chunk size adjustment based on content type and complexity
+     * @param language Programming language of the content
+     * @param content Content to be chunked
+     * @returns Optimal chunk size
+     */
+    private calculateOptimalChunkSize(language: string | undefined, content: string): number {
+        let baseSize = this.chunkSizeLimit;
+        
+        // Adjust based on language complexity
+        const languageMultipliers: Record<string, number> = {
+            'markdown': 1.5,
+            'html': 1.2,
+            'css': 1.3,
+            'json': 1.1,
+            'typescript': 0.9,
+            'javascript': 0.9,
+            'python': 0.8,
+            'java': 0.7,
+            'csharp': 0.7
+        };
+
+        if (language && languageMultipliers[language]) {
+            baseSize = Math.floor(baseSize * languageMultipliers[language]);
+        }
+
+        // Adjust based on content complexity (number of functions/classes)
+        const complexityIndicators = (content.match(/(function|class|def|interface|struct)\s+/g) || []).length;
+        if (complexityIndicators > 10) {
+            baseSize = Math.floor(baseSize * 0.8); // Smaller chunks for complex code
+        }
+
+        return Math.max(1000, Math.min(baseSize, 20000)); // Keep within reasonable bounds
+    }
+
+    /**
+     * Creates intelligent, context-aware chunks from file content.
      * @param agentId The ID of the agent.
      * @param filePath The absolute path to the file.
      * @param fileContent The content of the file.
@@ -44,6 +119,7 @@ export class CodeChunkingService {
      */
     public async chunkFileContent(
         agentId: string,
+
         filePath: string,
         fileContent: string,
         relativeFilePath: string,
@@ -63,24 +139,29 @@ export class CodeChunkingService {
         let summaryDbCallCount = 0;
         let summaryDbCallLatencyMs = 0;
 
-        // Handle very large files by splitting them into manageable chunks
-        if (fileContent.length > this.largeFileThreshold) {
-            return this.handleLargeFile(agentId, filePath, fileContent, relativeFilePath, language, strategy, storeEntitySummaries);
-        }
-
         let fullFileEntityName: string | null = 'full_file_chunk';
         if (!language) {
             fullFileEntityName = await this.aiProvider.generateMeaningfulEntityName(fileContent, language);
-            namingApiCallCount++;
+            namingApiCallCount++; // Increment if a meaningful name is generated for the full file
         }
-
-        chunks.push({
-            chunk_text: fileContent,
-            entity_name: fullFileEntityName,
-            metadata: { type: 'full_file', language }
-        });
-
-        if (!language || !['typescript', 'javascript', 'python', 'php'].includes(language)) {
+        // For very large files or unsupported languages, use sliding window chunking
+        if (!language || !['typescript', 'javascript', 'python', 'php'].includes(language) || fileContent.length > this.chunkSizeLimit * 2) {
+            const optimalChunkSize = this.calculateOptimalChunkSize(language, fileContent);
+            const slidingChunks = this.slidingWindowChunk(fileContent, optimalChunkSize, this.overlapSize);
+            
+            slidingChunks.forEach((chunkText, index) => {
+                chunks.push({
+                    chunk_text: chunkText,
+                    entity_name: `file_chunk_${index + 1}`,
+                    metadata: { 
+                        type: 'file_chunk', 
+                        language,
+                        chunk_index: index + 1,
+                        total_chunks: slidingChunks.length
+                    }
+                });
+            });
+            
             return { chunks, namingApiCallCount, summarizationApiCallCount, summaryDbCallCount: 0, summaryDbCallLatencyMs: 0 };
         }
 
@@ -88,8 +169,8 @@ export class CodeChunkingService {
         const importContext = "/* Imports for context */\n" + imports.map(imp => imp.originalImportString).join('\n');
 
         const codeEntities = await this.introspectionService.parseFileForCodeEntities(agentId, filePath, language);
-        const functionCodeMap = new Map<string, string>();
 
+        const functionCodeMap = new Map<string, string>();
         codeEntities.forEach(entity => {
             if (entity.type === 'function' || entity.type === 'method') {
                 if (typeof entity.name === 'string' && entity.name.length > 0) {
@@ -101,9 +182,10 @@ export class CodeChunkingService {
 
         const entitiesToProcess = codeEntities.filter(entity => {
             return (strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
-                (strategy === 'class' && entity.type === 'class') ||
-                (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type));
+                   (strategy === 'class' && entity.type === 'class') ||
+                   (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type));
         }).filter(entity => {
+            // Filter out entities without a fullName as they cannot be stored in the map
             if (entity.fullName === undefined) {
                 return false;
             }
@@ -111,16 +193,30 @@ export class CodeChunkingService {
             return entityCode.trim();
         });
 
-        // Batch fetch knowledge graph search results
-        await this.batchFetchKnowledgeGraphResults(agentId, entitiesToProcess);
-
         const namingRequests: Array<{ codeChunk: string; language: string | undefined }> = [];
         const summarizationRequests: Array<{ codeChunk: string; entityType: string; language: string }> = [];
-        const entityCodeMap = new Map<string, { original: string; enriched?: string }>();
+        const entityCodeMap = new Map<string, string>(); // To store entityCode for later use
+
+        // Batch fetch knowledge graph search results for all entities to reduce DB calls
+        const fullNames = entitiesToProcess.map(e => e.fullName!).filter(name => !this.knowledgeGraphCache.has(name));
+        if (fullNames.length > 0) {
+            try {
+                // Batch search by combining queries with OR
+                const batchQuery = fullNames.map(name => `name:${name}`).join(' OR ');
+                const batchResults = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, batchQuery);
+                // Organize results by entity fullName
+                for (const fullName of fullNames) {
+                    const related = batchResults.filter((r: any) => r.name.includes(fullName));
+                    this.knowledgeGraphCache.set(fullName, related);
+                }
+            } catch (e) {
+                console.warn('Batch knowledge graph search failed:', e);
+            }
+        }
 
         for (const entity of entitiesToProcess) {
             const entityCode = fileContent.split(/\r\n|\r|\n/).slice(entity.startLine - 1, entity.endLine).join('\n');
-            entityCodeMap.set(entity.fullName!, { original: entityCode });
+            entityCodeMap.set(entity.fullName!, entityCode); // Store by full name for easy retrieval
 
             if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
                 namingRequests.push({ codeChunk: entityCode, language: language });
@@ -128,36 +224,52 @@ export class CodeChunkingService {
 
             if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
                 const originalCodeHash = this.generateChunkHash(entityCode);
-                const { summary: existingSummary, latencyMs: summaryLatencyMs, callCount: summaryCallCount } =
-                    await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
-
+                const { summary: existingSummary, latencyMs: summaryLatencyMs, callCount: summaryCallCount } = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
                 summaryDbCallCount += summaryCallCount;
                 summaryDbCallLatencyMs += summaryLatencyMs;
-
+                
                 if (!existingSummary) {
-            let codeWithFullContextForSummarization = await this.enhanceCodeWithContext(
-                entityCode, entity, language, importContext, functionCodeMap, agentId
-            );
-                    summarizationRequests.push({
-                        codeChunk: codeWithFullContextForSummarization,
-                        entityType: entity.type,
-                        language: language!
-                    });
-                    entityCodeMap.get(entity.fullName!)!.enriched = codeWithFullContextForSummarization; // Store enriched code
+                    // Prepare prompt for summarization
+                    let graphContext = "/* Code structure context */\n";
+                    try {
+                        let relations;
+                        if (this.knowledgeGraphCache.has(entity.fullName!)) {
+                            relations = this.knowledgeGraphCache.get(entity.fullName!);
+                        } else {
+                            relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                            this.knowledgeGraphCache.set(entity.fullName!, relations);
+                        }
+                        if (relations && relations.length > 0) {
+                            const relatedNodes = relations.map((r: any) => r.name);
+                            graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                        }
+                        if (entity.parentClass) {
+                            graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
+                        }
+                    } catch (e) {
+                        console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+                    }
+
+                    let recursiveContext = '/* Recursively included function calls */\n';
+                    if (entity.type === 'function' || entity.type === 'method') {
+                        for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                            if (funcName !== entity.name && entityCode.includes(funcName)) {
+                                recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
+                            }
+                        }
+                    }
+                    const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+                    summarizationRequests.push({ codeChunk: codeWithFullContext, entityType: entity.type, language: language! });
                 }
             }
         }
 
-        const meaningfulNames = namingRequests.length > 0 ?
-            await this.aiProvider.batchGenerateMeaningfulEntityNames(namingRequests) : [];
-
+        const meaningfulNames = namingRequests.length > 0 ? await this.aiProvider.batchGenerateMeaningfulEntityNames(namingRequests) : [];
         if (namingRequests.length > 0) {
             namingApiCallCount++;
         }
 
-        const summaries = summarizationRequests.length > 0 ?
-            await this.aiProvider.batchSummarizeCodeChunks(summarizationRequests) : [];
-
+        const summaries = summarizationRequests.length > 0 ? await this.aiProvider.batchSummarizeCodeChunks(summarizationRequests) : [];
         if (summarizationRequests.length > 0) {
             summarizationApiCallCount++;
         }
@@ -165,331 +277,100 @@ export class CodeChunkingService {
         let nameIndex = 0;
         let summaryIndex = 0;
 
-        for (const entity of entitiesToProcess) {
-            const entityCode = entity.fullName !== undefined ? entityCodeMap.get(entity.fullName)?.original : undefined;
-            if (entityCode === undefined) {
-                console.warn(`Could not retrieve entity code for ${entity.fullName} from map.`);
-                continue;
-            }
- 
-            const cachedEnrichedCode = entityCodeMap.get(entity.fullName!)?.enriched;
-            let codeWithFullContextForChunk = cachedEnrichedCode || await this.enhanceCodeWithContext(
-                entityCode, entity, language, importContext, functionCodeMap, agentId
-            );
-
-            let entityNameForChunk = entity.name;
-            if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
-                entityNameForChunk = meaningfulNames[nameIndex++] || entity.name;
-            }
-
-            chunks.push({
-                chunk_text: codeWithFullContextForChunk,
-                entity_name: entityNameForChunk,
-                metadata: {
-                    type: entity.type,
-                    startLine: entity.startLine,
-                    endLine: entity.endLine,
-                    signature: entity.signature,
-                    fullName: entity.fullName,
-                    language: language
-                }
-            });
- 
-            if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
-                const originalCodeHash = this.generateChunkHash(entityCode);
-                const { summary: fetchedSummary, latencyMs: fetchedLatency, callCount: fetchedCallCount } =
-                    await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
-
-                summaryDbCallCount += fetchedCallCount;
-                summaryDbCallLatencyMs += fetchedLatency;
-
-                let summaryToUse = fetchedSummary;
-                if (!summaryToUse) {
-                    summaryToUse = summaries[summaryIndex++] || 'Could not generate summary.';
+        if (entitiesToProcess.length > 0) {
+            for (const entity of entitiesToProcess) {
+                // Ensure entity.fullName is defined before retrieving from the map
+                const entityCode = entity.fullName !== undefined ? entityCodeMap.get(entity.fullName) : undefined;
+                if (entityCode === undefined) {
+                    // This should not happen if the filtering and setting logic is correct,
+                    // but adding a check for safety.
+                    console.warn(`Could not retrieve entity code for ${entity.fullName} from map.`);
+                    continue; // Skip this entity if code is not found
                 }
 
-                let summaryEntityName = `${entity.name}_summary`;
-                if (entity.name.startsWith('anonymous_function_at_line_')) {
-                    summaryEntityName = `${entityNameForChunk}_summary`;
+                let graphContext = "/* Code structure context */\n";
+                try {
+                    let relations;
+                    if (this.knowledgeGraphCache.has(entity.fullName!)) {
+                        relations = this.knowledgeGraphCache.get(entity.fullName!);
+                    } else {
+                        relations = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, `name:${entity.fullName}`);
+                        this.knowledgeGraphCache.set(entity.fullName!, relations);
+                    }
+                    if (relations && relations.length > 0) {
+                        const relatedNodes = relations.map((r: any) => r.name);
+                        graphContext += `/* This entity is related to: ${relatedNodes.join(', ')} */\n`;
+                    }
+                    if (entity.parentClass) {
+                        graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
+                    }
+                } catch (e) {
+                    console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
+                }
+
+                let recursiveContext = '/* Recursively included function calls */\n';
+                if (entity.type === 'function' || entity.type === 'method') {
+                    for (const [funcName, funcCode] of functionCodeMap.entries()) {
+                        if (funcName !== entity.name && entityCode.includes(funcName)) {
+                            recursiveContext += `/* Included from internal call to ${funcName} */\n${funcCode}\n\n`;
+                        }
+                    }
+                }
+
+                const codeWithFullContext = `${recursiveContext}${graphContext}${importContext}\n\n${entityCode}`;
+
+                let entityNameForChunk = entity.name;
+                if (entity.name && entity.name.startsWith('anonymous_function_at_line_')) {
+                    entityNameForChunk = meaningfulNames[nameIndex++] || entity.name;
                 }
 
                 chunks.push({
-                    chunk_text: entityCode,
-                    ai_summary_text: summaryToUse,
-                    entity_name: summaryEntityName,
+                    chunk_text: codeWithFullContext,
+                    entity_name: entityNameForChunk,
                     metadata: {
-                        type: `${entity.type}_summary`,
-                        original_code_hash: originalCodeHash,
+                        type: entity.type,
                         startLine: entity.startLine,
                         endLine: entity.endLine,
+                        signature: entity.signature,
                         fullName: entity.fullName,
                         language: language
                     }
                 });
+
+                if (storeEntitySummaries && entity.name && ['function', 'method', 'class', 'interface'].includes(entity.type)) {
+                    const originalCodeHash = this.generateChunkHash(entityCode);
+                    const { summary: fetchedSummary, latencyMs: fetchedLatency, callCount: fetchedCallCount } = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
+                    summaryDbCallCount += fetchedCallCount;
+                    summaryDbCallLatencyMs += fetchedLatency;
+
+                    let summaryToUse = fetchedSummary;
+                    if (!summaryToUse) {
+                        summaryToUse = summaries[summaryIndex++] || 'Could not generate summary.';
+                    }
+
+                    let summaryEntityName = `${entity.name}_summary`;
+                    if (entity.name.startsWith('anonymous_function_at_line_')) {
+                        // If the original entity name was anonymous, generate a meaningful name for the summary too
+                        // This would ideally be batched as well, but for simplicity, we'll use the already generated meaningful name if available
+                        summaryEntityName = `${entityNameForChunk}_summary`;
+                    }
+
+                    chunks.push({
+                        chunk_text: entityCode,
+                        ai_summary_text: summaryToUse,
+                        entity_name: summaryEntityName,
+                        metadata: {
+                            type: `${entity.type}_summary`,
+                            original_code_hash: originalCodeHash,
+                            startLine: entity.startLine,
+                            endLine: entity.endLine,
+                            fullName: entity.fullName,
+                            language: language
+                        }
+                    });
+                }
             }
         }
-
         return { chunks, namingApiCallCount, summarizationApiCallCount, summaryDbCallCount, summaryDbCallLatencyMs };
-    }
-
-    /**
-     * Handles very large files by splitting them into smaller chunks with context.
-     */
-    private async handleLargeFile(
-        agentId: string,
-        filePath: string,
-        fileContent: string,
-        relativeFilePath: string,
-        language: string | undefined,
-        strategy: ChunkingStrategy,
-        storeEntitySummaries: boolean
-    ): Promise<{
-        chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }>;
-        namingApiCallCount: number;
-        summarizationApiCallCount: number;
-        summaryDbCallCount: number;
-        summaryDbCallLatencyMs: number;
-    }> {
-        console.log(`[CodeChunkingService] Handling large file: ${filePath} (${fileContent.length} characters)`);
-
-        const chunks: Array<{ chunk_text: string; entity_name?: string; metadata?: any; ai_summary_text?: string }> = [];
-        const lines = fileContent.split(/\r\n|\r|\n/);
-        let currentChunk: string[] = [];
-        let currentEntityName: string | undefined = undefined;
-        let chunkIndex = 0;
-
-        // Chunking at logical boundaries (functions/classes)
-        const functionRegex = /^\s*(export\s+)?(async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
-        const classRegex = /^\s*(export\s+)?class\s+([A-Za-z0-9_]+)/;
-
-        for (const line of lines) {
-            let match: RegExpMatchArray | null = null;
-            let entityType: 'function' | 'class' | undefined;
-
-            if ((match = line.match(functionRegex))) {
-                entityType = 'function';
-            } else if ((match = line.match(classRegex))) {
-                entityType = 'class';
-            }
-
-            if (match && entityType) {
-                // If there's an existing chunk, push it before starting a new one
-                if (currentChunk.length > 0) {
-                    chunks.push({
-                        chunk_text: currentChunk.join('\n'),
-                        entity_name: currentEntityName,
-                        metadata: { chunkIndex: chunkIndex++ }
-                    });
-                    currentChunk = []; // Reset current chunk
-                }
-
-                // Extract the entity name based on the type
-                const nameIndex = entityType === 'function' ? 3 : 2;
-                currentEntityName = `${entityType}:${match[nameIndex]}`;
-            }
-            // Check if adding the current line would exceed maxChunkSize
-            const potentialChunkLength = currentChunk.join('\n').length + line.length + 1; // +1 for the newline character
-            if (potentialChunkLength > this.maxChunkSize) {
-                // If it exceeds, push the currentChunk as a completed chunk
-                if (currentChunk.length > 0) {
-                    chunks.push({
-                        chunk_text: currentChunk.join('\n'),
-                        entity_name: currentEntityName, // Keep the last entity name for continuation
-                        metadata: { chunkIndex: chunkIndex++ }
-                    });
-                    currentChunk = []; // Reset current chunk
-                }
-            }
-            currentChunk.push(line);
-        }
-        // Push the last chunk if any
-        if (currentChunk.length > 0) {
-            chunks.push({
-                chunk_text: currentChunk.join('\n'),
-                entity_name: currentEntityName,
-                metadata: { chunkIndex: chunkIndex++ }
-            });
-        }
-
-        return {
-            chunks,
-            namingApiCallCount: 0,
-            summarizationApiCallCount: 0,
-            summaryDbCallCount: 0,
-            summaryDbCallLatencyMs: 0
-        };
-    }
-
-    /**
-     * Batch fetches knowledge graph results to reduce database calls.
-     */
-    private async batchFetchKnowledgeGraphResults(agentId: string, entitiesToProcess: any[]): Promise<void> {
-        const fullNames = entitiesToProcess.map(e => e.fullName!).filter(name => !this.knowledgeGraphCache.has(name));
-
-        if (fullNames.length > 0) {
-            try {
-                // Process in batches to avoid overly large queries
-                const batchSize = 50;
-                for (let i = 0; i < fullNames.length; i += batchSize) {
-                    const batch = fullNames.slice(i, i + batchSize);
-                    const batchQuery = batch.map(name => `name:${name}`).join(' OR ');
-                    const batchResults = await this.memoryManager.knowledgeGraphManager.searchNodes(agentId, batchQuery);
-
-                    // Organize results by entity fullName
-                    for (const fullName of batch) {
-                        const related = batchResults.filter((r: any) => r.name.includes(fullName));
-                        this.knowledgeGraphCache.set(fullName, related);
-                    }
-                }
-            } catch (e) {
-                console.warn('Batch knowledge graph search failed:', e);
-            }
-        }
-    }
-
-    /**
-     * Enhances code with additional context for better embeddings.
-     */
-    private async enhanceCodeWithContext(
-        entityCode: string,
-        entity: any,
-        language: string | undefined,
-        importContext: string,
-        functionCodeMap: Map<string, string>,
-        agentId: string
-    ): Promise<string> {
-        let graphContext = "/* Code structure context */\n";
-
-        try {
-            let relations;
-            if (this.knowledgeGraphCache.has(entity.fullName!)) {
-                relations = this.knowledgeGraphCache.get(entity.fullName!);
-            } else {
-                relations = await this.memoryManager.knowledgeGraphManager.searchNodes(
-                    agentId,
-                    `name:${entity.fullName}`
-                );
-                this.knowledgeGraphCache.set(entity.fullName!, relations);
-            }
-
-            if (relations && relations.length > 0) {
-                // Truncate relatedNodes to avoid excessive context size
-                const truncatedRelatedNodes = relations.map((r: any) => r.name).slice(0, 5); // Limit to 5 related nodes
-                graphContext += `/* This entity is related to: ${truncatedRelatedNodes.join(', ')} */\n`;
-            }
-
-            if (entity.parentClass) {
-                graphContext += `/* This method is part of class: ${entity.parentClass} */\n`;
-            }
-        } catch (e) {
-            console.warn(`Could not retrieve graph context for ${entity.fullName}: `, e);
-        }
-
-        let recursiveContext = '';
-        const cacheKey = entity.fullName; // Using entity.fullName as a unique identifier for the file/entity
-        if (this.recursiveContextFileCache.has(cacheKey)) {
-            recursiveContext = this.recursiveContextFileCache.get(cacheKey)!;
-        } else {
-            let tempRecursiveContext = '/* Recursively included function calls */\n';
-            if (entity.type === 'function' || entity.type === 'method') {
-                for (const [funcName, funcCode] of functionCodeMap.entries()) {
-                    if (funcName !== entity.name && entityCode.includes(funcName)) {
-                        // Include a truncated version of the function to avoid overly large chunks
-                        const truncatedFuncCode = funcCode.length > 500
-                            ? funcCode.substring(0, 500) + "\n// ... (truncated)"
-                            : funcCode;
-                        tempRecursiveContext += `/* Included from internal call to ${funcName} */\n${truncatedFuncCode}\n\n`;
-                    }
-                }
-            }
-            recursiveContext = tempRecursiveContext;
-            this.recursiveContextFileCache.set(cacheKey, recursiveContext);
-        }
-
-        let combinedContext = '';
-        const contextBudget = this.maxChunkSize - entityCode.length;
-
-        // Prioritize importContext, then graphContext, then recursiveContext
-        if (importContext.length <= contextBudget) {
-            combinedContext += importContext;
-        }
-
-        if ((combinedContext.length + graphContext.length) <= contextBudget) {
-            combinedContext += graphContext;
-        }
-
-        if ((combinedContext.length + recursiveContext.length) <= contextBudget) {
-            combinedContext += recursiveContext;
-        } else {
-            // If recursiveContext is too large even on its own after other contexts, truncate it
-            const remainingBudget = contextBudget - combinedContext.length;
-            if (remainingBudget > 0) {
-                combinedContext += recursiveContext.substring(0, remainingBudget) + "\n// ... (truncated)";
-            }
-        }
-
-        return `${combinedContext}\n\n${entityCode}`;
-    }
-
-    /**
-     * Performs a "live" chunking of file content without database lookups or AI summarization.
-     * Ideal for on-the-fly context generation for reviews.
-     * @param fileContent The raw content of the file.
-     * @param language The programming language of the file.
-     * @returns An array of string chunks.
-     */
-    public chunkFileContentLive(fileContent: string, language?: string): string[] {
-        const chunks: string[] = [];
-        const lines = fileContent.split(/\r\n|\r|\n/);
-        let currentChunkLines: string[] = [];
-        let currentEntityName: string | undefined = undefined;
-
-        // Simplified regex for logical boundaries
-        const functionRegex = /^\s*(public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
-        const classRegex = /^\s*(export\s+|abstract\s+)?class\s+([A-Za-z0-9_]+)/;
-
-        for (const line of lines) {
-            let match: RegExpMatchArray | null = null;
-            let entityType: 'function' | 'class' | undefined;
-
-            if ((match = line.match(classRegex))) {
-                entityType = 'class';
-            } else if ((match = line.match(functionRegex))) {
-                entityType = 'function';
-            }
-
-            // If a new logical block starts, push the previous chunk
-            if (match && entityType) {
-                if (currentChunkLines.length > 0) {
-                    chunks.push(currentChunkLines.join('\n'));
-                }
-                currentChunkLines = []; // Start a new chunk
-            }
-            
-            // Check if adding the current line would exceed maxChunkSize
-            const potentialChunkLength = currentChunkLines.join('\n').length + line.length + 1;
-            if (currentChunkLines.length > 0 && potentialChunkLength > this.maxChunkSize) {
-                chunks.push(currentChunkLines.join('\n'));
-                currentChunkLines = []; // Start a new chunk
-            }
-
-            currentChunkLines.push(line);
-        }
-
-        // Push the last remaining chunk
-        if (currentChunkLines.length > 0) {
-            chunks.push(currentChunkLines.join('\n'));
-        }
-
-        // If chunking resulted in a single chunk, and it's too large, split it by size
-        if (chunks.length === 1 && chunks[0].length > this.maxChunkSize) {
-            const bigChunk = chunks[0];
-            chunks.length = 0; // Clear the array
-            for (let i = 0; i < bigChunk.length; i += this.maxChunkSize) {
-                chunks.push(bigChunk.substring(i, i + this.maxChunkSize));
-            }
-        }
-
-        return chunks;
     }
 }

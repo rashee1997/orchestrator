@@ -40,8 +40,8 @@ export class CodebaseEmbeddingRepository {
     public async bulkInsertEmbeddings(embeddings: CodebaseEmbeddingRecord[]): Promise<void> {
         if (embeddings.length === 0) return;
         const insertMetadataSql = `INSERT OR REPLACE INTO ${this.metadataTable} (
-            embedding_id, agent_id, chunk_text, entity_name, model_name, chunk_hash, metadata_json, created_timestamp_unix, file_path_relative, full_file_path, ai_summary_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            embedding_id, agent_id, chunk_text, entity_name, model_name, chunk_hash, file_hash, metadata_json, created_timestamp_unix, file_path_relative, full_file_path, ai_summary_text, vector_dimensions
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`; // MODIFICATION: Added file_hash and vector_dimensions
         const insertVectorSql = `INSERT OR REPLACE INTO ${this.vectorTable} (embedding_id, embedding) VALUES (?, ?);`;
         const insertTransaction = this.db.transaction((records: CodebaseEmbeddingRecord[]) => {
             const stmtMetadata = this.db.prepare(insertMetadataSql);
@@ -54,11 +54,13 @@ export class CodebaseEmbeddingRepository {
                     metadata.entity_name,
                     metadata.model_name,
                     metadata.chunk_hash,
+                    metadata.file_hash, // MODIFICATION: Bind file_hash
                     metadata.metadata_json,
                     metadata.created_timestamp_unix,
                     metadata.file_path_relative,
                     metadata.full_file_path,
-                    metadata.ai_summary_text
+                    metadata.ai_summary_text,
+                    metadata.vector_dimensions // MODIFICATION: Bind vector_dimensions
                 );
                 const vector: number[] = [];
                 for (let i = 0; i < metadata.vector_blob.length; i += 4) {
@@ -147,6 +149,34 @@ export class CodebaseEmbeddingRepository {
         const rows = this.db.prepare(sql).all(agentId) as { file_path_relative: string }[];
         return rows.map(row => row.file_path_relative);
     }
+
+    /**
+     * MODIFICATION: New method to get the latest file hash for each file for an agent.
+     * This is the cornerstone of the file-level idempotency check.
+     * It efficiently retrieves the most recent hash for every file path stored in the database.
+     */
+    public async getLatestFileHashes(agentId: string): Promise<Map<string, string>> {
+        const sql = `
+            SELECT file_path_relative, file_hash
+            FROM codebase_embeddings
+            WHERE (file_path_relative, created_timestamp_unix) IN (
+                SELECT file_path_relative, MAX(created_timestamp_unix)
+                FROM codebase_embeddings
+                WHERE agent_id = ?
+                GROUP BY file_path_relative
+            )
+            AND agent_id = ?;
+        `;
+        try {
+            const rows = this.db.prepare(sql).all(agentId, agentId) as { file_path_relative: string, file_hash: string }[];
+            return new Map(rows.map(row => [row.file_path_relative, row.file_hash]));
+        } catch (error) {
+            console.error(`[CodebaseEmbeddingRepository] Error getting latest file hashes for agent ${agentId}:`, error);
+            return new Map();
+        }
+    }
+
+
 
     /**
      * Finds semantically similar embeddings, re-ranks them based on heuristics,

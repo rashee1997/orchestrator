@@ -201,8 +201,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
             }
 
-            await embeddingService.embeddingCache.flushToDb(); // Ensure cache is flushed after all ingestion operations.
-
+            await embeddingService.embeddingCache.flushToDb();
             const outputLines = [
                 outputMessage,
                 `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}`,
