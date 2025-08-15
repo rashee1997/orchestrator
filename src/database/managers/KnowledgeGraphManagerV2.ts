@@ -12,7 +12,7 @@ import { KnowledgeGraphCache } from '../cache/KnowledgeGraphCache.js';
 import { EntityResolver } from '../ai/EntityResolver.js';
 import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
-import type { QueryAST, NlpStructuredQuery } from '../../types/query.js';
+import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../types/query.js';
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
 
 /**
@@ -21,37 +21,36 @@ import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js'
 const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into structured queries for a knowledge graph.
 The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables.
 Node observations often include 'absolute_path', 'language', 'signature', 'lines', 'defined_in_file'.
-Key relation types include: 'contains_item' (directory to file/subdir), 'imports_file' (file to file), 'imports_module' (file to module), 'defined_in_file' (code entity to file), 'has_method' (class to method), 'calls_function', 'uses_class'.
+Key relation types include: 'contains_item', 'imports_file', 'imports_module', 'defined_in_file', 'has_method', 'calls_function', 'uses_class'.
 
-Given the following knowledge graph structure (or a summary if the graph is large) and a natural language query, translate the natural language query into a structured query JSON object.
-The structured query JSON should have an "operation" field and an "args" field.
+Given a natural language query, translate it into a structured query JSON object with an "operation" and "args" field.
 
 Supported operations and their 'args' structure:
 1. 'search_nodes': args = { "query": "key:value key2:value2 ..." }
-   - This is the PREFERRED operation for most specific searches.
-   - The "query" string for 'search_nodes' should use key:value pairs.
-   - Supported keys:
-     - 'entityType:<type>' (e.g., entityType:function, entityType:file)
-     - 'name:<text_to_contain_in_name>' (e.g., name:userService)
-     - 'file:<file_path_condition>' (e.g., file:src/services/user.ts) - this will match nodes representing the file or entities observed to be related to this file.
-     - 'obs:<text_to_contain_in_observations>' (e.g., obs:authenticate) - can be repeated for multiple observation conditions.
-     - 'id:<exact_node_id>'
-     - 'limit:<number>'
-     - 'defined_in_file_path:<file_path>' (e.g., defined_in_file_path:src/database/memory_manager.ts) - use this to find entities defined within a specific file.
-     - 'parent_class_full_name:<class_full_name>' (e.g., parent_class_full_name:src/database/memory_manager.ts::MemoryManager) - use this to find methods/properties of a specific class.
-   - Combine multiple key:value pairs with spaces. Values with spaces should be double-quoted, e.g., file:"path with spaces/file.ts".
-   - Example: "entityType:function file:src/utils.ts obs:format"
-   - Example: "name:controller limit:5"
-   - Example: "entityType:method parent_class_full_name:src/database/memory_manager.ts::MemoryManager"
+   - The "query" string uses key:value pairs. Supported keys: 'entityType', 'name', 'file', 'obs', 'id', 'limit', 'defined_in_file_path', 'parent_class_full_name'.
+   - This is for finding nodes based on their properties.
+   - Example NLQ: "Find all functions in 'src/utils.ts' that mention 'format'"
+   - Translation: { "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }
 
 2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
-   - Use for fetching specific nodes if their exact names are known from the NLQ.
+   - Use for fetching specific nodes by their exact names.
 
-3. 'graph_traversal': args = { "start_node": "node_name", "relation_types": ["relation1", "relation2"], "depth": number }
-   - Use for queries about connections or paths (e.g., "what does X import?", "functions called by Y").
+3. 'graph_traversal': args = { "start_node": "node_name", "relation_types": ["relation1"], "depth": number }
+   - Use for FORWARD (OUTGOING) traversal from a starting node.
+   - Answers questions like "What does X call?", "What does Y import?".
+   - Example NLQ: "What functions does 'AuthService' call?"
+   - Translation: { "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }
 
-4. 'read_graph': args = {}
-   - Use only if the query is very general like "show me the graph" or "list everything". Avoid for specific queries.
+4. 'find_inbound_relations': args = { "target_node_name": "node_name", "relation_type": "relation_name" }
+   - Use for INVERSE (INCOMING) traversal to find source nodes.
+   - Answers questions like "Who calls X?", "Which files import Y?", "Where is Z used?".
+   - Example NLQ: "Who calls the 'processAndRefinePrompt' function?"
+   - Translation: { "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }
+   - Example NLQ: "Which files import 'CodebaseContextRetrieverService'?"
+   - Translation: { "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }
+
+5. 'read_graph': args = {}
+   - Use only if the query is very general like "show me the graph".
 
 Knowledge Graph Structure (or summary):
 ---
@@ -63,12 +62,9 @@ Natural Language Query: "\${naturalLanguageQuery}"
 ---
 Instructions for translation:
 1. Analyze the NLQ and choose the most appropriate "operation".
-2. If using 'search_nodes', formulate the "query" string using the specified key:value pairs. Be precise.
-3. If the NLQ asks for "public" or "private" methods or properties, ensure to add 'obs:public' or 'obs:private' to the 'search_nodes' query arguments.
-4. If the NLQ implies exact names, consider 'open_nodes'.
-5. If the NLQ is about relationships or paths, use 'graph_traversal'.
-6. If the query is very broad and asks for the entire graph, use 'read_graph'.
-7. If the NLQ cannot be reasonably translated to one of these operations or if necessary information (like a start node for traversal) is missing and cannot be inferred, return:
+2. If the query asks about what a node DOES (e.g., calls, contains, imports), use 'graph_traversal'.
+3. If the query asks about WHO acts upon a node (e.g., callers of, importers of, users of), use 'find_inbound_relations'.
+4. If the query cannot be reasonably translated, return:
    { "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }
 
 Translate the above Natural Language Query into the structured JSON format. Provide ONLY the JSON object.
@@ -631,6 +627,19 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
                     return this.traverseGraph(agentId, args.start_node, args.relation_types, args.depth);
                 }
                 return { error: "Invalid args for 'graph_traversal'." };
+            case 'find_inbound_relations':
+                if (args && args.target_node_name && args.relation_type) {
+                    const ast: ParsedComplexQuery = {
+                        type: 'parsed_complex_search',
+                        findSourcesOf: {
+                            targetNodeName: args.target_node_name,
+                            relationType: args.relation_type,
+                        },
+                    };
+                    const queryResult = await this.queryEngine.executeQuery(ast, agentId);
+                    return queryResult.nodes;
+                }
+                return { error: "Invalid args for 'find_inbound_relations'." };
             case 'read_graph':
                 return this.readGraph(agentId);
             default:
@@ -898,29 +907,29 @@ If no new relations can be confidently inferred, return an empty array [].`;
 
     async getExistingRelation(agentId: string, fromNodeName: string, toNodeName: string, relationType: string): Promise<any | null> {
         console.log(`[KGManagerV2.getExistingRelation] Agent: ${agentId}, From: ${fromNodeName}, To: ${toNodeName}, Type: ${relationType}`);
-        
+
         const nodes = await this.jsonlStorage.readAllLines(this.getAgentNodesPath(agentId));
         const activeNodes = nodes.filter((n: any) => n && !n.deleted);
-        
+
         const nameToIdMap = new Map<string, string>(activeNodes.map((node: any) => [String(node.name), String(node.id)]));
         const allNames: string[] = activeNodes.map((n: any) => String(n.name));
-        
+
         const fromNodeId = this._resolveEndpoint(fromNodeName, nameToIdMap, allNames);
         const toNodeId = this._resolveEndpoint(toNodeName, nameToIdMap, allNames);
-        
+
         if (!fromNodeId || !toNodeId) {
             return null;
         }
-        
+
         const relations = await this.jsonlStorage.readAllLines(this.getAgentRelationsPath(agentId));
         const activeRelations = relations.filter((r: any) => r && !r.deleted);
-        
-        const existingRelation = activeRelations.find((rel: any) => 
-            rel.fromNodeId === fromNodeId && 
-            rel.toNodeId === toNodeId && 
+
+        const existingRelation = activeRelations.find((rel: any) =>
+            rel.fromNodeId === fromNodeId &&
+            rel.toNodeId === toNodeId &&
             rel.relationType === relationType
         );
-        
+
         return existingRelation || null;
     }
 

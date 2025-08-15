@@ -1,7 +1,7 @@
 import Fuse from 'fuse.js';
 import { JsonlStorageManager } from '../storage/JsonlStorageManager.js';
 import path from 'path';
-import type { QueryAST, ParsedComplexQuery, SimpleSearchQuery, NlpStructuredQuery, TraverseQuery, RankedSearchQuery } from '../../types/query.js';
+import type { QueryAST, ParsedComplexQuery, SimpleSearchQuery, NlpStructuredQuery, TraverseQuery, RankedSearchQuery, FindSourcesSpec } from '../../types/query.js';
 
 /**
  * Represents a node in the knowledge graph.
@@ -100,7 +100,7 @@ export class QueryEngine {
                 case 'entitytype': complexQuery.targetEntityType = value; break;
                 case 'file': complexQuery.filePathCondition = value; break;
                 case 'name': complexQuery.nameContains = value; break;
-                case 'obs': 
+                case 'obs':
                     if (complexQuery.observationContains) {
                         complexQuery.observationContains.push(value);
                     }
@@ -176,7 +176,12 @@ export class QueryEngine {
                 resultNodes = await this.executeRankedSearch(ast as RankedSearchQuery, allNodes);
                 break;
             case 'parsed_complex_search':
-                resultNodes = this.executeComplexQuery(ast as ParsedComplexQuery, allNodes);
+                const complexAst = ast as ParsedComplexQuery;
+                if (complexAst.findSourcesOf) {
+                    resultNodes = await this.executeFindSourcesQuery(complexAst.findSourcesOf, allNodes, allRelations);
+                } else {
+                    resultNodes = this.executeComplexQuery(complexAst, allNodes);
+                }
                 break;
             case 'simple_search':
                 resultNodes = this.executeSimpleSearch(ast as SimpleSearchQuery, allNodes);
@@ -188,6 +193,45 @@ export class QueryEngine {
 
         this.queryCache.set(cacheKey, { nodes: resultNodes, timestamp: Date.now() });
         return { nodes: resultNodes };
+    }
+
+    /**
+     * Executes an inverse traversal to find source nodes of a relationship.
+     */
+    private async executeFindSourcesQuery(spec: FindSourcesSpec, allNodes: NodeType[], allRelations: RelationType[]): Promise<NodeType[]> {
+        console.log(`[QueryEngine] Executing findSourcesOf query for target: "${spec.targetNodeName}"`);
+        // 1. Find the target node to get its ID.
+        const targetNode = allNodes.find(node => node.name === spec.targetNodeName);
+        if (!targetNode) {
+            console.warn(`[QueryEngine] Target node "${spec.targetNodeName}" not found for inverse traversal.`);
+            return [];
+        }
+        const targetNodeId = targetNode.id;
+
+        // 2. Find all relations pointing to the target node with the correct type.
+        const incomingRelations = allRelations.filter(rel =>
+            rel.toNodeId === targetNodeId && rel.relationType === spec.relationType
+        );
+
+        if (incomingRelations.length === 0) {
+            return [];
+        }
+
+        // 3. Collect all unique source node IDs.
+        const sourceNodeIds = new Set(incomingRelations.map(rel => rel.fromNodeId));
+
+        // 4. Efficiently look up the source nodes by their IDs.
+        const idToNodeMap = new Map(allNodes.map(node => [node.id, node]));
+        const resultNodes: NodeType[] = [];
+        for (const sourceId of sourceNodeIds) {
+            const sourceNode = idToNodeMap.get(sourceId);
+            if (sourceNode) {
+                resultNodes.push(sourceNode);
+            }
+        }
+
+        console.log(`[QueryEngine] Found ${resultNodes.length} source nodes for target "${spec.targetNodeName}".`);
+        return resultNodes;
     }
 
     /**
@@ -345,7 +389,7 @@ export class QueryEngine {
     private executeNlpQuery(ast: NlpStructuredQuery, nodes: NodeType[]): NodeType[] {
         let filteredNodes = nodes;
         if (ast.entities?.length) {
-            filteredNodes = filteredNodes.filter(node => 
+            filteredNodes = filteredNodes.filter(node =>
                 ast.entities!.some(entity => {
                     if (typeof entity === 'string') {
                         return node.name === entity;

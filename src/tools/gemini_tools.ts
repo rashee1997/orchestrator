@@ -74,6 +74,7 @@ ${contextString}
 ---
 
 Based on the accumulated context, please make a decision. Respond in this exact JSON format:
+\`\`\`json
 {
   "decision": "ANSWER" | "SEARCH_AGAIN",
   "reasoning": "Briefly explain your decision. If searching again, explain what information is missing and why it's needed.",
@@ -82,11 +83,13 @@ Based on the accumulated context, please make a decision. Respond in this exact 
     "next_search_query": "..."
   }
 }
+\`\`\`
 ---
 Instructions:
 - If the accumulated context is sufficient to fully answer the original query, set "decision" to "ANSWER" and provide the "final_answer".
 - If the context is still insufficient, set "decision" to "SEARCH_AGAIN". Formulate a concise and specific "next_search_query" to find the missing information (e.g., "implementations of AuthService", "usage of processPayment function", "contents of auth.middleware.ts").
 - If you've reached the last turn (${max_iterations}), you MUST provide a final answer, even if it's incomplete. Set "decision" to "ANSWER".
+- ONLY respond with the JSON object, and nothing else.
 `;
 
         const analysisResult = await geminiService.askGemini(analysisPrompt, model, systemInstruction);
@@ -132,7 +135,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         properties: {
             agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
-            model: { type: 'string', description: 'Optional: The Gemini model to use. Defaults to a fast, recent model.', default: 'gemini-1.5-flash-latest' },
+            model: { type: 'string', description: 'Optional: The Gemini model to use. Defaults to a fast, recent model.', default: 'gemini-2.5-flash' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable single-turn Retrieval-Augmented Generation (RAG) with codebase context.', default: false, nullable: true },
             enable_iterative_search: {

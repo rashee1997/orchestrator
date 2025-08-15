@@ -16,6 +16,14 @@ export interface NlpStructuredQuery {
 }
 
 /**
+ * Defines the structure for an inverse relationship lookup.
+ */
+export interface FindSourcesSpec {
+    targetNodeName: string;
+    relationType: string;
+}
+
+/**
  * Enhanced structure for a parsed complex query string with relationship support
  */
 export interface ParsedComplexQuery {
@@ -30,6 +38,7 @@ export interface ParsedComplexQuery {
     parentClassFullName?: string;
     // New fields for relationship traversal
     traverse?: TraverseSpec;
+    findSourcesOf?: FindSourcesSpec; // For inverse lookups (e.g., "who calls X?")
     // New fields for advanced operators
     logicalOperator?: 'AND' | 'OR';
     negated?: boolean;

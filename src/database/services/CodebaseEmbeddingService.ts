@@ -427,7 +427,7 @@ User Query: "how does the authentication middleware work"
 Response:
 ["validate user token pipeline", "handle unauthorized access in express routes"]`;
         try {
-            const result = await this.aiProvider.geminiService.askGemini(prompt, "gemini-1.5-flash-latest");
+            const result = await this.aiProvider.geminiService.askGemini(prompt, "gemini-2.5-flash");
             const textResponse = result.content[0].text ?? '';
             const jsonMatch = textResponse.match(/\[.*?\]/s);
             if (jsonMatch) {

@@ -15,6 +15,15 @@ export function parseGeminiJsonResponse(textResponse: string): any {
         }
         // Remove single-line comments (// ...) that might be present in the JSON string
         jsonString = jsonString.replace(/\/\/.*$/gm, '');
+
+        // Attempt to fix common JSON parsing issues: unescaped newlines, tabs, etc. within string literals
+        // This is a heuristic and might not cover all cases, but targets common LLM output issues.
+        // It looks for unescaped newlines or tabs within double-quoted strings and escapes them.
+        jsonString = jsonString.replace(/\"([^\"\\]*(?:\\.[^\"\\]*)*)\"/g, (match, p1) => {
+            // p1 is the content inside the quotes
+            return '"' + p1.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + '"';
+        });
+
         return JSON.parse(jsonString);
     } catch (parseError: any) {
         console.error(`Error parsing Gemini API JSON response. Raw response: "${textResponse}". Parse error:`, parseError);
