@@ -239,8 +239,23 @@ export class QueryEngine {
      */
     private async executeTraverseQuery(ast: TraverseQuery, allNodes: NodeType[], allRelations: RelationType[]): Promise<NodeType[]> {
         const { startEntityId, direction, depth, relationTypes } = ast;
-        const startNode = allNodes.find(node => node.name === startEntityId);
-        if (!startNode) return [];
+
+        // --- START: MODIFICATION - Resilient start-node-finding logic ---
+        let startNode: NodeType | undefined = allNodes.find(node => node.name === startEntityId);
+
+        if (!startNode) {
+            console.warn(`[QueryEngine] Target node "${startEntityId}" not found for traversal. Attempting fallback search.`);
+            const fallbackResults = this.executeSimpleSearch({ type: 'simple_search', query: startEntityId }, allNodes);
+
+            if (fallbackResults.length > 0) {
+                startNode = fallbackResults[0];
+                console.log(`[QueryEngine] Fallback successful. Using node "${startNode.name}" as traversal start.`);
+            } else {
+                console.error(`[QueryEngine] Fallback failed. Start node "${startEntityId}" not found.`);
+                return [];
+            }
+        }
+        // --- END: MODIFICATION ---
 
         const idToNodeMap = new Map(allNodes.map(n => [n.id, n]));
         const visited = new Set<string>();

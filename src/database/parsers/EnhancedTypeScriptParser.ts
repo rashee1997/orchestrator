@@ -251,9 +251,9 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
   private extractImportedSymbols(specifier: TSESTree.ImportSpecifier | TSESTree.ImportDefaultSpecifier | TSESTree.ImportNamespaceSpecifier): string[] {
     if (specifier.type === AST_NODE_TYPES.ImportSpecifier) {
-        if (specifier.imported.type === AST_NODE_TYPES.Identifier) {
-            return [specifier.imported.name];
-        }
+      if (specifier.imported.type === AST_NODE_TYPES.Identifier) {
+        return [specifier.imported.name];
+      }
     } else if (specifier.type === AST_NODE_TYPES.ImportNamespaceSpecifier) {
       return [`* as ${specifier.local.name}`];
     } else if (specifier.type === AST_NODE_TYPES.ImportDefaultSpecifier) {
@@ -264,10 +264,10 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
   private extractExportedSymbols(node: TSESTree.ExportNamedDeclaration): string[] {
     return node.specifiers.map((spec) => {
-        if (spec.local.type === AST_NODE_TYPES.Identifier) {
-            return spec.local.name;
-        }
-        return '';
+      if (spec.local.type === AST_NODE_TYPES.Identifier) {
+        return spec.local.name;
+      }
+      return '';
     }) || ['*'];
   }
 
@@ -311,7 +311,8 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
         };
 
         const processEntity = (type: EnhancedExtractedCodeEntity['type'], name: string, extra: Partial<EnhancedExtractedCodeEntity> = {}) => {
-          const fullName = `${context.fullNamePrefix}::${name}`;
+          // MODIFICATION: Standardized fullName generation
+          const fullName = `${context.fullNamePrefix}${context.className ? `::${context.className}` : ''}::${name}`;
           entity = {
             ...baseEntity,
             type,
@@ -436,9 +437,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
         const childContext = { ...context, parent: node, isExported: isNodeExportedFlag }; // Pass the flag
         if (entity) {
           const e = entity as EnhancedExtractedCodeEntity;
-          if (['class', 'interface', 'enum', 'function', 'method'].includes(e.type as string)) {
-            childContext.fullNamePrefix = e.fullName || context.fullNamePrefix;
-          }
+          // MODIFICATION: Removed incorrect prefix mutation to keep it as relativeFilePath
           if (e.type === 'class') {
             childContext.className = e.name;
           }
@@ -650,12 +649,12 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     if (!node) return '';
     switch (node.type) {
       case AST_NODE_TYPES.Identifier: return node.name;
-      case AST_NODE_TYPES.MemberExpression: 
+      case AST_NODE_TYPES.MemberExpression:
         return `${this.getIdentifierName(node.object)}.${this.getIdentifierName(node.property)}`;
       case AST_NODE_TYPES.ThisExpression: return 'this';
       case AST_NODE_TYPES.Super: return 'super';
       case AST_NODE_TYPES.CallExpression: return this.getIdentifierName(node.callee);
-      case AST_NODE_TYPES.TSQualifiedName: 
+      case AST_NODE_TYPES.TSQualifiedName:
         return `${this.getIdentifierName(node.left)}.${this.getIdentifierName(node.right)}`;
       default: return '';
     }
