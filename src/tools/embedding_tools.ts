@@ -4,8 +4,7 @@ import path from 'path';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 import { MemoryManager } from '../database/memory_manager.js';
-import { CodebaseEmbeddingService } from '../database/services/CodebaseEmbeddingService.js';
-import { ChunkingStrategy } from '../types/codebase_embeddings.js';
+import { EmbeddingIngestionResult, ChunkingStrategy } from '../types/codebase_embeddings.js';
 import { formatJsonToMarkdownCodeBlock, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
 
@@ -84,51 +83,116 @@ export const embeddingToolDefinitions = [
 ];
 
 /**
- * Generates a concise AI summary for a list of code chunks.
- * @param memoryManager - The memory manager instance to get the Gemini service.
- * @param chunks - The array of code chunks to summarize.
- * @param summaryType - The type of summary ('new', 'reused', 'deleted'), which determines the prompt.
- * @returns A formatted markdown string with the summary, or an empty string if no chunks are provided.
+ * Generates a single, holistic AI summary of all changes in the ingestion process.
+ * This version programmatically detects refactors before asking the AI to summarize.
+ * @param memoryManager The memory manager instance.
+ * @param resultCounts The full result object from the ingestion service.
+ * @returns A formatted markdown string with the unified summary, or an empty string.
  */
-async function _generateAiSummary(
+async function _generateUnifiedAiSummary(
     memoryManager: MemoryManager,
-    chunks: Array<{ file_path_relative: string; chunk_text: string }> | undefined,
-    summaryType: 'new' | 'reused' | 'deleted'
+    resultCounts: EmbeddingIngestionResult
 ): Promise<string> {
-    if (!chunks || chunks.length === 0) {
+    const { newEmbeddings, reusedEmbeddings, deletedEmbeddings } = resultCounts;
+
+    if (newEmbeddings.length === 0 && reusedEmbeddings.length === 0 && deletedEmbeddings.length === 0) {
         return '';
     }
 
-    const promptTemplates = {
-        new: `You are an expert software engineer. Summarize the key changes and additions in the following newly added code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.`,
-        reused: `You are an expert software engineer. Summarize the context and significance of the following reused code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.`,
-        deleted: `You are an expert software engineer. Summarize the impact and reasons for deletion of the following code chunks. Provide a concise, clear summary suitable for a development team review. Limit to 300 tokens.`
+    // --- Programmatic Refactor Detection ---
+    const fileChanges = new Map<string, { added: Set<string>, removed: Set<string> }>();
+
+    // Collate added and removed entities by file
+    newEmbeddings.forEach(e => {
+        if (!e.entity_name) return;
+        const file = fileChanges.get(e.file_path_relative) || { added: new Set(), removed: new Set() };
+        file.added.add(e.entity_name);
+        fileChanges.set(e.file_path_relative, file);
+    });
+    deletedEmbeddings.forEach(e => {
+        if (!e.entity_name) return;
+        const file = fileChanges.get(e.file_path_relative) || { added: new Set(), removed: new Set() };
+        file.removed.add(e.entity_name);
+        fileChanges.set(e.file_path_relative, file);
+    });
+
+    const refactoredEntities = new Set<string>(); // Stores unique identifier 'filePath::entityName'
+    for (const [filePath, changes] of fileChanges.entries()) {
+        const intersection = new Set([...changes.added].filter(entity => changes.removed.has(entity)));
+        intersection.forEach(entityName => refactoredEntities.add(`${filePath}::${entityName}`));
+    }
+
+    // Filter the original lists to create the final categories
+    const trulyNew = newEmbeddings.filter(e => !refactoredEntities.has(`${e.file_path_relative}::${e.entity_name}`));
+    const trulyDeleted = deletedEmbeddings.filter(e => !refactoredEntities.has(`${e.file_path_relative}::${e.entity_name}`));
+    const refactored = newEmbeddings.filter(e => refactoredEntities.has(`${e.file_path_relative}::${e.entity_name}`));
+
+
+    // Helper to format a list of changes for the prompt
+    const formatChangeList = (chunks: typeof newEmbeddings) => {
+        if (!chunks || chunks.length === 0) return "  - None\n";
+        const MAX_ITEMS_PER_SECTION = 50;
+
+        const groupedByFile = chunks.slice(0, MAX_ITEMS_PER_SECTION).reduce((acc, chunk) => {
+            const key = chunk.file_path_relative;
+            if (!acc[key]) acc[key] = [];
+            if (chunk.entity_name) acc[key].push(chunk.entity_name);
+            return acc;
+        }, {} as Record<string, string[]>);
+
+        let list = Object.entries(groupedByFile).map(([filePath, entities]) => {
+            let fileEntry = `  - File: \`${filePath}\``;
+            if (entities.length > 0) {
+                fileEntry += ` (Entities: ${entities.map(e => `\`${e}\``).join(', ')})`;
+            }
+            return fileEntry;
+        }).join('\n');
+
+        if (chunks.length > MAX_ITEMS_PER_SECTION) {
+            list += `\n  - ...and ${chunks.length - MAX_ITEMS_PER_SECTION} more items.`;
+        }
+        return list;
     };
 
-    const titles = {
-        new: 'New Embeddings Summary',
-        reused: 'Reused Embeddings Summary',
-        deleted: 'Deleted Embeddings Summary'
-    };
+    // Create the final, structured changelog for the AI
+    const changelog = `
+**Refactored Entities (Modified or Replaced):**
+${formatChangeList(refactored)}
 
-    const combinedChunksText = chunks.map(chunk => chunk.chunk_text).join('\n\n');
-    let summaryText = `(AI summary could not be generated for ${summaryType} chunks.)`;
+**Newly Added Entities:**
+${formatChangeList(trulyNew)}
 
+**Removed Entities:**
+${formatChangeList(trulyDeleted)}
+
+**Reused Unchanged Entities:**
+${formatChangeList(reusedEmbeddings)}
+`;
+
+    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for a pull request. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
+
+Synthesize all sections to understand the full picture. Pay close attention to the 'Refactored' section, which indicates code that was modified. Your summary should be brief, written in markdown, and focus on the overall impact of the changes.
+
+**Changelog:**
+${changelog}
+`;
+
+    let summaryText = `(AI summary could not be generated.)`;
     try {
         const geminiService = memoryManager.getGeminiIntegrationService();
         if (geminiService) {
-            const prompt = `${promptTemplates[summaryType]}\n\n${combinedChunksText}`;
-            const response = await geminiService.askGemini(prompt);
-            if (response?.content && Array.isArray(response.content)) {
-                summaryText = response.content.map(part => part.text).join('').trim();
+            const response = await geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            if (response?.content?.[0]?.text) {
+                summaryText = response.content[0].text.trim();
             }
         }
     } catch (e) {
-        console.warn(`AI summarizer failed for ${summaryType} embeddings summary:`, e);
+        console.warn(`Unified AI summarizer failed:`, e);
     }
 
-    return `\n### ${titles[summaryType]}:\n${summaryText}\n`;
+    return `\n### AI Change Summary:\n${summaryText}\n`;
 }
+
 
 export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
     return {
@@ -147,24 +211,21 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
             const absoluteProjectRootPath = path.resolve(project_root_path);
-            let resultCounts;
+            let resultCounts: EmbeddingIngestionResult;
             let outputMessage: string;
 
             if (paths_to_embed && paths_to_embed.length > 0) {
-                // Normalize and validate each path
                 const normalizedPaths = paths_to_embed.map((fp: string) => {
                     const absoluteFilePath = path.isAbsolute(fp)
                         ? fp
                         : path.resolve(absoluteProjectRootPath, fp);
                     if (!absoluteFilePath.startsWith(absoluteProjectRootPath)) {
-                        // Prevent path traversal. Path must be within the project root.
                         console.warn(`Skipped path outside project root: ${fp}`);
                         return null;
                     }
-                    // Get the path relative to the project root.
                     const relativePath = path.relative(absoluteProjectRootPath, absoluteFilePath).replace(/\\/g, '/');
                     return relativePath;
-                }).filter(Boolean);
+                }).filter(Boolean) as string[];
                 if (normalizedPaths.length === 0) {
                     throw new McpError(ErrorCode.InvalidParams, `No valid file paths to embed within project root (${absoluteProjectRootPath}).`);
                 }
@@ -180,7 +241,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 outputMessage = `Codebase embedding ingestion for ${normalizedPaths.length} specified files complete.`;
 
             } else {
-                // Mode 2 & 3: Process a single path (file or directory)
                 const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
 
                 if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {
@@ -201,42 +261,61 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
             }
 
-            await embeddingService.embeddingCache.flushToDb();
-            const outputLines = [
-                outputMessage,
-                `- New Embeddings Created: ${resultCounts.newEmbeddingsCount}`,
-                `- Reused Existing Embeddings: ${resultCounts.reusedEmbeddingsCount}`,
-                `- Deleted Stale Embeddings: ${resultCounts.deletedEmbeddingsCount}`,
-            ];
+            let detailedOutput = `## Ingestion Summary\n${outputMessage}\n\n### Overall Statistics:\n`
+                + `- **New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
+                + `- **Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
+                + `- **Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
 
-            if (resultCounts.embeddingRequestCount !== undefined) outputLines.push(`- Embedding API Requests: ${resultCounts.embeddingRequestCount}`);
-            if (resultCounts.embeddingRetryCount !== undefined) outputLines.push(`- Embedding API Retries: ${resultCounts.embeddingRetryCount}`);
-            if (resultCounts.namingApiCallCount !== undefined) outputLines.push(`- Naming API Calls: ${resultCounts.namingApiCallCount}`);
-            if (resultCounts.summarizationApiCallCount !== undefined) outputLines.push(`- Summarization API Calls: ${resultCounts.summarizationApiCallCount}`);
-            if (resultCounts.dbCallCount !== undefined) outputLines.push(`- Database Call Count (for existing hashes/summaries): ${resultCounts.dbCallCount}`);
+            const fileStats = new Map<string, { new: number; reused: number; deleted: number }>();
+            const aggregate = (list: typeof resultCounts.newEmbeddings, type: 'new' | 'reused' | 'deleted') => {
+                if (!list) return;
+                for (const item of list) {
+                    const stats = fileStats.get(item.file_path_relative) || { new: 0, reused: 0, deleted: 0 };
+                    stats[type]++;
+                    fileStats.set(item.file_path_relative, stats);
+                }
+            };
+
+            aggregate(resultCounts.newEmbeddings, 'new');
+            aggregate(resultCounts.reusedEmbeddings, 'reused');
+            aggregate(resultCounts.deletedEmbeddings, 'deleted');
+
+            if (fileStats.size > 0) {
+                detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files affected):\n`;
+                const sortedFiles = Array.from(fileStats.keys()).sort();
+                const filesToShow = 30;
+
+                sortedFiles.slice(0, filesToShow).forEach(filePath => {
+                    const counts = fileStats.get(filePath)!;
+                    detailedOutput += `- \`${filePath}\` (New: ${counts.new}, Reused: ${counts.reused}, Deleted: ${counts.deleted})\n`;
+                });
+
+                if (sortedFiles.length > filesToShow) {
+                    detailedOutput += `- ...and ${sortedFiles.length - filesToShow} more files.\n`;
+                }
+            }
+
+            detailedOutput += `\n### Performance Metrics:\n`;
+            if (resultCounts.embeddingRequestCount !== undefined) detailedOutput += `- **Embedding API Requests:** ${resultCounts.embeddingRequestCount}\n`;
+            if (resultCounts.embeddingRetryCount !== undefined) detailedOutput += `- **Embedding API Retries:** ${resultCounts.embeddingRetryCount}\n`;
+            if (resultCounts.namingApiCallCount !== undefined) detailedOutput += `- **Naming API Calls:** ${resultCounts.namingApiCallCount}\n`;
+            if (resultCounts.summarizationApiCallCount !== undefined) detailedOutput += `- **Summarization API Calls:** ${resultCounts.summarizationApiCallCount}\n`;
+            if (resultCounts.dbCallCount !== undefined) detailedOutput += `- **Database Call Count:** ${resultCounts.dbCallCount}\n`;
             if (resultCounts.dbCallLatencyMs !== undefined) {
                 const dbCallLatencySeconds = (resultCounts.dbCallLatencyMs / 1000).toFixed(2);
-                outputLines.push(`- Database Call Latency (for existing hashes/summaries): ${dbCallLatencySeconds} seconds`);
+                detailedOutput += `- **Database Call Latency:** ${dbCallLatencySeconds} seconds\n`;
             }
             if (resultCounts.totalTokensProcessed !== undefined) {
-                outputLines.push(`- Tokens Processed (est.): ${resultCounts.totalTokensProcessed}`);
+                detailedOutput += `- **Tokens Processed (est.):** ${resultCounts.totalTokensProcessed}\n`;
             }
             if (resultCounts.totalTimeMs !== undefined) {
-                const totalTimeMinutes = (resultCounts.totalTimeMs / 60000).toFixed(2);
-                outputLines.push(`- Total Time Taken: ${totalTimeMinutes} minutes`);
+                const totalTimeSeconds = (resultCounts.totalTimeMs / 1000).toFixed(2);
+                detailedOutput += `- **Total Time Taken:** ${totalTimeSeconds} seconds\n`;
             }
 
-            let detailedOutput = outputLines.join('\n');
-
             if (!disable_ai_output_summary) {
-                const [newSummary, reusedSummary, deletedSummary] = await Promise.all([
-                    _generateAiSummary(memoryManager, resultCounts.newEmbeddings, 'new'),
-                    _generateAiSummary(memoryManager, resultCounts.reusedEmbeddings, 'reused'),
-                    _generateAiSummary(memoryManager, resultCounts.deletedEmbeddings, 'deleted')
-                ]);
-                detailedOutput += newSummary;
-                detailedOutput += reusedSummary;
-                detailedOutput += deletedSummary;
+                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
+                detailedOutput += unifiedSummary;
             }
 
             return { content: [{ type: 'text', text: detailedOutput }] };
@@ -311,20 +390,14 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
             const absoluteProjectRootPath = path.resolve(project_root_path);
 
-            // Normalize all provided file paths to be relative to the project root and use forward slashes.
-            // This ensures consistency when querying the database.
             const normalizedFilePaths = file_paths.map((fp: string) => {
-                // Resolve the full, absolute path of the file.
                 const absoluteFilePath = path.isAbsolute(fp)
                     ? fp
                     : path.resolve(absoluteProjectRootPath, fp);
                 if (!absoluteFilePath.startsWith(absoluteProjectRootPath)) {
-                    // Prevent path traversal. Path must be within the project root.
                     throw new McpError(ErrorCode.InvalidParams, `File path to clean up (${fp}) must be within the project root path (${project_root_path}).`);
                 }
-                // Get the path relative to the project root.
                 const relativePath = path.relative(absoluteProjectRootPath, absoluteFilePath);
-                // Convert backslashes to forward slashes for OS-independent consistency.
                 return relativePath.replace(/\\/g, '/');
             });
 

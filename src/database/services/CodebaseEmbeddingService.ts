@@ -74,7 +74,6 @@ export class CodebaseEmbeddingService {
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
     ): Promise<EmbeddingIngestionResult> {
-        // This method now wraps the more efficient multi-file method for a single file.
         return this.generateAndStoreEmbeddingsForMultipleFiles(
             agentId,
             [filePath],
@@ -86,7 +85,6 @@ export class CodebaseEmbeddingService {
         );
     }
 
-    // This is the new core "bulk" processing function
     private async _processBatchOfFiles(
         agentId: string,
         filesToProcess: Array<{ absolutePath: string, relativePath: string }>,
@@ -97,13 +95,12 @@ export class CodebaseEmbeddingService {
     ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
 
         const chunksToEmbed: Array<{ chunk: any, fileInfo: any }> = [];
-        const embeddingIdsToDelete = new Set<string>();
         const report = {
             newEmbeddingsCount: 0,
             reusedEmbeddingsCount: 0,
-            newEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string }>,
-            reusedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string }>,
-            deletedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string }>,
+            newEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
+            reusedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
+            deletedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
             embeddingRequestCount: 0,
             embeddingRetryCount: 0,
             totalTokensProcessed: 0,
@@ -113,7 +110,9 @@ export class CodebaseEmbeddingService {
             dbCallLatencyMs: 0
         };
 
-        // --- Step 1: Concurrently process files to determine which chunks are new, reused, or stale ---
+        // --- MODIFICATION: This entire block is updated for the new ingestion strategy ---
+
+        // Step 1: Concurrently process files to generate chunks and identify stale ones
         await Promise.all(filesToProcess.map(async (fileInfo) => {
             try {
                 const fileContent = await fs.readFile(fileInfo.absolutePath, 'utf-8');
@@ -125,41 +124,30 @@ export class CodebaseEmbeddingService {
                     return;
                 }
 
-                const language = await this.introspectionService.detectLanguage(agentId, fileInfo.absolutePath, path.basename(fileInfo.absolutePath));
-                const existingEmbeddingsForFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath);
-                const { hashes: existingHashesInDb } = await this.repository.getChunkHashesForFile(fileInfo.relativePath);
-
-                const { chunks: chunksData, namingApiCallCount, summarizationApiCallCount } = await this.chunkingService.chunkFileContent(agentId, fileInfo.absolutePath, fileContent, fileInfo.relativePath, language, strategy, storeEntitySummaries);
-                report.namingApiCallCount += namingApiCallCount;
-                report.summarizationApiCallCount += summarizationApiCallCount;
-
-                const currentChunkHashes = new Set<string>();
-
-                for (const chunk of chunksData) {
-                    const chunkHash = this.generateChunkHash(chunk.chunk_text);
-                    currentChunkHashes.add(chunkHash);
-
-                    if (existingHashesInDb.has(chunkHash)) {
-                        report.reusedEmbeddingsCount++;
-                        report.reusedEmbeddings.push({ file_path_relative: fileInfo.relativePath, chunk_text: chunk.chunk_text });
-                    } else {
-                        chunksToEmbed.push({ chunk, fileInfo: { ...fileInfo, fileHash: currentFileHash } });
-                    }
+                // First, delete all old embeddings for this file to handle updates and refactors cleanly.
+                const existingEmbeddings = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+                if (existingEmbeddings.length > 0) {
+                    const idsToDelete = existingEmbeddings.map(e => e.embedding_id);
+                    await this.repository.bulkDeleteEmbeddings(idsToDelete);
+                    existingEmbeddings.forEach(e => report.deletedEmbeddings.push({ file_path_relative: e.file_path_relative, chunk_text: e.chunk_text, entity_name: e.entity_name }));
                 }
 
-                existingEmbeddingsForFile.forEach(existing => {
-                    if (existing.chunk_hash && !currentChunkHashes.has(existing.chunk_hash)) {
-                        embeddingIdsToDelete.add(existing.embedding_id);
-                        report.deletedEmbeddings.push({ file_path_relative: fileInfo.relativePath, chunk_text: existing.chunk_text });
-                    }
-                });
+                const language = await this.introspectionService.detectLanguage(agentId, fileInfo.absolutePath, path.basename(fileInfo.absolutePath));
+
+                // Use the new multi-vector chunking service
+                const { chunks: multiVectorChunks, summarizationApiCallCount } = await this.chunkingService.chunkFileForMultiVector(agentId, fileInfo.absolutePath, fileContent, fileInfo.relativePath, language);
+                report.summarizationApiCallCount += summarizationApiCallCount;
+
+                for (const chunk of multiVectorChunks) {
+                    chunksToEmbed.push({ chunk, fileInfo: { ...fileInfo, fileHash: currentFileHash } });
+                }
 
             } catch (err) {
                 console.error(`Error processing file ${fileInfo.absolutePath}:`, err);
             }
         }));
 
-        // --- Step 2: Batch generate embeddings for all new chunks from all files ---
+        // Step 2: Batch generate embeddings for all new chunks from all files
         if (chunksToEmbed.length > 0) {
             const textsToEmbed = chunksToEmbed.map(item => item.chunk.chunk_text);
             const { embeddings, requestCount, retryCount, totalTokensProcessed } = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
@@ -168,45 +156,55 @@ export class CodebaseEmbeddingService {
             report.totalTokensProcessed = totalTokensProcessed;
 
             const newEmbeddingsToStore: CodebaseEmbeddingRecord[] = [];
+            const parentIdMap = new Map<string, string>(); // Maps temporary parent IDs to final DB IDs
+
+            // First pass: create records and identify parent IDs
+            embeddings.forEach((embeddingResult, index) => {
+                if (embeddingResult) {
+                    const { chunk } = chunksToEmbed[index];
+                    const embeddingId = crypto.randomUUID();
+                    if (chunk.embedding_type === 'summary' && chunk.parent_embedding_id) {
+                        parentIdMap.set(chunk.parent_embedding_id, embeddingId);
+                    }
+                    chunksToEmbed[index].chunk.final_embedding_id = embeddingId; // Store final ID
+                }
+            });
+
+            // Second pass: build the final records with correct parent links
             embeddings.forEach((embeddingResult, index) => {
                 if (embeddingResult) {
                     const { chunk, fileInfo } = chunksToEmbed[index];
-                    const chunkHash = this.generateChunkHash(chunk.chunk_text);
                     const vectorBuffer = Buffer.alloc(embeddingResult.vector.length * VECTOR_FLOAT_SIZE);
                     embeddingResult.vector.forEach((val, i) => vectorBuffer.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
 
                     newEmbeddingsToStore.push({
-                        embedding_id: crypto.randomUUID(),
+                        embedding_id: chunk.final_embedding_id,
                         agent_id: agentId,
                         chunk_text: chunk.chunk_text,
                         entity_name: chunk.entity_name || null,
                         vector_blob: vectorBuffer,
                         vector_dimensions: embeddingResult.dimensions,
                         model_name: DEFAULT_EMBEDDING_MODEL,
-                        chunk_hash: chunkHash,
+                        chunk_hash: this.generateChunkHash(chunk.chunk_text),
                         file_hash: fileInfo.fileHash,
-                        metadata_json: JSON.stringify({ ...chunk.metadata, type: chunk.metadata?.type, ai_summary_text: chunk.ai_summary_text || undefined }),
+                        metadata_json: JSON.stringify(chunk.metadata || {}),
                         created_timestamp_unix: Math.floor(Date.now() / 1000),
                         file_path_relative: fileInfo.relativePath,
                         full_file_path: fileInfo.absolutePath,
-                        ai_summary_text: chunk.ai_summary_text || undefined
+                        embedding_type: chunk.embedding_type,
+                        parent_embedding_id: chunk.embedding_type === 'chunk' ? parentIdMap.get(chunk.parent_embedding_id) : chunk.final_embedding_id, // Parent links to itself
                     });
-                    report.newEmbeddings.push({ file_path_relative: fileInfo.relativePath, chunk_text: chunk.chunk_text });
+                    report.newEmbeddings.push({ file_path_relative: fileInfo.relativePath, chunk_text: chunk.chunk_text, entity_name: chunk.entity_name });
                 }
             });
+
             report.newEmbeddingsCount = newEmbeddingsToStore.length;
 
-            // --- Step 3: Perform bulk database operations ---
             if (newEmbeddingsToStore.length > 0) {
                 await this.repository.bulkInsertEmbeddings(newEmbeddingsToStore);
             }
         }
 
-        if (embeddingIdsToDelete.size > 0) {
-            await this.repository.bulkDeleteEmbeddings(Array.from(embeddingIdsToDelete));
-        }
-
-        // Note: deletedEmbeddingsCount will be set by the caller
         return report;
     }
 
@@ -234,7 +232,7 @@ export class CodebaseEmbeddingService {
         return {
             ...result,
             deletedEmbeddingsCount: result.deletedEmbeddings.length,
-            aiSummary: '', // Summary logic can be added if needed
+            aiSummary: '',
             totalTimeMs: Date.now() - startTime
         };
     }
@@ -263,21 +261,15 @@ export class CodebaseEmbeddingService {
 
         const result = await this._processBatchOfFiles(agentId, filesToProcess, absoluteProjectRootPath, strategy, storeEntitySummaries, existingFileHashes);
 
-        // Identify and delete embeddings for files that no longer exist
         const processedFilePaths = new Set(filesToProcess.map(f => f.relativePath));
-        const deletedFilePaths: string[] = [];
-        allDbFilePaths.forEach(dbPath => {
-            // Check if the file from DB is within the directory being processed
+        const staleFiles: string[] = Array.from(allDbFilePaths).filter(dbPath => {
             const isUnderDirectory = path.resolve(absoluteProjectRootPath, dbPath).startsWith(absoluteDirectoryPath);
-            if (isUnderDirectory && !processedFilePaths.has(dbPath)) {
-                deletedFilePaths.push(dbPath);
-            }
+            return isUnderDirectory && !processedFilePaths.has(dbPath);
         });
 
         let deletedEmbeddingsCount = result.deletedEmbeddings.length;
-        if (deletedFilePaths.length > 0) {
-            console.log(`[CodebaseEmbeddingService] Deleting embeddings for ${deletedFilePaths.length} stale files.`);
-            const cleanupResult = await this.cleanUpEmbeddingsByFilePaths(agentId, deletedFilePaths, absoluteProjectRootPath, true);
+        if (staleFiles.length > 0) {
+            const cleanupResult = await this.cleanUpEmbeddingsByFilePaths(agentId, staleFiles, absoluteProjectRootPath, true);
             deletedEmbeddingsCount += cleanupResult.deletedCount;
         }
 
@@ -302,20 +294,18 @@ export class CodebaseEmbeddingService {
             throw new Error("Failed to generate embedding for query text.");
         }
 
-        const initialTopK = topK * 5;
-
+        // This method will now need to be updated to handle the two-step retrieval process
+        // For now, it will only search against child chunks, but the foundation is laid.
         const rawResults = await this.repository.findSimilarEmbeddingsWithMetadata(
             queryEmbedding.vector,
             queryText,
-            initialTopK,
+            topK,
             agentId,
             targetFilePaths,
             exclude_chunk_types
         );
 
         const mappedResults = rawResults.map(meta => {
-            if (!meta) return null;
-
             let parsedMetadata: Record<string, any> | null = null;
             if (meta.metadata_json) {
                 try {
@@ -324,17 +314,16 @@ export class CodebaseEmbeddingService {
                     console.warn(`Failed to parse metadata_json for embedding ID ${meta.embedding_id}:`, e);
                 }
             }
-
             return {
                 chunk_text: meta.chunk_text,
                 ai_summary_text: meta.ai_summary_text,
                 file_path_relative: meta.file_path_relative,
                 entity_name: meta.entity_name,
-                score: meta.similarity,
+                score: meta.similarity || 0,
                 metadata: parsedMetadata
             };
-        }).filter((item): item is NonNullable<typeof item> => item !== null);
+        });
 
-        return mappedResults.slice(0, topK);
+        return mappedResults;
     }
 }

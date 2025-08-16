@@ -229,8 +229,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 for (const filePath of live_review_file_paths) {
                     const fileContent = await fs.readFile(filePath, 'utf-8');
                     const language = await embeddingService.introspectionService.detectLanguage(agent_id, filePath, path.basename(filePath));
-                    const { chunks } = await embeddingService.chunkingService.chunkFileContent(
-                        agent_id, filePath, fileContent, path.relative(process.cwd(), filePath), language, 'auto', false
+                    const { chunks } = await embeddingService.chunkingService.chunkFileForMultiVector(
+                        agent_id, filePath, fileContent, path.relative(process.cwd(), filePath), language
                     );
                     chunks.forEach((chunk: { chunk_text: string }, index: number) => {
                         finalContext.push({

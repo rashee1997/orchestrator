@@ -1,5 +1,6 @@
 export type ChunkingStrategy = 'auto' | 'function' | 'class' | 'sliding_window';
 
+// MODIFICATION: Added embedding_type and parent_embedding_id for structural awareness
 export interface CodebaseEmbeddingRecord {
     embedding_id: string;
     agent_id: string;
@@ -9,23 +10,25 @@ export interface CodebaseEmbeddingRecord {
     vector_dimensions: number;
     model_name: string;
     chunk_hash: string;
-    file_hash: string; // Hash of the entire file content
+    file_hash: string;
     metadata_json: string | null;
     created_timestamp_unix: number;
     file_path_relative: string;
     full_file_path: string;
     ai_summary_text?: string | null;
-    similarity?: number; // Added for retrieval results
-    finalScore?: number; // Added for retrieval results
+    embedding_type: 'summary' | 'chunk'; // 'summary' for parent, 'chunk' for child
+    parent_embedding_id?: string | null; // Link chunks to their parent summary
+    similarity?: number;
+    finalScore?: number;
 }
 
 export interface EmbeddingIngestionResult {
     newEmbeddingsCount: number;
     reusedEmbeddingsCount: number;
     deletedEmbeddingsCount: number;
-    newEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-    reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
-    deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string }>;
+    newEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
+    reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
+    deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
     aiSummary?: string;
     embeddingRequestCount: number;
     embeddingRetryCount: number;
@@ -34,7 +37,7 @@ export interface EmbeddingIngestionResult {
     dbCallCount: number;
     dbCallLatencyMs: number;
     totalTimeMs: number;
-    totalTokensProcessed?: number; // MODIFICATION: Added for cost/performance tracking
+    totalTokensProcessed?: number;
 }
 
 export interface CachedChunk {

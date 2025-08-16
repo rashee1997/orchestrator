@@ -93,6 +93,7 @@ export class EmbeddingCache {
                 file_path_relative: chunk.file_path_relative,
                 entity_name: chunk.entity_name ?? null,
                 chunk_text: chunk.chunk_text,
+                embedding_type: 'chunk',
                 ai_summary_text: chunk.metadata?.ai_summary_text ?? null,
                 vector_blob: vectorBuffer,
                 vector_dimensions: chunk.vector_dimensions,
