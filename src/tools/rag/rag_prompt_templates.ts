@@ -13,7 +13,7 @@ export class RagPromptTemplates {
     static generateAnalysisPrompt(params: {
         originalQuery: string;
         currentTurn: number;
-        maxIterations: number;
+        maxIterations: string;
         accumulatedContext: string;
         focusString?: string;
         enableWebSearch: boolean;
@@ -32,12 +32,14 @@ Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB]
 Reasoning: [Briefly explain your decision. If searching again, explain what is missing. If searching the web, explain why external info is needed.]
 Next Codebase Search Query: [Only if decision is SEARCH_AGAIN, provide a query to find missing code info.]
 Next Web Search Query: [Only if decision is SEARCH_WEB, provide a concise query for a web search engine.]
+Confidence: [A number between 0 and 1 indicating your confidence in this decision]
 ---
 Instructions:
 - If the **accumulated context** (from codebase or web search) is sufficient to fully answer the original query, set "Decision" to "ANSWER".
 - If more **codebase** information is needed, set "Decision" to "SEARCH_AGAIN".
 - If the query requires **external, real-time, or third-party library information** not found in the code, set "Decision" to "SEARCH_WEB".
 - Consider the **relevance and completeness** of the current context. If key information is missing, continue searching.
+- Avoid repetitive queries. If you've already searched for similar information, try a different approach.
 ${enableWebSearch ? '- If you\'ve reached the last turn (' + maxIterations + '), you MUST set "Decision" to "ANSWER".' : '- If you\'ve reached the last turn (' + maxIterations + '), you MUST set "Decision" to "ANSWER".'}
 `;
     }

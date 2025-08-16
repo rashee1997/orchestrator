@@ -21,37 +21,50 @@ export class RagResponseParser {
      */
     static parseAnalysisResponse(rawResponseText: string): RagAnalysisResponse | null {
         try {
-            // Extract decision
-            const decisionMatch = rawResponseText.match(/Decision:\s*(ANSWER|SEARCH_AGAIN|SEARCH_WEB)/i);
+            // Normalize line endings and trim whitespace
+            const normalizedText = rawResponseText.replace(/\r\n/g, '\n').trim();
+
+            // More flexible regex for decision
+            const decisionMatch = normalizedText.match(/Decision:\s*(ANSWER|SEARCH_AGAIN|SEARCH_WEB)/i);
             if (!decisionMatch) {
-                console.warn('[RagResponseParser] Decision not found in response');
+                console.warn(`[RagResponseParser] Decision not found in response. Raw text: "${normalizedText}"`);
                 return null;
             }
             const decision = decisionMatch[1].toUpperCase() as 'ANSWER' | 'SEARCH_AGAIN' | 'SEARCH_WEB';
 
-            // Extract reasoning
-            const reasoningMatch = rawResponseText.match(/Reasoning:\s*([\s\S]*?)(?=\nNext Codebase Search Query:|\nNext Web Search Query:|\n---|$)/i);
-            const reasoning = reasoningMatch ? reasoningMatch[1].trim() : '';
+            // Function to extract content between a start key and a set of end keys
+            const extractContent = (startKey: string, endKeys: string[]): string => {
+                const startRegex = new RegExp(`${startKey}:\\s*`, 'i');
+                const startIndexMatch = normalizedText.match(startRegex);
+                if (!startIndexMatch || startIndexMatch.index === undefined) {
+                    return '';
+                }
+                const contentStartIndex = startIndexMatch.index + startIndexMatch[0].length;
+                let endIndex = normalizedText.length;
 
-            // Extract confidence score if present
+                for (const endKey of endKeys) {
+                    const endRegex = new RegExp(`\\n${endKey}:`, 'i');
+                    const endIndexMatch = normalizedText.substring(contentStartIndex).match(endRegex);
+                    if (endIndexMatch && endIndexMatch.index !== undefined) {
+                        const potentialEndIndex = contentStartIndex + endIndexMatch.index;
+                        if (potentialEndIndex < endIndex) {
+                            endIndex = potentialEndIndex;
+                        }
+                    }
+                }
+                return normalizedText.substring(contentStartIndex, endIndex).trim();
+            };
+
+            const allEndKeys = ['Next Codebase Search Query', 'Next Web Search Query', 'Confidence', '---'];
+            const reasoning = extractContent('Reasoning', allEndKeys);
+            const nextCodebaseQuery = decision === 'SEARCH_AGAIN' ? extractContent('Next Codebase Search Query', allEndKeys.filter(k => k !== 'Next Codebase Search Query')) : undefined;
+            const nextWebQuery = decision === 'SEARCH_WEB' ? extractContent('Next Web Search Query', allEndKeys.filter(k => k !== 'Next Web Search Query')) : undefined;
+
+            // Extract confidence score with a more flexible regex
             let confidenceScore: number | undefined;
-            const confidenceMatch = rawResponseText.match(/Confidence:\s*(\d+(\.\d+)?)/i);
+            const confidenceMatch = normalizedText.match(/Confidence:\s*(\d*\.?\d+)/i);
             if (confidenceMatch) {
                 confidenceScore = parseFloat(confidenceMatch[1]);
-            }
-
-            // Extract next codebase query (only if decision is SEARCH_AGAIN)
-            let nextCodebaseQuery: string | undefined;
-            if (decision === 'SEARCH_AGAIN') {
-                const codebaseQueryMatch = rawResponseText.match(/Next Codebase Search Query:\s*([\s\S]*?)(?=\nNext Web Search Query:|\n---|$)/i);
-                nextCodebaseQuery = codebaseQueryMatch ? codebaseQueryMatch[1].trim() : undefined;
-            }
-
-            // Extract next web query (only if decision is SEARCH_WEB)
-            let nextWebQuery: string | undefined;
-            if (decision === 'SEARCH_WEB') {
-                const webQueryMatch = rawResponseText.match(/Next Web Search Query:\s*([\s\S]*?)(?=\n---|$)/i);
-                nextWebQuery = webQueryMatch ? webQueryMatch[1].trim() : undefined;
             }
 
             return {

@@ -18,7 +18,6 @@ import { ContextRetrievalOptions } from '../database/services/CodebaseContextRet
 import { callTavilyApi } from '../integrations/tavily.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
 import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
-
 /**
  * Performs an automated, multi-turn iterative search and refinement process.
  * This function orchestrates a loop where it retrieves context, asks Gemini to analyze it,
@@ -39,7 +38,6 @@ async function _performIterativeRagSearch(
     const orchestrator = new IterativeRagOrchestrator(memoryManagerInstance, geminiService);
     return await orchestrator.performIterativeSearch(args);
 }
-
 export const askGeminiToolDefinition: InternalToolDefinition = {
     name: 'ask_gemini',
     description: 'Asks a query to the Gemini AI. Can perform a simple query, use Retrieval-Augmented Generation (RAG) for context-aware answers, or perform an automated, multi-step iterative search for complex questions.',
@@ -157,6 +155,50 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 description: 'Strategy for context window optimization.',
                 enum: ['truncate', 'summarize', 'adaptive'],
                 default: 'adaptive'
+            },
+            // Tavily web search parameters
+            tavily_search_depth: {
+                type: 'string',
+                description: 'Optional: Depth of the web search. Defaults to "basic".',
+                enum: ['basic', 'advanced'],
+                default: 'basic',
+                nullable: true
+            },
+            tavily_max_results: {
+                type: 'number',
+                description: 'Optional: Maximum number of search results to return. Defaults to 5.',
+                default: 5,
+                minimum: 1,
+                maximum: 10,
+                nullable: true
+            },
+            tavily_include_raw_content: {
+                type: 'boolean',
+                description: 'Optional: Include raw content in search results. Defaults to false.',
+                default: false,
+                nullable: true
+            },
+            tavily_include_images: {
+                type: 'boolean',
+                description: 'Optional: Include images in search results. Defaults to false.',
+                default: false,
+                nullable: true
+            },
+            tavily_include_image_descriptions: {
+                type: 'boolean',
+                description: 'Optional: Include image descriptions in search results. Defaults to false.',
+                default: false,
+                nullable: true
+            },
+            tavily_time_period: {
+                type: 'string',
+                description: 'Optional: Time period for search results (e.g., "1m", "1y", "all"). Defaults to no time restriction.',
+                nullable: true
+            },
+            tavily_topic: {
+                type: 'string',
+                description: 'Optional: Topic category for search results (e.g., "news", "general"). Defaults to "general".',
+                nullable: true
             }
         },
         required: ['agent_id', 'query']
@@ -167,7 +209,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             console.error(errorMsg);
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
-
         const {
             agent_id,
             query,
@@ -187,33 +228,35 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             max_iterations,
             hallucination_check_threshold,
             enable_context_summarization,
-            context_window_optimization_strategy
+            context_window_optimization_strategy,
+            // Tavily parameters
+            tavily_search_depth,
+            tavily_max_results,
+            tavily_include_raw_content,
+            tavily_include_images,
+            tavily_include_image_descriptions,
+            tavily_time_period,
+            tavily_topic
         } = args;
-
         const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
         const contextManager = (memoryManagerInstance as any).contextInformationManager as ContextInformationManager | undefined;
-
         if (!dbService || !contextManager) {
             const errorMsg = "dbService or contextInformationManager not available through MemoryManager for GeminiIntegrationService. Update access pattern in MemoryManager or tool.";
             console.error(errorMsg);
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
-
         if (!process.env.GEMINI_API_KEY) {
             const errorMsg = "Gemini API key (GEMINI_API_KEY) is not set in environment variables.";
             console.error(errorMsg);
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
-
         const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
-
         // --- Stage 1: Context Acquisition ---
         let finalContext: RetrievedCodeContext[] = [];
         let webSearchSources: { title: string; url: string }[] = [];
         let finalAnswerFromIteration: string | undefined;
         let searchMetrics: any = undefined;
-
         try {
             if (enable_iterative_search) {
                 console.log("[ask_gemini] Starting Stage 1: Iterative Search Context Acquisition");
@@ -236,9 +279,16 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     max_iterations,
                     hallucination_check_threshold,
                     enable_context_summarization,
-                    context_window_optimization_strategy
+                    context_window_optimization_strategy,
+                    // Pass Tavily parameters
+                    tavily_search_depth,
+                    tavily_max_results,
+                    tavily_include_raw_content,
+                    tavily_include_images,
+                    tavily_include_image_descriptions,
+                    tavily_time_period,
+                    tavily_topic
                 }, memoryManagerInstance, geminiService);
-
                 finalContext = iterativeResult.accumulatedContext;
                 webSearchSources = iterativeResult.webSearchSources;
                 finalAnswerFromIteration = iterativeResult.finalAnswer;
@@ -248,7 +298,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const embeddingService = memoryManagerInstance.getCodebaseEmbeddingService();
                 const chunkingService = embeddingService.chunkingService;
                 const introspectionService = embeddingService.introspectionService;
-
                 for (const filePath of live_review_file_paths) {
                     const fileContent = await fs.readFile(filePath, 'utf-8');
                     const language = await introspectionService.detectLanguage(agent_id, filePath, path.basename(filePath));
@@ -261,7 +310,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         'auto',
                         false
                     );
-
                     chunks.forEach((chunk: { chunk_text: string }, index: number) => {
                         finalContext.push({
                             type: 'file_snippet',
@@ -281,27 +329,21 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             console.error(`Error during context acquisition stage:`, error);
             throw new McpError(ErrorCode.InternalError, `Context Acquisition failed: ${error.message}`);
         }
-
         console.log(`[ask_gemini] Stage 1 complete. Acquired ${finalContext.length} context items.`);
-
         // --- Stage 2: Output Generation ---
         console.log(`[ask_gemini] Starting Stage 2: Output Generation with mode "${execution_mode}"`);
-
         if (execution_mode === 'plan_generation') {
             const modelToUse = model || REFINEMENT_MODEL_NAME;
             const raw_user_prompt = query;
             const retrievedCodeContextParts = formatRetrievedContextForPrompt(finalContext);
-
             const metaPromptContent = META_PROMPT
                 .replace('{modelToUse}', modelToUse)
                 .replace('{raw_user_prompt}', raw_user_prompt)
                 .replace('{retrievedCodeContextString}', retrievedCodeContextParts[0].text || 'No relevant context was found.');
-
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
                 const textResponse = result.content[0].text ?? '';
                 let parsedResponse = parseGeminiJsonResponse(textResponse);
-
                 parsedResponse.agent_id = parsedResponse.agent_id || agent_id;
                 parsedResponse.refinement_engine_model = modelToUse;
                 parsedResponse.refinement_timestamp = new Date().toISOString();
@@ -309,7 +351,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 parsedResponse.target_ai_persona = target_ai_persona;
                 parsedResponse.conversation_context_ids = conversation_context_ids;
                 parsedResponse.refined_prompt_id = await geminiService.storeRefinedPrompt(parsedResponse);
-
                 return { content: [{ type: 'text', text: JSON.stringify(parsedResponse, null, 2) }] };
             } catch (error: any) {
                 console.error(`Error generating plan using Gemini API (agent: ${agent_id}):`, error);
@@ -323,7 +364,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += `### AI Answer:\n`;
                 markdownOutput += formatJsonToMarkdownCodeBlock(finalAnswerFromIteration, 'text') + '\n';
                 markdownOutput += `\n**Verification Status:** Verified against provided context.\n`;
-
                 // Add search metrics if available
                 if (searchMetrics) {
                     markdownOutput += `\n### Search Metrics:\n`;
@@ -335,20 +375,16 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         markdownOutput += `- Early Termination Reason: ${searchMetrics.earlyTerminationReason}\n`;
                     }
                 }
-
                 if (webSearchSources.length > 0) {
                     markdownOutput += `\n### Web Search Sources:\n`;
                     webSearchSources.forEach((source, index) => {
                         markdownOutput += `${index + 1}. [${source.title}](${source.url})\n`;
                     });
                 }
-
                 return { content: [{ type: 'text', text: markdownOutput }] };
             }
-
             let finalPromptContent = "";
             let finalSystemInstruction = systemInstruction;
-
             if (finalContext.length > 0) {
                 let metaPromptTemplate: string;
                 if (webSearchSources.length > 0) {
@@ -374,12 +410,10 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         }
                     }
                 }
-
                 let focusString = "";
                 if (analysis_focus_points && analysis_focus_points.length > 0) {
                     focusString = "Focus on the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
                 }
-
                 const contextText = finalContext.map(res => {
                     const isWebResult = res.type === 'documentation' && webSearchSources.some(s => s.url === res.sourcePath);
                     if (isWebResult) {
@@ -394,11 +428,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         return `File: ${sourceCitation}${entityName}\n\`\`\`${res.metadata?.language || 'text'}\n${contentPreview}${truncated}\n\`\`\``;
                     }
                 }).join("\n\n---\n\n");
-
                 finalPromptContent = metaPromptTemplate
                     .replace('{context}', contextText)
                     .replace('{query}', query);
-
                 if (focusString) {
                     finalPromptContent = `${focusString}\n\n${finalPromptContent}`;
                 }
@@ -407,48 +439,39 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 finalPromptContent = query;
                 finalSystemInstruction = "You are a helpful AI assistant. No specific context was provided, so answer the query to the best of your general knowledge.";
             }
-
             try {
                 const response = await geminiService.askGemini(finalPromptContent, model, finalSystemInstruction);
                 const geminiText = response.content?.[0]?.text ?? '';
-
                 const contextStringForCheck = formatRetrievedContextForPrompt(finalContext)[0]?.text || 'No context was provided.';
                 const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({
                     originalQuery: query,
                     contextString: contextStringForCheck,
                     generatedAnswer: geminiText
                 });
-
                 const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.");
                 const verificationText = verificationResult.content[0].text ?? "";
-
                 let markdownOutput = `## Gemini Response for Query:\n`;
                 markdownOutput += `> "${query}"\n\n`;
                 markdownOutput += `### AI Answer:\n`;
-
                 let aiAnswerContent = '';
                 if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]}/)) {
                     aiAnswerContent = formatJsonToMarkdownCodeBlock(geminiText, 'text');
                 } else {
                     aiAnswerContent = `> ${geminiText.replace(/\n/g, '\n> ')}`;
                 }
-
                 markdownOutput += aiAnswerContent + '\n';
                 markdownOutput += `\n`;
-
                 if (verificationText.includes("HALLUCINATION_DETECTED")) {
                     markdownOutput += `**Warning:** The following potential hallucinations were detected based on the provided context:\n${formatJsonToMarkdownCodeBlock(verificationText.replace("HALLUCINATION_DETECTED", "").trim(), 'text')}\n`;
                 } else {
                     markdownOutput += `**Verification Status:** Verified against provided context.\n`;
                 }
-
                 if (webSearchSources.length > 0) {
                     markdownOutput += `\n### Web Search Sources:\n`;
                     webSearchSources.forEach((source, index) => {
                         markdownOutput += `${index + 1}. [${source.title}](${source.url})\n`;
                     });
                 }
-
                 return { content: [{ type: 'text', text: markdownOutput }] };
             } catch (error: any) {
                 console.error(`Error asking Gemini:`, error);
@@ -457,7 +480,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         }
     }
 };
-
 export function getGeminiToolHandlers(memoryManager: MemoryManager) {
     return {
         'ask_gemini': (args: any, agent_id?: string) => { // agent_id is not directly used by ask_gemini but passed by MCP server
@@ -469,7 +491,6 @@ export function getGeminiToolHandlers(memoryManager: MemoryManager) {
         }
     };
 }
-
 // This is for MCP server listing, func is stripped.
 export const geminiToolDefinitions: InternalToolDefinition[] = [
     {
