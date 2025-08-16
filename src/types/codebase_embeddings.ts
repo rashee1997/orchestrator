@@ -1,35 +1,22 @@
+export type ChunkingStrategy = 'auto' | 'function' | 'class' | 'sliding_window';
+
 export interface CodebaseEmbeddingRecord {
     embedding_id: string;
     agent_id: string;
-    file_path_relative: string;
-    entity_name: string | null;
     chunk_text: string;
-    ai_summary_text: string | undefined;
+    entity_name: string | null;
     vector_blob: Buffer;
     vector_dimensions: number;
     model_name: string;
-    chunk_hash?: string;
-    file_hash: string; // MODIFICATION: Added file_hash property
-    created_timestamp_unix: number;
-    metadata_json?: string | null;
-    full_file_path?: string; // Added this property
-}
-
-export type ChunkingStrategy = 'file' | 'function' | 'class' | 'auto';
-
-export interface CachedChunk {
-    embedding_id: string;
-    agent_id: string;
-    chunk_text: string;
-    entity_name: string | null;
-    vector: number[];
-    vector_dimensions: number;
-    model_name: string;
     chunk_hash: string;
-    metadata?: any;
+    file_hash: string; // Hash of the entire file content
+    metadata_json: string | null;
     created_timestamp_unix: number;
     file_path_relative: string;
     full_file_path: string;
+    ai_summary_text?: string | null;
+    similarity?: number; // Added for retrieval results
+    finalScore?: number; // Added for retrieval results
 }
 
 export interface EmbeddingIngestionResult {
@@ -47,5 +34,20 @@ export interface EmbeddingIngestionResult {
     dbCallCount: number;
     dbCallLatencyMs: number;
     totalTimeMs: number;
-    totalTokensProcessed?: number;
+    totalTokensProcessed?: number; // MODIFICATION: Added for cost/performance tracking
+}
+
+export interface CachedChunk {
+    embedding_id: string;
+    agent_id: string;
+    chunk_text: string;
+    entity_name: string | null;
+    vector: number[];
+    vector_dimensions: number;
+    model_name: string;
+    chunk_hash: string;
+    metadata: any;
+    created_timestamp_unix: number;
+    file_path_relative: string;
+    full_file_path: string;
 }

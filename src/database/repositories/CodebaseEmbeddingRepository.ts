@@ -182,19 +182,23 @@ export class CodebaseEmbeddingRepository {
      * Finds semantically similar embeddings, re-ranks them based on heuristics,
      * and directly fetches their metadata, applying optional filters.
      * @param queryEmbedding The vector to find similar embeddings for.
+     * @param queryText The original user query text for keyword boosting.
      * @param topK The number of similar embeddings to return.
      * @param agentId Optional: The ID of the agent to filter by.
      * @param targetFilePaths Optional: Array of relative file paths to boost in ranking.
+     * @param excludeChunkTypes Optional: Array of chunk types to exclude from results.
      * @returns A promise that resolves to an array of similar embeddings with full metadata and similarity scores.
      */
     public async findSimilarEmbeddingsWithMetadata(
         queryEmbedding: number[],
+        queryText: string,
         topK: number,
         agentId?: string,
-        targetFilePaths?: string[]
+        targetFilePaths?: string[],
+        excludeChunkTypes?: string[]
     ): Promise<Array<CodebaseEmbeddingRecord & { similarity: number }>> {
         // Step 1: Find similar embeddings using the vector DB function
-        // Fetch a larger pool of candidates to allow for effective re-ranking.
+        // Fetch a larger pool of candidates to allow for effective re-ranking and filtering.
         const initialFetchK = topK * 10;
         const vecResults = await findSimilarVecEmbeddings(queryEmbedding, initialFetchK, this.vectorTable);
         if (vecResults.length === 0) {
@@ -205,7 +209,7 @@ export class CodebaseEmbeddingRepository {
         const similarityMap = new Map<string, number>();
         vecResults.forEach(r => similarityMap.set(r.embedding_id, r.similarity));
 
-        // Step 2: Fetch metadata for these embedding IDs with basic SQL filtering
+        // Step 2: Fetch metadata for these embedding IDs with efficient SQL filtering
         const placeholders = embeddingIds.map(() => '?').join(',');
         const params: (string)[] = [...embeddingIds];
         let sql = `SELECT * FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`;
@@ -215,12 +219,19 @@ export class CodebaseEmbeddingRepository {
             params.push(agentId);
         }
 
+        // MODIFICATION: Filter by chunk type directly in the database query
+        if (excludeChunkTypes && excludeChunkTypes.length > 0) {
+            const typePlaceholders = excludeChunkTypes.map(() => '?').join(',');
+            sql += ` AND json_extract(metadata_json, '$.type') NOT IN (${typePlaceholders})`;
+            params.push(...excludeChunkTypes);
+        }
+
         const metadataRows = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
 
         // Step 3: Combine metadata with scores, apply re-ranking, and sort
         const combinedResults: Array<CodebaseEmbeddingRecord & { similarity: number; finalScore: number }> = [];
         const now_unix = Math.floor(Date.now() / 1000);
-        const TIME_DECAY_LAMBDA = 0.005; // Smaller value = slower decay, giving older items more of a chance
+        const TIME_DECAY_LAMBDA = 0.005; // Smaller value = slower decay
 
         for (const meta of metadataRows) {
             const similarity = similarityMap.get(meta.embedding_id);
@@ -245,6 +256,19 @@ export class CodebaseEmbeddingRepository {
                 // Recency boost gives up to 10% bonus, decaying over time
                 const recencyBoost = 0.1 * Math.exp(-TIME_DECAY_LAMBDA * age_in_days);
                 finalScore *= (1 + recencyBoost);
+            }
+
+            // 3. MODIFICATION: Keyword Matching Boost for Entity Names
+            const KEYWORD_BOOST = 1.15; // 15% score boost
+            if (meta.entity_name && queryText) {
+                // Extract meaningful words from query (longer than 3 chars) to avoid common noise
+                const queryWords = new Set(queryText.toLowerCase().split(/[\s_-]+/).filter(w => w.length > 3));
+                if (queryWords.size > 0) {
+                    const entityWords = meta.entity_name.toLowerCase().replace(/_/g, ' ').split(/\s+/);
+                    if (entityWords.some(ew => queryWords.has(ew))) {
+                        finalScore *= KEYWORD_BOOST;
+                    }
+                }
             }
 
             combinedResults.push({ ...meta, similarity, finalScore });

@@ -28,48 +28,59 @@ export class CodeChunkingService {
     }
 
     /**
-     * Enhanced sliding window chunking for large files without semantic boundaries
+     * Enhanced sliding window chunking that respects line breaks.
      * @param content The content to chunk
      * @param maxChunkSize Maximum size of each chunk
-     * @param overlap Overlap size between chunks
+     * @param overlap Overlap size between chunks (in characters)
      * @returns Array of chunked content strings
      */
     private slidingWindowChunk(content: string, maxChunkSize: number = this.chunkSizeLimit, overlap: number = this.overlapSize): string[] {
+        if (content.length <= maxChunkSize) {
+            return [content];
+        }
+
         const chunks: string[] = [];
-        const lines = content.split(/\r\n|\r|\n/);
-        let currentChunk: string[] = [];
-        let currentSize = 0;
+        const lines = content.split('\n');
+        let currentChunkLines: string[] = [];
+        let currentChunkSize = 0;
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const lineSize = line.length + 1; // +1 for newline
+            const lineSize = line.length + 1; // +1 for the newline character
 
-            if (currentSize + lineSize > maxChunkSize && currentChunk.length > 0) {
-                // Save current chunk
-                chunks.push(currentChunk.join('\n'));
-                
-                // Start new chunk with overlap
-                if (overlap > 0 && currentChunk.length > 0) {
-                    const overlapLines = Math.min(Math.floor(overlap / 50), currentChunk.length); // Approximate 50 chars per line
-                    currentChunk = currentChunk.slice(-overlapLines);
-                    currentSize = currentChunk.join('\n').length;
-                } else {
-                    currentChunk = [];
-                    currentSize = 0;
+            // If adding the next line exceeds the max size, finalize the current chunk
+            if (currentChunkSize > 0 && currentChunkSize + lineSize > maxChunkSize) {
+                chunks.push(currentChunkLines.join('\n'));
+
+                // Start the next chunk with an overlap
+                let overlapCharsCount = 0;
+                let overlapLineIndex = currentChunkLines.length - 1;
+                const newChunkLines: string[] = [];
+
+                while (overlapLineIndex >= 0 && overlapCharsCount < overlap) {
+                    const overlapLine = currentChunkLines[overlapLineIndex];
+                    newChunkLines.unshift(overlapLine);
+                    overlapCharsCount += overlapLine.length + 1;
+                    overlapLineIndex--;
                 }
+
+                currentChunkLines = newChunkLines.length > 0 ? newChunkLines : [];
+                currentChunkSize = currentChunkLines.join('\n').length;
             }
 
-            currentChunk.push(line);
-            currentSize += lineSize;
+            // Add the current line to the chunk
+            currentChunkLines.push(line);
+            currentChunkSize += lineSize;
         }
 
-        // Add final chunk if it has content
-        if (currentChunk.length > 0) {
-            chunks.push(currentChunk.join('\n'));
+        // Add the final remaining chunk
+        if (currentChunkLines.length > 0) {
+            chunks.push(currentChunkLines.join('\n'));
         }
 
         return chunks;
     }
+
 
     /**
      * Intelligent chunk size adjustment based on content type and complexity
@@ -79,7 +90,7 @@ export class CodeChunkingService {
      */
     private calculateOptimalChunkSize(language: string | undefined, content: string): number {
         let baseSize = this.chunkSizeLimit;
-        
+
         // Adjust based on language complexity
         const languageMultipliers: Record<string, number> = {
             'markdown': 1.5,
@@ -148,20 +159,20 @@ export class CodeChunkingService {
         if (!language || !['typescript', 'javascript', 'python', 'php'].includes(language) || fileContent.length > this.chunkSizeLimit * 2) {
             const optimalChunkSize = this.calculateOptimalChunkSize(language, fileContent);
             const slidingChunks = this.slidingWindowChunk(fileContent, optimalChunkSize, this.overlapSize);
-            
+
             slidingChunks.forEach((chunkText, index) => {
                 chunks.push({
                     chunk_text: chunkText,
                     entity_name: `file_chunk_${index + 1}`,
-                    metadata: { 
-                        type: 'file_chunk', 
+                    metadata: {
+                        type: 'file_chunk',
                         language,
                         chunk_index: index + 1,
                         total_chunks: slidingChunks.length
                     }
                 });
             });
-            
+
             return { chunks, namingApiCallCount, summarizationApiCallCount, summaryDbCallCount: 0, summaryDbCallLatencyMs: 0 };
         }
 
@@ -182,8 +193,8 @@ export class CodeChunkingService {
 
         const entitiesToProcess = codeEntities.filter(entity => {
             return (strategy === 'function' && (entity.type === 'function' || entity.type === 'method')) ||
-                   (strategy === 'class' && entity.type === 'class') ||
-                   (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type));
+                (strategy === 'class' && entity.type === 'class') ||
+                (strategy === 'auto' && ['function', 'method', 'class', 'interface'].includes(entity.type));
         }).filter(entity => {
             // Filter out entities without a fullName as they cannot be stored in the map
             if (entity.fullName === undefined) {
@@ -227,7 +238,7 @@ export class CodeChunkingService {
                 const { summary: existingSummary, latencyMs: summaryLatencyMs, callCount: summaryCallCount } = await this.memoryManager.codebaseEmbeddingService.repository.getExistingSummaryByHash(originalCodeHash);
                 summaryDbCallCount += summaryCallCount;
                 summaryDbCallLatencyMs += summaryLatencyMs;
-                
+
                 if (!existingSummary) {
                     // Prepare prompt for summarization
                     let graphContext = "/* Code structure context */\n";

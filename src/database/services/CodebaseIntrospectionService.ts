@@ -52,57 +52,47 @@ export interface ExtractedCodeEntity {
 
 
 export class CodebaseIntrospectionService {
-    private static readonly IGNORED_DIRECTORIES = new Set([
-        'node_modules', '.git', '.vscode', 'dist', 'build', '.DS_Store', 'coverage', 'target', 'out'
+    // Directories that should always be ignored during recursive scans.
+    private static readonly IGNORED_DIRECTORY_NAMES = new Set([
+        'node_modules', '.git', '.vscode', 'dist', 'build', 'coverage', 'target', 'out',
+        '.svn', '.hg', '.bzr', '.idea', '.next', '.nuxt', '.parcel-cache', '.rollup.cache', '.webpack',
+        '.cache', '.expo', '.direnv', '.terraform', '.serverless', '.aws-sam', '.nyc_output', '.cpcache',
+        '.pnp', '.pnpm-store', '.npm', '.yarn', 'amplify', 'bin', 'obj', 'debug', 'release', '.vs',
+        '.user', '.suo', '.venv', 'venv', 'env', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+        'log', 'logs', 'tmp', 'temp' // These can be directories or files, safer to ignore as directories too.
     ]);
 
-    private static readonly NON_CODE_EXTENSIONS = new Set([
+    // File extensions that typically do not contain source code or are build artifacts/temporary files.
+    private static readonly IGNORED_FILE_EXTENSIONS = new Set([
         '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
-        '.gitmodules', '.prettierrc', '.eslintrc', '.vscode', '.idea', '.env', '.sample',
-        '.example', '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
+        '.gitmodules', '.prettierrc', '.eslintrc', '.env', '.sample', '.example',
+        '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
         '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
         '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
-        '.sql', '.csv', '.xml'
+        '.sql', '.csv', '.xml',
+        // Add extensions from the old DENY_LIST_BASENAMES that were wildcards
+        '.bak', '.tmp', '.swp', '.swo', '.swn', '.exe', '.dll', '.obj', '.lib', '.bin', '.out',
+        '.diff', '.patch', '.rej', '.orig'
     ]);
 
-    // Deny list for exact file and directory names (e.g., dot-files, common build/dependency folders)
-    // These are checked by basename, not extension, to handle cases like '.env' or 'node_modules'
-    private static readonly DENY_LIST_BASENAMES = new Set([
-        // Version control and IDE specific
-        '.git', '.svn', '.hg', '.bzr', '.vscode', '.idea', '.DS_Store',
-
-        // Node.js specific
-        'node_modules', 'package-lock.json', 'yarn.lock', '.npmignore',
-
-        // Environment files
+    // Specific file basenames (e.g., package.json, .env files) that should be ignored.
+    private static readonly IGNORED_FILE_BASENAMES = new Set([
+        '.DS_Store', // Moved from IGNORED_DIRECTORIES
+        'package-lock.json', 'yarn.lock', '.npmignore',
         '.env', '.env.local', '.env.development', '.env.production', '.env.test',
-
-        // Build artifacts and logs
-        'dist', 'build', 'out', 'coverage', 'log', 'logs', 'tmp', 'temp',
-
-        // Common ignore files (handled by .gitignore but good for explicit deny)
         '.gitignore', '.gitattributes', '.editorconfig', '.prettierrc', '.eslintrc',
-
-        // Other common non-code files
-        'Thumbs.db', 'ehthumbs.db', 'desktop.ini', 'npm-debug.log', 'yarn-debug.log',
-        'yarn-error.log', '.project', '.classpath', '.settings', '.factorypath',
-        '.next', '.nuxt', '.parcel-cache', '.rollup.cache', '.webpack',
-        '.cache', '.expo', '.direnv', '.terraform', '.terraform.lock.hcl',
-        '.serverless', '.aws-sam', '.nyc_output', '.cpcache', '.pnp', '.pnpm-store',
-        '.npm', '.yarn', 'lerna.json', 'firebase.json', 'netlify.toml', 'vercel.json',
-        'aws-exports.js', 'amplify', 'serverless.yml', 'cloudformation.yaml',
-        'jest.config.js', 'babel.config.js', 'webpack.config.js', 'rollup.config.js',
-        'tailwind.config.js', 'postcss.config.js', 'tsconfig.json', 'jsconfig.json',
-        'tslint.json', 'nodemon.json', '.prettierignore', '.eslintignore', '.dockerignore',
-        'docker-compose.yml', 'Dockerfile', 'Vagrantfile', 'Makefile', 'CMakeLists.txt',
-        'Rakefile', 'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock',
-        'phpcs.xml', 'phpunit.xml', 'pyproject.toml', 'Pipfile', 'Pipfile.lock',
-        'requirements.txt', '.python-version', '.venv', 'venv', 'env',
-        '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-        'bin', 'obj', 'debug', 'release', '.vs', '.user', '.suo', '.bak', '.tmp',
-        '*.bak', '*.tmp', '*.swp', '*.swo', '*.swn', '*.exe', '*.dll', '*.obj', '*.lib',
-        '*.bin', '*.out', '*.log', '*.diff', '*.patch', '*.rej', '*.orig',
-        'package.json', 'package-lock.json', 'tsconfig.json', 'tslint.json', 'webpack.config.js'
+        'Thumbs.db', 'ehthumbs.db', 'desktop.ini', 'npm-debug.log', 'yarn-debug.log', 'yarn-error.log',
+        '.project', '.classpath', '.settings', '.factorypath',
+        'lerna.json', 'firebase.json', 'netlify.toml', 'vercel.json', 'aws-exports.js',
+        'serverless.yml', 'cloudformation.yaml', 'jest.config.js', 'babel.config.js',
+        'webpack.config.js', 'rollup.config.js', 'tailwind.config.js', 'postcss.config.js',
+        'tsconfig.json', 'jsconfig.json', 'tslint.json', 'nodemon.json',
+        '.prettierignore', '.eslintignore', '.dockerignore', 'docker-compose.yml', 'Dockerfile',
+        'Vagrantfile', 'Makefile', 'CMakeLists.txt', 'Rakefile', 'Gemfile', 'Gemfile.lock',
+        'composer.json', 'composer.lock', 'phpcs.xml', 'phpunit.xml', 'pyproject.toml',
+        'Pipfile', 'Pipfile.lock', 'requirements.txt', '.python-version',
+        '.terraform.lock.hcl',
+        'package.json' // Keep this as it was in the original DENY_LIST_BASENAMES
     ]);
 
     private memoryManager: MemoryManager;
@@ -115,7 +105,7 @@ export class CodebaseIntrospectionService {
         this.memoryManager = memoryManager;
         this.geminiService = geminiService || null;
         this.projectRootPath = projectRootPath || process.cwd();
-        
+
         this.parserFactory = new ParserFactory(this.projectRootPath);
 
         this.languageParsers = new Map();
@@ -136,6 +126,33 @@ export class CodebaseIntrospectionService {
         this.geminiService = geminiService;
     }
 
+    /**
+     * Determines if a given path (file or directory) should be ignored based on predefined rules.
+     * @param itemPath The full path of the item.
+     * @param isDirectory True if the item is a directory, false if it's a file.
+     * @returns True if the item should be ignored, false otherwise.
+     */
+    private static shouldIgnore(itemPath: string, isDirectory: boolean): boolean {
+        const basename = path.basename(itemPath);
+        const extension = path.extname(basename).toLowerCase();
+
+        if (isDirectory) {
+            // Ignore explicitly listed directory names or any hidden directory (starts with '.')
+            return CodebaseIntrospectionService.IGNORED_DIRECTORY_NAMES.has(basename) || basename.startsWith('.');
+        } else { // It's a file
+            // Ignore explicitly listed file basenames
+            if (CodebaseIntrospectionService.IGNORED_FILE_BASENAMES.has(basename)) {
+                return true;
+            }
+            // Ignore files with certain extensions
+            if (CodebaseIntrospectionService.IGNORED_FILE_EXTENSIONS.has(extension)) {
+                return true;
+            }
+            // No general ignore for dot-files here, as specific ones are in IGNORED_FILE_BASENAMES.
+            return false;
+        }
+    }
+
     public async scanDirectoryRecursive(
         agentId: string,
         directoryPath: string,
@@ -148,8 +165,9 @@ export class CodebaseIntrospectionService {
             for (const item of items) {
                 const fullPath = path.resolve(directoryPath, item.name);
                 const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
+
                 if (item.isDirectory()) {
-                    if (CodebaseIntrospectionService.IGNORED_DIRECTORIES.has(item.name) || item.name.startsWith('.')) {
+                    if (CodebaseIntrospectionService.shouldIgnore(fullPath, true)) {
                         continue;
                     }
                     const stats = await fs.stat(fullPath);
@@ -161,6 +179,9 @@ export class CodebaseIntrospectionService {
                     });
                     results.push(...await this.scanDirectoryRecursive(agentId, fullPath, effectiveRootPath));
                 } else if (item.isFile()) {
+                    if (CodebaseIntrospectionService.shouldIgnore(fullPath, false)) {
+                        continue;
+                    }
                     const stats = await fs.stat(fullPath);
                     const language = await this.detectLanguage(agentId, fullPath, item.name);
                     results.push({
@@ -185,23 +206,16 @@ export class CodebaseIntrospectionService {
         fileName: string,
         useAIForUncertain: boolean = true
     ): Promise<string | undefined> {
-        const extension = path.extname(fileName).toLowerCase();
-
-        // First, check if a specific parser is registered for the extension
-        if (this.languageParsers.has(extension)) {
-            return this.languageParsers.get(extension)!.getLanguageName();
+        // First, check if the file itself should be ignored based on its name or extension.
+        if (CodebaseIntrospectionService.shouldIgnore(filePath, false)) {
+            return undefined; // Do not attempt to detect language for these
         }
 
-        // If no specific parser, check our denylist of non-code extensions
-        const basename = path.basename(filePath);
-        // Exclude based on exact basename match (for dot-files, node_modules, etc.)
-        if (CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename) ||
-            CodebaseIntrospectionService.NON_CODE_EXTENSIONS.has(extension) ||
-            // General check for dot-files/folders where path.extname might not work (e.g., .vscode, .git)
-            // This is a fallback and might be redundant with DENY_LIST_BASENAMES for some cases, but safer.
-            basename.startsWith('.') && basename.length > 1 && !CodebaseIntrospectionService.DENY_LIST_BASENAMES.has(basename)
-        ) {
-            return undefined; // Do not attempt to detect language for these
+        const extension = path.extname(fileName).toLowerCase();
+
+        // Then, check if a specific parser is registered for the extension
+        if (this.languageParsers.has(extension)) {
+            return this.languageParsers.get(extension)!.getLanguageName();
         }
 
         // If still uncertain, try AI detection

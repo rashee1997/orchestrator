@@ -12,10 +12,6 @@ export class AIEmbeddingProvider {
         private maxTokensPerBatch: number = 20000 // Conservative token limit per batch
     ) {
         this.geminiService = geminiService;
-        this.maxRetries = maxRetries;
-        this.baseDelay = baseDelay;
-        this.maxBatchSize = maxBatchSize;
-        this.maxTokensPerBatch = maxTokensPerBatch;
     }
 
     /**
@@ -85,14 +81,15 @@ Concise Name:`);
             throw new Error(`Gemini API not initialized in GeminiIntegrationService.`);
         }
 
-        const results: Array<{ vector: number[], dimensions: number } | null> = [];
+        // Initialize final results array with nulls, maintaining original order
+        const finalResults: Array<{ vector: number[], dimensions: number } | null> = new Array(texts.length).fill(null);
 
-        // Dynamic batching based on content length
+        // Dynamic batching based on content length, now includes original index
         const batches = this.createOptimizedBatches(texts);
 
         for (const batch of batches) {
-            const contents = batch.map(text => ({ role: "user", parts: [{ text }] }));
-            const totalTokens = batch.reduce((acc, text) => acc + this._estimateTokens(text), 0);
+            const contents = batch.map(item => ({ role: "user", parts: [{ text: item.text }] }));
+            const totalTokens = batch.reduce((acc, item) => acc + this._estimateTokens(item.text), 0);
             totalTokensProcessed += totalTokens;
             console.log(`[AIEmbeddingProvider] Processing embedding batch with ${batch.length} texts and an estimated ${totalTokens} tokens.`);
 
@@ -106,55 +103,60 @@ Concise Name:`);
                     const embeddings = result.embeddings;
 
                     if (embeddings && embeddings.length === batch.length) {
-                        for (const embedding of embeddings) {
+                        for (let i = 0; i < embeddings.length; i++) {
+                            const embedding = embeddings[i];
+                            const originalIndex = batch[i].originalIndex; // Get original index
                             if (embedding.values) {
-                                results.push({ vector: embedding.values, dimensions: embedding.values.length });
+                                finalResults[originalIndex] = { vector: embedding.values, dimensions: embedding.values.length };
                             } else {
-                                results.push(null);
+                                finalResults[originalIndex] = null;
                             }
                         }
                         success = true;
                     } else {
-                        for (let j = 0; j < batch.length; j++) {
-                            results.push(null);
+                        // If the API returns a malformed response, fill with nulls to maintain array length
+                        console.warn('[AIEmbeddingProvider] Malformed embedding response, length mismatch.');
+                        for (let i = 0; i < batch.length; i++) {
+                            const originalIndex = batch[i].originalIndex;
+                            finalResults[originalIndex] = null;
                         }
-                        success = true;
+                        success = true; // Treat as "successful" to avoid retrying a bad request
                     }
                 } catch (error: any) {
                     attempt++;
+                    totalRetries++; // Increment totalRetries for any retry attempt
 
-                    if (attempt <= this.maxRetries) {
-                        const isRateLimitError = error?.message?.includes('429') ||
-                            error?.message?.includes('Too Many Requests') ||
-                            (error?.cause && error.cause.message && error.cause.message.includes('429'));
+                    const isRateLimitError = error?.message?.includes('429') ||
+                        error?.message?.includes('Too Many Requests') ||
+                        (error?.cause && error.cause.message && error.cause.message.includes('429'));
 
+                    if (attempt < this.maxRetries) { // Check if we still have retries left
+                        const backoffTime = this.baseDelay * Math.pow(2, attempt - 1) + Math.random() * 1000; // Exponential backoff with jitter
                         if (isRateLimitError) {
-                            totalRetries++;
-                            const backoffTime = this.baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
-                            console.warn(`Rate limit hit. Retry attempt ${attempt} after ${backoffTime}ms.`);
-                            await new Promise(resolve => setTimeout(resolve, backoffTime));
+                            console.warn(`Rate limit hit. Retrying attempt ${attempt} after ${Math.round(backoffTime)}ms.`);
                         } else {
-                            console.error(`Error embedding batch:`, error);
-                            // For non-rate limit errors, wait a bit before retrying
-                            await new Promise(resolve => setTimeout(resolve, this.baseDelay));
+                            console.error(`Error embedding batch (attempt ${attempt}):`, error.message);
+                            console.warn(`Retrying after ${Math.round(backoffTime)}ms.`);
                         }
+                        await new Promise(resolve => setTimeout(resolve, backoffTime));
                     } else {
-                        console.error(`Max retries (${this.maxRetries}) reached for embedding batch. Skipping batch.`);
-                        for (let j = 0; j < batch.length; j++) {
-                            results.push(null);
+                        console.error(`Max retries (${this.maxRetries}) reached for embedding batch. Skipping batch. Error:`, error.message);
+                        // Fill the results for this batch with null to maintain order and size
+                        for (let i = 0; i < batch.length; i++) {
+                            const originalIndex = batch[i].originalIndex;
+                            finalResults[originalIndex] = null;
                         }
-                        success = true;
                     }
                 }
             }
 
             // Add delay between batches to avoid rate limiting
             if (batches.indexOf(batch) < batches.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, this.baseDelay));
+                await new Promise(resolve => setTimeout(resolve, this.baseDelay / 2));
             }
         }
 
-        return { embeddings: results, requestCount: totalRequests, retryCount: totalRetries, totalTokensProcessed };
+        return { embeddings: finalResults, requestCount: totalRequests, retryCount: totalRetries, totalTokensProcessed };
     }
 
     /**
@@ -163,21 +165,22 @@ Concise Name:`);
      * @returns The estimated token count.
      */
     private _estimateTokens(text: string): number {
-        return Math.round(text.length / 4);
+        // A common heuristic for token estimation is roughly 4 characters per token.
+        return Math.ceil(text.length / 4);
     }
 
     /**
      * Creates optimized batches based on token count to maximize efficiency.
      * @param texts Array of texts to batch
-     * @returns Array of batches
+     * @returns Array of batches, where each item in a batch includes the original text and its original index.
      */
-    private createOptimizedBatches(texts: string[]): string[][] {
-        const batches: string[][] = [];
-        let currentBatch: string[] = [];
+    private createOptimizedBatches(texts: string[]): Array<Array<{ text: string, originalIndex: number }>> {
+        const batches: Array<Array<{ text: string, originalIndex: number }>> = [];
+        let currentBatch: Array<{ text: string, originalIndex: number }> = [];
         let currentTokenCount = 0;
 
-        for (const text of texts) {
-            const tokenCount = this._estimateTokens(text); // Consistent token approximation
+        texts.forEach((text, index) => {
+            const tokenCount = this._estimateTokens(text);
 
             if (currentBatch.length >= this.maxBatchSize ||
                 (currentTokenCount + tokenCount > this.maxTokensPerBatch && currentBatch.length > 0)) {
@@ -186,9 +189,9 @@ Concise Name:`);
                 currentTokenCount = 0;
             }
 
-            currentBatch.push(text);
+            currentBatch.push({ text, originalIndex: index });
             currentTokenCount += tokenCount;
-        }
+        });
 
         if (currentBatch.length > 0) {
             batches.push(currentBatch);
