@@ -63,17 +63,25 @@ ${enableWebSearch ? '- If you\'ve reached the last turn (' + maxIterations + '),
         generatedAnswer: string;
     }): string {
         const { originalQuery, contextString, generatedAnswer } = params;
-        return `You are a fact-checker. Verify if the following answer is supported by the provided context.
+        return `You are an adversarial fact-checker. Your task is to find any claims in the "Proposed Answer" that are NOT supported by the "Context".
                 
 Original Query: "${originalQuery}"
-Context:
+
+--- CONTEXT START ---
 ${contextString}
-Proposed Answer:
+--- CONTEXT END ---
+
+--- PROPOSED ANSWER START ---
 ${generatedAnswer}
-Instructions:
-1. Check if all claims in the answer can be verified from the context
-2. Identify any statements that are not supported by the context
-3. Respond with "VERIFIED" if the answer is fully supported, or "HALLUCINATION_DETECTED" followed by specific issues found.`;
+--- PROPOSED ANSWER END ---
+
+**Verification Steps:**
+1.  **Component Check:** First, list all primary classes, services, or functions mentioned in the "Proposed Answer". For each one, verify if it is explicitly defined or mentioned in the "Context".
+2.  **Logic Check:** Scrutinize every statement and description of logic in the "Proposed Answer". Verify that the described behavior is exactly what the code in the "Context" shows.
+
+**Your Response:**
+-   If all components and all logic in the answer are fully and directly supported by the context, respond ONLY with the word "VERIFIED".
+-   If you find ANY component (class, method, etc.) or ANY piece of logic that is not explicitly present in the context, respond with "HALLUCINATION_DETECTED" followed by a list of the specific unsupported claims or invented components.`;
     }
 
     /**

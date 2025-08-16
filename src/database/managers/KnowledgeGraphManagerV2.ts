@@ -18,19 +18,19 @@ import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js'
 /**
  * Prompt template for translating natural language queries into structured graph queries using an AI model.
  */
-const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into structured queries for a knowledge graph.
+const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into a structured query for a knowledge graph.
 The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables.
 Node observations often include 'absolute_path', 'language', 'signature', 'lines', 'defined_in_file'.
 Key relation types include: 'contains_item', 'imports_file', 'imports_module', 'defined_in_file', 'has_method', 'calls_function', 'uses_class'.
 
-Given a natural language query, translate it into a structured query JSON object with an "operation" and "args" field.
+Given a natural language query, translate it into a JSON array of operation objects. Each object must have an "operation" and "args" field.
 
 Supported operations and their 'args' structure:
 1. 'search_nodes': args = { "query": "key:value key2:value2 ..." }
    - The "query" string uses key:value pairs. Supported keys: 'entityType', 'name', 'file', 'obs', 'id', 'limit', 'defined_in_file_path', 'parent_class_full_name'.
    - This is for finding nodes based on their properties.
    - Example NLQ: "Find all functions in 'src/utils.ts' that mention 'format'"
-   - Translation: { "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }
+   - Translation: [{ "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }]
 
 2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
    - Use for fetching specific nodes by their exact names.
@@ -39,15 +39,15 @@ Supported operations and their 'args' structure:
    - Use for FORWARD (OUTGOING) traversal from a starting node.
    - Answers questions like "What does X call?", "What does Y import?".
    - Example NLQ: "What functions does 'AuthService' call?"
-   - Translation: { "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }
+   - Translation: [{ "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }]
 
 4. 'find_inbound_relations': args = { "target_node_name": "node_name", "relation_type": "relation_name" }
    - Use for INVERSE (INCOMING) traversal to find source nodes.
    - Answers questions like "Who calls X?", "Which files import Y?", "Where is Z used?".
    - Example NLQ: "Who calls the 'processAndRefinePrompt' function?"
-   - Translation: { "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }
+   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }]
    - Example NLQ: "Which files import 'CodebaseContextRetrieverService'?"
-   - Translation: { "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }
+   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }]
 
 5. 'read_graph': args = {}
    - Use only if the query is very general like "show me the graph".
@@ -61,13 +61,19 @@ Natural Language Query: "\${naturalLanguageQuery}"
 
 ---
 Instructions for translation:
-1. Analyze the NLQ and choose the most appropriate "operation".
+1. Analyze the NLQ and choose the most appropriate "operation(s)".
 2. If the query asks about what a node DOES (e.g., calls, contains, imports), use 'graph_traversal'.
 3. If the query asks about WHO acts upon a node (e.g., callers of, importers of, users of), use 'find_inbound_relations'.
-4. If the query cannot be reasonably translated, return:
-   { "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }
+4. If a query asks for multiple distinct items (e.g., "Find class A and function B"), break it down into multiple separate operations in the array.
+   - Example NLQ: "Show me the GeminiApiClient class and the batchAskGemini method"
+   - Translation: [{ "operation": "open_nodes", "args": { "names": ["GeminiApiClient"] } }, { "operation": "open_nodes", "args": { "names": ["batchAskGemini"] } }]
+5. If the query asks for a process description, implementation details, or "how" something works (e.g., "how are API keys managed?"), it requires code analysis beyond simple graph lookups. In this case, return a single error operation.
+   - Example NLQ: "how are API keys managed in GeminiApiClient?"
+   - Translation: [{ "operation": "error", "args": { "message": "Could not translate query: This query requires code analysis of implementation details. Consider using a RAG tool like 'ask_gemini' with codebase context." } }]
+6. If the query cannot be reasonably translated for other reasons, return a single error operation:
+   [{ "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }]
 
-Translate the above Natural Language Query into the structured JSON format. Provide ONLY the JSON object.
+Translate the above Natural Language Query into the structured JSON array format. Provide ONLY the JSON array.
 `;
 
 export class KnowledgeGraphManagerV2 {
@@ -582,25 +588,47 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
     }
 
     /**
-     * Parses a JSON object from a string, which may be wrapped in markdown code fences.
+     * Parses a JSON object or array from a string, which may be wrapped in markdown code fences.
+     * Ensures the final return value is always an array of operations.
      */
-    private _parseGeminiJsonResponse(responseText: string): any {
-        let jsonToParse = responseText;
+    private _parseGeminiJsonResponse(responseText: string): any[] {
+        let jsonToParse = responseText.trim();
         const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
         if (jsonMatch && jsonMatch[1]) {
             jsonToParse = jsonMatch[1].trim();
-        } else if (!jsonToParse.startsWith("{") || !jsonToParse.endsWith("}")) {
-            const firstBrace = jsonToParse.indexOf('{');
-            const lastBrace = jsonToParse.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                jsonToParse = jsonToParse.substring(firstBrace, lastBrace + 1);
-            } else {
-                throw new Error("Response was not in a recognizable JSON format.");
-            }
         }
+
+        // Find the start of the JSON (either '[' or '{')
+        const firstBracket = jsonToParse.indexOf('[');
+        const firstBrace = jsonToParse.indexOf('{');
+        let startIndex = -1;
+
+        if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+            startIndex = firstBracket;
+        } else if (firstBrace !== -1) {
+            startIndex = firstBrace;
+        }
+
+        if (startIndex === -1) {
+            throw new Error("Response does not contain a valid JSON object or array.");
+        }
+
+        // Find the corresponding end of the JSON
+        const endChar = jsonToParse.charAt(startIndex) === '[' ? ']' : '}';
+        const lastIndex = jsonToParse.lastIndexOf(endChar);
+
+        if (lastIndex <= startIndex) {
+            throw new Error("Mismatched JSON delimiters in the response.");
+        }
+
+        jsonToParse = jsonToParse.substring(startIndex, lastIndex + 1);
+
         // Clean up trailing commas that can cause JSON parsing errors
         jsonToParse = jsonToParse.replace(/,\s*([}\]])/g, '$1');
-        return JSON.parse(jsonToParse);
+        const parsed = JSON.parse(jsonToParse);
+
+        // Ensure the final return is always an array of operations
+        return Array.isArray(parsed) ? parsed : [parsed];
     }
 
     /**
@@ -664,15 +692,17 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
             return JSON.stringify({
                 metadata: {
                     originalQuery: naturalLanguageQuery,
-                    translatedOperation: structuredQuery.type,
-                    translatedArgs: structuredQuery,
+                    translatedOperations: [{
+                        operation: structuredQuery.type,
+                        args: structuredQuery
+                    }],
                     usedGemini: false
                 },
                 results: queryResult.nodes
             }, null, 2);
         }
 
-        let structuredQueryFromAI: any;
+        let structuredQueriesFromAI: any[];
         let usedGemini = false;
         try {
             const graphContext = await this._prepareGraphContextForPrompt(agentId);
@@ -682,37 +712,70 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
 
             const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
             usedGemini = true;
-            const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "";
-            structuredQueryFromAI = this._parseGeminiJsonResponse(geminiResponseText);
-            console.log("[KGManagerV2] Gemini Parsed Structured Query:", JSON.stringify(structuredQueryFromAI));
+            const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "[]";
+            structuredQueriesFromAI = this._parseGeminiJsonResponse(geminiResponseText);
+            console.log("[KGManagerV2] Gemini Parsed Structured Queries:", JSON.stringify(structuredQueriesFromAI));
 
-            if (structuredQueryFromAI.operation === 'error') {
-                const message = structuredQueryFromAI.args?.message || "Gemini could not translate the query.";
-                console.warn(`[KGManagerV2] Gemini reported translation error: ${message}`);
-                return JSON.stringify({
-                    metadata: { originalQuery: naturalLanguageQuery, translatedOperation: 'error', translatedArgs: structuredQueryFromAI.args, usedGemini },
-                    results: { error: message }
-                }, null, 2);
-            }
         } catch (e: any) {
             console.error(`[KGManagerV2] Gemini call or parsing failed:`, e);
             console.warn("[KGManagerV2] Falling back to local NLP due to Gemini error.");
-            structuredQueryFromAI = this.nlpQueryProcessor.generateStructuredQuery(naturalLanguageQuery);
+            const singleQuery = this.nlpQueryProcessor.generateStructuredQuery(naturalLanguageQuery);
+            structuredQueriesFromAI = [singleQuery]; // Wrap in array to match expected format
             usedGemini = false;
         }
 
-        const queryResultData = await this._executeAiQuery(agentId, structuredQueryFromAI);
+        const allResults: any[] = [];
+        const allTranslatedOps: any[] = [];
+        let hasError = false;
+        let errorMessage = '';
 
-        console.log(`[KGManagerV2.queryNaturalLanguage] Final query result count: ${Array.isArray(queryResultData) ? queryResultData.length : 'N/A'}`);
+        for (const query of structuredQueriesFromAI) {
+            // Check for error operation first
+            if (query.operation === 'error') {
+                hasError = true;
+                errorMessage = query.args?.message || "Gemini could not translate the query.";
+                allTranslatedOps.push({ operation: 'error', args: query.args });
+                console.warn(`[KGManagerV2] Gemini reported translation error: ${errorMessage}`);
+                break; // Stop processing if one part of the query is an error
+            }
+
+            try {
+                const queryResultData = await this._executeAiQuery(agentId, query);
+                // Ensure results are always pushed as an array of items
+                if (Array.isArray(queryResultData)) {
+                    allResults.push(...queryResultData);
+                } else if (queryResultData) {
+                    allResults.push(queryResultData);
+                }
+                allTranslatedOps.push({ operation: query.operation || query.type, args: query.args || query });
+            } catch (execError: any) {
+                hasError = true;
+                errorMessage = `Failed to execute operation '${query.operation}': ${execError.message}`;
+                allTranslatedOps.push({ operation: query.operation || query.type, args: query.args });
+                console.error(`[KGManagerV2] Error executing AI query:`, execError);
+                break;
+            }
+        }
+
+        if (hasError) {
+            return JSON.stringify({
+                metadata: { originalQuery: naturalLanguageQuery, translatedOperations: allTranslatedOps, usedGemini },
+                results: { error: errorMessage }
+            }, null, 2);
+        }
+
+        // De-duplicate results based on a unique key, like node_id.
+        const uniqueResults = Array.from(new Map(allResults.map(item => [item.node_id || JSON.stringify(item), item])).values());
+
+        console.log(`[KGManagerV2.queryNaturalLanguage] Final unique query result count: ${uniqueResults.length}`);
 
         return JSON.stringify({
             metadata: {
                 originalQuery: naturalLanguageQuery,
-                translatedOperation: structuredQueryFromAI.operation || structuredQueryFromAI.type,
-                translatedArgs: structuredQueryFromAI.args || structuredQueryFromAI,
+                translatedOperations: allTranslatedOps,
                 usedGemini
             },
-            results: queryResultData
+            results: uniqueResults
         }, null, 2);
     }
 
@@ -765,8 +828,8 @@ If no new relations can be confidently inferred, return an empty array [].`;
         if (this.geminiService) {
             try {
                 const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
-                proposedByAI = this._parseGeminiJsonResponse(geminiResponse.content[0]?.text?.trim() || "[]");
-                if (!Array.isArray(proposedByAI)) proposedByAI = [];
+                const parsedResponse = this._parseGeminiJsonResponse(geminiResponse.content[0]?.text?.trim() || "[]");
+                proposedByAI = Array.isArray(parsedResponse) ? parsedResponse : [];
                 console.log(`[KGManagerV2.inferRelations] Gemini proposed ${proposedByAI.length} relations.`);
             } catch (e: any) {
                 console.error(`[KGManagerV2.inferRelations] Gemini call or parsing failed: ${e.message}`);

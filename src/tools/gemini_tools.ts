@@ -7,7 +7,7 @@ import { ContextInformationManager } from '../database/managers/ContextInformati
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, CODE_ANALYSIS_META_PROMPT, INTENT_CLASSIFICATION_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
@@ -18,29 +18,52 @@ import { ContextRetrievalOptions } from '../database/services/CodebaseContextRet
 import { callTavilyApi } from '../integrations/tavily.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
 import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
+
+const VALID_FOCUS_AREAS = [
+    "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
+    "refactoring", "testing", "documentation", "code_modularization_orchestration", "codebase_analysis"
+];
+
+/**
+ * Uses a fast AI model to classify the user's query and determine the best focus area.
+ * @param query The user's query string.
+ * @param geminiService An instance of the GeminiIntegrationService.
+ * @returns The selected focus area string, or null if classification fails.
+ */
+async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrationService): Promise<string | null> {
+    try {
+        const classificationPrompt = INTENT_CLASSIFICATION_PROMPT.replace('{query}', query);
+        // Use a fast model for classification, no context or thinking needed.
+        const result = await geminiService.askGemini(classificationPrompt, 'gemini-2.5-flash');
+        const intent = result.content[0].text?.trim() || '';
+
+        // Validate that the model returned a valid focus area
+        if (VALID_FOCUS_AREAS.includes(intent)) {
+            return intent;
+        }
+        console.warn(`[ask_gemini] Intent classification returned an invalid focus area: "${intent}". Falling back to default.`);
+        return null;
+    } catch (error) {
+        console.error(`[ask_gemini] Error during AI-powered intent classification:`, error);
+        return null; // Fallback on error
+    }
+}
+
 /**
  * Performs an automated, multi-turn iterative search and refinement process.
- * This function orchestrates a loop where it retrieves context, asks Gemini to analyze it,
- * and if necessary, refines the search query to gather more related information before
- * formulating a final answer.
- *
- * @param args The arguments from the tool call.
- * @param memoryManagerInstance The instance of MemoryManager.
- * @param geminiService The instance of GeminiIntegrationService.
- * @returns A promise that resolves to the final, comprehensive answer as a string.
  */
 async function _performIterativeRagSearch(
     args: IterativeRagArgs,
     memoryManagerInstance: MemoryManager,
     geminiService: GeminiIntegrationService
 ): Promise<IterativeRagResult> {
-    // Delegate to the new IterativeRagOrchestrator
     const orchestrator = new IterativeRagOrchestrator(memoryManagerInstance, geminiService);
     return await orchestrator.performIterativeSearch(args);
 }
+
 export const askGeminiToolDefinition: InternalToolDefinition = {
     name: 'ask_gemini',
-    description: 'Asks a query to the Gemini AI. Can perform a simple query, use Retrieval-Augmented Generation (RAG) for context-aware answers, or perform an automated, multi-step iterative search for complex questions.',
+    description: 'Asks a query to the Gemini AI. Can perform RAG, iterative search, and supports advanced Gemini thinking capabilities. Autonomously selects the best analysis focus if not specified.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -51,272 +74,168 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             enable_rag: { type: 'boolean', description: 'Optional: Enable single-turn Retrieval-Augmented Generation (RAG) with codebase context.', default: false, nullable: true },
             enable_iterative_search: {
                 type: 'boolean',
-                description: 'Enable an automated, multi-step search-and-refine process for complex queries to gather more comprehensive context before answering.',
+                description: 'Enable an automated, multi-step search-and-refine process for complex queries.',
                 default: false
             },
             enable_web_search: {
                 type: 'boolean',
-                description: 'Allow the AI to autonomously perform Tavily web searches during iterative RAG if it determines the codebase context is insufficient to answer the query. Only applies if enable_iterative_search is true.',
+                description: 'Allow autonomous Tavily web searches during iterative RAG.',
                 default: false
             },
             max_iterations: {
                 type: 'number',
-                description: 'The maximum number of search-and-refine iterations. Only applies if enable_iterative_search is true.',
+                description: 'Max iterations for iterative search.',
                 default: 3,
                 minimum: 1,
                 maximum: 5
             },
-            live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Optional: Provide an array of full file paths for live chunking and review, bypassing RAG.', nullable: true },
+            live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Optional: Array of full file paths for live chunking and review.', nullable: true },
             focus_area: {
                 type: 'string',
-                description: 'Optional: Focus area for the response (e.g., code review, code explanation, enhancement suggestions, code modularization & orchestration).',
-                enum: [
-                    "code_review",
-                    "code_explanation",
-                    "enhancement_suggestions",
-                    "bug_fixing",
-                    "refactoring",
-                    "testing",
-                    "documentation",
-                    "code_modularization_orchestration"
-                ],
+                description: 'Optional: Manually set a focus area to override autonomous selection (e.g., code_review, bug_fixing).',
+                enum: VALID_FOCUS_AREAS,
                 nullable: true
             },
-            context_snippet_length: { type: 'number', description: 'Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.', default: 200, nullable: true },
+            context_snippet_length: { type: 'number', description: 'Optional: Maximum length of each context snippet included in the prompt.', default: 200, nullable: true },
             analysis_focus_points: {
                 type: 'array',
                 items: {
                     type: 'string',
                     enum: [
-                        "Potential Bugs & Errors",
-                        "Best Practices & Conventions",
-                        "Performance",
-                        "Security Vulnerabilities",
-                        "Readability & Maintainability",
-                        "Duplications",
-                        "Code Smells",
-                        "Testability",
-                        "Error Handling",
-                        "Modularity & Coupling",
+                        "Potential Bugs & Errors", "Best Practices & Conventions", "Performance",
+                        "Security Vulnerabilities", "Readability & Maintainability", "Duplications",
+                        "Code Smells", "Testability", "Error Handling", "Modularity & Coupling",
                         "Documentation & Comments"
                     ]
                 },
-                description: 'Specific aspects to focus on during the review. If empty or not provided, a general comprehensive review is performed.',
+                description: 'Specific aspects to focus on during a review.',
                 nullable: true
             },
             context_options: {
                 type: 'object',
                 properties: {
-                    topKEmbeddings: { type: 'number', description: 'Optional: Number of top embedding results to retrieve.', nullable: true },
-                    kgQueryDepth: { type: 'number', description: 'Optional: Depth for Knowledge Graph queries.', nullable: true },
-                    includeFileContent: { type: 'boolean', description: 'Optional: Whether to include full file content for retrieved files.', nullable: true },
-                    targetFilePaths: { type: 'array', items: { type: 'string' }, description: 'Optional: Array of relative file paths to restrict context retrieval to.', nullable: true },
-                    topKKgResults: { type: 'number', description: 'Optional: Number of top Knowledge Graph results to retrieve.', nullable: true },
-                    embeddingScoreThreshold: { type: 'number', description: 'Optional: Minimum embedding similarity score to include results.', nullable: true }
+                    topKEmbeddings: { type: 'number', nullable: true },
+                    kgQueryDepth: { type: 'number', nullable: true },
+                    includeFileContent: { type: 'boolean', nullable: true },
+                    targetFilePaths: { type: 'array', items: { type: 'string' }, nullable: true },
+                    topKKgResults: { type: 'number', nullable: true },
+                    embeddingScoreThreshold: { type: 'number', nullable: true }
                 },
                 additionalProperties: false,
                 nullable: true
             },
             execution_mode: {
                 type: 'string',
-                description: 'Optional: Specifies the desired output format and underlying logic. "generative_answer" for standard AI response, "plan_generation" for a structured JSON plan.',
+                description: 'Specifies the desired output format.',
                 enum: ['generative_answer', 'plan_generation'],
                 default: 'generative_answer',
                 nullable: true
             },
-            target_ai_persona: {
-                type: ['string', 'null'],
-                description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer'). Used primarily for 'plan_generation' mode.",
-                default: null,
-                nullable: true
-            },
-            conversation_context_ids: {
-                type: ['array', 'null'],
-                items: { type: 'string' },
-                description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement. Used primarily for 'plan_generation' mode.",
-                default: null,
-                nullable: true
-            },
-            // New configuration options for RAG enhancements
-            hallucination_check_threshold: {
-                type: 'number',
-                description: 'Threshold for hallucination detection confidence (0-1). Lower values are more strict.',
-                default: 0.8,
-                minimum: 0,
-                maximum: 1
-            },
-            enable_context_summarization: {
-                type: 'boolean',
-                description: 'Enable dynamic summarization of older context to optimize context window usage.',
-                default: true
-            },
-            context_window_optimization_strategy: {
-                type: 'string',
-                description: 'Strategy for context window optimization.',
-                enum: ['truncate', 'summarize', 'adaptive'],
-                default: 'adaptive'
-            },
-            // Tavily web search parameters
-            tavily_search_depth: {
-                type: 'string',
-                description: 'Optional: Depth of the web search. Defaults to "basic".',
-                enum: ['basic', 'advanced'],
-                default: 'basic',
-                nullable: true
-            },
-            tavily_max_results: {
-                type: 'number',
-                description: 'Optional: Maximum number of search results to return. Defaults to 5.',
-                default: 5,
-                minimum: 1,
-                maximum: 10,
-                nullable: true
-            },
-            tavily_include_raw_content: {
-                type: 'boolean',
-                description: 'Optional: Include raw content in search results. Defaults to false.',
-                default: false,
-                nullable: true
-            },
-            tavily_include_images: {
-                type: 'boolean',
-                description: 'Optional: Include images in search results. Defaults to false.',
-                default: false,
-                nullable: true
-            },
-            tavily_include_image_descriptions: {
-                type: 'boolean',
-                description: 'Optional: Include image descriptions in search results. Defaults to false.',
-                default: false,
-                nullable: true
-            },
-            tavily_time_period: {
-                type: 'string',
-                description: 'Optional: Time period for search results (e.g., "1m", "1y", "all"). Defaults to no time restriction.',
-                nullable: true
-            },
-            tavily_topic: {
-                type: 'string',
-                description: 'Optional: Topic category for search results (e.g., "news", "general"). Defaults to "general".',
-                nullable: true
-            }
+            target_ai_persona: { type: ['string', 'null'], description: "Optional: A suggested persona for the AI agent.", default: null, nullable: true },
+            conversation_context_ids: { type: ['array', 'null'], items: { type: 'string' }, description: "Optional: Array of recent conversation_ids for context.", default: null, nullable: true },
+            hallucination_check_threshold: { type: 'number', description: 'Confidence threshold for hallucination detection (0-1).', default: 0.8, minimum: 0, maximum: 1 },
+            enable_context_summarization: { type: 'boolean', description: 'Enable dynamic summarization of older context.', default: true },
+            context_window_optimization_strategy: { type: 'string', description: 'Strategy for context window optimization.', enum: ['truncate', 'summarize', 'adaptive'], default: 'adaptive' },
+            tavily_search_depth: { type: 'string', enum: ['basic', 'advanced'], default: 'basic', nullable: true },
+            tavily_max_results: { type: 'number', default: 5, minimum: 1, maximum: 10, nullable: true },
+            tavily_include_raw_content: { type: 'boolean', default: false, nullable: true },
+            tavily_include_images: { type: 'boolean', default: false, nullable: true },
+            tavily_include_image_descriptions: { type: 'boolean', default: false, nullable: true },
+            tavily_time_period: { type: 'string', nullable: true },
+            tavily_topic: { type: 'string', nullable: true },
+            enable_thinking: { type: 'boolean', description: 'Enable Gemini thinking capabilities.', default: false, nullable: true },
+            thinking_budget: { type: 'number', description: 'Token budget for thinking (-1 for dynamic).', default: 4096, minimum: -1, maximum: 32768, nullable: true },
+            thinking_mode: { type: 'string', description: 'Controls how thinking is used.', enum: ['AUTO', 'MODE_THINK'], default: 'AUTO', nullable: true },
+            include_thoughts: { type: 'boolean', description: 'Request thought summaries in the response.', default: false, nullable: true },
+            enable_dynamic_thinking: { type: 'boolean', description: 'Shortcut for thinking_budget = -1.', default: false, nullable: true }
         },
         required: ['agent_id', 'query']
     },
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) {
-            const errorMsg = "MemoryManager instance is required for ask_gemini";
-            console.error(errorMsg);
-            throw new McpError(ErrorCode.InternalError, errorMsg);
+            throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required for ask_gemini");
         }
-        const {
-            agent_id,
-            query,
-            model,
-            systemInstruction,
-            enable_rag,
-            focus_area,
-            analysis_focus_points,
-            context_options,
-            context_snippet_length,
-            live_review_file_paths,
-            enable_iterative_search,
-            execution_mode,
-            target_ai_persona,
-            conversation_context_ids,
-            enable_web_search,
-            max_iterations,
-            hallucination_check_threshold,
-            enable_context_summarization,
-            context_window_optimization_strategy,
-            // Tavily parameters
-            tavily_search_depth,
-            tavily_max_results,
-            tavily_include_raw_content,
-            tavily_include_images,
-            tavily_include_image_descriptions,
-            tavily_time_period,
-            tavily_topic
+
+        let {
+            agent_id, query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points,
+            context_options, live_review_file_paths, enable_iterative_search, execution_mode,
+            target_ai_persona, conversation_context_ids, enable_web_search, max_iterations,
+            hallucination_check_threshold, enable_context_summarization, context_window_optimization_strategy,
+            tavily_search_depth, tavily_max_results, tavily_include_raw_content, tavily_include_images,
+            tavily_include_image_descriptions, tavily_time_period, tavily_topic,
+            enable_thinking, thinking_budget, thinking_mode, include_thoughts, enable_dynamic_thinking
         } = args;
-        const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
+
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
         const contextManager = (memoryManagerInstance as any).contextInformationManager as ContextInformationManager | undefined;
         if (!dbService || !contextManager) {
-            const errorMsg = "dbService or contextInformationManager not available through MemoryManager for GeminiIntegrationService. Update access pattern in MemoryManager or tool.";
-            console.error(errorMsg);
-            throw new McpError(ErrorCode.InternalError, errorMsg);
+            throw new McpError(ErrorCode.InternalError, "dbService or contextInformationManager not available.");
         }
-        if (!process.env.GEMINI_API_KEY) {
-            const errorMsg = "Gemini API key (GEMINI_API_KEY) is not set in environment variables.";
-            console.error(errorMsg);
-            throw new McpError(ErrorCode.InternalError, errorMsg);
+        if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
+            throw new McpError(ErrorCode.InternalError, "Gemini/Google API key is not set.");
         }
+
         const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
-        // --- Stage 1: Context Acquisition ---
+
+        // --- Autonomous Focus Area Selection ---
+        if (!focus_area) {
+            const detectedFocus = await _getIntentFocusArea(query, geminiService);
+            if (detectedFocus) {
+                console.log(`[ask_gemini] Autonomously selected focus area: "${detectedFocus}"`);
+                focus_area = detectedFocus;
+                if (focus_area === 'codebase_analysis') {
+                    console.log("[ask_gemini] High-precision analysis query detected. Upgrading model to gemini-pro.");
+                    model = 'gemini-2.5-pro'; // Or another high-capability model name
+                }
+            }
+        }
+
+        let thinkingConfig: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK'; includeThoughts?: boolean } | undefined;
+        if (enable_thinking || enable_dynamic_thinking || include_thoughts) {
+            const budget = enable_dynamic_thinking ? -1 : (thinking_budget ?? 4096);
+            thinkingConfig = {
+                thinkingBudget: budget,
+                thinkingMode: thinking_mode || 'AUTO',
+                includeThoughts: include_thoughts || undefined
+            };
+        }
+
         let finalContext: RetrievedCodeContext[] = [];
         let webSearchSources: { title: string; url: string }[] = [];
         let finalAnswerFromIteration: string | undefined;
         let searchMetrics: any = undefined;
+
         try {
             if (enable_iterative_search) {
                 console.log("[ask_gemini] Starting Stage 1: Iterative Search Context Acquisition");
                 const iterativeResult = await _performIterativeRagSearch({
-                    agent_id,
-                    query,
-                    model,
-                    systemInstruction,
-                    enable_rag,
-                    focus_area,
-                    analysis_focus_points,
-                    context_options,
-                    context_snippet_length,
-                    live_review_file_paths,
-                    enable_iterative_search,
-                    execution_mode,
-                    target_ai_persona,
-                    conversation_context_ids,
-                    enable_web_search,
-                    max_iterations,
-                    hallucination_check_threshold,
-                    enable_context_summarization,
-                    context_window_optimization_strategy,
-                    // Pass Tavily parameters
-                    tavily_search_depth,
-                    tavily_max_results,
-                    tavily_include_raw_content,
-                    tavily_include_images,
-                    tavily_include_image_descriptions,
-                    tavily_time_period,
-                    tavily_topic
+                    agent_id, query, model, systemInstruction, enable_rag, focus_area,
+                    analysis_focus_points, context_options, live_review_file_paths,
+                    enable_iterative_search, execution_mode, target_ai_persona,
+                    conversation_context_ids, enable_web_search, max_iterations,
+                    hallucination_check_threshold, enable_context_summarization,
+                    context_window_optimization_strategy, tavily_search_depth,
+                    tavily_max_results, tavily_include_raw_content, tavily_include_images,
+                    tavily_include_image_descriptions, tavily_time_period, tavily_topic,
+                    thinkingConfig
                 }, memoryManagerInstance, geminiService);
                 finalContext = iterativeResult.accumulatedContext;
                 webSearchSources = iterativeResult.webSearchSources;
                 finalAnswerFromIteration = iterativeResult.finalAnswer;
                 searchMetrics = iterativeResult.searchMetrics;
-            } else if (live_review_file_paths && Array.isArray(live_review_file_paths) && live_review_file_paths.length > 0) {
+            } else if (live_review_file_paths?.length) {
                 console.log("[ask_gemini] Starting Stage 1: Live File Review Context Acquisition");
                 const embeddingService = memoryManagerInstance.getCodebaseEmbeddingService();
-                const chunkingService = embeddingService.chunkingService;
-                const introspectionService = embeddingService.introspectionService;
                 for (const filePath of live_review_file_paths) {
                     const fileContent = await fs.readFile(filePath, 'utf-8');
-                    const language = await introspectionService.detectLanguage(agent_id, filePath, path.basename(filePath));
-                    const { chunks } = await chunkingService.chunkFileContent(
-                        agent_id,
-                        filePath,
-                        fileContent,
-                        path.relative(process.cwd(), filePath),
-                        language,
-                        'auto',
-                        false
+                    const language = await embeddingService.introspectionService.detectLanguage(agent_id, filePath, path.basename(filePath));
+                    const { chunks } = await embeddingService.chunkingService.chunkFileContent(
+                        agent_id, filePath, fileContent, path.relative(process.cwd(), filePath), language, 'auto', false
                     );
                     chunks.forEach((chunk: { chunk_text: string }, index: number) => {
                         finalContext.push({
-                            type: 'file_snippet',
-                            sourcePath: filePath,
-                            entityName: `chunk_${index + 1}`,
-                            content: chunk.chunk_text,
-                            metadata: { language }
+                            type: 'file_snippet', sourcePath: filePath, entityName: `chunk_${index + 1}`,
+                            content: chunk.chunk_text, metadata: { language }
                         });
                     });
                 }
@@ -326,172 +245,126 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, query, context_options || {});
             }
         } catch (error: any) {
-            console.error(`Error during context acquisition stage:`, error);
             throw new McpError(ErrorCode.InternalError, `Context Acquisition failed: ${error.message}`);
         }
+
         console.log(`[ask_gemini] Stage 1 complete. Acquired ${finalContext.length} context items.`);
-        // --- Stage 2: Output Generation ---
-        console.log(`[ask_gemini] Starting Stage 2: Output Generation with mode "${execution_mode}"`);
+
         if (execution_mode === 'plan_generation') {
             const modelToUse = model || REFINEMENT_MODEL_NAME;
-            const raw_user_prompt = query;
-            const retrievedCodeContextParts = formatRetrievedContextForPrompt(finalContext);
+            const contextString = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text || 'No relevant context was found.';
             const metaPromptContent = META_PROMPT
                 .replace('{modelToUse}', modelToUse)
-                .replace('{raw_user_prompt}', raw_user_prompt)
-                .replace('{retrievedCodeContextString}', retrievedCodeContextParts[0].text || 'No relevant context was found.');
+                .replace('{raw_user_prompt}', query)
+                .replace('{retrievedCodeContextString}', contextString);
             try {
-                const result = await geminiService.askGemini(metaPromptContent, modelToUse);
-                const textResponse = result.content[0].text ?? '';
-                let parsedResponse = parseGeminiJsonResponse(textResponse);
-                parsedResponse.agent_id = parsedResponse.agent_id || agent_id;
-                parsedResponse.refinement_engine_model = modelToUse;
-                parsedResponse.refinement_timestamp = new Date().toISOString();
-                parsedResponse.original_prompt_text = raw_user_prompt;
-                parsedResponse.target_ai_persona = target_ai_persona;
-                parsedResponse.conversation_context_ids = conversation_context_ids;
-                parsedResponse.refined_prompt_id = await geminiService.storeRefinedPrompt(parsedResponse);
+                const result = await geminiService.askGemini(metaPromptContent, modelToUse, undefined, undefined, thinkingConfig);
+                let parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
+                Object.assign(parsedResponse, {
+                    agent_id: agent_id,
+                    refinement_engine_model: modelToUse,
+                    refinement_timestamp: new Date().toISOString(),
+                    original_prompt_text: query,
+                    target_ai_persona: target_ai_persona,
+                    conversation_context_ids: conversation_context_ids,
+                    refined_prompt_id: await geminiService.storeRefinedPrompt(parsedResponse)
+                });
                 return { content: [{ type: 'text', text: JSON.stringify(parsedResponse, null, 2) }] };
             } catch (error: any) {
-                console.error(`Error generating plan using Gemini API (agent: ${agent_id}):`, error);
                 throw new McpError(ErrorCode.InternalError, `Failed to generate plan using Gemini API: ${error.message}`);
             }
-        } else { // Default to 'generative_answer'
+        } else {
             if (finalAnswerFromIteration) {
-                console.log("[ask_gemini] Using pre-verified answer from iterative search.");
-                let markdownOutput = `## Gemini Response for Query:\n`;
-                markdownOutput += `> "${query}"\n\n`;
-                markdownOutput += `### AI Answer:\n`;
-                markdownOutput += formatJsonToMarkdownCodeBlock(finalAnswerFromIteration, 'text') + '\n';
-                markdownOutput += `\n**Verification Status:** Verified against provided context.\n`;
-                // Add search metrics if available
+                let markdownOutput = `## Gemini Response for Query:\n> "${query}"\n\n### AI Answer:\n${formatJsonToMarkdownCodeBlock(finalAnswerFromIteration, 'text')}\n\n**Verification Status:** Verified against provided context.\n`;
                 if (searchMetrics) {
-                    markdownOutput += `\n### Search Metrics:\n`;
-                    markdownOutput += `- Total Iterations: ${searchMetrics.totalIterations}\n`;
-                    markdownOutput += `- Context Items Added: ${searchMetrics.contextItemsAdded}\n`;
-                    markdownOutput += `- Web Searches Performed: ${searchMetrics.webSearchesPerformed}\n`;
-                    markdownOutput += `- Hallucination Checks Passed: ${searchMetrics.hallucinationChecksPassed}\n`;
+                    markdownOutput += `\n### Search Metrics:\n- Total Iterations: ${searchMetrics.totalIterations}\n- Context Items Added: ${searchMetrics.contextItemsAdded}\n- Web Searches Performed: ${searchMetrics.webSearchesPerformed}\n- Hallucination Checks Passed: ${searchMetrics.hallucinationChecksPassed}\n`;
                     if (searchMetrics.earlyTerminationReason) {
                         markdownOutput += `- Early Termination Reason: ${searchMetrics.earlyTerminationReason}\n`;
                     }
                 }
                 if (webSearchSources.length > 0) {
-                    markdownOutput += `\n### Web Search Sources:\n`;
-                    webSearchSources.forEach((source, index) => {
-                        markdownOutput += `${index + 1}. [${source.title}](${source.url})\n`;
-                    });
+                    markdownOutput += `\n### Web Search Sources:\n` + webSearchSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
                 }
                 return { content: [{ type: 'text', text: markdownOutput }] };
             }
-            let finalPromptContent = "";
+
+            const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text || 'No context was provided.';
             let finalSystemInstruction = systemInstruction;
-            if (finalContext.length > 0) {
-                let metaPromptTemplate: string;
-                if (webSearchSources.length > 0) {
-                    finalSystemInstruction = GENERAL_WEB_ASSISTANT_META_PROMPT;
-                    metaPromptTemplate = `Based on the following information, please answer the user's query. Remember to cite your sources as instructed.
---- CONTEXT ---
-{context}
---- END CONTEXT ---
---- USER QUERY ---
-{query}`;
-                } else {
-                    metaPromptTemplate = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
-                    if (focus_area) {
-                        switch (focus_area) {
-                            case "code_review": metaPromptTemplate = CODE_REVIEW_META_PROMPT; break;
-                            case "code_explanation": metaPromptTemplate = CODE_EXPLANATION_META_PROMPT; break;
-                            case "enhancement_suggestions": metaPromptTemplate = ENHANCEMENT_SUGGESTIONS_META_PROMPT; break;
-                            case "bug_fixing": metaPromptTemplate = BUG_FIXING_META_PROMPT; break;
-                            case "refactoring": metaPromptTemplate = REFACTORING_META_PROMPT; break;
-                            case "testing": metaPromptTemplate = TESTING_META_PROMPT; break;
-                            case "documentation": metaPromptTemplate = DOCUMENTATION_META_PROMPT; break;
-                            case "code_modularization_orchestration": metaPromptTemplate = CODE_MODULARIZATION_ORCHESTRATION_META_PROMPT; break;
-                        }
-                    }
-                }
-                let focusString = "";
-                if (analysis_focus_points && analysis_focus_points.length > 0) {
-                    focusString = "Focus on the following aspects:\n" + analysis_focus_points.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
-                }
-                const contextText = finalContext.map(res => {
-                    const isWebResult = res.type === 'documentation' && webSearchSources.some(s => s.url === res.sourcePath);
-                    if (isWebResult) {
-                        const sourceInfo = webSearchSources.find(s => s.url === res.sourcePath);
-                        const citation = sourceInfo ? `[Source Title: ${sourceInfo.title}](${sourceInfo.url})` : `[Source URL: ${res.sourcePath}]`;
-                        return `Source: ${citation}\nContent: ${res.content}`;
-                    } else {
-                        const sourceCitation = `\`${res.sourcePath}\``;
-                        const entityName = res.entityName ? ` (Entity: \`${res.entityName}\`)` : '';
-                        const contentPreview = res.content.substring(0, snippetLength);
-                        const truncated = res.content.length > snippetLength ? '...' : '';
-                        return `File: ${sourceCitation}${entityName}\n\`\`\`${res.metadata?.language || 'text'}\n${contentPreview}${truncated}\n\`\`\``;
-                    }
-                }).join("\n\n---\n\n");
-                finalPromptContent = metaPromptTemplate
-                    .replace('{context}', contextText)
-                    .replace('{query}', query);
-                if (focusString) {
-                    finalPromptContent = `${focusString}\n\n${finalPromptContent}`;
-                }
+            let metaPromptTemplate: string;
+
+            if (finalContext.length === 0) {
+                finalSystemInstruction = "You are a helpful AI assistant. No context was provided, so answer the query to the best of your general knowledge.";
+                metaPromptTemplate = `{query}`;
+            } else if (webSearchSources.length > 0) {
+                finalSystemInstruction = GENERAL_WEB_ASSISTANT_META_PROMPT;
+                metaPromptTemplate = `Based on the following information, please answer the user's query...\n--- CONTEXT ---\n{context}\n--- END CONTEXT ---\n--- USER QUERY ---\n{query}`;
             } else {
-                // If no context at all, just use the original query
-                finalPromptContent = query;
-                finalSystemInstruction = "You are a helpful AI assistant. No specific context was provided, so answer the query to the best of your general knowledge.";
+                switch (focus_area) {
+                    case "code_review": metaPromptTemplate = CODE_REVIEW_META_PROMPT; break;
+                    case "code_explanation": metaPromptTemplate = CODE_EXPLANATION_META_PROMPT; break;
+                    case "enhancement_suggestions": metaPromptTemplate = ENHANCEMENT_SUGGESTIONS_META_PROMPT; break;
+                    case "bug_fixing": metaPromptTemplate = BUG_FIXING_META_PROMPT; break;
+                    case "refactoring": metaPromptTemplate = REFACTORING_META_PROMPT; break;
+                    case "testing": metaPromptTemplate = TESTING_META_PROMPT; break;
+                    case "documentation": metaPromptTemplate = DOCUMENTATION_META_PROMPT; break;
+                    case "code_modularization_orchestration": metaPromptTemplate = CODE_MODULARIZATION_ORCHESTATION_META_PROMPT; break;
+                    case "codebase_analysis": metaPromptTemplate = CODE_ANALYSIS_META_PROMPT; break;
+                    default: metaPromptTemplate = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                }
             }
+
+            const focusString = analysis_focus_points?.length ? "Focus on:\n" + analysis_focus_points.map((p: string) => `- **${p}**`).join('\n') : "";
+            const finalPromptContent = (focusString ? `${focusString}\n\n` : '') + metaPromptTemplate
+                .replace('{context}', canonicalContextPart)
+                .replace('{query}', query);
+
             try {
-                const response = await geminiService.askGemini(finalPromptContent, model, finalSystemInstruction);
+                const response = await geminiService.askGemini(finalPromptContent, model, finalSystemInstruction, undefined, thinkingConfig);
                 const geminiText = response.content?.[0]?.text ?? '';
-                const contextStringForCheck = formatRetrievedContextForPrompt(finalContext)[0]?.text || 'No context was provided.';
+
                 const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({
                     originalQuery: query,
-                    contextString: contextStringForCheck,
+                    contextString: canonicalContextPart,
                     generatedAnswer: geminiText
                 });
-                const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.");
+                const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.", undefined, thinkingConfig);
                 const verificationText = verificationResult.content[0].text ?? "";
-                let markdownOutput = `## Gemini Response for Query:\n`;
-                markdownOutput += `> "${query}"\n\n`;
-                markdownOutput += `### AI Answer:\n`;
-                let aiAnswerContent = '';
-                if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]}/)) {
-                    aiAnswerContent = formatJsonToMarkdownCodeBlock(geminiText, 'text');
-                } else {
-                    aiAnswerContent = `> ${geminiText.replace(/\n/g, '\n> ')}`;
-                }
-                markdownOutput += aiAnswerContent + '\n';
-                markdownOutput += `\n`;
+
+                let markdownOutput = `## Gemini Response for Query:\n> "${query}"\n\n### AI Answer:\n`;
+                const aiAnswerContent = (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]}/))
+                    ? formatJsonToMarkdownCodeBlock(geminiText, 'text')
+                    : `> ${geminiText.replace(/\n/g, '\n> ')}`;
+                markdownOutput += aiAnswerContent + '\n\n';
+
                 if (verificationText.includes("HALLUCINATION_DETECTED")) {
-                    markdownOutput += `**Warning:** The following potential hallucinations were detected based on the provided context:\n${formatJsonToMarkdownCodeBlock(verificationText.replace("HALLUCINATION_DETECTED", "").trim(), 'text')}\n`;
+                    markdownOutput += `**Warning:** Potential hallucinations detected:\n${formatJsonToMarkdownCodeBlock(verificationText.replace("HALLUCINATION_DETECTED", "").trim(), 'text')}\n`;
                 } else {
                     markdownOutput += `**Verification Status:** Verified against provided context.\n`;
                 }
+
                 if (webSearchSources.length > 0) {
-                    markdownOutput += `\n### Web Search Sources:\n`;
-                    webSearchSources.forEach((source, index) => {
-                        markdownOutput += `${index + 1}. [${source.title}](${source.url})\n`;
-                    });
+                    markdownOutput += `\n### Web Search Sources:\n` + webSearchSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
                 }
+
                 return { content: [{ type: 'text', text: markdownOutput }] };
             } catch (error: any) {
-                console.error(`Error asking Gemini:`, error);
                 throw new McpError(ErrorCode.InternalError, `Gemini API Error: ${error.message}`);
             }
         }
     }
 };
+
 export function getGeminiToolHandlers(memoryManager: MemoryManager) {
     return {
-        'ask_gemini': (args: any, agent_id?: string) => { // agent_id is not directly used by ask_gemini but passed by MCP server
+        'ask_gemini': (args: any, agent_id?: string) => {
             if (!askGeminiToolDefinition.func) {
                 throw new McpError(ErrorCode.InternalError, 'ask_gemini handler not implemented');
             }
-            // Pass memoryManager to the func, agent_id is implicitly handled or not needed by this specific tool's core logic
             return askGeminiToolDefinition.func(args, memoryManager);
         }
     };
 }
-// This is for MCP server listing, func is stripped.
+
 export const geminiToolDefinitions: InternalToolDefinition[] = [
     {
         name: askGeminiToolDefinition.name,
