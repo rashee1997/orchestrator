@@ -116,10 +116,12 @@ export class IterativeRagOrchestrator {
         };
         // Track query history to detect repetitive patterns
         const queryHistory: string[] = [];
+        const focusString = RagPromptTemplates.generateFocusString(focus_area, analysis_focus_points);
+
         console.log(`[Iterative RAG] Starting iterative search for query: "${query}"`);
         for (let i = 0; i < max_iterations; i++) {
             searchMetrics.totalIterations = i + 1;
-            console.log(`[Iterative RAG] Turn ${i + 1}/${max_iterations}: Searching for "${currentSearchQuery.substring(0, 100)}..."`);
+            console.log(`[Iterative RAG] Turn ${i + 1}/${max_iterations}: Searching for "${currentSearchQuery.substring(0, 100)}"...`);
             // Add current query to history
             queryHistory.push(currentSearchQuery.toLowerCase().trim());
             // Check for repetitive queries (potential infinite loop)
@@ -151,8 +153,6 @@ export class IterativeRagOrchestrator {
             // Format context using the robust formatter
             const formattedContextParts = formatContextForGemini(accumulatedContext);
             const contextString = formattedContextParts[0].text || ''; // Assuming it returns a single text part
-            // Generate focus string
-            const focusString = RagPromptTemplates.generateFocusString(focus_area, analysis_focus_points);
             // Generate analysis prompt
             const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
                 originalQuery: query,
@@ -251,11 +251,31 @@ export class IterativeRagOrchestrator {
                                 sourcePath: res.url,
                                 entityName: res.title,
                                 content: res.content,
-                                relevanceScore: 0.95,
+                                relevanceScore: 0.95, // Assign a high relevance score to web results
                             };
                             accumulatedContext.push(webContext);
                             processedEntities.add(`${res.url}::${res.title}`);
                         });
+
+                        // Re-analyze the context with the new web results
+                        const newContextString = formatContextForGemini(accumulatedContext)[0].text || '';
+                        const reanalysisResponse = await this._reanalyzeContextAndDecide(
+                            newContextString,
+                            query, // The original user query
+                            focusString, // The original focus string
+                            model,
+                            thinkingConfig
+                        );
+
+                        if (reanalysisResponse && RagResponseParser.validateResponse(reanalysisResponse)) {
+                            decision = reanalysisResponse.decision;
+                            nextCodebaseQuery = reanalysisResponse.nextCodebaseQuery;
+                            console.log(`[Iterative RAG] Post-web search re-analysis decision: ${decision}`);
+                        } else {
+                            // Fallback if re-analysis fails
+                            decision = "SEARCH_AGAIN";
+                            nextCodebaseQuery = `Find codebase information for: "${query}"`;
+                        }
                     }
                 } catch (webError: any) {
                     console.error(`[Iterative RAG] Tavily web search failed: ${webError.message}`);
@@ -284,6 +304,38 @@ export class IterativeRagOrchestrator {
             searchMetrics
         };
     }
+    /**
+     * Performs an enhanced hallucination check using multiple strategies.
+     * @param params Parameters for the hallucination check
+     * @returns Result of the hallucination check
+     */
+    private async _reanalyzeContextAndDecide(
+        contextString: string,
+        originalQuery: string,
+        focusString: string,
+        model: string | undefined,
+        thinkingConfig: any
+    ): Promise<RagAnalysisResponse | null> {
+        console.log('[Iterative RAG] Re-analyzing context after web search.');
+        const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
+            originalQuery: originalQuery,
+            currentTurn: -1, // Indicate this is a special re-analysis turn
+            maxIterations: '-1',
+            accumulatedContext: contextString,
+            focusString: focusString,
+            enableWebSearch: false // Disable further web searches in this step
+        });
+        const analysisResult = await this.geminiService.askGemini(
+            analysisPrompt,
+            model,
+            RagPromptTemplates.generateAnalysisSystemInstruction(),
+            undefined,
+            thinkingConfig
+        );
+        const rawResponseText = analysisResult.content[0].text ?? '';
+        return RagResponseParser.parseAnalysisResponse(rawResponseText);
+    }
+
     /**
      * Performs an enhanced hallucination check using multiple strategies.
      * @param params Parameters for the hallucination check
