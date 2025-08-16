@@ -6,6 +6,7 @@ export interface RagAnalysisResponse {
     reasoning: string;
     nextCodebaseQuery?: string;
     nextWebQuery?: string;
+    confidenceScore?: number; // New field for confidence in decision
 }
 
 /**
@@ -32,6 +33,13 @@ export class RagResponseParser {
             const reasoningMatch = rawResponseText.match(/Reasoning:\s*([\s\S]*?)(?=\nNext Codebase Search Query:|\nNext Web Search Query:|\n---|$)/i);
             const reasoning = reasoningMatch ? reasoningMatch[1].trim() : '';
 
+            // Extract confidence score if present
+            let confidenceScore: number | undefined;
+            const confidenceMatch = rawResponseText.match(/Confidence:\s*(\d+(\.\d+)?)/i);
+            if (confidenceMatch) {
+                confidenceScore = parseFloat(confidenceMatch[1]);
+            }
+
             // Extract next codebase query (only if decision is SEARCH_AGAIN)
             let nextCodebaseQuery: string | undefined;
             if (decision === 'SEARCH_AGAIN') {
@@ -50,7 +58,8 @@ export class RagResponseParser {
                 decision,
                 reasoning,
                 nextCodebaseQuery,
-                nextWebQuery
+                nextWebQuery,
+                confidenceScore
             };
         } catch (error) {
             console.error('[RagResponseParser] Error parsing response:', error);

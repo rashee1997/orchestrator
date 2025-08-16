@@ -13,12 +13,11 @@ import { formatRetrievedContextForPrompt } from '../database/services/gemini-int
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { REFINEMENT_MODEL_NAME } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
-import { Part } from '@google/genai'; // Assuming Part is from here
-import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js'; // Assuming ContextRetrievalOptions is from here
+import { Part } from '@google/genai';
+import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { callTavilyApi } from '../integrations/tavily.js';
-import { IterativeRagOrchestrator, IterativeRagResult } from './rag/iterative_rag_orchestrator.js';
+import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
 import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
-
 
 /**
  * Performs an automated, multi-turn iterative search and refinement process.
@@ -32,24 +31,7 @@ import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
  * @returns A promise that resolves to the final, comprehensive answer as a string.
  */
 async function _performIterativeRagSearch(
-    args: {
-        agent_id: string;
-        query: string;
-        model?: string;
-        systemInstruction?: string;
-        enable_rag?: boolean;
-        focus_area?: string;
-        analysis_focus_points?: string[];
-        context_options?: ContextRetrievalOptions;
-        context_snippet_length?: number;
-        live_review_file_paths?: string[];
-        enable_iterative_search?: boolean;
-        execution_mode?: string;
-        target_ai_persona?: string | null;
-        conversation_context_ids?: string[] | null;
-        enable_web_search?: boolean;
-        max_iterations?: number;
-    },
+    args: IterativeRagArgs,
     memoryManagerInstance: MemoryManager,
     geminiService: GeminiIntegrationService
 ): Promise<IterativeRagResult> {
@@ -186,9 +168,29 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             throw new McpError(ErrorCode.InternalError, errorMsg);
         }
 
-        const { agent_id, query, model, systemInstruction, enable_rag, focus_area, analysis_focus_points, context_options, context_snippet_length, live_review_file_paths, enable_iterative_search, execution_mode, target_ai_persona, conversation_context_ids } = args;
-        const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
+        const {
+            agent_id,
+            query,
+            model,
+            systemInstruction,
+            enable_rag,
+            focus_area,
+            analysis_focus_points,
+            context_options,
+            context_snippet_length,
+            live_review_file_paths,
+            enable_iterative_search,
+            execution_mode,
+            target_ai_persona,
+            conversation_context_ids,
+            enable_web_search,
+            max_iterations,
+            hallucination_check_threshold,
+            enable_context_summarization,
+            context_window_optimization_strategy
+        } = args;
 
+        const snippetLength = context_snippet_length !== undefined ? context_snippet_length : 200;
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
         const contextManager = (memoryManagerInstance as any).contextInformationManager as ContextInformationManager | undefined;
 
@@ -210,14 +212,37 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let finalContext: RetrievedCodeContext[] = [];
         let webSearchSources: { title: string; url: string }[] = [];
         let finalAnswerFromIteration: string | undefined;
+        let searchMetrics: any = undefined;
 
         try {
             if (enable_iterative_search) {
                 console.log("[ask_gemini] Starting Stage 1: Iterative Search Context Acquisition");
-                const iterativeResult = await _performIterativeRagSearch(args, memoryManagerInstance, geminiService);
+                const iterativeResult = await _performIterativeRagSearch({
+                    agent_id,
+                    query,
+                    model,
+                    systemInstruction,
+                    enable_rag,
+                    focus_area,
+                    analysis_focus_points,
+                    context_options,
+                    context_snippet_length,
+                    live_review_file_paths,
+                    enable_iterative_search,
+                    execution_mode,
+                    target_ai_persona,
+                    conversation_context_ids,
+                    enable_web_search,
+                    max_iterations,
+                    hallucination_check_threshold,
+                    enable_context_summarization,
+                    context_window_optimization_strategy
+                }, memoryManagerInstance, geminiService);
+
                 finalContext = iterativeResult.accumulatedContext;
                 webSearchSources = iterativeResult.webSearchSources;
                 finalAnswerFromIteration = iterativeResult.finalAnswer;
+                searchMetrics = iterativeResult.searchMetrics;
             } else if (live_review_file_paths && Array.isArray(live_review_file_paths) && live_review_file_paths.length > 0) {
                 console.log("[ask_gemini] Starting Stage 1: Live File Review Context Acquisition");
                 const embeddingService = memoryManagerInstance.getCodebaseEmbeddingService();
@@ -236,6 +261,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         'auto',
                         false
                     );
+
                     chunks.forEach((chunk: { chunk_text: string }, index: number) => {
                         finalContext.push({
                             type: 'file_snippet',
@@ -282,7 +308,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 parsedResponse.original_prompt_text = raw_user_prompt;
                 parsedResponse.target_ai_persona = target_ai_persona;
                 parsedResponse.conversation_context_ids = conversation_context_ids;
-
                 parsedResponse.refined_prompt_id = await geminiService.storeRefinedPrompt(parsedResponse);
 
                 return { content: [{ type: 'text', text: JSON.stringify(parsedResponse, null, 2) }] };
@@ -299,12 +324,25 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += formatJsonToMarkdownCodeBlock(finalAnswerFromIteration, 'text') + '\n';
                 markdownOutput += `\n**Verification Status:** Verified against provided context.\n`;
 
+                // Add search metrics if available
+                if (searchMetrics) {
+                    markdownOutput += `\n### Search Metrics:\n`;
+                    markdownOutput += `- Total Iterations: ${searchMetrics.totalIterations}\n`;
+                    markdownOutput += `- Context Items Added: ${searchMetrics.contextItemsAdded}\n`;
+                    markdownOutput += `- Web Searches Performed: ${searchMetrics.webSearchesPerformed}\n`;
+                    markdownOutput += `- Hallucination Checks Passed: ${searchMetrics.hallucinationChecksPassed}\n`;
+                    if (searchMetrics.earlyTerminationReason) {
+                        markdownOutput += `- Early Termination Reason: ${searchMetrics.earlyTerminationReason}\n`;
+                    }
+                }
+
                 if (webSearchSources.length > 0) {
                     markdownOutput += `\n### Web Search Sources:\n`;
                     webSearchSources.forEach((source, index) => {
                         markdownOutput += `${index + 1}. [${source.title}](${source.url})\n`;
                     });
                 }
+
                 return { content: [{ type: 'text', text: markdownOutput }] };
             }
 
@@ -313,16 +351,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
             if (finalContext.length > 0) {
                 let metaPromptTemplate: string;
-
                 if (webSearchSources.length > 0) {
                     finalSystemInstruction = GENERAL_WEB_ASSISTANT_META_PROMPT;
-                    // This is a simple template to structure the data for the AI, not an instruction template.
                     metaPromptTemplate = `Based on the following information, please answer the user's query. Remember to cite your sources as instructed.
-
 --- CONTEXT ---
 {context}
 --- END CONTEXT ---
-
 --- USER QUERY ---
 {query}`;
                 } else {
@@ -351,10 +385,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     if (isWebResult) {
                         const sourceInfo = webSearchSources.find(s => s.url === res.sourcePath);
                         const citation = sourceInfo ? `[Source Title: ${sourceInfo.title}](${sourceInfo.url})` : `[Source URL: ${res.sourcePath}]`;
-                        // For web results, provide the full content and the citation info clearly.
                         return `Source: ${citation}\nContent: ${res.content}`;
                     } else {
-                        // For codebase results, provide a snippet.
                         const sourceCitation = `\`${res.sourcePath}\``;
                         const entityName = res.entityName ? ` (Entity: \`${res.entityName}\`)` : '';
                         const contentPreview = res.content.substring(0, snippetLength);
@@ -381,7 +413,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const geminiText = response.content?.[0]?.text ?? '';
 
                 const contextStringForCheck = formatRetrievedContextForPrompt(finalContext)[0]?.text || 'No context was provided.';
-
                 const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({
                     originalQuery: query,
                     contextString: contextStringForCheck,
@@ -396,14 +427,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += `### AI Answer:\n`;
 
                 let aiAnswerContent = '';
-                if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]]/)) {
+                if (geminiText.includes('\n') || geminiText.match(/[{[<>()=\-/\\.+*;:'"]}/)) {
                     aiAnswerContent = formatJsonToMarkdownCodeBlock(geminiText, 'text');
                 } else {
                     aiAnswerContent = `> ${geminiText.replace(/\n/g, '\n> ')}`;
                 }
 
                 markdownOutput += aiAnswerContent + '\n';
-
                 markdownOutput += `\n`;
 
                 if (verificationText.includes("HALLUCINATION_DETECTED")) {

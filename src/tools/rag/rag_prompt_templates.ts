@@ -19,17 +19,14 @@ export class RagPromptTemplates {
         enableWebSearch: boolean;
     }): string {
         const { originalQuery, currentTurn, maxIterations, accumulatedContext, focusString = "", enableWebSearch } = params;
-
         return `
 You are an intelligent search orchestrator. Your goal is to answer the user's original query by iteratively searching a codebase and, if necessary, the web.
 Original Query: "${originalQuery}"
 Current Search Turn: ${currentTurn} of ${maxIterations}
-
 ${focusString}---
 Accumulated Context So Far:
 ${accumulatedContext}
 ---
-
 Based on the accumulated context, please make a decision. Respond in this exact plain text format:
 Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB]
 Reasoning: [Briefly explain your decision. If searching again, explain what is missing. If searching the web, explain why external info is needed.]
@@ -40,6 +37,7 @@ Instructions:
 - If the **accumulated context** (from codebase or web search) is sufficient to fully answer the original query, set "Decision" to "ANSWER".
 - If more **codebase** information is needed, set "Decision" to "SEARCH_AGAIN".
 - If the query requires **external, real-time, or third-party library information** not found in the code, set "Decision" to "SEARCH_WEB".
+- Consider the **relevance and completeness** of the current context. If key information is missing, continue searching.
 ${enableWebSearch ? '- If you\'ve reached the last turn (' + maxIterations + '), you MUST set "Decision" to "ANSWER".' : '- If you\'ve reached the last turn (' + maxIterations + '), you MUST set "Decision" to "ANSWER".'}
 `;
     }
@@ -66,17 +64,33 @@ ${enableWebSearch ? '- If you\'ve reached the last turn (' + maxIterations + '),
         return `You are a fact-checker. Verify if the following answer is supported by the provided context.
                 
 Original Query: "${originalQuery}"
-
 Context:
 ${contextString}
-
 Proposed Answer:
 ${generatedAnswer}
-
 Instructions:
 1. Check if all claims in the answer can be verified from the context
 2. Identify any statements that are not supported by the context
 3. Respond with "VERIFIED" if the answer is fully supported, or "HALLUCINATION_DETECTED" followed by specific issues found.`;
+    }
+
+    /**
+     * Generates a prompt to generate an answer based on the provided context.
+     * @param params The parameters for the answer prompt
+     * @returns The formatted answer prompt string
+     */
+    static generateAnswerPrompt(params: {
+        originalQuery: string;
+        contextString: string;
+        focusString?: string;
+    }): string {
+        const { originalQuery, contextString, focusString = "" } = params;
+        return `Based on the following context, please provide a comprehensive answer to the original query: "${originalQuery}"
+${focusString}
+Context:
+${contextString}
+Original Query: "${originalQuery}"
+Please provide your answer:`;
     }
 
     /**
@@ -87,7 +101,6 @@ Instructions:
      */
     static generateFocusString(focusArea?: string, analysisFocusPoints?: string[]): string {
         let focusString = "";
-
         if (focusArea) {
             if (analysisFocusPoints && analysisFocusPoints.length > 0) {
                 focusString = `Focus on the following aspects for your analysis and response:\n` + analysisFocusPoints.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
@@ -126,7 +139,6 @@ Instructions:
                 focusString = `--- Focus Area ---\n${focusString}\n\n`;
             }
         }
-
         return focusString;
     }
 }
