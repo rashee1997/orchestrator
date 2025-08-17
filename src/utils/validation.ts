@@ -1,3 +1,4 @@
+// src/utils/validation.ts
 import Ajv from 'ajv';
 
 const ajv = new Ajv.default({ allErrors: true, useDefaults: true });
@@ -395,6 +396,12 @@ export const schemas = {
             agent_id: { type: 'string' },
             goal_description: { type: ['string', 'null'], description: "A natural language description of the overall goal for AI plan generation." },
             refined_prompt_id: { type: ['string', 'null'], description: "The ID of a pre-existing refined prompt to use for AI plan generation." },
+            live_review_file_paths: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Optional: Array of full file paths for the AI to review live when generating the plan.',
+                nullable: true
+            },
             planData: {
                 type: ['object', 'null'],
                 properties: {
@@ -428,6 +435,7 @@ export const schemas = {
                         estimated_effort_hours: { type: ['number', 'null'] },
                         assigned_to: { type: ['string', 'null'] },
                         verification_method: { type: ['string', 'null'] },
+                        code_content: { type: ['string', 'null'] },
                         notes_json: { type: ['string', 'null'] }
                     },
                     additionalProperties: true,

@@ -21,7 +21,13 @@ export function parseGeminiJsonResponse(textResponse: string): any {
         // It looks for unescaped newlines or tabs within double-quoted strings and escapes them.
         jsonString = jsonString.replace(/\"([^\"\\]*(?:\\.[^\"\\]*)*)\"/g, (match, p1) => {
             // p1 is the content inside the quotes
-        return '"' + p1.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r') + '"';
+            // Escape backslashes first, then double quotes, then newlines/tabs/returns
+            let escapedP1 = p1.replace(/\\/g, '\\\\') // Escape existing backslashes
+                              .replace(/"/g, '\\"')   // Escape existing double quotes
+                              .replace(/\n/g, '\\n')
+                              .replace(/\t/g, '\\t')
+                              .replace(/\r/g, '\\r');
+            return '"' + escapedP1 + '"';
         });
 
         // Remove any remaining invalid control characters that JSON.parse would reject

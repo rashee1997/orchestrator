@@ -1,4 +1,3 @@
-// src/database/services/gemini-integration-modules/GeminiPromptTemplates.ts
 export const SUMMARIZE_CODE_CHUNK_PROMPT = `
 You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
 Do not describe the code line-by-line. Focus on the high-level goal and functionality.
@@ -66,10 +65,10 @@ You are an expert AI prompt engineer and senior software architect. Your task is
 1.  **Interpret Goal:** Define the user's \`overall_goal\` by interpreting their prompt in light of the provided code context.
 2.  **Analyze Context:** In the \`codebase_context_summary_by_ai\` field, summarize how the existing code influences the plan. Is this a new feature, a modification, or a refactor? Which files are most relevant?
 3.  **Identify Key Entities:** In the \`relevant_code_elements_analyzed\` field, list the specific functions, classes, and files from the context that will be directly impacted or are crucial for implementation.
-5.  **Decompose Tasks:** Break down the goal into a sequence of actionable development tasks. Each task in \`decomposed_tasks\` must be concrete and grounded in the codebase (e.g., "Modify the 'processPayment' function in 'payment_service.ts' to handle gift cards.").
-5.  **Suggest Dependencies:** For each decomposed task, list any prerequisite tasks in the \`suggested_dependencies\` field. This is crucial for creating a valid execution plan.
-6.  **Suggest Validation:** Propose a \`suggested_validation_steps\` for the agent to perform after completing the plan, such as running specific tests or querying the knowledge graph to confirm changes.
-7.  **Suggest New File Paths:** If the task involves refactoring or modularizing large code files, **propose concrete new file paths and their corresponding new folder structures** for the modularized components in the \`suggested_new_file_paths\` field. These paths should be relative to the project root and reflect a logical, maintainable organization. **Format these as an array of strings, where each string is a full relative path including the new folder structure (e.g., "src/database/services/new_module/file.ts").**
+4.  **Decompose Tasks:** Break down the goal into a sequence of granular, actionable development tasks. For each task in \`decomposed_tasks\`, provide the exact keys as specified below, as they map directly to a database schema.
+5.  **Suggest Dependencies:** For each decomposed task, list the \`title\` of any prerequisite tasks in the \`dependencies_task_ids_json\` field. This is crucial for creating a valid execution plan.
+6.  **Suggest Validation:** Propose \`suggested_validation_steps\` for the agent to perform after completing the entire plan, such as running specific tests or querying the knowledge graph to confirm changes.
+7.  **Suggest New File Paths:** If the task involves refactoring or creating new files, propose concrete new file paths in the \`suggested_new_file_paths\` field. These paths should be relative to the project root.
 
 **Output Schema:**
 You MUST output the refined prompt strictly as a JSON object, adhering exactly to the following schema. Do not include any text or markdown outside the JSON block.
@@ -77,14 +76,20 @@ You MUST output the refined prompt strictly as a JSON object, adhering exactly t
 \`\`\`json
 {
   "refined_prompt_id": "server_generated_uuid",
+  "agent_id": "{agentId}",
   "original_prompt_text": "The exact raw user prompt text.",
   "refinement_engine_model": "{modelToUse}",
   "refinement_timestamp": "YYYY-MM-DDTHH:MM:SS.sssZ",
   "overall_goal": "A clear, concise statement of the user's primary objective, informed by the codebase context.",
   "decomposed_tasks": [
     {
-      "task_description": "A specific, actionable development task.",
-      "suggested_dependencies": ["Description of a prerequisite task from this list."]
+      "title": "A concise, actionable title for the task.",
+      "description": "A detailed, step-by-step description of what needs to be done to complete this task.",
+      "purpose": "A brief explanation of why this task is necessary for the overall goal.",
+      "files_involved_json": ["src/path/to/file1.ts", "src/path/to/file2.ts"],
+      "tools_required_list_json": ["apply_file_patch", "run_shell_command"],
+      "success_criteria_text": "A clear, verifiable statement of what constitutes successful completion of this task.",
+      "dependencies_task_ids_json": ["Title of a prerequisite task from this list."]
     }
   ],
   "key_entities_identified": [ 

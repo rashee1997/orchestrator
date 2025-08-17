@@ -204,7 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_plans_agent_id_status ON plans (agent_id, status)
 CREATE INDEX IF NOT EXISTS idx_plans_creation_ts ON plans (creation_timestamp_unix);
 CREATE INDEX IF NOT EXISTS idx_plans_version ON plans (version);
 
--- Plan Tasks table
+-- Plan Tasks table (MODIFIED TO ADD NEW DETAIL COLUMNS)
 CREATE TABLE IF NOT EXISTS plan_tasks (
     task_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL,
@@ -213,17 +213,18 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
     title TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'PLANNED',
-    purpose TEXT,
+    purpose TEXT, -- NEW: Why this task is necessary
     action_description TEXT,
     files_involved_json TEXT,
     dependencies_task_ids_json TEXT,
     tools_required_list_json TEXT,
     inputs_summary TEXT,
     outputs_summary TEXT,
-    success_criteria_text TEXT,
+    success_criteria_text TEXT, -- NEW: How to verify this task is done
     estimated_effort_hours REAL,
     assigned_to TEXT,
     verification_method TEXT,
+    code_content TEXT, -- NEW: For storing full code for new files or diffs for existing files
     creation_timestamp_unix INTEGER NOT NULL,
     creation_timestamp_iso TEXT NOT NULL,
     last_updated_timestamp_unix INTEGER NOT NULL,

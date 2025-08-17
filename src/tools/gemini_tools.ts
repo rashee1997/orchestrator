@@ -272,19 +272,28 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             const metaPromptContent = META_PROMPT
                 .replace('{modelToUse}', modelToUse)
                 .replace('{raw_user_prompt}', finalQuery)
-                .replace('{retrievedCodeContextString}', contextString);
+                .replace('{retrievedCodeContextString}', contextString)
+                .replace('{agentId}', agent_id);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse, undefined, undefined, thinkingConfig);
                 let parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
-                Object.assign(parsedResponse, {
-                    agent_id: agent_id,
-                    refinement_engine_model: modelToUse,
-                    refinement_timestamp: new Date().toISOString(),
-                    original_prompt_text: query,
-                    target_ai_persona: target_ai_persona,
-                    conversation_context_ids: conversation_context_ids,
-                    refined_prompt_id: await geminiService.storeRefinedPrompt(parsedResponse)
-                });
+
+                // --- START: THE FIX ---
+                // 1. Enrich the object with server-side data
+                parsedResponse.agent_id = agent_id; // Ensure the correct agent_id is set
+                parsedResponse.refinement_engine_model = modelToUse;
+                parsedResponse.refinement_timestamp = new Date().toISOString();
+                parsedResponse.original_prompt_text = query;
+                parsedResponse.target_ai_persona = target_ai_persona;
+                parsedResponse.conversation_context_ids = conversation_context_ids;
+
+                // 2. Store the enriched object. The function will generate and return the real ID.
+                const real_stored_id = await geminiService.storeRefinedPrompt(parsedResponse);
+
+                // 3. CRITICAL: Replace the placeholder ID with the real ID in the object we are about to return.
+                parsedResponse.refined_prompt_id = real_stored_id;
+                // --- END: THE FIX ---
+
                 return { content: [{ type: 'text', text: JSON.stringify(parsedResponse, null, 2) }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Failed to generate plan using Gemini API: ${error.message}`);

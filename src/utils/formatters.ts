@@ -1,5 +1,4 @@
 // src/utils/formatters.ts
-
 // Minimal escape: only for characters that most commonly break lists or emphasis if not intended.
 function escapeMinimalMarkdown(text: string | number | boolean | null | undefined): string {
     if (text === null || typeof text === 'undefined') {
@@ -150,7 +149,7 @@ export function formatObjectToMarkdown(obj: any, indentLevel: number = 0): strin
     return md;
 }
 
-export function formatJsonToMarkdownCodeBlock(data: any, lang: string = 'json'): string {
+export function formatJsonToMarkdownCodeBlock(data: any, lang: string = 'json', indentLevel: number = 0): string {
     let jsonDataString: string;
     if (typeof data === 'string') {
         try {
@@ -166,7 +165,8 @@ export function formatJsonToMarkdownCodeBlock(data: any, lang: string = 'json'):
         // If it's already an object/array
         jsonDataString = JSON.stringify(data, null, 2);
     }
-    return `\`\`\`${lang}\n${jsonDataString}\n\`\`\``;
+    const indent = ' '.repeat(indentLevel);
+    return `${indent}\`\`\`${lang}\n${indentBlockContent(jsonDataString, indent)}\n${indent}\`\`\``;
 }
 
 
@@ -199,11 +199,20 @@ export function formatTaskToMarkdown(task: any): string {
     if (task.creation_timestamp_iso) md += `  - **Created:** ${formatValue(task.creation_timestamp_iso ? new Date(task.creation_timestamp_iso) : null)}\n`;
     if (task.last_updated_timestamp_iso) md += `  - **Last Updated:** ${formatValue(task.last_updated_timestamp_iso ? new Date(task.last_updated_timestamp_iso) : null)}\n`;
     if (task.completion_timestamp_iso) md += `  - **Completed:** ${formatValue(task.completion_timestamp_iso ? new Date(task.completion_timestamp_iso) : null)}\n`;
+    
+    if (task.code_content) {
+        const files = getParsedArrayField(task.files_involved_parsed || task.files_involved_json || task.files_involved);
+        const language = files.length > 0 ? (files[0].split('.').pop() || 'text') : 'text';
+        const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
+        
+        md += `  - **Proposed Code Changes:**\n`;
+        md += `${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 4)}\n`;
+    }
 
     const notes = task.notes_parsed || task.notes_json || task.notes;
     if (notes) {
         // Notes are often structured JSON, so a code block is appropriate.
-        md += `  - **Notes:**\n${formatJsonToMarkdownCodeBlock(notes).split('\n').map(line => `    ${line}`).join('\n')}\n`;
+        md += `  - **Notes:**\n${formatJsonToMarkdownCodeBlock(notes, 'json', 4)}\n`;
     }
     return md;
 }
@@ -254,28 +263,66 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
     return md;
 }
 
-export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = []): string {
+// *** MODIFIED FUNCTION TO DISPLAY FULL TASK DETAILS ***
+export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = [], taskMap: Map<string, any> = new Map()): string {
     if (!plan) return "*No plan details provided.*\n";
-    let md = `## Plan: ${formatValue(plan.title || 'N/A')} (ID: ${formatValue(plan.plan_id, {isCodeOrId: true})})\n`;
-    md += `- **Agent ID:** ${formatValue(plan.agent_id, {isCodeOrId: true})}\n`;
-    md += `- **Status:** ${formatValue(plan.status || 'N/A')}\n`;
-    if (plan.overall_goal) md += `- **Overall Goal:** ${formatValue(plan.overall_goal)}\n`;
-    md += `- **Version:** ${formatValue(plan.version || 1)}\n`;
-    if (plan.creation_timestamp_iso) md += `- **Created:** ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
-    if (plan.last_updated_timestamp_iso) md += `- **Last Updated:** ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
-    if (plan.refined_prompt_id_associated) md += `- **Refined Prompt ID:** ${formatValue(plan.refined_prompt_id_associated, {isCodeOrId: true})}\n`;
-    if (plan.analysis_report_id_referenced) md += `- **Analysis Report ID:** ${formatValue(plan.analysis_report_id_referenced, {isCodeOrId: true})}\n`;
-
+    
+    let md = `## Plan: ${formatValue(plan.title || 'N/A')} (ID: ${formatValue(plan.plan_id, {isCodeOrId: true})})\n\n`;
+    md += `- __Agent ID:__ ${formatValue(plan.agent_id, {isCodeOrId: true})}\n`;
+    md += `- __Status:__ ${formatValue(plan.status || 'N/A')}\n`;
+    if (plan.overall_goal) md += `- __Overall Goal:__ ${formatValue(plan.overall_goal)}\n`;
+    md += `- __Version:__ ${formatValue(plan.version || 1)}\n`;
+    if (plan.creation_timestamp_iso) md += `- __Created:__ ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
+    if (plan.last_updated_timestamp_iso) md += `- __Last Updated:__ ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
+    if (plan.refined_prompt_id_associated) md += `- __Refined Prompt ID:__ ${formatValue(plan.refined_prompt_id_associated, {isCodeOrId: true})}\n`;
+    
     const metadata = plan.metadata_parsed || plan.metadata;
     if (metadata) {
-        md += `- **Metadata:**\n${formatJsonToMarkdownCodeBlock(metadata)}\n`;
+        md += `- __Metadata:__\n${formatJsonToMarkdownCodeBlock(metadata, 'json', 2)}\n`;
     }
 
-    if (tasks && tasks.length > 0) {
-        md += "\n### Tasks for this Plan:\n";
-        md += formatTasksListToMarkdownTable(tasks, true);
-    } else {
+    md += "\n### Tasks for this Plan:\n";
+
+    if (!tasks || tasks.length === 0) {
         md += "\n*No tasks associated with this plan currently.*\n";
+    } else {
+        // Ensure tasks are sorted by task_number
+        tasks.sort((a, b) => (a.task_number || 0) - (b.task_number || 0)).forEach(task => {
+            md += `\n---\n`;
+            md += `#### Task ${task.task_number}: ${formatValue(task.title)} [\`${task.status}\`]\n`;
+            md += `*ID: ${formatValue(task.task_id, { isCodeOrId: true })}*\n`;
+
+            if (task.purpose) md += `\n- **Purpose:** ${formatValue(task.purpose)}\n`;
+            if (task.description) md += `- **Description:** ${formatValue(task.description)}\n`;
+            if (task.success_criteria_text) md += `- **Success Criteria:** ${formatValue(task.success_criteria_text)}\n`;
+
+            const dependencies = getParsedArrayField(task.dependencies_task_ids)
+                .map((depId: string) => {
+                    const depTask = taskMap.get(depId);
+                    return depTask ? `Task ${depTask.task_number} ('${formatValue(depTask.title)}')` : formatValue(depId, { isCodeOrId: true });
+                })
+                .join(', ');
+
+            if (dependencies) md += `- **Dependencies:** ${dependencies}\n`;
+            
+            const filesInvolved = getParsedArrayField(task.files_involved);
+            if (filesInvolved.length > 0) {
+                md += `- **Files Involved:** ${filesInvolved.map(f => formatValue(f, {isCodeOrId: true})).join(', ')}\n`;
+            }
+
+            const toolsRequired = getParsedArrayField(task.tools_required_list);
+            if (toolsRequired.length > 0) {
+                md += `- **Tools Required:** ${toolsRequired.map(t => formatValue(t, {isCodeOrId: true})).join(', ')}\n`;
+            }
+            
+            if (task.code_content) {
+                const language = filesInvolved.length > 0 ? (filesInvolved[0].split('.').pop() || 'text') : 'text';
+                const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
+                
+                md += `- **Proposed Code Changes:**\n`;
+                md += `${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 2)}\n`;
+            }
+        });
     }
 
     if (planSubtasks && planSubtasks.length > 0) {

@@ -1,3 +1,4 @@
+// src/database/memory_manager.ts
 import { GoogleGenAI } from '@google/genai';
 
 // TypeScript interface for plan_tasks table
@@ -8,6 +9,7 @@ export interface PlanTaskRow {
     title: string;
     description: string;
     status: string;
+    code_content?: string;
     created_at: string;
     updated_at: string;
     [key: string]: any; // For any additional columns
