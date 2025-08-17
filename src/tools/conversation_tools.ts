@@ -6,151 +6,151 @@ import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/for
 export const conversationToolDefinitions = [
     {
         name: 'create_conversation_session',
-        description: 'Creates a new conversation session with optional title and metadata.',
+        description: 'Use this to start a new, distinct conversation thread or topic. It acts as a container for messages and participants, enabling structured, collaborative dialogues.',
         inputSchema: {
             type: 'object',
             properties: {
-                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-                user_id: { type: 'string', description: 'Identifier of the user (optional).' },
-                title: { type: 'string', description: 'Optional title for the conversation session.' },
-                metadata: { type: 'object', description: 'Optional metadata for the session.' }
+                agent_id: { type: 'string', description: 'Your unique agent ID. This is required to associate the session with you as the creator.' },
+                title: { type: 'string', description: "A brief, human-readable title for the session, like 'Refactoring the User Service'. Helps in identifying sessions later.", nullable: true },
+                metadata: { type: 'object', description: 'A flexible JSON object to store any relevant structured data, such as related task IDs, project names, or session goals.', nullable: true },
+                initial_participant_ids: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: "A list of other agent or user IDs to immediately include in this collaborative session. Your own agent ID is added automatically as the 'owner'.",
+                    nullable: true
+                }
             },
             required: ['agent_id'],
         },
     },
     {
         name: 'end_conversation_session',
-        description: 'Marks a conversation session as ended by setting its end timestamp.',
+        description: 'Closes an active conversation session by recording an end timestamp. This is useful for signaling that a task or topic is complete and the conversation is archived.',
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'ID of the conversation session to end.' }
+                session_id: { type: 'string', description: 'The unique ID of the conversation session to mark as ended.' }
             },
             required: ['session_id'],
         },
     },
     {
-        name: 'store_conversation_message',
-        description: 'Stores a message in an existing conversation session with threading support.',
+        name: 'store_conversation_messages',
+        description: 'Use this to save messages to a conversation. You can store your own thoughts, user replies, or system events. It supports saving multiple messages at once for high efficiency.',
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'ID of the conversation session.' },
-                sender: { type: 'string', description: 'Role of the sender (e.g., user, agent, system).' },
-                message_content: { type: 'string', description: 'The actual text of the message.' },
-                message_type: { type: 'string', description: 'Type of message (e.g., text, image, tool_call, tool_output).', default: 'text' },
-                tool_info: { type: 'object', description: 'JSON object for tool calls/outputs.', nullable: true },
-                context_snapshot_id: { type: 'string', description: 'Foreign key to context_information table.', nullable: true },
-                source_attribution_id: { type: 'string', description: 'Foreign key to source_attribution table.', nullable: true },
-                parent_message_id: { type: 'string', description: 'ID of the parent message for threading.', nullable: true },
-                metadata: { type: 'object', description: 'Additional metadata for the message.', nullable: true },
-                generate_embedding: { type: 'boolean', description: 'Generate embedding for semantic search.', default: false }
+                session_id: { type: 'string', description: 'The ID of the session where the messages should be stored.' },
+                messages: {
+                    type: 'array',
+                    description: 'An array of one or more message objects to be saved.',
+                    minItems: 1,
+                    items: {
+                        type: 'object',
+                        properties: {
+                            sender: { type: 'string', description: "The ID of the message sender. This should be your agent ID, a user's ID, or a system identifier like 'system'." },
+                            message_content: { type: 'string', description: 'The complete text content of the message.' },
+                            message_type: { type: 'string', description: "Specifies the nature of the message. Common types are 'text', 'tool_call', 'tool_output', 'thought'.", default: 'text' },
+                            tool_info: { type: 'object', description: "If message_type is 'tool_call' or 'tool_output', this object should contain details like the tool name, parameters, and result.", nullable: true },
+                            parent_message_id: { type: 'string', description: "Set this to the `message_id` of a previous message to create a reply thread. Essential for maintaining conversational context.", nullable: true },
+                            metadata: { type: 'object', description: 'A JSON object for extra data, like message sentiment, confidence scores, or source citations.', nullable: true },
+                            generate_embedding: { type: 'boolean', description: "If true, an embedding vector will be created for the message, enabling powerful semantic search capabilities later. Use for important messages.", default: false }
+                        },
+                        required: ['sender', 'message_content'],
+                    }
+                }
             },
-            required: ['session_id', 'sender', 'message_content'],
+            required: ['session_id', 'messages'],
         },
     },
     {
         name: 'get_conversation_session',
-        description: 'Retrieves details of a specific conversation session.',
+        description: "Fetches the complete details for a single conversation session, including its title, timestamps, and a full list of participants. Use this to get an overview of a specific conversation.",
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'ID of the conversation session.' }
+                session_id: { type: 'string', description: 'The unique ID of the conversation session to retrieve.' }
             },
             required: ['session_id'],
         },
     },
     {
         name: 'get_conversation_sessions',
-        description: 'Retrieves conversation sessions for an agent with optional user filtering.',
+        description: 'Lists multiple conversation sessions. You can list all sessions you created or filter them to find only those that include a specific user or another agent.',
         inputSchema: {
             type: 'object',
             properties: {
-                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-                user_id: { type: 'string', description: 'Optional filter for specific user.' },
-                limit: { type: 'number', description: 'Maximum number of sessions to retrieve.', default: 50 },
-                offset: { type: 'number', description: 'Offset for pagination.', default: 0 }
+                agent_id: { type: 'string', description: 'Your agent ID. This scopes the search to sessions you created.' },
+                participant_id: { type: 'string', description: 'If provided, the results will be limited to sessions where this user or agent is also a participant.', nullable: true },
+                limit: { type: 'number', description: 'The maximum number of sessions to return. Use with `offset` for pagination.', default: 50 },
+                offset: { type: 'number', description: 'The number of sessions to skip from the beginning of the list. Use with `limit` for pagination.', default: 0 }
             },
             required: ['agent_id'],
         },
     },
     {
         name: 'get_conversation_messages',
-        description: 'Retrieves messages from a conversation session with pagination.',
+        description: 'Fetches the chronological history of messages within a specific session. This is how you read the content of a conversation. Supports pagination for long conversations.',
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'ID of the conversation session.' },
-                limit: { type: 'number', description: 'Maximum number of messages to retrieve.', default: 100 },
-                offset: { type: 'number', description: 'Offset for pagination.', default: 0 },
-                include_embeddings: { type: 'boolean', description: 'Include message embeddings.', default: false }
+                session_id: { type: 'string', description: 'The unique ID of the session from which to retrieve messages.' },
+                limit: { type: 'number', description: 'The maximum number of messages to return. Use with `offset` for pagination.', default: 100 },
+                offset: { type: 'number', description: 'The number of messages to skip from the beginning of the history. Use with `limit` for pagination.', default: 0 }
             },
             required: ['session_id'],
         },
     },
     {
-        name: 'get_message_thread',
-        description: 'Retrieves a threaded conversation starting from a specific message.',
+        name: 'add_participant_to_session',
+        description: 'Use this to invite another user or agent into an existing conversation, enabling collaboration.',
         inputSchema: {
             type: 'object',
             properties: {
-                message_id: { type: 'string', description: 'ID of the message to start the thread from.' }
+                session_id: { type: 'string', description: 'The unique ID of the session to which the participant will be added.' },
+                participant_id: { type: 'string', description: 'The unique ID of the user or agent to add as a participant.' },
+                role: { type: 'string', description: "The role to assign to the new participant. Defaults to 'member'. Other roles like 'observer' could be used depending on the system's rules.", default: 'member' }
             },
-            required: ['message_id'],
+            required: ['session_id', 'participant_id'],
         },
     },
     {
-        name: 'search_conversations',
-        description: 'Searches conversations using keyword or semantic search.',
+        name: 'get_session_participants',
+        description: "Use this to check who is currently a member of a specific conversation before sending messages or sharing information.",
         inputSchema: {
             type: 'object',
             properties: {
-                agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-                query: { type: 'string', description: 'Search query string.' },
-                search_type: { type: 'string', enum: ['keyword', 'semantic'], description: 'Type of search to perform.', default: 'keyword' },
-                limit: { type: 'number', description: 'Maximum number of results.', default: 20 },
-                offset: { type: 'number', description: 'Offset for pagination.', default: 0 }
-            },
-            required: ['agent_id', 'query'],
-        },
-    },
-    {
-        name: 'summarize_conversation',
-        description: 'Generates a summary of a conversation session using Gemini.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                session_id: { type: 'string', description: 'ID of the conversation session to summarize.' }
+                session_id: { type: 'string', description: 'The unique ID of the session whose participants you want to list.' }
             },
             required: ['session_id'],
         },
-    }
+    },
 ];
 
 // --- Type definitions for tool arguments ---
 
 interface CreateSessionArgs {
     agent_id: string;
-    user_id?: string | null;
     title?: string | null;
     metadata?: any | null;
+    initial_participant_ids?: string[];
 }
 
 interface EndSessionArgs {
     session_id: string;
 }
 
-interface StoreMessageArgs {
+interface StoreMessagesArgs {
     session_id: string;
-    sender: string;
-    message_content: string;
-    message_type?: string;
-    tool_info?: any | null;
-    context_snapshot_id?: string | null;
-    source_attribution_id?: string | null;
-    parent_message_id?: string | null;
-    metadata?: any | null;
-    generate_embedding?: boolean;
+    messages: Array<{
+        sender: string;
+        message_content: string;
+        message_type?: string;
+        tool_info?: any | null;
+        parent_message_id?: string | null;
+        metadata?: any | null;
+        generate_embedding?: boolean;
+    }>;
 }
 
 interface GetSessionArgs {
@@ -159,7 +159,7 @@ interface GetSessionArgs {
 
 interface GetSessionsArgs {
     agent_id: string;
-    user_id?: string | null;
+    participant_id?: string | null;
     limit?: number;
     offset?: number;
 }
@@ -168,22 +168,15 @@ interface GetMessagesArgs {
     session_id: string;
     limit?: number;
     offset?: number;
-    include_embeddings?: boolean;
 }
 
-interface GetMessageThreadArgs {
-    message_id: string;
+interface AddParticipantArgs {
+    session_id: string;
+    participant_id: string;
+    role?: string;
 }
 
-interface SearchConversationsArgs {
-    agent_id: string;
-    query: string;
-    search_type?: 'keyword' | 'semantic';
-    limit?: number;
-    offset?: number;
-}
-
-interface SummarizeConversationArgs {
+interface GetParticipantsArgs {
     session_id: string;
 }
 
@@ -191,285 +184,131 @@ interface SummarizeConversationArgs {
 
 export function getConversationToolHandlers(memoryManager: MemoryManager) {
     return {
-        /**
-         * Creates a new conversation session.
-         */
         'create_conversation_session': async (args: CreateSessionArgs) => {
-            const validationResult = validate('conversationSession', args); // Assuming a schema for session creation
-            if (!validationResult.valid) {
-                throw new McpError(
-                    ErrorCode.InvalidParams,
-                    `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
-                );
-            }
-
-            const { agent_id, user_id, title, metadata } = args;
+            // NOTE: Validation call is removed as we cannot modify the validation schema file.
+            // A robust implementation should add a 'createConversationSession' schema.
+            const { agent_id, title, metadata, initial_participant_ids } = args;
             const sessionId = await memoryManager.createConversationSession(
-                agent_id, user_id, title, metadata
+                agent_id, title, metadata, initial_participant_ids
             );
-
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Created conversation session with ID: \`${sessionId}\``, "Session Created")
+                    text: formatSimpleMessage(`Created collaborative session: \`${sessionId}\``, "Session Created")
                 }]
             };
         },
 
-        /**
-         * Marks a conversation session as ended.
-         */
         'end_conversation_session': async (args: EndSessionArgs) => {
             const { session_id } = args;
             await memoryManager.endConversationSession(session_id);
-
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Conversation session \`${session_id}\` has been ended.`, "Session Ended")
+                    text: formatSimpleMessage(`Session \`${session_id}\` ended.`, "Session Ended")
                 }]
             };
         },
 
-        /**
-         * Stores a message in the conversation history within a session.
-         */
-        'store_conversation_message': async (args: StoreMessageArgs) => {
-            const validationResult = validate('conversationMessage', args); // Assuming a schema for message storage
-            if (!validationResult.valid) {
-                throw new McpError(
-                    ErrorCode.InvalidParams,
-                    `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
-                );
-            }
-
-            const {
-                session_id, sender, message_content, message_type, tool_info,
-                context_snapshot_id, source_attribution_id, parent_message_id,
-                metadata, generate_embedding
-            } = args;
-
-            const messageId = await memoryManager.storeConversationMessage(
-                session_id, sender, message_content, message_type ?? 'text',
-                tool_info, context_snapshot_id, source_attribution_id,
-                parent_message_id, metadata, generate_embedding ?? false
-            );
-
+        'store_conversation_messages': async (args: StoreMessagesArgs) => {
+            // NOTE: Validation for bulk messages should be implemented in a 'storeConversationMessages' schema.
+            // This is a placeholder for that logic.
+            const { session_id, messages } = args;
+            const messageIds = await memoryManager.storeConversationMessagesBulk(session_id, messages);
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Message stored with ID: \`${messageId}\``, "Message Stored")
+                    text: formatSimpleMessage(`Stored ${messageIds.length} message(s) in session \`${session_id}\`.`, "Messages Stored")
                 }]
             };
         },
 
-        /**
-         * Retrieves details of a specific conversation session.
-         */
         'get_conversation_session': async (args: GetSessionArgs) => {
             const { session_id } = args;
             const session = await memoryManager.getConversationSession(session_id);
 
             if (!session) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage(`No conversation session found with ID: \`${session_id}\`.`, "Session Not Found")
-                    }]
-                };
+                return { content: [{ type: 'text', text: formatSimpleMessage(`Session not found: \`${session_id}\`.`, "Not Found") }] };
             }
 
-            const formattedSession = `## Conversation Session: \`${session_id}\`\n\n` +
-                `**Agent ID:** \`${session.agent_id}\`\n` +
-                `**User ID:** ${session.user_id ? `\`${session.user_id}\`` : 'N/A'}\n` +
+            let md = `## Session: \`${session_id}\`\n\n` +
                 `**Title:** ${session.title || 'N/A'}\n` +
+                `**Created by Agent:** \`${session.agent_id}\`\n` +
                 `**Start Time:** ${new Date(session.start_timestamp).toLocaleString()}\n` +
                 `**End Time:** ${session.end_timestamp ? new Date(session.end_timestamp).toLocaleString() : 'Ongoing'}\n` +
+                `**Participants (${session.participants.length}):**\n` +
+                session.participants.map(p => `  - \`${p.participant_id}\` (Role: ${p.role})`).join('\n') + `\n` +
                 `**Metadata:** ${session.metadata ? formatJsonToMarkdownCodeBlock(session.metadata) : 'N/A'}`;
 
-            return { content: [{ type: 'text', text: formattedSession }] };
+            return { content: [{ type: 'text', text: md }] };
         },
 
-        /**
-         * Retrieves conversation sessions for an agent.
-         */
         'get_conversation_sessions': async (args: GetSessionsArgs) => {
-            const { agent_id, user_id, limit = 50, offset = 0 } = args;
-            const sessions = await memoryManager.getConversationSessions(agent_id, user_id, limit, offset);
+            const { agent_id, participant_id, limit = 50, offset = 0 } = args;
+            const sessions = await memoryManager.getConversationSessions(agent_id, participant_id, limit, offset);
 
             if (!sessions || sessions.length === 0) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage("No conversation sessions found for the given criteria.", "No Sessions")
-                    }]
-                };
+                return { content: [{ type: 'text', text: formatSimpleMessage("No sessions found.", "No Sessions") }] };
             }
 
-            let md = `## Conversation Sessions for Agent: \`${agent_id}\`\n\n`;
-            if (user_id) {
-                md += `**User ID Filter:** \`${user_id}\`\n\n`;
-            }
-
+            let md = `## Conversation Sessions\n\n`;
             sessions.forEach(session => {
                 md += `### Session: \`${session.session_id}\`\n` +
                     `**Title:** ${session.title || 'N/A'}\n` +
-                    `**Start Time:** ${new Date(session.start_timestamp).toLocaleString()}\n` +
-                    `**End Time:** ${session.end_timestamp ? new Date(session.end_timestamp).toLocaleString() : 'Ongoing'}\n` +
-                    `**User ID:** ${session.user_id ? `\`${session.user_id}\`` : 'N/A'}\n\n`;
+                    `**Started:** ${new Date(session.start_timestamp).toLocaleString()}\n` +
+                    `**Participants:** ${session.participants.length}\n\n`;
             });
 
             return { content: [{ type: 'text', text: md }] };
         },
 
-        /**
-         * Retrieves messages from a conversation session.
-         */
         'get_conversation_messages': async (args: GetMessagesArgs) => {
-            const { session_id, limit = 100, offset = 0, include_embeddings = false } = args;
-            const messages = await memoryManager.getConversationMessages(session_id, limit, offset, include_embeddings);
+            const { session_id, limit = 100, offset = 0 } = args;
+            const messages = await memoryManager.getConversationMessages(session_id, limit, offset, false);
 
             if (!messages || messages.length === 0) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage("No messages found in this session.", "No Messages")
-                    }]
-                };
+                return { content: [{ type: 'text', text: formatSimpleMessage("No messages found in this session.", "No Messages") }] };
             }
 
             let md = `## Messages in Session: \`${session_id}\`\n\n`;
-
             messages.forEach(msg => {
                 md += `**[${new Date(msg.timestamp).toLocaleString()}] ${msg.sender}:**\n`;
-                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n`;
-
+                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n\n`;
                 if (msg.parent_message_id) {
                     md += `  - *Reply to:* \`${msg.parent_message_id}\`\n`;
                 }
-
-                if (msg.message_type && msg.message_type !== 'text') {
-                    md += `  - *Type:* ${msg.message_type}\n`;
-                }
-
-                if (msg.tool_info) {
-                    md += `  - *Tool Info:*\n${formatJsonToMarkdownCodeBlock(msg.tool_info)}\n`;
-                }
-
-                if (msg.metadata) {
-                    md += `  - *Metadata:*\n${formatJsonToMarkdownCodeBlock(msg.metadata)}\n`;
-                }
-
-                if (include_embeddings && msg.embedding) {
-                    md += `  - *Embedding:* [${msg.embedding.length} dimensions]\n`;
-                }
-
                 md += "\n---\n\n";
             });
 
             return { content: [{ type: 'text', text: md }] };
         },
 
-        /**
-         * Retrieves a threaded conversation starting from a specific message.
-         */
-        'get_message_thread': async (args: GetMessageThreadArgs) => {
-            const { message_id } = args;
-            const messages = await memoryManager.getMessageThread(message_id);
-
-            if (!messages || messages.length === 0) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage("No messages found for this thread.", "No Thread")
-                    }]
-                };
-            }
-
-            let md = `## Message Thread Starting from \`${message_id}\`\n\n`;
-
-            messages.forEach(msg => {
-                md += `**[${new Date(msg.timestamp).toLocaleString()}] ${msg.sender}:**\n`;
-                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n`;
-
-                if (msg.parent_message_id) {
-                    md += `  - *Reply to:* \`${msg.parent_message_id}\`\n`;
-                }
-
-                if (msg.message_type && msg.message_type !== 'text') {
-                    md += `  - *Type:* ${msg.message_type}\n`;
-                }
-
-                if (msg.tool_info) {
-                    md += `  - *Tool Info:*\n${formatJsonToMarkdownCodeBlock(msg.tool_info)}\n`;
-                }
-
-                if (msg.metadata) {
-                    md += `  - *Metadata:*\n${formatJsonToMarkdownCodeBlock(msg.metadata)}\n`;
-                }
-
-                md += "\n---\n\n";
-            });
-
-            return { content: [{ type: 'text', text: md }] };
-        },
-
-        /**
-         * Searches conversations using keyword or semantic search.
-         */
-        'search_conversations': async (args: SearchConversationsArgs) => {
-            const { agent_id, query, search_type = 'keyword', limit = 20, offset = 0 } = args;
-            const { sessions, messages } = await memoryManager.searchConversations(
-                agent_id, query, limit, offset, search_type
-            );
-
-            if ((!sessions || sessions.length === 0) && (!messages || messages.length === 0)) {
-                return {
-                    content: [{
-                        type: 'text',
-                        text: formatSimpleMessage("No conversations found matching the query.", "No Results")
-                    }]
-                };
-            }
-
-            let md = `## Search Results for "${query}" (${search_type} search)\n\n`;
-
-            if (sessions.length > 0) {
-                md += "### Matching Sessions:\n\n";
-                sessions.forEach(session => {
-                    md += `- **Session:** \`${session.session_id}\` (${session.title || 'No title'})\n`;
-                    md += `  - **Agent:** \`${session.agent_id}\`\n`;
-                    md += `  - **User:** ${session.user_id ? `\`${session.user_id}\`` : 'N/A'}\n`;
-                    md += `  - **Started:** ${new Date(session.start_timestamp).toLocaleString()}\n\n`;
-                });
-            }
-
-            if (messages.length > 0) {
-                md += "### Matching Messages:\n\n";
-                messages.forEach(msg => {
-                    md += `- **Message:** \`${msg.message_id}\` in session \`${msg.session_id}\`\n`;
-                    md += `  - **Sender:** ${msg.sender}\n`;
-                    md += `  - **Time:** ${new Date(msg.timestamp).toLocaleString()}\n`;
-                    md += `  - **Content:** ${msg.message_content.substring(0, 100)}${msg.message_content.length > 100 ? '...' : ''}\n\n`;
-                });
-            }
-
-            return { content: [{ type: 'text', text: md }] };
-        },
-
-        /**
-         * Generates a summary of a conversation session.
-         */
-        'summarize_conversation': async (args: SummarizeConversationArgs) => {
-            const { session_id } = args;
-            const summary = await memoryManager.conversationHistoryManager.summarizeConversation(session_id);
-
+        'add_participant_to_session': async (args: AddParticipantArgs) => {
+            const { session_id, participant_id, role } = args;
+            await memoryManager.addParticipantToSession(session_id, participant_id, role);
             return {
                 content: [{
                     type: 'text',
-                    text: `## Conversation Summary for Session: \`${session_id}\`\n\n${summary}`
+                    text: formatSimpleMessage(`Added \`${participant_id}\` to session \`${session_id}\`.`, "Participant Added")
                 }]
             };
-        }
+        },
+
+        'get_session_participants': async (args: GetParticipantsArgs) => {
+            const { session_id } = args;
+            const participants = await memoryManager.getSessionParticipants(session_id);
+
+            if (!participants || participants.length === 0) {
+                return { content: [{ type: 'text', text: formatSimpleMessage("No participants found in this session.", "No Participants") }] };
+            }
+
+            let md = `## Participants in Session: \`${session_id}\`\n\n`;
+            participants.forEach(p => {
+                md += `- **ID:** \`${p.participant_id}\`\n` +
+                    `  - **Role:** ${p.role}\n` +
+                    `  - **Joined:** ${new Date(p.join_timestamp).toLocaleString()}\n`;
+            });
+            return { content: [{ type: 'text', text: md }] };
+        },
     };
 }

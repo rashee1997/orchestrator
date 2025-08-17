@@ -18,11 +18,10 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS idx_agents_name ON agents (name);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status);
 
--- Conversation Sessions table (NEW)
+-- Conversation Sessions table (MODIFIED)
 CREATE TABLE IF NOT EXISTS conversation_sessions (
     session_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    user_id TEXT,
+    agent_id TEXT NOT NULL, -- The agent that created the session
     title TEXT,
     start_timestamp INTEGER NOT NULL,
     end_timestamp INTEGER,
@@ -30,8 +29,20 @@ CREATE TABLE IF NOT EXISTS conversation_sessions (
     FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON conversation_sessions (agent_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON conversation_sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON conversation_sessions (start_timestamp);
+
+-- Session Participants table (NEW)
+CREATE TABLE IF NOT EXISTS session_participants (
+    participant_id TEXT NOT NULL, -- Can be an agent_id or a user_id
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', -- e.g., 'owner', 'member', 'observer'
+    join_timestamp INTEGER NOT NULL,
+    PRIMARY KEY (participant_id, session_id),
+    FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_participants_session_id ON session_participants (session_id);
+CREATE INDEX IF NOT EXISTS idx_session_participants_participant_id ON session_participants (participant_id);
+
 
 -- Conversation Messages table (NEW - replaces conversation_history)
 CREATE TABLE IF NOT EXISTS conversation_messages (

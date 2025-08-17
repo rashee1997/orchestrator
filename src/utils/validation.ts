@@ -1,9 +1,67 @@
-// src/utils/validation.ts
 import Ajv from 'ajv';
 
 const ajv = new Ajv.default({ allErrors: true, useDefaults: true });
 
 export const schemas = {
+    // --- NEW/MODIFIED CONVERSATION SCHEMAS ---
+    createConversationSession: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string' },
+            title: { type: ['string', 'null'] },
+            metadata: { type: ['object', 'null'] },
+            initial_participant_ids: {
+                type: ['array', 'null'],
+                items: { type: 'string' }
+            }
+        },
+        required: ['agent_id'],
+        additionalProperties: false,
+    },
+    storeConversationMessages: {
+        type: 'object',
+        properties: {
+            session_id: { type: 'string' },
+            messages: {
+                type: 'array',
+                minItems: 1,
+                items: {
+                    type: 'object',
+                    properties: {
+                        sender: { type: 'string' },
+                        message_content: { type: 'string' },
+                        message_type: { type: 'string', default: 'text' },
+                        tool_info: { type: ['object', 'null'] },
+                        parent_message_id: { type: ['string', 'null'] },
+                        metadata: { type: ['object', 'null'] },
+                        generate_embedding: { type: 'boolean', default: false }
+                    },
+                    required: ['sender', 'message_content']
+                }
+            }
+        },
+        required: ['session_id', 'messages'],
+        additionalProperties: false,
+    },
+    addParticipantToSession: {
+        type: 'object',
+        properties: {
+            session_id: { type: 'string' },
+            participant_id: { type: 'string' },
+            role: { type: 'string', default: 'member' }
+        },
+        required: ['session_id', 'participant_id'],
+        additionalProperties: false,
+    },
+    getSessionParticipants: {
+        type: 'object',
+        properties: {
+            session_id: { type: 'string' }
+        },
+        required: ['session_id'],
+        additionalProperties: false,
+    },
+    // --- EXISTING SCHEMAS (UNCHANGED) ---
     aiSuggestTaskDetails: { // New schema for ai_suggest_task_details
         type: 'object',
         properties: {
@@ -166,34 +224,6 @@ export const schemas = {
             perform_deep_entity_ingestion: { type: 'boolean', default: false, description: "If true, performs a full code entity parse on every valid file found in the scan." }
         },
         required: ['agent_id', 'directory_path'],
-        additionalProperties: false,
-    },
-    conversationSession: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            user_id: { type: ['string', 'null'], description: 'Identifier of the user (optional).' },
-            title: { type: ['string', 'null'], description: 'Optional title for the conversation session.' },
-            metadata: { type: ['object', 'null'], description: 'Optional metadata for the session.' }
-        },
-        required: ['agent_id'],
-        additionalProperties: false,
-    },
-    conversationMessage: {
-        type: 'object',
-        properties: {
-            session_id: { type: 'string' },
-            agent_id: { type: 'string' },
-            user_id: { type: ['string', 'null'] },
-            sender: { type: 'string' },
-            message_content: { type: 'string' },
-            message_type: { type: 'string', default: 'text' },
-            tool_info: { type: ['string', 'object', 'null'] },
-            context_snapshot_id: { type: ['string', 'null'] },
-            source_attribution_id: { type: ['string', 'null'] },
-            parent_message_id: { type: ['string', 'null'] },
-        },
-        required: ['agent_id', 'sender', 'message_content', 'session_id'],
         additionalProperties: false,
     },
     contextInformation: {

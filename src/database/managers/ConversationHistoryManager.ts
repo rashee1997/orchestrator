@@ -2,10 +2,17 @@ import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 
+export interface SessionParticipant {
+    participant_id: string; // Can be an agent_id or user_id
+    session_id: string;
+    role: string;
+    join_timestamp: number;
+}
+
 export interface ConversationSession {
     session_id: string;
-    agent_id: string;
-    user_id: string | null;
+    agent_id: string; // The creating agent
+    participants: SessionParticipant[];
     title: string | null;
     start_timestamp: number;
     end_timestamp: number | null;
@@ -27,6 +34,18 @@ export interface ConversationMessage {
     embedding: number[] | null;
 }
 
+export interface NewMessage {
+    sender: string;
+    message_content: string;
+    message_type?: string;
+    tool_info?: any;
+    context_snapshot_id?: string | null;
+    source_attribution_id?: string | null;
+    parent_message_id?: string | null;
+    metadata?: any;
+    generateEmbedding?: boolean;
+}
+
 export class ConversationHistoryManager {
     private dbService: DatabaseService;
     private geminiService: GeminiIntegrationService;
@@ -39,17 +58,28 @@ export class ConversationHistoryManager {
     async initializeTables(): Promise<void> {
         const db = this.dbService.getDb();
 
-        // Create conversation_sessions table
+        // Create conversation_sessions table (without user_id)
         await db.exec(`
             CREATE TABLE IF NOT EXISTS conversation_sessions (
                 session_id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
-                user_id TEXT,
                 title TEXT,
                 start_timestamp INTEGER NOT NULL,
                 end_timestamp INTEGER,
                 metadata TEXT,
-                FOREIGN KEY (agent_id) REFERENCES agents (agent_id)
+                FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
+            )
+        `);
+
+        // Create session_participants table for collaborative sessions
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS session_participants (
+                participant_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member',
+                join_timestamp INTEGER NOT NULL,
+                PRIMARY KEY (participant_id, session_id),
+                FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE
             )
         `);
 
@@ -68,7 +98,7 @@ export class ConversationHistoryManager {
                 source_attribution_id TEXT,
                 metadata TEXT,
                 embedding BLOB,
-                FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id),
+                FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE,
                 FOREIGN KEY (parent_message_id) REFERENCES conversation_messages (message_id)
             )
         `);
@@ -78,15 +108,16 @@ export class ConversationHistoryManager {
             CREATE INDEX IF NOT EXISTS idx_messages_session_id ON conversation_messages (session_id);
             CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON conversation_messages (parent_message_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON conversation_sessions (agent_id);
-            CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON conversation_sessions (user_id);
+            CREATE INDEX IF NOT EXISTS idx_session_participants_session_id ON session_participants (session_id);
+            CREATE INDEX IF NOT EXISTS idx_session_participants_participant_id ON session_participants (participant_id);
         `);
     }
 
     async createConversationSession(
         agent_id: string,
-        user_id: string | null = null,
         title: string | null = null,
-        metadata: any = null
+        metadata: any = null,
+        initial_participant_ids: string[] = []
     ): Promise<string> {
         const db = this.dbService.getDb();
         const session_id = randomUUID();
@@ -94,10 +125,21 @@ export class ConversationHistoryManager {
 
         await db.run(
             `INSERT INTO conversation_sessions (
-                session_id, agent_id, user_id, title, start_timestamp, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
-            session_id, agent_id, user_id, title, start_timestamp, JSON.stringify(metadata)
+                session_id, agent_id, title, start_timestamp, metadata
+            ) VALUES (?, ?, ?, ?, ?)`,
+            session_id, agent_id, title, start_timestamp, JSON.stringify(metadata)
         );
+
+        // Add the creating agent as the owner
+        await this.addParticipantToSession(session_id, agent_id, 'owner');
+
+        // Add initial participants
+        for (const participant_id of initial_participant_ids) {
+            // Avoid re-adding the owner
+            if (participant_id !== agent_id) {
+                await this.addParticipantToSession(session_id, participant_id, 'member');
+            }
+        }
 
         return session_id;
     }
@@ -124,37 +166,62 @@ export class ConversationHistoryManager {
         metadata: any = null,
         generateEmbedding: boolean = false
     ): Promise<string> {
+        const result = await this.storeConversationMessagesBulk(session_id, [{
+            sender, message_content, message_type, tool_info, context_snapshot_id,
+            source_attribution_id, parent_message_id, metadata, generateEmbedding
+        }]);
+        return result[0];
+    }
+
+    async storeConversationMessagesBulk(
+        session_id: string,
+        messages: NewMessage[]
+    ): Promise<string[]> {
         const db = this.dbService.getDb();
-        const message_id = randomUUID();
-        const timestamp = Date.now();
+        const message_ids: string[] = [];
 
-        let embedding: number[] | null = null;
-        if (generateEmbedding && this.geminiService) {
-            try {
-                embedding = await this.generateMessageEmbedding(message_content);
-            } catch (error) {
-                console.error('Failed to generate message embedding:', error);
-            }
-        }
-
-        const embeddingBlob = embedding ? Buffer.from(new Float32Array(embedding).buffer) : null;
-
-        await db.run(
+        const insertStatement = await db.prepare(
             `INSERT INTO conversation_messages (
                 message_id, session_id, parent_message_id, timestamp, sender, message_content,
                 message_type, tool_info, context_snapshot_id, source_attribution_id, metadata, embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            message_id, session_id, parent_message_id, timestamp, sender, message_content,
-            message_type, JSON.stringify(tool_info), context_snapshot_id, source_attribution_id,
-            JSON.stringify(metadata), embeddingBlob
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
-        return message_id;
+        try {
+            await db.exec('BEGIN TRANSACTION');
+            for (const message of messages) {
+                const message_id = randomUUID();
+                message_ids.push(message_id);
+                const timestamp = Date.now();
+                let embedding: number[] | null = null;
+                if (message.generateEmbedding && this.geminiService) {
+                    try {
+                        embedding = await this.generateMessageEmbedding(message.message_content);
+                    } catch (error) {
+                        console.error('Failed to generate message embedding:', error);
+                    }
+                }
+                const embeddingBlob = embedding ? Buffer.from(new Float32Array(embedding).buffer) : null;
+
+                await insertStatement.run(
+                    message_id, session_id, message.parent_message_id, timestamp, message.sender, message.message_content,
+                    message.message_type ?? 'text', JSON.stringify(message.tool_info), message.context_snapshot_id,
+                    message.source_attribution_id, JSON.stringify(message.metadata), embeddingBlob
+                );
+            }
+            await db.exec('COMMIT');
+        } catch (error) {
+            await db.exec('ROLLBACK');
+            console.error('Failed to bulk insert messages:', error);
+            throw error;
+        } finally {
+            await insertStatement.finalize();
+        }
+
+        return message_ids;
     }
 
     private async generateMessageEmbedding(content: string): Promise<number[]> {
-        // This would use the Gemini service to generate embeddings
-        // For now, we'll return a placeholder
         return new Array(768).fill(0).map(() => Math.random());
     }
 
@@ -167,10 +234,12 @@ export class ConversationHistoryManager {
 
         if (!result) return null;
 
+        const participants = await this.getSessionParticipants(session_id);
+
         return {
             session_id: result.session_id,
             agent_id: result.agent_id,
-            user_id: result.user_id,
+            participants,
             title: result.title,
             start_timestamp: result.start_timestamp,
             end_timestamp: result.end_timestamp,
@@ -216,33 +285,42 @@ export class ConversationHistoryManager {
 
     async getConversationSessions(
         agent_id: string,
-        user_id: string | null = null,
+        participant_id: string | null = null,
         limit: number = 50,
         offset: number = 0
     ): Promise<ConversationSession[]> {
         const db = this.dbService.getDb();
-        let query = `SELECT * FROM conversation_sessions WHERE agent_id = ?`;
+        let query = `
+            SELECT cs.* FROM conversation_sessions cs
+            JOIN session_participants sp ON cs.session_id = sp.session_id
+            WHERE cs.agent_id = ?
+        `;
         const params: any[] = [agent_id];
 
-        if (user_id !== null) {
-            query += ` AND user_id = ?`;
-            params.push(user_id);
+        if (participant_id !== null) {
+            query += ` AND sp.participant_id = ?`;
+            params.push(participant_id);
         }
 
-        query += ` ORDER BY start_timestamp DESC LIMIT ? OFFSET ?`;
+        query += ` GROUP BY cs.session_id ORDER BY cs.start_timestamp DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
         const results = await db.all(query, ...params);
+        const sessions: ConversationSession[] = [];
 
-        return results.map(row => ({
-            session_id: row.session_id,
-            agent_id: row.agent_id,
-            user_id: row.user_id,
-            title: row.title,
-            start_timestamp: row.start_timestamp,
-            end_timestamp: row.end_timestamp,
-            metadata: row.metadata ? JSON.parse(row.metadata) : null
-        }));
+        for (const row of results) {
+            const participants = await this.getSessionParticipants(row.session_id);
+            sessions.push({
+                session_id: row.session_id,
+                agent_id: row.agent_id,
+                participants,
+                title: row.title,
+                start_timestamp: row.start_timestamp,
+                end_timestamp: row.end_timestamp,
+                metadata: row.metadata ? JSON.parse(row.metadata) : null
+            });
+        }
+        return sessions;
     }
 
     async searchConversations(
@@ -275,8 +353,7 @@ export class ConversationHistoryManager {
         let query = `
             SELECT cm.*, 
                    cs.session_id AS cs_session_id, 
-                   cs.agent_id AS cs_agent_id, 
-                   cs.user_id AS cs_user_id, 
+                   cs.agent_id AS cs_agent_id,
                    cs.title AS cs_title, 
                    cs.start_timestamp AS cs_start_timestamp, 
                    cs.end_timestamp AS cs_end_timestamp, 
@@ -285,10 +362,9 @@ export class ConversationHistoryManager {
             JOIN conversation_sessions cs ON cm.session_id = cs.session_id
             WHERE cs.agent_id = ?
         `;
-
         const params: any[] = [agent_id];
 
-        searchKeywords.forEach((keyword, index) => {
+        searchKeywords.forEach((keyword) => {
             query += ` AND LOWER(cm.message_content) LIKE ?`;
             params.push(`%${keyword}%`);
         });
@@ -301,21 +377,21 @@ export class ConversationHistoryManager {
         const sessionsMap = new Map<string, ConversationSession>();
         const messages: ConversationMessage[] = [];
 
-        results.forEach(row => {
+        for (const row of results) {
             if (!sessionsMap.has(row.cs_session_id)) {
+                const participants = await this.getSessionParticipants(row.cs_session_id);
                 sessionsMap.set(row.cs_session_id, {
                     session_id: row.cs_session_id,
                     agent_id: row.cs_agent_id,
-                    user_id: row.cs_user_id,
+                    participants,
                     title: row.cs_title,
                     start_timestamp: row.cs_start_timestamp,
                     end_timestamp: row.cs_end_timestamp,
                     metadata: row.cs_metadata ? JSON.parse(row.cs_metadata) : null
                 });
             }
-
             messages.push(this.parseMessageRow(row, false));
-        });
+        }
 
         return {
             sessions: Array.from(sessionsMap.values()),
@@ -329,16 +405,12 @@ export class ConversationHistoryManager {
         limit: number,
         offset: number
     ): Promise<{ sessions: ConversationSession[], messages: ConversationMessage[] }> {
-        // This would use vector similarity search on message embeddings
-        // For now, we'll fall back to keyword search
         console.warn("Semantic search is not fully implemented. Falling back to keyword search.");
         return this.keywordSearchConversations(agent_id, query, limit, offset);
     }
 
     async getMessageThread(message_id: string): Promise<ConversationMessage[]> {
         const db = this.dbService.getDb();
-
-        // Use a recursive CTE to get the message and all its replies (descendants)
         const results = await db.all(
             `WITH RECURSIVE thread_messages AS (
                 SELECT * FROM conversation_messages WHERE message_id = ?
@@ -349,13 +421,11 @@ export class ConversationHistoryManager {
             SELECT * FROM thread_messages ORDER BY timestamp ASC`,
             message_id
         );
-
         return results.map(row => this.parseMessageRow(row, false));
     }
 
     async updateMessageMetadata(message_id: string, metadata: any): Promise<void> {
         const db = this.dbService.getDb();
-
         await db.run(
             `UPDATE conversation_messages SET metadata = ? WHERE message_id = ?`,
             JSON.stringify(metadata), message_id
@@ -364,23 +434,47 @@ export class ConversationHistoryManager {
 
     async deleteConversationSession(session_id: string): Promise<void> {
         const db = this.dbService.getDb();
-
+        await db.run(`DELETE FROM session_participants WHERE session_id = ?`, session_id);
         await db.run(`DELETE FROM conversation_messages WHERE session_id = ?`, session_id);
         await db.run(`DELETE FROM conversation_sessions WHERE session_id = ?`, session_id);
     }
 
     async summarizeConversation(session_id: string): Promise<string> {
         const messages = await this.getConversationMessages(session_id, 100, 0);
-
         if (!messages || messages.length === 0) {
             return "No conversation found to summarize.";
         }
-
         const formattedMessages = messages.map(msg => `${msg.sender}: ${msg.message_content}`).join('\n');
-
         return this.geminiService.summarizeConversation(
             messages[0].session_id,
             formattedMessages
+        );
+    }
+
+    // --- Participant Management ---
+    async addParticipantToSession(session_id: string, participant_id: string, role: string = 'member'): Promise<void> {
+        const db = this.dbService.getDb();
+        const join_timestamp = Date.now();
+        await db.run(
+            `INSERT OR REPLACE INTO session_participants (session_id, participant_id, role, join_timestamp)
+             VALUES (?, ?, ?, ?)`,
+            session_id, participant_id, role, join_timestamp
+        );
+    }
+
+    async removeParticipantFromSession(session_id: string, participant_id: string): Promise<void> {
+        const db = this.dbService.getDb();
+        await db.run(
+            `DELETE FROM session_participants WHERE session_id = ? AND participant_id = ?`,
+            session_id, participant_id
+        );
+    }
+
+    async getSessionParticipants(session_id: string): Promise<SessionParticipant[]> {
+        const db = this.dbService.getDb();
+        return db.all<SessionParticipant[]>(
+            `SELECT * FROM session_participants WHERE session_id = ?`,
+            session_id
         );
     }
 }

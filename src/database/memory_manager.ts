@@ -1,4 +1,3 @@
-// src/database/memory_manager.ts
 import { GoogleGenAI } from '@google/genai';
 
 // TypeScript interface for plan_tasks table
@@ -240,6 +239,10 @@ export class MemoryManager {
         return this.conversationHistoryManager.storeConversationMessage(...args);
     }
 
+    async storeConversationMessagesBulk(...args: Parameters<ConversationHistoryManager['storeConversationMessagesBulk']>) {
+        return this.conversationHistoryManager.storeConversationMessagesBulk(...args);
+    }
+
     async getConversationMessages(...args: Parameters<ConversationHistoryManager['getConversationMessages']>) {
         return this.conversationHistoryManager.getConversationMessages(...args);
     }
@@ -254,6 +257,19 @@ export class MemoryManager {
 
     async deleteConversationSession(...args: Parameters<ConversationHistoryManager['deleteConversationSession']>) {
         return this.conversationHistoryManager.deleteConversationSession(...args);
+    }
+
+    // --- Conversation Participants (New) ---
+    async addParticipantToSession(...args: Parameters<ConversationHistoryManager['addParticipantToSession']>) {
+        return this.conversationHistoryManager.addParticipantToSession(...args);
+    }
+
+    async removeParticipantFromSession(...args: Parameters<ConversationHistoryManager['removeParticipantFromSession']>) {
+        return this.conversationHistoryManager.removeParticipantFromSession(...args);
+    }
+
+    async getSessionParticipants(...args: Parameters<ConversationHistoryManager['getSessionParticipants']>) {
+        return this.conversationHistoryManager.getSessionParticipants(...args);
     }
 
     // --- Conversation Search ---

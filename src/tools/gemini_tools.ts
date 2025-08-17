@@ -69,6 +69,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         properties: {
             agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
+            session_id: { type: 'string', description: 'Optional: The ID of the current conversation session. If provided, the tool will automatically include the recent conversation history as context for the query, enabling collaborative and follow-up questions.', nullable: true },
+            conversation_history_limit: { type: 'number', description: 'The number of recent messages to include from the session history when a session_id is provided.', default: 15 },
             model: { type: 'string', description: 'Optional: The Gemini model to use. Defaults to a fast, recent model.', default: 'gemini-2.5-flash' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable single-turn Retrieval-Augmented Generation (RAG) with codebase context.', default: false, nullable: true },
@@ -163,7 +165,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             hallucination_check_threshold, enable_context_summarization, context_window_optimization_strategy,
             tavily_search_depth, tavily_max_results, tavily_include_raw_content, tavily_include_images,
             tavily_include_image_descriptions, tavily_time_period, tavily_topic,
-            enable_thinking, thinking_budget, thinking_mode, include_thoughts, enable_dynamic_thinking
+            enable_thinking, thinking_budget, thinking_mode, include_thoughts, enable_dynamic_thinking,
+            session_id, conversation_history_limit
         } = args;
 
         const dbService = (memoryManagerInstance as any).dbService as DatabaseService | undefined;
@@ -177,9 +180,22 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         const geminiService = new GeminiIntegrationService(dbService, contextManager, memoryManagerInstance);
 
+        // --- Stage 0: Conversation Context Acquisition ---
+        let finalQuery = query;
+        if (session_id) {
+            console.log(`[ask_gemini] Acquiring context from session: ${session_id}`);
+            const messages = await memoryManagerInstance.getConversationMessages(session_id, conversation_history_limit, 0);
+            if (messages.length > 0) {
+                const history = messages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
+                finalQuery = `Given the following conversation history:\n\n<CONVERSATION_HISTORY>\n${history}\n</CONVERSATION_HISTORY>\n\nPlease address this new query: ${query}`;
+                console.log(`[ask_gemini] Query augmented with ${messages.length} messages from conversation history.`);
+            }
+        }
+
+
         // --- Autonomous Focus Area Selection ---
         if (!focus_area) {
-            const detectedFocus = await _getIntentFocusArea(query, geminiService);
+            const detectedFocus = await _getIntentFocusArea(finalQuery, geminiService);
             if (detectedFocus) {
                 console.log(`[ask_gemini] Autonomously selected focus area: "${detectedFocus}"`);
                 focus_area = detectedFocus;
@@ -209,7 +225,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             if (enable_iterative_search) {
                 console.log("[ask_gemini] Starting Stage 1: Iterative Search Context Acquisition");
                 const iterativeResult = await _performIterativeRagSearch({
-                    agent_id, query, model, systemInstruction, enable_rag, focus_area,
+                    agent_id, query: finalQuery, model, systemInstruction, enable_rag, focus_area,
                     analysis_focus_points, context_options, live_review_file_paths,
                     enable_iterative_search, execution_mode, target_ai_persona,
                     conversation_context_ids, enable_web_search, max_iterations,
@@ -242,7 +258,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             } else if (enable_rag) {
                 console.log("[ask_gemini] Starting Stage 1: Standard RAG Context Acquisition");
                 const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
-                finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, query, context_options || {});
+                finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, finalQuery, context_options || {});
             }
         } catch (error: any) {
             throw new McpError(ErrorCode.InternalError, `Context Acquisition failed: ${error.message}`);
@@ -255,7 +271,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             const contextString = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text || 'No relevant context was found.';
             const metaPromptContent = META_PROMPT
                 .replace('{modelToUse}', modelToUse)
-                .replace('{raw_user_prompt}', query)
+                .replace('{raw_user_prompt}', finalQuery)
                 .replace('{retrievedCodeContextString}', contextString);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse, undefined, undefined, thinkingConfig);
@@ -316,14 +332,14 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             const focusString = analysis_focus_points?.length ? "Focus on:\n" + analysis_focus_points.map((p: string) => `- **${p}**`).join('\n') : "";
             const finalPromptContent = (focusString ? `${focusString}\n\n` : '') + metaPromptTemplate
                 .replace('{context}', canonicalContextPart)
-                .replace('{query}', query);
+                .replace('{query}', finalQuery);
 
             try {
                 const response = await geminiService.askGemini(finalPromptContent, model, finalSystemInstruction, undefined, thinkingConfig);
                 const geminiText = response.content?.[0]?.text ?? '';
 
                 const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({
-                    originalQuery: query,
+                    originalQuery: finalQuery,
                     contextString: canonicalContextPart,
                     generatedAnswer: geminiText
                 });
