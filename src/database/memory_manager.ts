@@ -53,7 +53,7 @@ export class MemoryManager {
     public geminiIntegrationService!: GeminiIntegrationService;
     public geminiPlannerService!: GeminiPlannerService;
     public codebaseEmbeddingService!: CodebaseEmbeddingService;
-    public codebaseContextRetrieverService!: CodebaseContextRetrieverService; 
+    public codebaseContextRetrieverService!: CodebaseContextRetrieverService;
     private databaseUtilityService!: DatabaseUtilityService;
     public taskReviewLogManager!: TaskReviewLogManager;
     public finalPlanReviewLogManager!: FinalPlanReviewLogManager;
@@ -91,7 +91,7 @@ export class MemoryManager {
         return this.codebaseEmbeddingService;
     }
 
-    public getCodebaseContextRetrieverService(): CodebaseContextRetrieverService { 
+    public getCodebaseContextRetrieverService(): CodebaseContextRetrieverService {
         return this.codebaseContextRetrieverService;
     }
 
@@ -115,6 +115,7 @@ export class MemoryManager {
         // Initialize services in the correct order
         // Initialize managers that don't depend on other services first
         this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, null as any); // Temporarily null
+        await this.conversationHistoryManager.initializeTables(); // Initialize conversation history manager with new functionality
         this.referenceKeyManager = new ReferenceKeyManager(this.dbService);
         this.sourceAttributionManager = new SourceAttributionManager(this.dbService);
         this.correctionLogManager = new CorrectionLogManager(this.dbService);
@@ -131,25 +132,25 @@ export class MemoryManager {
 
         // Now create GeminiIntegrationService
         this.geminiIntegrationService = new GeminiIntegrationService(
-            this.dbService, 
-            this.contextInformationManager, 
-            this, 
+            this.dbService,
+            this.contextInformationManager,
+            this,
             genAIInstance
         );
-        
+
         // Update managers that need GeminiIntegrationService
-        this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, this.geminiIntegrationService);
-        
+        this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, this.geminiIntegrationService); // Update conversation history manager with gemini service after it's initialized
+
         // Create Knowledge Graph Manager using factory
         this.knowledgeGraphManager = await KnowledgeGraphFactory.create(this);
-        
+
         // Create GeminiPlannerService
         this.geminiPlannerService = new GeminiPlannerService(this.geminiIntegrationService, this);
-        
+
         // Create CodebaseEmbeddingService after GeminiIntegrationService is ready
         this.codebaseEmbeddingService = new CodebaseEmbeddingService(this, this.vectorDb as any, this.geminiIntegrationService);
 
-        
+
         // Finally, create CodebaseContextRetrieverService after all dependencies are ready
         this.codebaseContextRetrieverService = new CodebaseContextRetrieverService(this);
     }
@@ -217,18 +218,47 @@ export class MemoryManager {
         return this.errorLogManager.deleteErrorLog(...args);
     }
 
-    // --- Conversation History ---
+    // --- Conversation Sessions ---
+    async createConversationSession(...args: Parameters<ConversationHistoryManager['createConversationSession']>) {
+        return this.conversationHistoryManager.createConversationSession(...args);
+    }
+
+    async endConversationSession(...args: Parameters<ConversationHistoryManager['endConversationSession']>) {
+        return this.conversationHistoryManager.endConversationSession(...args);
+    }
+
+    async getConversationSession(...args: Parameters<ConversationHistoryManager['getConversationSession']>) {
+        return this.conversationHistoryManager.getConversationSession(...args);
+    }
+
+    async getConversationSessions(...args: Parameters<ConversationHistoryManager['getConversationSessions']>) {
+        return this.conversationHistoryManager.getConversationSessions(...args);
+    }
+
+    // --- Conversation Messages ---
     async storeConversationMessage(...args: Parameters<ConversationHistoryManager['storeConversationMessage']>) {
         return this.conversationHistoryManager.storeConversationMessage(...args);
     }
-    async getConversationHistory(...args: Parameters<ConversationHistoryManager['getConversationHistory']>) {
-        return this.conversationHistoryManager.getConversationHistory(...args);
+
+    async getConversationMessages(...args: Parameters<ConversationHistoryManager['getConversationMessages']>) {
+        return this.conversationHistoryManager.getConversationMessages(...args);
     }
-    async searchConversationByKeywords(...args: Parameters<ConversationHistoryManager['searchConversationByKeywords']>) {
-        return this.conversationHistoryManager.searchConversationByKeywords(...args);
+
+    async getMessageThread(...args: Parameters<ConversationHistoryManager['getMessageThread']>) {
+        return this.conversationHistoryManager.getMessageThread(...args);
     }
-    async summarizeConversation(...args: Parameters<ConversationHistoryManager['summarizeConversation']>) {
-        return this.conversationHistoryManager.summarizeConversation(...args);
+
+    async updateMessageMetadata(...args: Parameters<ConversationHistoryManager['updateMessageMetadata']>) {
+        return this.conversationHistoryManager.updateMessageMetadata(...args);
+    }
+
+    async deleteConversationSession(...args: Parameters<ConversationHistoryManager['deleteConversationSession']>) {
+        return this.conversationHistoryManager.deleteConversationSession(...args);
+    }
+
+    // --- Conversation Search ---
+    async searchConversations(...args: Parameters<ConversationHistoryManager['searchConversations']>) {
+        return this.conversationHistoryManager.searchConversations(...args);
     }
 
     // --- Context Information ---
@@ -352,7 +382,7 @@ export class MemoryManager {
     async inferRelations(...args: Parameters<IKnowledgeGraphManager['inferRelations']>) {
         return this.knowledgeGraphManager.inferRelations(...args);
     }
-     async generateMermaidGraph(...args: Parameters<IKnowledgeGraphManager['generateMermaidGraph']>) {
+    async generateMermaidGraph(...args: Parameters<IKnowledgeGraphManager['generateMermaidGraph']>) {
         return this.knowledgeGraphManager.generateMermaidGraph(...args);
     }
 
@@ -366,7 +396,7 @@ export class MemoryManager {
     async semanticSearchContext(...args: Parameters<GeminiIntegrationService['semanticSearchContext']>) {
         return this.geminiIntegrationService.semanticSearchContext(...args);
     }
-   
+
     async storeRefinedPrompt(...args: Parameters<GeminiIntegrationService['storeRefinedPrompt']>) {
         return this.geminiIntegrationService.storeRefinedPrompt(...args);
     }

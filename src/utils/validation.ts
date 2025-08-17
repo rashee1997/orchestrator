@@ -168,9 +168,21 @@ export const schemas = {
         required: ['agent_id', 'directory_path'],
         additionalProperties: false,
     },
+    conversationSession: {
+        type: 'object',
+        properties: {
+            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
+            user_id: { type: ['string', 'null'], description: 'Identifier of the user (optional).' },
+            title: { type: ['string', 'null'], description: 'Optional title for the conversation session.' },
+            metadata: { type: ['object', 'null'], description: 'Optional metadata for the session.' }
+        },
+        required: ['agent_id'],
+        additionalProperties: false,
+    },
     conversationMessage: {
         type: 'object',
         properties: {
+            session_id: { type: 'string' },
             agent_id: { type: 'string' },
             user_id: { type: ['string', 'null'] },
             sender: { type: 'string' },
@@ -179,8 +191,9 @@ export const schemas = {
             tool_info: { type: ['string', 'object', 'null'] },
             context_snapshot_id: { type: ['string', 'null'] },
             source_attribution_id: { type: ['string', 'null'] },
+            parent_message_id: { type: ['string', 'null'] },
         },
-        required: ['agent_id', 'sender', 'message_content'],
+        required: ['agent_id', 'sender', 'message_content', 'session_id'],
         additionalProperties: false,
     },
     contextInformation: {
