@@ -1,3 +1,4 @@
+// src/database/db.ts
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { readFileSync } from 'fs';
@@ -52,8 +53,10 @@ export async function initializeDatabase() {
         }
     }
 
-    // Check and add timestamp columns to 'plan_tasks' table if they don't exist
+    // Check and add timestamp and new detail columns to 'plan_tasks' table if they don't exist
     const planTasksTableInfo = await db.all("PRAGMA table_info(plan_tasks);");
+
+    // Timestamp columns
     if (!planTasksTableInfo.some((column: any) => column.name === 'last_updated_timestamp_unix')) {
         try {
             await db.exec("ALTER TABLE plan_tasks ADD COLUMN last_updated_timestamp_unix INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))");
@@ -61,6 +64,39 @@ export async function initializeDatabase() {
             console.log('Successfully added timestamp columns to "plan_tasks" table.');
         } catch (error: any) {
             console.error('Error adding timestamp columns to "plan_tasks" table:', error);
+            throw error;
+        }
+    }
+
+    // NEW: Migration for 'purpose' column
+    if (!planTasksTableInfo.some((column: any) => column.name === 'purpose')) {
+        try {
+            await db.exec("ALTER TABLE plan_tasks ADD COLUMN purpose TEXT");
+            console.log('Successfully added "purpose" column to "plan_tasks" table.');
+        } catch (error: any) {
+            console.error('Error adding "purpose" column to "plan_tasks" table:', error);
+            throw error;
+        }
+    }
+
+    // NEW: Migration for 'success_criteria_text' column
+    if (!planTasksTableInfo.some((column: any) => column.name === 'success_criteria_text')) {
+        try {
+            await db.exec("ALTER TABLE plan_tasks ADD COLUMN success_criteria_text TEXT");
+            console.log('Successfully added "success_criteria_text" column to "plan_tasks" table.');
+        } catch (error: any) {
+            console.error('Error adding "success_criteria_text" column to "plan_tasks" table:', error);
+            throw error;
+        }
+    }
+
+    // NEW: Migration for 'code_content' column
+    if (!planTasksTableInfo.some((column: any) => column.name === 'code_content')) {
+        try {
+            await db.exec("ALTER TABLE plan_tasks ADD COLUMN code_content TEXT");
+            console.log('Successfully added "code_content" column to "plan_tasks" table.');
+        } catch (error: any) {
+            console.error('Error adding "code_content" column to "plan_tasks" table:', error);
             throw error;
         }
     }
@@ -76,7 +112,7 @@ export async function initializeDatabase() {
         `INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso, status) VALUES (?, ?, ?, ?, ?, ?)`,
         'BLACKBOXAI', 'Blackbox AI Agent', 'Default agent for AI operations', Math.floor(Date.now() / 1000), new Date().toISOString(), 'ACTIVE'
     );
-     await db.run(
+    await db.run(
         `INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso, status) VALUES (?, ?, ?, ?, ?, ?)`,
         'test_agent', 'Test Agent', 'Agent for testing purposes', Math.floor(Date.now() / 1000), new Date().toISOString(), 'ACTIVE'
     );

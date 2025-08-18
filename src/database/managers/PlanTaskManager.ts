@@ -1,3 +1,4 @@
+// src/database/managers/PlanTaskManager.ts
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { validate, schemas } from '../../utils/validation.js';
@@ -12,12 +13,13 @@ export class PlanTaskManager {
     async createPlanWithTasks(
         agent_id: string,
         planData: { title: string; overall_goal?: string; status?: string; version?: number; refined_prompt_id_associated?: string; analysis_report_id_referenced?: string; metadata?: any },
-        tasksData: Array<{ task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved?: string[]; dependencies_task_ids?: string[]; tools_required_list?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; notes?: any }>
+        tasksData: Array<{ task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }>
     ): Promise<{ plan_id: string; task_ids: string[] }> {
         const db = this.dbService.getDb();
         const plan_id = randomUUID();
         const timestamp = Date.now();
 
+        // The validation schema name should match what's in schemas object. Let's assume it's 'createTaskPlan'.
         const validationResult = validate('createTaskPlan', { agent_id, planData, tasksData });
         if (!validationResult.valid) {
             console.error('Validation errors for createPlanWithTasks:', validationResult.errors);
@@ -49,21 +51,40 @@ export class PlanTaskManager {
             );
 
             const task_ids: string[] = [];
+            const taskTitleToIdMap = new Map<string, string>();
+            const processedTasksData = [];
+
+            // First pass: Generate UUIDs and create a title-to-ID map
+            for (const task of tasksData) {
+                const task_id = randomUUID();
+                task_ids.push(task_id);
+                if (task.title) {
+                    taskTitleToIdMap.set(task.title, task_id);
+                }
+                processedTasksData.push({ ...task, task_id });
+            }
+
             const taskStmt = await db.prepare(
                 `INSERT INTO plan_tasks (
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method,
-                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, completion_timestamp_unix, completion_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             );
 
-            for (const task of tasksData) {
-                const task_id = randomUUID();
-                task_ids.push(task_id);
+            // Second pass: Insert tasks with resolved dependency IDs
+            for (const task of processedTasksData) {
+                let resolvedDependencyIds: string[] = [];
+                if (task.dependencies_task_ids_json && Array.isArray(task.dependencies_task_ids_json)) {
+                    resolvedDependencyIds = task.dependencies_task_ids_json
+                        .map((title: string) => taskTitleToIdMap.get(title))
+                        .filter((id): id is string => !!id);
+                }
+
                 await taskStmt.run(
-                    task_id,
+                    task.task_id,
                     plan_id,
                     agent_id,
                     task.task_number,
@@ -72,21 +93,20 @@ export class PlanTaskManager {
                     task.status || 'PLANNED',
                     task.purpose || null,
                     task.action_description || null,
-                    task.files_involved ? JSON.stringify(task.files_involved) : null,
-                    task.dependencies_task_ids ? JSON.stringify(task.dependencies_task_ids) : null,
-                    task.tools_required_list ? JSON.stringify(task.tools_required_list) : null,
+                    task.files_involved_json ? JSON.stringify(task.files_involved_json) : null,
+                    resolvedDependencyIds.length > 0 ? JSON.stringify(resolvedDependencyIds) : null,
+                    task.tools_required_list_json ? JSON.stringify(task.tools_required_list_json) : null,
                     task.inputs_summary || null,
                     task.outputs_summary || null,
                     task.success_criteria_text || null,
                     task.estimated_effort_hours || null,
                     task.assigned_to || null,
                     task.verification_method || null,
+                    task.code_content || null,
                     timestamp,
                     new Date(timestamp).toISOString(),
                     timestamp,
                     new Date(timestamp).toISOString(),
-                    task.status === 'COMPLETED' || task.status === 'FAILED' ? timestamp : null,
-                    task.status === 'COMPLETED' || task.status === 'FAILED' ? new Date(timestamp).toISOString() : null,
                     task.notes ? JSON.stringify(task.notes) : null
                 );
             }
@@ -169,45 +189,25 @@ export class PlanTaskManager {
         const results = await db.all(query, ...params as any[]);
         return results.map((row: any) => {
             // Safely parse JSON fields, adding error flags and keeping raw data if parsing fails
-            if (row.files_involved_json) {
-                try { row.files_involved = JSON.parse(row.files_involved_json); } 
-                catch (e) { 
-                    console.error(`Failed to parse files_involved_json for task ${row.task_id}:`, e); 
-                    row.files_involved = null; // Or []
-                    row.files_involved_json_parsing_error = true;
-                    row.raw_files_involved_json = row.files_involved_json;
+            const parseJsonSafe = (jsonString: string, fieldName: string) => {
+                if (jsonString) {
+                    try {
+                        return JSON.parse(jsonString);
+                    } catch (e) {
+                        console.error(`Failed to parse ${fieldName} for task ${row.task_id}:`, e);
+                        row[`${fieldName}_parsing_error`] = true;
+                        row[`raw_${fieldName}`] = jsonString;
+                        return null;
+                    }
                 }
-            } else { row.files_involved = []; }
+                return []; // Return empty array for consistency if field is null
+            };
 
-            if (row.dependencies_task_ids_json) {
-                try { row.dependencies_task_ids = JSON.parse(row.dependencies_task_ids_json); }
-                catch (e) {
-                    console.error(`Failed to parse dependencies_task_ids_json for task ${row.task_id}:`, e);
-                    row.dependencies_task_ids = null; // Or []
-                    row.dependencies_task_ids_json_parsing_error = true;
-                    row.raw_dependencies_task_ids_json = row.dependencies_task_ids_json;
-                }
-            } else { row.dependencies_task_ids = []; }
-
-            if (row.tools_required_list_json) {
-                try { row.tools_required_list = JSON.parse(row.tools_required_list_json); }
-                catch (e) {
-                    console.error(`Failed to parse tools_required_list_json for task ${row.task_id}:`, e);
-                    row.tools_required_list = null; // Or []
-                    row.tools_required_list_json_parsing_error = true;
-                    row.raw_tools_required_list_json = row.tools_required_list_json;
-                }
-            } else { row.tools_required_list = []; }
+            row.files_involved = parseJsonSafe(row.files_involved_json, 'files_involved_json');
+            row.dependencies_task_ids = parseJsonSafe(row.dependencies_task_ids_json, 'dependencies_task_ids_json');
+            row.tools_required_list = parseJsonSafe(row.tools_required_list_json, 'tools_required_list_json');
+            row.notes = parseJsonSafe(row.notes_json, 'notes_json');
             
-            if (row.notes_json) {
-                try { row.notes = JSON.parse(row.notes_json); }
-                catch (e) {
-                    console.error(`Failed to parse notes_json for task ${row.task_id}:`, e);
-                    row.notes = null; // Or {}
-                    row.notes_json_parsing_error = true;
-                    row.raw_notes_json = row.notes_json;
-                }
-            } else { row.notes = null; }
             return row;
         });
     }
@@ -231,15 +231,16 @@ export class PlanTaskManager {
             status?: string;
             purpose?: string;
             action_description?: string;
-            files_involved?: string[];
-            dependencies_task_ids?: string[];
-            tools_required_list?: string[];
+            files_involved_json?: string[];
+            dependencies_task_ids_json?: string[];
+            tools_required_list_json?: string[];
             inputs_summary?: string;
             outputs_summary?: string;
             success_criteria_text?: string;
             estimated_effort_hours?: number;
             assigned_to?: string;
             verification_method?: string;
+            code_content?: string;
             notes?: any;
         },
         completion_timestamp?: number
@@ -262,21 +263,18 @@ export class PlanTaskManager {
         let updateFields: string[] = [];
         let updateValues: any[] = [];
 
-        if (updates.title !== undefined) { updateFields.push('title = ?'); updateValues.push(updates.title); }
-        if (updates.description !== undefined) { updateFields.push('description = ?'); updateValues.push(updates.description); }
-        if (updates.status !== undefined) { updateFields.push('status = ?'); updateValues.push(updates.status); }
-        if (updates.purpose !== undefined) { updateFields.push('purpose = ?'); updateValues.push(updates.purpose); }
-        if (updates.action_description !== undefined) { updateFields.push('action_description = ?'); updateValues.push(updates.action_description); }
-        if (updates.files_involved !== undefined) { updateFields.push('files_involved_json = ?'); updateValues.push(updates.files_involved ? JSON.stringify(updates.files_involved) : null); }
-        if (updates.dependencies_task_ids !== undefined) { updateFields.push('dependencies_task_ids_json = ?'); updateValues.push(updates.dependencies_task_ids ? JSON.stringify(updates.dependencies_task_ids) : null); }
-        if (updates.tools_required_list !== undefined) { updateFields.push('tools_required_list_json = ?'); updateValues.push(updates.tools_required_list ? JSON.stringify(updates.tools_required_list) : null); }
-        if (updates.inputs_summary !== undefined) { updateFields.push('inputs_summary = ?'); updateValues.push(updates.inputs_summary); }
-        if (updates.outputs_summary !== undefined) { updateFields.push('outputs_summary = ?'); updateValues.push(updates.outputs_summary); }
-        if (updates.success_criteria_text !== undefined) { updateFields.push('success_criteria_text = ?'); updateValues.push(updates.success_criteria_text); }
-        if (updates.estimated_effort_hours !== undefined) { updateFields.push('estimated_effort_hours = ?'); updateValues.push(updates.estimated_effort_hours); }
-        if (updates.assigned_to !== undefined) { updateFields.push('assigned_to = ?'); updateValues.push(updates.assigned_to); }
-        if (updates.verification_method !== undefined) { updateFields.push('verification_method = ?'); updateValues.push(updates.verification_method); }
-        if (updates.notes !== undefined) { updateFields.push('notes_json = ?'); updateValues.push(updates.notes ? JSON.stringify(updates.notes) : null); }
+        Object.entries(updates).forEach(([key, value]) => {
+            if (value !== undefined) {
+                if (['files_involved_json', 'dependencies_task_ids_json', 'tools_required_list_json', 'notes_json'].includes(key)) {
+                    updateFields.push(`${key} = ?`);
+                    updateValues.push(value ? JSON.stringify(value) : null);
+                } else {
+                    const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase(); // convert camelCase to snake_case for db
+                    updateFields.push(`${dbKey} = ?`);
+                    updateValues.push(value);
+                }
+            }
+        });
 
         updateFields.push('last_updated_timestamp_unix = ?');
         updateValues.push(timestamp);
@@ -289,21 +287,16 @@ export class PlanTaskManager {
             updateFields.push('completion_timestamp_iso = ?');
             updateValues.push(completion_timestamp ? new Date(completion_timestamp).toISOString() : null);
         } else if (updates.status === 'COMPLETED' || updates.status === 'FAILED') {
-            // If status is set to completed/failed and no explicit completion_timestamp is provided, set it now
             updateFields.push('completion_timestamp_unix = ?');
             updateValues.push(timestamp);
             updateFields.push('completion_timestamp_iso = ?');
             updateValues.push(new Date(timestamp).toISOString());
-        } else if (updates.status !== 'COMPLETED' && updates.status !== 'FAILED' && (task as any).completion_timestamp_unix) {
-            // If status is changed from completed/failed to something else, clear completion timestamp
-            updateFields.push('completion_timestamp_unix = ?');
-            updateValues.push(null);
-            updateFields.push('completion_timestamp_iso = ?');
-            updateValues.push(null);
+        } else if (updates.status && !['COMPLETED', 'FAILED'].includes(updates.status) && (task as any).completion_timestamp_unix) {
+            updateFields.push('completion_timestamp_unix = ?', 'completion_timestamp_iso = ?');
+            updateValues.push(null, null);
         }
 
-
-        if (updateFields.length === 0) {
+        if (updateFields.length <= 2) { // Only timestamp fields added
             console.warn(`No fields provided for updateTaskDetails for task: ${task_id}`);
             return false;
         }
@@ -348,45 +341,24 @@ export class PlanTaskManager {
             agent_id, task_id
         );
         if (task) {
-            if (task.files_involved_json) {
-                try { task.files_involved = JSON.parse(task.files_involved_json); }
-                catch (e) {
-                    console.error(`Failed to parse files_involved_json for task ${task.task_id}:`, e);
-                    task.files_involved = null; // Or []
-                    task.files_involved_json_parsing_error = true;
-                    task.raw_files_involved_json = task.files_involved_json;
+             const parseJsonSafe = (jsonString: string, fieldName: string) => {
+                if (jsonString) {
+                    try {
+                        return JSON.parse(jsonString);
+                    } catch (e) {
+                        console.error(`Failed to parse ${fieldName} for task ${task.task_id}:`, e);
+                        (task as any)[`${fieldName}_parsing_error`] = true;
+                        (task as any)[`raw_${fieldName}`] = jsonString;
+                        return null;
+                    }
                 }
-            } else { task.files_involved = []; }
+                return []; // Return empty array for consistency if field is null
+            };
 
-            if (task.dependencies_task_ids_json) {
-                try { task.dependencies_task_ids = JSON.parse(task.dependencies_task_ids_json); }
-                catch (e) {
-                    console.error(`Failed to parse dependencies_task_ids_json for task ${task.task_id}:`, e);
-                    task.dependencies_task_ids = null; // Or []
-                    task.dependencies_task_ids_json_parsing_error = true;
-                    task.raw_dependencies_task_ids_json = task.dependencies_task_ids_json;
-                }
-            } else { task.dependencies_task_ids = []; }
-
-            if (task.tools_required_list_json) {
-                try { task.tools_required_list = JSON.parse(task.tools_required_list_json); }
-                catch (e) {
-                    console.error(`Failed to parse tools_required_list_json for task ${task.task_id}:`, e);
-                    task.tools_required_list = null; // Or []
-                    task.tools_required_list_json_parsing_error = true;
-                    task.raw_tools_required_list_json = task.tools_required_list_json;
-                }
-            } else { task.tools_required_list = []; }
-
-            if (task.notes_json) {
-                try { task.notes = JSON.parse(task.notes_json); }
-                catch (e) {
-                    console.error(`Failed to parse notes_json for task ${task.task_id}:`, e);
-                    task.notes = null; // Or {}
-                    task.notes_json_parsing_error = true;
-                    task.raw_notes_json = task.notes_json;
-                }
-            } else { task.notes = null; }
+            (task as any).files_involved = parseJsonSafe(task.files_involved_json, 'files_involved_json');
+            (task as any).dependencies_task_ids = parseJsonSafe(task.dependencies_task_ids_json, 'dependencies_task_ids_json');
+            (task as any).tools_required_list = parseJsonSafe(task.tools_required_list_json, 'tools_required_list_json');
+            (task as any).notes = parseJsonSafe(task.notes_json, 'notes_json');
         }
         return task;
     }
@@ -394,7 +366,7 @@ export class PlanTaskManager {
     async addTaskToPlan(
         agent_id: string,
         plan_id: string,
-        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved?: string[]; dependencies_task_ids?: string[]; tools_required_list?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; notes?: any }
+        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }
     ): Promise<string> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
@@ -417,9 +389,9 @@ export class PlanTaskManager {
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method,
-                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, completion_timestamp_unix, completion_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 task_id,
                 plan_id,
                 agent_id,
@@ -429,21 +401,20 @@ export class PlanTaskManager {
                 taskData.status || 'PLANNED',
                 taskData.purpose || null,
                 taskData.action_description || null,
-                taskData.files_involved ? JSON.stringify(taskData.files_involved) : null,
-                taskData.dependencies_task_ids ? JSON.stringify(taskData.dependencies_task_ids) : null,
-                taskData.tools_required_list ? JSON.stringify(taskData.tools_required_list) : null,
+                taskData.files_involved_json ? JSON.stringify(taskData.files_involved_json) : null,
+                taskData.dependencies_task_ids_json ? JSON.stringify(taskData.dependencies_task_ids_json) : null,
+                taskData.tools_required_list_json ? JSON.stringify(taskData.tools_required_list_json) : null,
                 taskData.inputs_summary || null,
                 taskData.outputs_summary || null,
                 taskData.success_criteria_text || null,
                 taskData.estimated_effort_hours || null,
                 taskData.assigned_to || null,
                 taskData.verification_method || null,
+                taskData.code_content || null,
                 timestamp,
                 new Date(timestamp).toISOString(),
                 timestamp,
                 new Date(timestamp).toISOString(),
-                taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? timestamp : null,
-                taskData.status === 'COMPLETED' || taskData.status === 'FAILED' ? new Date(timestamp).toISOString() : null,
                 taskData.notes ? JSON.stringify(taskData.notes) : null
             );
             return task_id;

@@ -1,3 +1,4 @@
+// src/tools/plan_management_tools.ts
 import { MemoryManager } from '../database/memory_manager.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
@@ -7,9 +8,12 @@ import {
     formatPlansListToMarkdownTable,
     formatSubtasksListToMarkdownTable,
     formatSimpleMessage,
-    formatJsonToMarkdownCodeBlock
+    formatJsonToMarkdownCodeBlock,
+    formatTaskToMarkdown
 } from '../utils/formatters.js';
 import { InitialDetailedPlanAndTasks } from '../database/services/GeminiPlannerService.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 // Minimal interfaces to improve type-hinting in this file.
 // For a more robust solution, these could be imported from a central types/models file.
@@ -32,9 +36,9 @@ export const planManagementToolDefinitions = [
         inputSchema: schemas.createTaskPlan,
     },
     {
-        name: 'get_task_plan_details',
+        name: 'get_plan',
         description: 'Retrieves details for a specific task plan, including its tasks and subtasks. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: schemas.getTaskPlanDetails,
+        inputSchema: schemas.getTaskPlanDetails, // Re-using schema
     },
     {
         name: 'list_task_plans',
@@ -105,9 +109,6 @@ export const planManagementToolDefinitions = [
 
 export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
 
-    /**
-     * Retrieves the agent_id from arguments or the server context and throws if it's missing.
-     */
     const getValidatedAgentId = (args: any, agentIdFromServer: string, toolName: string): string => {
         const agent_id = args.agent_id || agentIdFromServer;
         if (!agent_id) {
@@ -116,9 +117,6 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
         return agent_id;
     };
 
-    /**
-     * Validates tool arguments against a predefined schema and throws a formatted error on failure.
-     */
     const validateToolArgs = (schemaName: keyof typeof schemas, args: any, toolName: string): void => {
         const validationResult = validate(schemaName, args);
         if (!validationResult.valid) {
@@ -127,16 +125,10 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
         }
     };
 
-    /**
-     * Creates the standard tool response structure.
-     */
     const createToolResponse = (text: string) => {
         return { content: [{ type: 'text', text }] };
     };
 
-    /**
-     * Creates a consistent success message for entity update operations.
-     */
     const createUpdateSuccessMessage = (entityType: 'Task' | 'Subtask', entityId: string, updates: Record<string, any>): string => {
         const updatedKeys = Object.keys(updates).filter(key => !['agent_id', 'task_id', 'subtask_id', 'completion_timestamp'].includes(key));
 
@@ -149,7 +141,6 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
         return `${entityType} \`${entityId}\` updated.`;
     };
 
-
     return {
         'create_task_plan': async (args: any, agent_id_from_server: string) => {
             const toolName = 'create_task_plan';
@@ -158,18 +149,45 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
 
             let planDataToStore: any;
             let tasksDataToStore: any[];
-            let aiGeneratedPlan: InitialDetailedPlanAndTasks | undefined;
 
             if (args.goal_description || args.refined_prompt_id) {
                 const identifier = args.refined_prompt_id || args.goal_description;
                 const isRefinedPromptId = !!args.refined_prompt_id;
+                
+                // Read live files content if paths are provided
+                let liveFilesContent: Map<string, string> | undefined;
+                if (args.live_review_file_paths && Array.isArray(args.live_review_file_paths)) {
+                    liveFilesContent = new Map();
+                    for (const filePath of args.live_review_file_paths) {
+                        try {
+                             if (path.isAbsolute(filePath) && !filePath.startsWith(memoryManager.projectRootPath)) {
+                                 console.warn(`Skipping file outside of project root: ${filePath}`);
+                                 continue;
+                            }
+                            const content = await fs.readFile(filePath, 'utf-8');
+                            liveFilesContent.set(filePath, content);
+                        } catch (error: any) {
+                            console.warn(`Could not read live file for planning context: ${filePath}. Error: ${error.message}`);
+                        }
+                    }
+                }
+                
                 try {
-                    aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(agent_id, identifier, isRefinedPromptId);
+                    const aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
+                        agent_id, 
+                        identifier, 
+                        isRefinedPromptId,
+                        undefined, // directRefinedPromptDetails
+                        undefined, // codebaseContextSummary
+                        liveFilesContent // Pass live file content to the planner
+                    );
                     planDataToStore = aiGeneratedPlan.planData;
                     tasksDataToStore = aiGeneratedPlan.tasksData;
+
                     if (args.refined_prompt_id) {
                         planDataToStore.refined_prompt_id_associated = args.refined_prompt_id;
                     }
+
                 } catch (error: any) {
                     console.error(`Error during AI plan generation for agent ${agent_id}:`, error);
                     throw new McpError(ErrorCode.InternalError, `AI plan generation failed: ${error.message}`);
@@ -180,47 +198,29 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             } else {
                 throw new McpError(ErrorCode.InvalidParams, "Either AI generation parameters (goal_description or refined_prompt_id) or manual planData and tasksData must be provided.");
             }
-
-            if (tasksDataToStore) {
-                tasksDataToStore = tasksDataToStore.map(task => {
-                    const newTask = { ...task };
-                    newTask.suggested_files_involved = newTask.suggested_files_involved || [];
-                    if (newTask.files_involved_json) {
-                        try {
-                            const parsedFiles = JSON.parse(newTask.files_involved_json);
-                            if (Array.isArray(parsedFiles)) {
-                                newTask.suggested_files_involved = parsedFiles;
-                            }
-                        } catch (e) {
-                            console.warn(`Failed to parse files_involved_json for a task: ${e}`);
-                        }
-                        delete newTask.files_involved_json;
-                    }
-                    return newTask;
-                });
-            }
-
+            
             if (!planDataToStore.title) {
                 planDataToStore.title = args.goal_description ? `Plan for: ${args.goal_description.substring(0, 50)}...` : 'Untitled AI Plan';
             }
 
             const planResult = await memoryManager.createPlanWithTasks(agent_id, planDataToStore, tasksDataToStore);
 
-            let md = `## Task Plan Created for Agent: \`${agent_id}\`\n`;
-            md += `- **Plan ID:** \`${planResult.plan_id}\`\n`;
-            md += `- **Title:** ${planDataToStore.title}\n`;
-            if (planDataToStore.overall_goal) md += `- **Overall Goal:** ${planDataToStore.overall_goal}\n`;
-            if (planDataToStore.metadata?.estimated_duration_days) md += `- **Est. Duration:** ${planDataToStore.metadata.estimated_duration_days} days\n`;
-            if (planDataToStore.refined_prompt_id_associated) md += `- **Based on Refined Prompt ID:** \`${planDataToStore.refined_prompt_id_associated}\`\n`;
-            md += `- **Task IDs Created:** ${planResult.task_ids.map(id => `\`${id}\``).join(', ')}\n`;
-            if (aiGeneratedPlan?.suggested_next_steps_for_agent) {
-                md += `\n${aiGeneratedPlan.suggested_next_steps_for_agent.replace(/\[agent_id\]/g, agent_id).replace(/\[plan_id\]/g, planResult.plan_id)}\n`;
+            // Fetch the created plan and tasks to format them for the response
+            const newPlan = await memoryManager.getPlan(agent_id, planResult.plan_id);
+            const newTasks = await memoryManager.getPlanTasks(agent_id, planResult.plan_id);
+
+            if (!newPlan) {
+                 throw new McpError(ErrorCode.InternalError, "Failed to retrieve the newly created plan.");
             }
-            return createToolResponse(md);
+            
+            // Use the formatter to create a beautiful markdown output
+            const markdownOutput = formatPlanToMarkdown(newPlan, newTasks as Task[]);
+            
+            return createToolResponse(markdownOutput);
         },
 
-        'get_task_plan_details': async (args: any, agent_id_from_server: string) => {
-            const toolName = 'get_task_plan_details';
+        'get_plan': async (args: any, agent_id_from_server: string) => {
+            const toolName = 'get_plan';
             const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
             validateToolArgs('getTaskPlanDetails', args, toolName);
 
@@ -230,6 +230,8 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             }
 
             const tasksFromDb = await memoryManager.getPlanTasks(agent_id, args.plan_id);
+             const taskMap = new Map((tasksFromDb as Task[]).map(t => [t.task_id, t]));
+
             const tasks = await Promise.all(
                 (tasksFromDb as Task[]).map(async (task) => ({
                     ...task,
@@ -240,7 +242,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             const planLevelSubtasks = ((await memoryManager.subtaskManager.getSubtasksByPlan(agent_id, args.plan_id)) as Subtask[])
                 .filter((subtask: Subtask) => !subtask.parent_task_id);
 
-            return createToolResponse(formatPlanToMarkdown(planDetails, tasks, planLevelSubtasks));
+            return createToolResponse(formatPlanToMarkdown(planDetails, tasks, planLevelSubtasks, taskMap));
         },
 
         'list_task_plans': async (args: any, agent_id_from_server: string) => {
@@ -424,81 +426,32 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             return createToolResponse(formatSimpleMessage(message, "Delete Subtasks"));
         },
 
-        // Retrieve a single task's full details by ID
         'get_task_details': async (args: any, agent_id_from_server: string) => {
             const toolName = 'get_task_details';
             const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
             validateToolArgs('getTaskDetails', args, toolName);
 
-            const task = await (memoryManager as any).planTaskManager?.getTaskById?.(agent_id, args.task_id)
-                ?? await memoryManager.getPlanTaskById?.(agent_id, args.task_id);
+            const task = await memoryManager.getTask(agent_id, args.task_id);
             if (!task) {
-                return { content: [{ type: 'text', text: formatSimpleMessage(`Task with ID \`${args.task_id}\` not found for agent \`${agent_id}\`.`, "Task Not Found") }] };
+                return createToolResponse(formatSimpleMessage(`Task with ID \`${args.task_id}\` not found for agent \`${agent_id}\`.`, "Task Not Found"));
             }
 
-            // Safely parse JSON fields if present
-            const parseJsonSafe = (val: any) => {
-                if (val == null) return null;
-                if (typeof val !== 'string') return val;
-                try { return JSON.parse(val); } catch { return val; }
-            };
-
-            const detailed = {
-                ...task,
-                files_involved: parseJsonSafe(task.files_involved_json),
-                dependencies_task_ids: parseJsonSafe(task.dependencies_task_ids_json),
-                tools_required_list: parseJsonSafe(task.tools_required_list_json),
-                notes: parseJsonSafe(task.notes_json),
-            };
-
-            // Build a detailed markdown
-            let md = `## Task Details\n`;
-            md += `- **Task ID:** \`${detailed.task_id}\`\n`;
-            if (detailed.plan_id) md += `- **Plan ID:** \`${detailed.plan_id}\`\n`;
-            md += `- **Agent ID:** \`${agent_id}\`\n`;
-            md += `- **Title:** ${detailed.title || '*N/A*'}\n`;
-            md += `- **Status:** ${detailed.status || '*N/A*'}\n`;
-            if (typeof detailed.task_number !== 'undefined') md += `- **Task Number:** ${detailed.task_number}\n`;
-            if (detailed.purpose) md += `- **Purpose:** ${detailed.purpose}\n`;
-            if (detailed.description) md += `\n**Description:**\n${detailed.description}\n`;
-            if (detailed.inputs_summary) md += `\n**Inputs Summary:**\n${detailed.inputs_summary}\n`;
-            if (detailed.outputs_summary) md += `\n**Outputs Summary:**\n${detailed.outputs_summary}\n`;
-            if (detailed.success_criteria_text) md += `\n**Success Criteria:**\n${detailed.success_criteria_text}\n`;
-            if (typeof detailed.estimated_effort_hours !== 'undefined' && detailed.estimated_effort_hours !== null) {
-                md += `\n**Estimated Effort (hours):** ${detailed.estimated_effort_hours}\n`;
-            }
-            if (detailed.assigned_to) md += `\n**Assigned To:** ${detailed.assigned_to}\n`;
-            if (detailed.verification_method) md += `\n**Verification Method:** ${detailed.verification_method}\n`;
-
-            if (detailed.files_involved) md += `\n**Files Involved:**\n${formatJsonToMarkdownCodeBlock(detailed.files_involved)}\n`;
-            if (detailed.dependencies_task_ids) md += `\n**Dependencies (Task IDs):**\n${formatJsonToMarkdownCodeBlock(detailed.dependencies_task_ids)}\n`;
-            if (detailed.tools_required_list) md += `\n**Tools Required:**\n${formatJsonToMarkdownCodeBlock(detailed.tools_required_list)}\n`;
-            if (detailed.notes) md += `\n**Notes:**\n${formatJsonToMarkdownCodeBlock(detailed.notes)}\n`;
-
-            return { content: [{ type: 'text', text: md }] };
+            return createToolResponse(formatTaskToMarkdown(task));
         },
 
-        // Update a single task by ID (partial update)
         'update_task': async (args: any, agent_id_from_server: string) => {
             const toolName = 'update_task';
             const agent_id = getValidatedAgentId(args, agent_id_from_server, toolName);
             validateToolArgs('updateTask', args, toolName);
 
-            const { task_id, completion_timestamp, files_involved, dependencies_task_ids, tools_required_list, notes, ...rest } = args;
-
-            // Serialize JSON/list fields if provided
-            const updates: Record<string, any> = { ...rest };
-            if (typeof files_involved !== 'undefined') updates.files_involved = files_involved;
-            if (typeof dependencies_task_ids !== 'undefined') updates.dependencies_task_ids = dependencies_task_ids;
-            if (typeof tools_required_list !== 'undefined') updates.tools_required_list = tools_required_list;
-            if (typeof notes !== 'undefined') updates.notes = notes;
-
+            const { task_id, completion_timestamp, ...updates } = args;
+            
             const success = await memoryManager.updateTaskDetails(agent_id, task_id, updates, completion_timestamp);
 
             const message = success
                 ? `Task \`${task_id}\` updated successfully.`
                 : `Failed to update task \`${task_id}\`.`;
-            return { content: [{ type: 'text', text: formatSimpleMessage(message, "Update Task") }] };
+            return createToolResponse(formatSimpleMessage(message, "Update Task"));
         },
     };
 }

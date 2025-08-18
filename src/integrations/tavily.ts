@@ -1,16 +1,20 @@
 import axios from 'axios'; // Import axios
 import { MemoryManager } from '../database/memory_manager.js';
-
 const TAVILY_MOCK_MODE = process.env.TAVILY_MOCK_MODE === 'true';
 const TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'; // Define endpoint
-
 export async function callTavilyApi(
     query: string,
-    search_depth: 'basic' | 'advanced' = 'basic',
-    max_results: number = 5
+    options?: {
+        search_depth?: 'basic' | 'advanced';
+        max_results?: number;
+        include_raw_content?: boolean;
+        include_images?: boolean;
+        include_image_descriptions?: boolean;
+        time_period?: string;
+        topic?: string;
+    }
 ) {
     const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
-
     if (TAVILY_MOCK_MODE) {
         console.log('Tavily Mock Mode: Returning mock search results.');
         return [
@@ -26,26 +30,27 @@ export async function callTavilyApi(
             }
         ];
     }
-
     if (!TAVILY_API_KEY) {
         console.warn('TAVILY_API_KEY environment variable is not set. Tavily search will not be available.');
         throw new Error('Tavily API key is not configured. Cannot perform search.');
     }
-
     try {
         // Removed debug console.logs
         const response = await axios.post(TAVILY_SEARCH_ENDPOINT, {
             api_key: TAVILY_API_KEY, // Explicitly pass API key in request body
             query: query,
-            search_depth: search_depth,
-            max_results: max_results,
-            include_raw_content: false
+            search_depth: options?.search_depth || 'basic',
+            max_results: options?.max_results || 5,
+            include_raw_content: options?.include_raw_content || false,
+            include_images: options?.include_images || false,
+            include_image_descriptions: options?.include_image_descriptions || false,
+            time_period: options?.time_period,
+            topic: options?.topic
         }, {
             headers: {
                 'Content-Type': 'application/json'
             }
         });
-
         return response.data.results; // Access data.results as per Tavily API response
     } catch (error: any) {
         if (axios.isAxiosError(error) && error.response) {

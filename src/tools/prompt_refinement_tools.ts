@@ -5,49 +5,6 @@ import { formatObjectToMarkdown, formatSimpleMessage, formatJsonToMarkdownCodeBl
 
 export const promptRefinementToolDefinitions = [
     {
-        name: 'refine_user_prompt',
-        description: 'Analyzes a raw user prompt using an LLM and returns a structured, refined version for AI agent processing, including suggestions for context analysis. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                agent_id: { type: 'string', description: "Identifier of the AI agent (e.g., 'cline')." },
-                raw_user_prompt: { type: 'string', description: "The raw text prompt received from the user." },
-                target_ai_persona: {
-                  type: ['string', 'null'],
-                  description: "Optional: A suggested persona for the AI agent to adopt for the task (e.g., 'expert Python developer', 'technical writer').",
-                  default: null
-                },
-                conversation_context_ids: {
-                  type: ['array', 'null'],
-                  items: { type: 'string' },
-                  description: "Optional: Array of recent conversation_ids or context_ids that might provide immediate context for the refinement, if available to the agent.",
-                  default: null
-                },
-                context_options: {
-                    type: 'object',
-                    properties: {
-                        topKEmbeddings: { type: 'number', default: 3 },
-                        topKKgResults: { type: 'number', default: 3 },
-                        embeddingScoreThreshold: { type: 'number', default: 0.5 },
-                        kgQueryDepth: { type: 'number', description: "Optional: Depth for Knowledge Graph queries.", nullable: true },
-                        includeFileContent: { type: 'boolean', description: "Optional: Whether to include full file content for retrieved files.", nullable: true },
-                        targetFilePaths: {
-                            type: 'array',
-                            items: { type: 'string' },
-                            description: "Optional: Array of relative file paths to restrict context retrieval to.",
-                            nullable: true
-                        },
-                        context_snippet_length: { type: 'number', description: "Optional: Maximum length of each context snippet included in the prompt. Defaults to 200.", default: 200, nullable: true }
-                    },
-                    additionalProperties: false,
-                    nullable: true
-                }
-            },
-            required: ['agent_id', 'raw_user_prompt'],
-            additionalProperties: false,
-        }
-    },
-    {
         name: 'get_refined_prompt',
         description: 'Retrieves a previously stored refined prompt by its ID. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
         inputSchema: {
@@ -76,9 +33,27 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
 
     if (prompt.decomposed_tasks_parsed && prompt.decomposed_tasks_parsed.length > 0) {
         md += "\n**Decomposed Tasks:**\n";
-        prompt.decomposed_tasks_parsed.forEach((task: { task_description: string }) => md += `- ${task.task_description}\n`);
+        prompt.decomposed_tasks_parsed.forEach((task: any, index: number) => {
+            md += `\n**Task ${index + 1}: ${task.title || 'Untitled Task'}**\n`;
+            md += `- **Description:** ${task.description || '*Not specified*'}\n`;
+            if (task.purpose) {
+                md += `- **Purpose:** ${task.purpose}\n`;
+            }
+            if (task.files_involved_json && task.files_involved_json.length > 0) {
+                md += `- **Files to Modify:**\n` + task.files_involved_json.map((f: string) => `  - \`${f}\``).join('\n') + `\n`;
+            }
+            if (task.tools_required_list_json && task.tools_required_list_json.length > 0) {
+                md += `- **Suggested Tools:** \`${task.tools_required_list_json.join('`, `')}\`\n`;
+            }
+            if (task.success_criteria_text) {
+                md += `- **Success Criteria:** ${task.success_criteria_text}\n`;
+            }
+            if (task.dependencies_task_ids_json && task.dependencies_task_ids_json.length > 0) {
+                md += `- **Dependencies:** ${task.dependencies_task_ids_json.join(', ')}\n`;
+            }
+        });
     }
-    
+
     if (prompt.key_entities_identified_parsed && prompt.key_entities_identified_parsed.length > 0) {
         md += "\n**Key Entities Identified:**\n";
         md += formatJsonToMarkdownCodeBlock(prompt.key_entities_identified_parsed) + "\n";
@@ -105,7 +80,7 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
         md += "\n**Desired Output Characteristics:**\n";
         md += formatObjectToMarkdown(prompt.desired_output_characteristics_inferred_parsed, 1) + "\n";
     }
-    
+
     if (prompt.suggested_context_analysis_for_agent_parsed && prompt.suggested_context_analysis_for_agent_parsed.length > 0) {
         md += "\n**Suggested Context Analysis:**\n";
         md += formatJsonToMarkdownCodeBlock(prompt.suggested_context_analysis_for_agent_parsed) + "\n";
@@ -134,7 +109,7 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
         });
         md += "\n";
     }
-    
+
     if (prompt.confidence_in_refinement_score) {
         md += `\n**Confidence Score:** ${prompt.confidence_in_refinement_score}\n`;
     }
@@ -147,53 +122,13 @@ function formatRefinedPromptToMarkdown(prompt: any, agent_id: string): string {
 
 export function getPromptRefinementToolHandlers(memoryManager: MemoryManager) {
     return {
-        'refine_user_prompt': async (args: any, agent_id: string) => {
-            const validationResult = validate('refineUserPrompt', args);
-            if (!validationResult.valid) {
-                throw new McpError(
-                    ErrorCode.InvalidParams,
-                    `Validation failed for tool refine_user_prompt: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`
-                );
-            }
-            // Agent ID from args takes precedence for this specific tool as it's part of its core logic.
-            const effective_agent_id = args.agent_id || agent_id; 
-            if (!effective_agent_id) {
-                 throw new McpError(ErrorCode.InvalidParams, `agent_id is strictly required for refine_user_prompt.`);
-            }
-
-            console.log('[DEBUG] refine_user_prompt args:', JSON.stringify(args, null, 2));
-            // Enhance context options for richer context if not provided
-            const enhancedContextOptions = {
-                topKEmbeddings: args.context_options?.topKEmbeddings || 20,
-                topKKgResults: args.context_options?.topKKgResults || 10,
-                embeddingScoreThreshold: args.context_options?.embeddingScoreThreshold || 0.2,
-                ...(args.context_options || {})
-            };
-            const refinedPromptObject = await memoryManager.processAndRefinePrompt(
-                effective_agent_id,
-                args.raw_user_prompt as string,
-                args.target_ai_persona as string | undefined,
-                args.conversation_context_ids as string[] | undefined,
-                enhancedContextOptions
-            );
-            if (refinedPromptObject.agent_id && refinedPromptObject.agent_id !== effective_agent_id) {
-                throw new Error(`Refined prompt's agent_id (${refinedPromptObject.agent_id}) does not match the effective agent_id (${effective_agent_id}). Data integrity violation.`);
-            }
-            // Ensure agent_id is present for DB insert (refined_prompts.agent_id is NOT NULL)
-            if (!refinedPromptObject.agent_id) {
-                refinedPromptObject.agent_id = effective_agent_id;
-            }
-            await memoryManager.storeRefinedPrompt(refinedPromptObject);
-            // The refinedPromptObject itself is the full structured data.
-            return { content: [{ type: 'text', text: formatRefinedPromptToMarkdown(refinedPromptObject, effective_agent_id) }] };
-        },
         'get_refined_prompt': async (args: any, agent_id_from_server: string) => { // agent_id_from_server is passed by MCP server
             const agent_id_to_use = args.agent_id || agent_id_from_server;
-             if (!agent_id_to_use) {
-                 throw new McpError(ErrorCode.InvalidParams, `agent_id is strictly required for get_refined_prompt.`);
+            if (!agent_id_to_use) {
+                throw new McpError(ErrorCode.InvalidParams, `agent_id is strictly required for get_refined_prompt.`);
             }
             const refinedPrompt = await memoryManager.getRefinedPrompt(
-                agent_id_to_use, 
+                agent_id_to_use,
                 args.refined_prompt_id as string
             );
             if (!refinedPrompt) {

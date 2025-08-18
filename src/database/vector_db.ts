@@ -1,4 +1,3 @@
-// src/database/vector_db.ts
 import Database from 'better-sqlite3';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
@@ -15,6 +14,7 @@ console.log(`[vector_db] Determined MCP_ROOT_PATH: ${MCP_ROOT_PATH}`);
 const VECTOR_DB_PATH = process.env.VECTOR_DB_PATH || path.join(MCP_ROOT_PATH, 'vector_store.db');
 console.log(`[vector_db] Using VECTOR_DB_PATH: ${VECTOR_DB_PATH}`);
 
+// IMPORTANT: This schema file MUST be updated with the new columns.
 const VECTOR_SCHEMA_PATH = join(__dirname, 'vector_store_schema.sql');
 console.log(`[vector_db] Using VECTOR_SCHEMA_PATH: ${VECTOR_SCHEMA_PATH}`);
 
@@ -118,7 +118,7 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
         db.exec(schema);
         console.log('[vector_db] Vector store database schema applied successfully.');
 
-        // Create vec virtual table if not exists
+        // This creates the vector index table. It is separate from the metadata table.
         console.log('[vector_db] Creating vec virtual table if not exists...');
         db.exec(`
             CREATE VIRTUAL TABLE IF NOT EXISTS codebase_embeddings_vec_idx USING vec0(
@@ -143,17 +143,14 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
 }
 
 export function getVectorStoreDb(): Database {
-    console.log('[vector_db] getVectorStoreDb called.');
     if (!vectorDbInstance) {
         console.error('[vector_db] FATAL: Vector store database has not been initialized. Call initializeVectorStoreDatabase() first.');
         throw new Error('Vector store database has not been initialized. Call initializeVectorStoreDatabase() first.');
     }
-    console.log('[vector_db] Returning existing vectorDbInstance.');
     return vectorDbInstance;
 }
 
 export async function closeVectorStoreDatabase(): Promise<void> {
-    console.log('[vector_db] closeVectorStoreDatabase called.');
     if (vectorDbInstance) {
         try {
             vectorDbInstance.close();
@@ -162,29 +159,18 @@ export async function closeVectorStoreDatabase(): Promise<void> {
         } catch (error) {
             console.error('[vector_db] Error closing vector store database connection:', error);
         }
-    } else {
-        console.log('[vector_db] Vector store database connection already closed or not initialized.');
     }
 }
 
+// This is a low-level function to insert a single vector into the index.
+// It is used by the repository's bulk insert logic.
 export function storeVecEmbedding(embedding_id: string, vector: number[], tableName: string = 'codebase_embeddings_vec_idx'): void {
-    console.log(`[vector_db] Storing vector embedding with ID: ${embedding_id} in table: ${tableName}`);
     const db = getVectorStoreDb();
     const vectorString = `[${vector.join(',')}]`;
     try {
         db.prepare(
             `INSERT OR REPLACE INTO ${tableName} (embedding_id, embedding) VALUES (?, ?);`
         ).run(embedding_id, vectorString);
-        console.log(`[vector_db] Successfully stored vector for ID: ${embedding_id}`);
-
-        // Add a read-back check immediately after insertion
-        const checkStmt = db.prepare(`SELECT embedding_id FROM ${tableName} WHERE embedding_id = ?;`);
-        const checkResult = checkStmt.get(embedding_id);
-        if (checkResult) {
-            console.log(`[vector_db] Read-back successful: Embedding with ID ${checkResult.embedding_id} found immediately after insertion.`);
-        } else {
-            console.error(`[vector_db] Read-back FAILED: Embedding with ID ${embedding_id} NOT found immediately after insertion.`);
-        }
 
     } catch (error) {
         console.error(`[vector_db] Error storing vector for ID ${embedding_id} in table ${tableName}:`, error);
@@ -192,20 +178,22 @@ export function storeVecEmbedding(embedding_id: string, vector: number[], tableN
     }
 }
 
+// This is a low-level function to perform a raw vector search.
+// It is the building block used by the advanced repository logic.
 export async function findSimilarVecEmbeddings(queryVector: number[], topK: number = 5, tableName: string = 'codebase_embeddings_vec_idx'): Promise<Array<{ embedding_id: string, similarity: number }>> {
-    console.log(`[vector_db] Finding similar vector embeddings using vec virtual table in table: ${tableName}, topK: ${topK}`);
     const db = getVectorStoreDb();
     const vectorString = `[${queryVector.join(',')}]`;
 
     try {
-        // Use the vec virtual table for similarity search
+        // The `MATCH` operator performs the KNN search on the virtual table.
         const stmt = db.prepare(
             `SELECT embedding_id, distance FROM ${tableName} WHERE embedding MATCH ? ORDER BY distance LIMIT ?;`
         );
         const results = stmt.all(vectorString, topK);
 
-        // Convert distance to similarity (1 - distance for cosine similarity, assuming normalized vectors)
-        return results.map(row => ({
+        // sqlite-vec returns 'distance'. We convert it to 'similarity'.
+        // For cosine distance, similarity = 1 - distance.
+        return results.map((row: any) => ({
             embedding_id: row.embedding_id,
             similarity: 1 - row.distance,
         }));

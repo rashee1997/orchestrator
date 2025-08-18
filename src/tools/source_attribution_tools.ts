@@ -3,7 +3,6 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
 import { callTavilyApi } from '../integrations/tavily.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatObjectToMarkdown } from '../utils/formatters.js';
-
 export const sourceAttributionToolDefinitions = [
     {
         name: 'log_source_attribution',
@@ -45,12 +44,16 @@ export const sourceAttributionToolDefinitions = [
                 query: { type: 'string', description: 'The search query.' },
                 search_depth: { type: 'string', enum: ['basic', 'advanced'], default: 'basic', description: 'Depth of the search.' },
                 max_results: { type: 'number', default: 5, description: 'Maximum number of search results to return.' },
+                include_raw_content: { type: 'boolean', default: false, description: 'Include raw content in search results.' },
+                include_images: { type: 'boolean', default: false, description: 'Include images in search results.' },
+                include_image_descriptions: { type: 'boolean', default: false, description: 'Include image descriptions in search results.' },
+                time_period: { type: 'string', description: 'Time period for search results (e.g., "1m", "1y", "all").' },
+                topic: { type: 'string', description: 'Topic category for search results (e.g., "news", "general").' },
             },
             required: ['query'],
         },
     },
 ];
-
 export function getSourceAttributionToolHandlers(memoryManager: MemoryManager) {
     return {
         'log_source_attribution': async (args: any, agent_id: string) => {
@@ -81,7 +84,7 @@ export function getSourceAttributionToolHandlers(memoryManager: MemoryManager) {
                 return { content: [{ type: 'text', text: formatSimpleMessage("No source attributions found.", "Source Attributions") }] };
             }
             let md = `## Source Attributions for Agent: \`${agent_id}\`\n`;
-            if(args.source_type) md += `### Type: \`${args.source_type}\`\n`;
+            if (args.source_type) md += `### Type: \`${args.source_type}\`\n`;
             attributions.forEach((attr: any) => {
                 md += `### Attribution ID: \`${attr.attribution_id}\`\n`;
                 md += `- **Type:** ${attr.source_type}\n`;
@@ -99,8 +102,17 @@ export function getSourceAttributionToolHandlers(memoryManager: MemoryManager) {
             if (!validationResult.valid) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
             }
-            const tavilySearchResults = await callTavilyApi(args.query, args.search_depth, args.max_results);
-            
+            // Pass all Tavily parameters to the API call
+            const tavilySearchResults = await callTavilyApi(args.query, {
+                search_depth: args.search_depth,
+                max_results: args.max_results,
+                include_raw_content: args.include_raw_content,
+                include_images: args.include_images,
+                include_image_descriptions: args.include_image_descriptions,
+                time_period: args.time_period,
+                topic: args.topic
+            });
+
             let md = `## Tavily Web Search Results for Query: "${args.query}"\n\n`;
             if (!tavilySearchResults || tavilySearchResults.length === 0) {
                 md += "*No results found.*\n";

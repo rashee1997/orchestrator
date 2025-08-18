@@ -2,7 +2,6 @@ import { DatabaseService } from '../services/DatabaseService.js';
 import { ContextInformationManager } from '../managers/ContextInformationManager.js';
 import { MemoryManager } from "../memory_manager.js";
 import { CodebaseContextRetrieverService, RetrievedCodeContext, ContextRetrievalOptions } from "./CodebaseContextRetrieverService.js";
-
 // Import refactored modules
 import { GeminiApiClient, GeminiApiNotInitializedError } from './gemini-integration-modules/GeminiApiClient.js';
 import { SUMMARIZE_CODE_CHUNK_PROMPT, SUMMARIZE_CONTEXT_PROMPT, EXTRACT_ENTITIES_PROMPT, META_PROMPT, SUMMARIZE_CONVERSATION_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
@@ -12,9 +11,7 @@ import { cosineSimilarity } from './gemini-integration-modules/GeminiUtilityFunc
 import { GeminiDbUtils } from './gemini-integration-modules/GeminiDbUtils.js';
 import { SUMMARIZATION_MODEL_NAME, ENTITY_EXTRACTION_MODEL_NAME, EMBEDDING_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, REFINEMENT_MODEL_NAME } from './gemini-integration-modules/GeminiConfig.js';
 import { GoogleGenAI, Part } from "@google/genai";
-
 export { GeminiApiNotInitializedError } from './gemini-integration-modules/GeminiApiClient.js';
-
 export class GeminiIntegrationService {
     private dbService: DatabaseService;
     private contextManager: ContextInformationManager;
@@ -22,14 +19,12 @@ export class GeminiIntegrationService {
     private _codebaseContextRetrieverService?: CodebaseContextRetrieverService;
     private geminiApiClient: GeminiApiClient;
     private geminiDbUtils: GeminiDbUtils;
-
     // Model names are now imported from GeminiConfig.ts, but re-exposed via getters for backward compatibility
     public get summarizationModelName(): string { return SUMMARIZATION_MODEL_NAME; }
     public get entityExtractionModelName(): string { return ENTITY_EXTRACTION_MODEL_NAME; }
     public get embeddingModelName(): string { return EMBEDDING_MODEL_NAME; }
     public get defaultAskModelName(): string { return DEFAULT_ASK_MODEL_NAME; }
     public get refinementModelName(): string { return REFINEMENT_MODEL_NAME; }
-
     constructor(
         dbService: DatabaseService,
         contextManager: ContextInformationManager,
@@ -42,40 +37,34 @@ export class GeminiIntegrationService {
         this.geminiApiClient = new GeminiApiClient(genAIInstance);
         this.geminiDbUtils = new GeminiDbUtils(this.dbService, this.geminiApiClient, this.summarizationModelName);
     }
-
     private get codebaseContextRetrieverService(): CodebaseContextRetrieverService {
         if (!this._codebaseContextRetrieverService) {
             this._codebaseContextRetrieverService = this.memoryManager.getCodebaseContextRetrieverService();
         }
         return this._codebaseContextRetrieverService;
     }
-
     // Generate a structured query from natural language input
     async generateStructuredQueryFromNaturalLanguage(naturalLanguageQuery: string): Promise<any> {
         // Use NLPQueryProcessor internally to generate structured query
         const nlpProcessor = new (await import('../ai/NLPQueryProcessor.js')).NLPQueryProcessor();
         return nlpProcessor.generateStructuredQuery(naturalLanguageQuery);
     }
-
     public getGenAIInstance(): GoogleGenAI | undefined {
         return this.geminiApiClient.getGenAIInstance();
     }
-
     // Ask a single question to Gemini
-    async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[]): Promise<{ content: Part[], confidenceScore?: number }> {
+    async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<{ content: Part[], confidenceScore?: number }> {
         const contextContentParts = formatRetrievedContextForPrompt(contextResults || []);
-        const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, contextContentParts);
+        const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig);
         if (results.length > 0) {
             return results[0];
         }
         throw new Error("Failed to get response from Gemini.");
     }
-
     // Ask multiple questions to Gemini in batch
-    public async batchAskGemini(queries: string[], modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[]): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+    public async batchAskGemini(queries: string[], modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
         const contextContentParts = formatRetrievedContextForPrompt(contextResults || []);
-        const results = await this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, contextContentParts);
-
+        const results = await this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig);
         return results.map(result => {
             let confidenceScore: number | undefined;
             if (contextResults && contextResults.length > 0) {
@@ -85,17 +74,16 @@ export class GeminiIntegrationService {
             return { ...result, confidenceScore };
         });
     }
-
     // Helper method to extract text from context data
     private extractTextFromContextData(dataToUse: any): string {
         const MAX_CONTEXT_STRING_LENGTH = 1000; // Define a reasonable maximum length
-    
+
         if (dataToUse === null || dataToUse === undefined) {
             return '';
         }
-    
+
         let resultString: string;
-    
+
         if (dataToUse && dataToUse.documentation_snippets && Array.isArray(dataToUse.documentation_snippets)) {
             resultString = dataToUse.documentation_snippets.map((s: any) =>
                 `${s.TITLE || ''}: ${s.DESCRIPTION || ''} ${s.CODE || ''}`
@@ -118,15 +106,14 @@ export class GeminiIntegrationService {
         } else {
             resultString = String(dataToUse); // Handle numbers, booleans, etc.
         }
-    
+
         // Limit the length of the output string
         if (resultString.length > MAX_CONTEXT_STRING_LENGTH) {
             return resultString.substring(0, MAX_CONTEXT_STRING_LENGTH) + '... (truncated)';
         }
-    
+
         return resultString;
     }
-
     // Summarize a code chunk
     async summarizeCodeChunk(codeChunk: string, entityType: string, language: string): Promise<string> {
         const modelToUse = this.summarizationModelName;
@@ -134,7 +121,6 @@ export class GeminiIntegrationService {
             .replace('{language}', language)
             .replace('{entityType}', entityType)
             .replace('{codeChunk}', codeChunk);
-
         try {
             const result = await this.askGemini(prompt, modelToUse);
             let summary = result.content[0].text ?? 'Could not generate summary.';
@@ -145,7 +131,6 @@ export class GeminiIntegrationService {
             throw error;
         }
     }
-
     // Summarize context for a specific agent and context type
     async summarizeContext(
         agent_id: string,
@@ -154,18 +139,14 @@ export class GeminiIntegrationService {
     ): Promise<string> {
         const modelToUse = this.summarizationModelName;
         const contextResult = await this.contextManager.getContext(agent_id, context_type, version);
-
         if (!contextResult || (!contextResult.context_data && !contextResult.context_data_parsed)) {
             return `No context data found for agent_id: ${agent_id}, context_type: ${context_type}, version: ${version}`;
         }
-
         const dataToUse = contextResult.context_data_parsed || contextResult.context_data;
         const textToSummarize = this.extractTextFromContextData(dataToUse);
-
         if (textToSummarize.trim().length === 0) {
             return `No content to summarize for agent_id: ${agent_id}, context_type: ${context_type}`;
         }
-
         try {
             const prompt = SUMMARIZE_CONTEXT_PROMPT.replace('{textToSummarize}', textToSummarize);
             const result = await this.askGemini(prompt, modelToUse);
@@ -175,7 +156,6 @@ export class GeminiIntegrationService {
             throw new Error(`Failed to summarize context using Gemini API: ${error.message}`);
         }
     }
-
     // Extract entities and keywords from context
     async extractEntities(
         agent_id: string,
@@ -184,23 +164,18 @@ export class GeminiIntegrationService {
     ): Promise<{ entities: string[]; keywords: string[]; message: string }> {
         const modelToUse = this.entityExtractionModelName;
         const contextResult = await this.contextManager.getContext(agent_id, context_type, version);
-
         if (!contextResult || (!contextResult.context_data && !contextResult.context_data_parsed)) {
             return { entities: [], keywords: [], message: `No context data found for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
-
         const dataToUse = contextResult.context_data_parsed || contextResult.context_data;
         const textToExtractFrom = this.extractTextFromContextData(dataToUse);
-
         if (textToExtractFrom.trim().length === 0) {
             return { entities: [], keywords: [], message: `No content to extract entities from for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
-
         try {
             const prompt = EXTRACT_ENTITIES_PROMPT.replace('{textToExtractFrom}', textToExtractFrom);
             const result = await this.askGemini(prompt, modelToUse);
             const textResponse = result.content[0].text ?? '';
-
             const parsedResponse = parseGeminiJsonResponse(textResponse);
             return {
                 entities: parsedResponse.entities || [],
@@ -212,7 +187,6 @@ export class GeminiIntegrationService {
             throw new Error(`Failed to extract entities using Gemini API: ${error.message}`);
         }
     }
-
     // Get embedding for a text using Gemini API
     private async getEmbedding(text: string): Promise<number[]> {
         const genAIInstance = this.geminiApiClient.getGenAIInstance();
@@ -227,7 +201,6 @@ export class GeminiIntegrationService {
         }
         return embeddingValues;
     }
-
     // Perform semantic search on context
     async semanticSearchContext(
         agent_id: string,
@@ -237,37 +210,30 @@ export class GeminiIntegrationService {
     ): Promise<{ results: Array<{ score: number; snippet: any }>; message: string }> {
         const contextResult = await this.contextManager.getContext(agent_id, context_type);
         const dataToSearch = contextResult?.context_data_parsed || contextResult?.context_data;
-
         if (!dataToSearch || !dataToSearch.documentation_snippets || !Array.isArray(dataToSearch.documentation_snippets) || dataToSearch.documentation_snippets.length === 0) {
             return { results: [], message: `No context or documentation snippets found for agent_id: ${agent_id}, context_type: ${context_type}` };
         }
-
         try {
             const queryEmbedding = await this.getEmbedding(query_text);
             if (!queryEmbedding || queryEmbedding.length === 0) {
                 throw new Error("Failed to generate embedding for the query text.");
             }
-
             const snippetsWithEmbeddings: { snippet: any; embedding: number[] }[] = [];
             for (const snippet of dataToSearch.documentation_snippets) {
                 const snippetText = `${snippet.TITLE || ''}: ${snippet.DESCRIPTION || ''} ${snippet.CODE || ''}`;
                 if (!snippetText.trim()) continue;
-
                 const snippetEmbedding = await this.getEmbedding(snippetText);
                 if (snippetEmbedding && snippetEmbedding.length > 0) {
                     snippetsWithEmbeddings.push({ snippet, embedding: snippetEmbedding });
                 }
             }
-
             if (snippetsWithEmbeddings.length === 0) {
                 return { results: [], message: "Failed to generate embeddings for any snippet." };
             }
-
             const searchResults = snippetsWithEmbeddings.map(item => {
                 const similarity = cosineSimilarity(queryEmbedding, item.embedding);
                 return { score: similarity, snippet: item.snippet };
             }).sort((a, b) => b.score - a.score);
-
             return {
                 results: searchResults.slice(0, top_k),
                 message: `Successfully performed semantic search using Gemini API.`
@@ -277,81 +243,18 @@ export class GeminiIntegrationService {
             throw new Error(`Failed to perform semantic search using Gemini API: ${error.message}`);
         }
     }
-
-    // Process and refine a user prompt using context and conversation history
-    async processAndRefinePrompt(
-        agent_id: string,
-        raw_user_prompt: string,
-        target_ai_persona: string | null = null,
-        conversation_context_ids: string[] | null = null,
-        context_options?: ContextRetrievalOptions
-    ): Promise<any> {
-        const modelToUse = this.refinementModelName;
-
-        let retrievedCodeContextParts: Part[] = [{ text: "No codebase context was actively retrieved for this refinement iteration." }];
-        try {
-            const retrievalOptions: ContextRetrievalOptions = context_options || {
-                topKEmbeddings: 5,
-                topKKgResults: 5,
-                embeddingScoreThreshold: 0.6
-            };
-            console.log('[DEBUG] processAndRefinePrompt retrievalOptions:', retrievalOptions);
-            const codeContexts = await this.codebaseContextRetrieverService.retrieveContextForPrompt(
-                agent_id,
-                raw_user_prompt,
-                retrievalOptions
-            );
-            retrievedCodeContextParts = formatRetrievedContextForPrompt(codeContexts);
-        } catch (contextError: any) {
-            console.error(`Error retrieving codebase context for prompt refinement (agent: ${agent_id}):`, contextError);
-            retrievedCodeContextParts = [{ text: `Error retrieving codebase context: ${contextError.message}` }];
-        }
-
-        const metaPromptContent = META_PROMPT
-            .replace('{modelToUse}', modelToUse)
-            .replace('{raw_user_prompt}', raw_user_prompt)
-            .replace('{retrievedCodeContextString}', retrievedCodeContextParts[0].text || '');
-
-        try {
-            const result = await this.askGemini(metaPromptContent, modelToUse);
-            const textResponse = result.content[0].text ?? '';
-
-            const parsedResponse = parseGeminiJsonResponse(textResponse);
-
-            // Ensure agent_id is always present in the refined prompt output
-            parsedResponse.agent_id = parsedResponse.agent_id || agent_id;
-
-            // Add server-side generated fields BEFORE storing
-            parsedResponse.refinement_timestamp = new Date().toISOString();
-            parsedResponse.original_prompt_text = raw_user_prompt;
-
-            // Now store the complete object and get the ID
-            parsedResponse.refined_prompt_id = await this.geminiDbUtils.storeRefinedPrompt(parsedResponse);
-
-            return parsedResponse;
-
-
-        } catch (error: any) {
-            console.error(`Error calling Gemini API for prompt refinement (agent: ${agent_id}):`, error);
-            throw new Error(`Failed to refine prompt using Gemini API: ${error.message}`);
-        }
-    }
-
     // Store a refined prompt in the database
     async storeRefinedPrompt(refinedPrompt: any): Promise<string> {
         return this.geminiDbUtils.storeRefinedPrompt(refinedPrompt);
     }
-
     // Retrieve a refined prompt from the database
     async getRefinedPrompt(agent_id: string, refined_prompt_id: string): Promise<any | null> {
         return this.geminiDbUtils.getRefinedPrompt(agent_id, refined_prompt_id);
     }
-
     // Summarize correction logs for an agent
     async summarizeCorrectionLogs(agent_id: string, maxLogs: number = 10): Promise<string> {
         return this.geminiDbUtils.summarizeCorrectionLogs(agent_id, maxLogs);
     }
-
     // Summarize a conversation
     async summarizeConversation(
         agent_id: string,
