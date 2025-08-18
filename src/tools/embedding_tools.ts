@@ -240,7 +240,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 );
                 outputMessage = `Codebase embedding ingestion for ${normalizedPaths.length} specified files complete.`;
 
-            } else {
+            } else if (path_to_embed) {
                 const absolutePathToEmbed = path.resolve(absoluteProjectRootPath, path_to_embed);
 
                 if (!absolutePathToEmbed.startsWith(absoluteProjectRootPath)) {
@@ -259,7 +259,10 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 }
                 const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
+            } else {
+                throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed' or 'paths_to_embed' must be provided.");
             }
+
 
             let detailedOutput = `## Ingestion Summary\n${outputMessage}\n\n### Overall Statistics:\n`
                 + `- **New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
@@ -281,7 +284,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             aggregate(resultCounts.deletedEmbeddings, 'deleted');
 
             if (fileStats.size > 0) {
-detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files processed):\n`;
+                detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files processed):\n`;
                 const sortedFiles = Array.from(fileStats.keys()).sort();
 
                 sortedFiles.forEach(filePath => {

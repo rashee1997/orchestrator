@@ -140,50 +140,78 @@ export class CodebaseEmbeddingRepository {
         excludeChunkTypes?: string[]
     ): Promise<Array<CodebaseEmbeddingRecord & { similarity: number }>> {
 
-        // --- Step 1: Perform both searches in parallel ---
-        const parentSearchPromise = this.findSimilarParentSummaries(queryEmbedding, topK, agentId);
-        const directChunkSearchPromise = this.findSimilarChildChunksDirectly(queryEmbedding, topK, agentId);
+        // --- Step 1: Perform Vector Search, applying pre-filters if possible ---
+        const vecResults = await findSimilarVecEmbeddings(queryEmbedding, topK * 5, this.vectorTable); // Fetch more initially
+        const embeddingIds = vecResults.map(r => r.embedding_id);
+        if (embeddingIds.length === 0) return [];
+        
+        const similarityMap = new Map(vecResults.map(r => [r.embedding_id, r.similarity]));
+        const placeholders = embeddingIds.map(() => '?').join(',');
 
-        const [summaryResults, directChunkResults] = await Promise.all([parentSearchPromise, directChunkSearchPromise]);
+        // --- Step 2: Fetch Metadata and Apply Post-filters ---
+        let sql = `SELECT * FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`;
+        const params: (string|number)[] = [...embeddingIds];
+
+        if (agentId) {
+            sql += ` AND agent_id = ?`;
+            params.push(agentId);
+        }
+        if (targetFilePaths && targetFilePaths.length > 0) {
+            sql += ` AND file_path_relative IN (${targetFilePaths.map(() => '?').join(',')})`;
+            params.push(...targetFilePaths);
+        }
+        if (excludeChunkTypes && excludeChunkTypes.length > 0) {
+            sql += ` AND embedding_type NOT IN (${excludeChunkTypes.map(() => '?').join(',')})`;
+            params.push(...excludeChunkTypes);
+        }
+
+        const filteredMetaRows = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
+        
+        // --- Step 3: Hybrid Retrieval Logic (Parent Document Expansion) ---
+        const parentIdsToFetch = new Set<string>();
+        const directChunkResults = new Map<string, CodebaseEmbeddingRecord & { similarity: number }>();
+
+        for (const meta of filteredMetaRows) {
+            const similarity = similarityMap.get(meta.embedding_id)!;
+            if (meta.embedding_type === 'summary') {
+                parentIdsToFetch.add(meta.embedding_id);
+            } else if (meta.embedding_type === 'chunk') {
+                directChunkResults.set(meta.embedding_id, { ...meta, similarity });
+                if (meta.parent_embedding_id) {
+                    parentIdsToFetch.add(meta.parent_embedding_id);
+                }
+            }
+        }
 
         let childChunksOfTopParents: (CodebaseEmbeddingRecord & { similarity: number })[] = [];
-        if (summaryResults.length > 0) {
-            const parentIds = summaryResults.map(r => r.embedding_id);
-            const parentSimilarityMap = new Map(summaryResults.map(p => [p.embedding_id, p.similarity]));
-            
-            const placeholders = parentIds.map(() => '?').join(',');
-            let sql = `SELECT * FROM ${this.metadataTable} WHERE parent_embedding_id IN (${placeholders}) AND embedding_type = 'chunk'`;
-            const params: (string | number)[] = [...parentIds];
+        if (parentIdsToFetch.size > 0) {
+            const parentPlaceholders = Array.from(parentIdsToFetch).map(() => '?').join(',');
+            let childSql = `SELECT * FROM ${this.metadataTable} WHERE parent_embedding_id IN (${parentPlaceholders}) AND embedding_type = 'chunk'`;
+            const childParams = [...parentIdsToFetch];
             if (agentId) {
-                // Not strictly needed as parent search is already filtered, but good for safety
-                sql += ` AND agent_id = ?`;
-                params.push(agentId);
+                childSql += ` AND agent_id = ?`;
+                childParams.push(agentId);
             }
-            const chunks = this.db.prepare(sql).all(...params) as CodebaseEmbeddingRecord[];
+            const chunks = this.db.prepare(childSql).all(...childParams) as CodebaseEmbeddingRecord[];
             childChunksOfTopParents = chunks.map(child => ({
                 ...child,
-                similarity: parentSimilarityMap.get(child.parent_embedding_id!) || 0
+                similarity: similarityMap.get(child.parent_embedding_id!) || 0.5 // Assign parent's score or a default
             }));
         }
 
-        // --- Step 2: Combine and de-duplicate the results ---
+        // --- Step 4: Combine, De-duplicate, and Re-rank ---
         const combinedResultsMap = new Map<string, CodebaseEmbeddingRecord & { similarity: number }>();
+        const allResults = [...childChunksOfTopParents, ...Array.from(directChunkResults.values())];
 
-        // Add results from both strategies to the map. The map handles de-duplication automatically.
-        const allResults = [...childChunksOfTopParents, ...directChunkResults];
         for (const result of allResults) {
-            // If a chunk is found by both methods, prioritize the one with the higher similarity score.
             const existing = combinedResultsMap.get(result.embedding_id);
             if (!existing || result.similarity > existing.similarity) {
                 combinedResultsMap.set(result.embedding_id, result);
             }
         }
         
-        // --- Step 3: Apply final re-ranking to the combined, unique set ---
         const finalRankedResults = Array.from(combinedResultsMap.values()).map(meta => {
             let finalScore = meta.similarity;
-
-            // Apply keyword boosting from query text
             if (meta.entity_name && queryText) {
                 const queryWords = new Set(queryText.toLowerCase().split(/[\s_-]+/).filter(w => w.length > 3));
                 if (queryWords.size > 0) {
@@ -196,10 +224,7 @@ export class CodebaseEmbeddingRepository {
             return { ...meta, finalScore };
         });
 
-        // Sort by the final composite score
         finalRankedResults.sort((a, b) => b.finalScore - a.finalScore);
-
-        // Return the top K results
         return finalRankedResults.slice(0, topK);
     }
 

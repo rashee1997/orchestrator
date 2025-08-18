@@ -17,7 +17,8 @@ import { ContextRetrievalOptions } from '../database/services/CodebaseContextRet
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
 import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
 import { randomUUID } from 'crypto';
-import { HistoryManager, ChatSession, ChatMessage } from './history_manager.js';
+import { ConversationMessage, ConversationSession } from '../database/managers/ConversationHistoryManager.js';
+
 
 const VALID_FOCUS_AREAS = [
     "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
@@ -68,16 +69,16 @@ async function _performIterativeRagSearch(args: IterativeRagArgs, memoryManagerI
 
 export const askGeminiToolDefinition: InternalToolDefinition = {
     name: 'ask_gemini',
-    description: 'Asks a query to the Gemini AI. Manages conversation history in a local `history` folder.',
+    description: 'Asks a query to the Gemini AI. Manages conversation history in the central database.',
     inputSchema: {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
-            session_id: { type: ['string', 'number'], description: 'The sequential ID (e.g., 1, 2) of a past conversation to continue. Use this with `continue: true`.', nullable: true },
+            session_id: { type: ['string', 'null'], description: 'The UUID of a past conversation to continue. Use this with `continue: true`.', nullable: true },
             continue: {
                 type: 'boolean',
-                description: 'If true, continues a conversation. If `session_id` is provided, it continues that specific session. If not, it continues the most recent one. If false, it finalizes the previous session and starts a new one.',
+                description: 'If true, continues a conversation. If `session_id` is provided, it continues that specific session. If not, it continues the most recent one. If false, it starts a new session.',
                 default: false,
                 nullable: true
             },
@@ -154,8 +155,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let mutable_enable_rag = enable_rag;
         let mutable_enable_iterative_search = enable_iterative_search;
 
-        const projectRoot = await findProjectRoot(__dirname);
-
         const geminiService = memoryManagerInstance.getGeminiIntegrationService();
         if (!geminiService) {
             throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available.");
@@ -163,46 +162,35 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
             throw new McpError(ErrorCode.InternalError, "Gemini/Google API key is not set.");
         }
-        const historyManager = new HistoryManager(projectRoot, geminiService);
+        const conversationHistoryManager = memoryManagerInstance.conversationHistoryManager;
 
-        let currentSession: ChatSession | null = null;
+        let currentSessionId: string | null = session_id;
 
         if (continue_session) {
-            if (session_id) {
-                currentSession = await historyManager.loadSession(Number(session_id));
-                if (currentSession) console.log(`[ask_gemini] Continuing specific session ID: ${session_id}`);
-            } else {
-                currentSession = await historyManager.loadActiveSession();
-                if (!currentSession) {
-                    currentSession = await historyManager.getLatestSession();
-                    if (currentSession) console.log(`[ask_gemini] Continuing latest finalized session ID: ${currentSession.displayId}`);
-                } else {
-                    console.log(`[ask_gemini] Continuing active session.`);
+            if (!currentSessionId) {
+                const sessions = await conversationHistoryManager.getConversationSessions(agent_id, null, 1);
+                if (sessions.length > 0) {
+                    currentSessionId = sessions[0].session_id;
+                    console.log(`[ask_gemini] Continuing most recent session ID: ${currentSessionId}`);
                 }
             }
-        } else {
-            await historyManager.finalizeActiveSession();
         }
 
-        if (!currentSession) {
-            currentSession = {
-                sessionId: randomUUID(),
-                displayId: 0,
-                startTime: new Date().toISOString(),
-                endTime: null,
-                title: query.substring(0, 75) + (query.length > 75 ? "..." : ""),
-                messages: [],
-            };
-            console.log(`[ask_gemini] Starting new session: ${currentSession.sessionId}`);
+        if (!currentSessionId) {
+            currentSessionId = await conversationHistoryManager.createConversationSession(agent_id, query.substring(0, 75) + (query.length > 75 ? "..." : ""));
+            console.log(`[ask_gemini] Starting new session: ${currentSessionId}`);
         }
+
+        const userMessage = { sender: 'user', message_content: query };
+        await conversationHistoryManager.storeConversationMessage(currentSessionId, userMessage.sender, userMessage.message_content);
 
         let conversationHistoryForPrompt = "";
-        const historyMessages = currentSession.messages.slice(-conversation_history_limit);
+        const historyMessages = await conversationHistoryManager.getConversationMessages(currentSessionId, conversation_history_limit);
         const hasConversationHistory = historyMessages.length > 0;
         let ragQuery = query;
 
         if (hasConversationHistory) {
-            conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.content}`).join('\n');
+            conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
             const isRagEnabled = mutable_enable_rag || mutable_enable_iterative_search || (mutable_live_review_paths && mutable_live_review_paths.length > 0);
 
             if (isRagEnabled) {
@@ -222,8 +210,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     } else if (decisionResponse.decision === 'PERFORM_RAG' && decisionResponse.rag_query) {
                         console.log(`[ask_gemini] AI Decision: Perform RAG with refined query: "${decisionResponse.rag_query}"`);
                         ragQuery = decisionResponse.rag_query;
-                        // <-- THIS IS THE KEY CHANGE -->
-                        // Autonomously upgrade to iterative search if the AI decides it needs more context.
                         console.log('[ask_gemini] Autonomously enabling iterative search for follow-up query.');
                         mutable_enable_iterative_search = true;
                     }
@@ -291,10 +277,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
                 const aiResponseText = JSON.stringify(parsedResponse, null, 2);
 
-                const userMessage: ChatMessage = { sender: 'user', content: query, timestamp: new Date().toISOString() };
-                const aiMessage: ChatMessage = { sender: 'ai', content: aiResponseText, timestamp: new Date().toISOString(), context: finalContext.length > 0 ? finalContext : undefined };
-                currentSession.messages.push(userMessage, aiMessage);
-                await historyManager.saveActiveSession(currentSession);
+                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
 
                 return { content: [{ type: 'text', text: aiResponseText }] };
             } catch (error: any) {
@@ -310,7 +293,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             } else {
                 const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text || 'No context was provided.';
                 let metaPromptTemplate: string;
-                
+
                 if (finalContext.length === 0 && !hasConversationHistory) {
                     metaPromptTemplate = `{query}`;
                 } else if (webSearchSources.length > 0) {
@@ -325,26 +308,26 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{context}', canonicalContextPart)
                     .replace('{query}', query)
                     .replace('{conversation_history}', conversationHistoryForPrompt);
-                
+
                 const toolConfig = google_search ? { tools: [{ googleSearch: {} }] } : undefined;
                 const response = await geminiService.askGemini(finalPromptContent, model, systemInstruction, undefined, undefined, toolConfig);
                 const geminiText = response.content?.[0]?.text ?? '';
                 markdownOutput = `## Gemini Response for Query:\n> "${query}"\n\n### AI Answer:\n${formatJsonToMarkdownCodeBlock(geminiText, 'text')}\n\n`;
             }
-            
+
             const isContextProvided = finalContext.length > 0;
             if (isContextProvided) {
-                 const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text;
-                 const answerToCheck = finalAnswerFromIteration || markdownOutput.split('### AI Answer:')[1];
-                 const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({ originalQuery: query, contextString: canonicalContextPart, generatedAnswer: answerToCheck });
-                 const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.");
-                 const verificationText = verificationResult.content[0].text ?? "";
+                const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text;
+                const answerToCheck = finalAnswerFromIteration || markdownOutput.split('### AI Answer:')[1];
+                const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({ originalQuery: query, contextString: canonicalContextPart, generatedAnswer: answerToCheck });
+                const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.");
+                const verificationText = verificationResult.content[0].text ?? "";
 
-                 if (verificationText.includes("HALLUCINATION_DETECTED")) {
-                     markdownOutput += `**Warning:** Potential hallucinations detected:\n${formatJsonToMarkdownCodeBlock(verificationText.replace("HALLUCINATION_DETECTED", "").trim(), 'text')}\n`;
-                 } else {
-                     markdownOutput += `**Verification Status:** Verified against provided context.\n`;
-                 }
+                if (verificationText.includes("HALLUCINATION_DETECTED")) {
+                    markdownOutput += `**Warning:** Potential hallucinations detected:\n${formatJsonToMarkdownCodeBlock(verificationText.replace("HALLUCINATION_DETECTED", "").trim(), 'text')}\n`;
+                } else {
+                    markdownOutput += `**Verification Status:** Verified against provided context.\n`;
+                }
             }
 
             if (searchMetrics) {
@@ -356,17 +339,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += `\n### Web Search Sources:\n` + webSearchSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
             }
 
-            const userMessage: ChatMessage = { sender: 'user', content: query, timestamp: new Date().toISOString() };
-            const aiMessage: ChatMessage = {
-                sender: 'ai', content: markdownOutput, timestamp: new Date().toISOString(),
+            await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', markdownOutput, 'text', null, null, null, null, {
                 context: finalContext.length > 0 ? finalContext : undefined,
                 sources: webSearchSources.length > 0 ? webSearchSources : undefined,
                 metrics: searchMetrics,
                 decisionLog: decisionLog.length > 0 ? decisionLog : undefined,
-                finalAnswerContent: finalAnswerFromIteration, // Add the final answer as a separate field
-            };
-            currentSession.messages.push(userMessage, aiMessage);
-            await historyManager.saveActiveSession(currentSession);
+                finalAnswerContent: finalAnswerFromIteration,
+            });
 
             return { content: [{ type: 'text', text: markdownOutput }] };
         } catch (error: any) {

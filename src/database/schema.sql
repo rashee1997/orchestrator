@@ -151,38 +151,6 @@ CREATE TABLE IF NOT EXISTS success_metrics (
 CREATE INDEX IF NOT EXISTS idx_success_metrics_agent_name_ts ON success_metrics (agent_id, metric_name, timestamp);
 CREATE INDEX IF NOT EXISTS idx_success_metrics_timestamp ON success_metrics (timestamp);
 
--- Knowledge Graph Nodes table
-CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
-    node_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    entity_type TEXT NOT NULL,
-    observations TEXT,
-    timestamp INTEGER NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_kg_nodes_agent_id ON knowledge_graph_nodes (agent_id);
-CREATE INDEX IF NOT EXISTS idx_kg_nodes_name ON knowledge_graph_nodes (name);
-CREATE INDEX IF NOT EXISTS idx_kg_nodes_entity_type ON knowledge_graph_nodes (entity_type);
-CREATE INDEX IF NOT EXISTS idx_kg_nodes_timestamp ON knowledge_graph_nodes (timestamp);
-
--- Knowledge Graph Relations table
-CREATE TABLE IF NOT EXISTS knowledge_graph_relations (
-    relation_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    from_node_id TEXT NOT NULL,
-    to_node_id TEXT NOT NULL,
-    relation_type TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (from_node_id) REFERENCES knowledge_graph_nodes (node_id) ON DELETE CASCADE,
-    FOREIGN KEY (to_node_id) REFERENCES knowledge_graph_nodes (node_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_kg_relations_agent_id ON knowledge_graph_relations (agent_id);
-CREATE INDEX IF NOT EXISTS idx_kg_relations_from_to ON knowledge_graph_relations (from_node_id, to_node_id);
-CREATE INDEX IF NOT EXISTS idx_kg_relations_type ON knowledge_graph_relations (relation_type);
-CREATE INDEX IF NOT EXISTS idx_kg_relations_timestamp ON knowledge_graph_relations (timestamp);
-
 -- Plans table
 CREATE TABLE IF NOT EXISTS plans (
     plan_id TEXT PRIMARY KEY,
