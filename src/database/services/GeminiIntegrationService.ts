@@ -53,18 +53,18 @@ export class GeminiIntegrationService {
         return this.geminiApiClient.getGenAIInstance();
     }
     // Ask a single question to Gemini
-    async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<{ content: Part[], confidenceScore?: number }> {
+    async askGemini(query: string, modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number }> {
         const contextContentParts = formatRetrievedContextForPrompt(contextResults || []);
-        const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig);
+        const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
         }
         throw new Error("Failed to get response from Gemini.");
     }
     // Ask multiple questions to Gemini in batch
-    public async batchAskGemini(queries: string[], modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+    public async batchAskGemini(queries: string[], modelName?: string, systemInstruction?: string, contextResults?: RetrievedCodeContext[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
         const contextContentParts = formatRetrievedContextForPrompt(contextResults || []);
-        const results = await this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig);
+        const results = await this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, contextContentParts, thinkingConfig, toolConfig);
         return results.map(result => {
             let confidenceScore: number | undefined;
             if (contextResults && contextResults.length > 0) {

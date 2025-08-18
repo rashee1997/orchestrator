@@ -6,7 +6,11 @@ export interface RagAnalysisResponse {
     reasoning: string;
     nextCodebaseQuery?: string;
     nextWebQuery?: string;
-    confidenceScore?: number; // New field for confidence in decision
+    confidenceScore?: number;
+    // New fields for comprehensive logging
+    contextUsed?: string; // The context string provided to Gemini for this analysis
+    promptSent?: string; // The full prompt sent to Gemini for this analysis
+    rawGeminiResponse?: string; // The raw text response received from Gemini for this analysis
 }
 
 /**
@@ -17,9 +21,12 @@ export class RagResponseParser {
     /**
      * Parses the raw text response from Gemini's analysis prompt.
      * @param rawResponseText The raw text response from Gemini
+     * @param rawResponseText The raw text response from Gemini
+     * @param contextUsed The context string used for the Gemini analysis
+     * @param promptSent The full prompt sent to Gemini for the analysis
      * @returns Parsed response object or null if parsing fails
      */
-    static parseAnalysisResponse(rawResponseText: string): RagAnalysisResponse | null {
+    static parseAnalysisResponse(rawResponseText: string, contextUsed?: string, promptSent?: string): RagAnalysisResponse | null {
         try {
             // Normalize line endings and trim whitespace
             const normalizedText = rawResponseText.replace(/\r\n/g, '\n').trim();
@@ -72,7 +79,10 @@ export class RagResponseParser {
                 reasoning,
                 nextCodebaseQuery,
                 nextWebQuery,
-                confidenceScore
+                confidenceScore,
+                contextUsed,
+                promptSent,
+                rawGeminiResponse: rawResponseText // Store the raw response as well
             };
         } catch (error) {
             console.error('[RagResponseParser] Error parsing response:', error);

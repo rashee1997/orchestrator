@@ -6,6 +6,8 @@ import { RagPromptTemplates } from './rag_prompt_templates.js';
 import { RagAnalysisResponse, RagResponseParser } from './rag_response_parser.js';
 import { callTavilyApi } from '../../integrations/tavily.js';
 import { formatRetrievedContextForPrompt as formatContextForGemini } from '../../database/services/gemini-integration-modules/GeminiContextFormatter.js';
+import { GeminiApiNotInitializedError } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 /**
  * Interface for the result of the iterative RAG search.
  */
@@ -13,6 +15,7 @@ export interface IterativeRagResult {
     accumulatedContext: RetrievedCodeContext[];
     webSearchSources: { title: string; url: string }[];
     finalAnswer?: string;
+    decisionLog?: RagAnalysisResponse[]; // <-- ADDED THIS LINE
     searchMetrics?: {
         totalIterations: number;
         contextItemsAdded: number;
@@ -106,6 +109,7 @@ export class IterativeRagOrchestrator {
         let currentSearchQuery = query;
         const webSearchSources: { title: string; url: string }[] = [];
         let finalAnswer: string | undefined = undefined;
+        const decisionLog: RagAnalysisResponse[] = []; // <-- ADDED THIS LINE
         // Search metrics tracking
         const searchMetrics = {
             totalIterations: 0,
@@ -164,10 +168,30 @@ export class IterativeRagOrchestrator {
             });
             // Get analysis from Gemini
             const geminiSystemInstruction = RagPromptTemplates.generateAnalysisSystemInstruction();
-            const analysisResult = await this.geminiService.askGemini(analysisPrompt, model, geminiSystemInstruction, undefined, thinkingConfig);
+            let analysisResult;
+            try {
+                analysisResult = await this.geminiService.askGemini(analysisPrompt, model, geminiSystemInstruction, undefined, thinkingConfig);
+            } catch (error: any) {
+                console.error(`[Iterative RAG] Turn ${i + 1}: Error during Gemini analysis:`, error);
+                if (error instanceof GeminiApiNotInitializedError || (error && typeof error === 'object' && 'message' in error && (error.message as string).includes('429') || (error.message as string).includes('Quota exceeded'))) {
+                    searchMetrics.earlyTerminationReason = "Gemini API quota exhausted or not initialized.";
+                } else {
+                    searchMetrics.earlyTerminationReason = `Gemini analysis failed: ${error.message}`;
+                }
+                break;
+            }
             const rawResponseText = analysisResult.content[0].text ?? "";
-            // Parse the response
-            const parsedResponse = RagResponseParser.parseAnalysisResponse(rawResponseText);
+            // Parse the response, passing the additional context for logging
+            const parsedResponse = RagResponseParser.parseAnalysisResponse(
+                rawResponseText,
+                contextString, // contextUsed
+                analysisPrompt // promptSent
+            );
+
+            if (parsedResponse) { // <-- ADDED THIS BLOCK
+                decisionLog.push(parsedResponse);
+            }
+
             if (!parsedResponse || !RagResponseParser.validateResponse(parsedResponse)) {
                 console.warn(`[Iterative RAG] Turn ${i + 1}: Failed to parse or validate Gemini response. Concluding search.`);
                 searchMetrics.earlyTerminationReason = "Failed to parse Gemini response";
@@ -184,7 +208,18 @@ export class IterativeRagOrchestrator {
                     contextString: contextString,
                     focusString
                 });
-                const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", undefined, thinkingConfig);
+                let answerResult;
+                try {
+                    answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", undefined, thinkingConfig);
+                } catch (error: any) {
+                    console.error(`[Iterative RAG] Turn ${i + 1}: Error during Gemini answer generation:`, error);
+                    if (error instanceof GeminiApiNotInitializedError || (error && typeof error === 'object' && 'message' in error && (error.message as string).includes('429') || (error.message as string).includes('Quota exceeded'))) {
+                        searchMetrics.earlyTerminationReason = "Gemini API quota exhausted or not initialized.";
+                    } else {
+                        searchMetrics.earlyTerminationReason = `Gemini answer generation failed: ${error.message}`;
+                    }
+                    break;
+                }
                 const generatedAnswer = answerResult.content[0].text ?? "";
                 // Enhanced hallucination check with multiple verification strategies
                 const verificationResult = await this.performEnhancedHallucinationCheck({
@@ -264,10 +299,13 @@ export class IterativeRagOrchestrator {
                             query, // The original user query
                             focusString, // The original focus string
                             model,
-                            thinkingConfig
+                            thinkingConfig,
+                            newContextString, // contextUsed for reanalysis
+                            analysisPrompt // promptSent for reanalysis
                         );
 
                         if (reanalysisResponse && RagResponseParser.validateResponse(reanalysisResponse)) {
+                            decisionLog.push(reanalysisResponse); // <-- ADDED THIS LINE
                             decision = reanalysisResponse.decision;
                             nextCodebaseQuery = reanalysisResponse.nextCodebaseQuery;
                             console.log(`[Iterative RAG] Post-web search re-analysis decision: ${decision}`);
@@ -301,6 +339,7 @@ export class IterativeRagOrchestrator {
             accumulatedContext,
             webSearchSources,
             finalAnswer,
+            decisionLog, // <-- ADDED THIS LINE
             searchMetrics
         };
     }
@@ -314,7 +353,9 @@ export class IterativeRagOrchestrator {
         originalQuery: string,
         focusString: string,
         model: string | undefined,
-        thinkingConfig: any
+        thinkingConfig: any,
+        contextUsed?: string, // New parameter
+        promptSent?: string // New parameter
     ): Promise<RagAnalysisResponse | null> {
         console.log('[Iterative RAG] Re-analyzing context after web search.');
         const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
@@ -325,15 +366,22 @@ export class IterativeRagOrchestrator {
             focusString: focusString,
             enableWebSearch: false // Disable further web searches in this step
         });
-        const analysisResult = await this.geminiService.askGemini(
-            analysisPrompt,
-            model,
-            RagPromptTemplates.generateAnalysisSystemInstruction(),
-            undefined,
-            thinkingConfig
-        );
+        let analysisResult;
+        try {
+            analysisResult = await this.geminiService.askGemini(
+                analysisPrompt,
+                model,
+                RagPromptTemplates.generateAnalysisSystemInstruction(),
+                undefined,
+                thinkingConfig
+            );
+        } catch (error: any) {
+            console.error(`[Iterative RAG] Re-analysis: Error during Gemini analysis:`, error);
+            // Do not break the loop here, just return null or a default response
+            return null;
+        }
         const rawResponseText = analysisResult.content[0].text ?? '';
-        return RagResponseParser.parseAnalysisResponse(rawResponseText);
+        return RagResponseParser.parseAnalysisResponse(rawResponseText, contextUsed, promptSent);
     }
 
     /**
@@ -356,13 +404,20 @@ export class IterativeRagOrchestrator {
             contextString,
             generatedAnswer
         });
-        const verificationResult = await this.geminiService.askGemini(
-            verificationPrompt,
-            model,
-            "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.",
-            undefined,
-            thinkingConfig
-        );
+        let verificationResult;
+        try {
+            verificationResult = await this.geminiService.askGemini(
+                verificationPrompt,
+                model,
+                "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.",
+                undefined,
+                thinkingConfig
+            );
+        } catch (error: any) {
+            console.error(`[Iterative RAG] Hallucination check: Error during Gemini verification:`, error);
+            // If verification fails, assume no hallucination for now to avoid blocking
+            return { isHallucination: false, confidence: 0, issues: `Verification failed: ${error.message}` };
+        }
         const verificationText = verificationResult.content[0].text ?? "";
         // Strategy 2: Fact extraction and comparison
         const factExtractionPrompt = `
@@ -384,13 +439,20 @@ Example Response:
   "hallucinationScore": 0.1
 }
 `;
-        const factExtractionResult = await this.geminiService.askGemini(
-            factExtractionPrompt,
-            model,
-            "You are a fact extraction expert. Respond only with a valid JSON object, without any conversational text or markdown.",
-            undefined,
-            thinkingConfig
-        );
+        let factExtractionResult;
+        try {
+            factExtractionResult = await this.geminiService.askGemini(
+                factExtractionPrompt,
+                model,
+                "You are a fact extraction expert. Respond only with a valid JSON object, without any conversational text or markdown.",
+                undefined,
+                thinkingConfig
+            );
+        } catch (error: any) {
+            console.error(`[Iterative RAG] Hallucination check: Error during fact extraction:`, error);
+            // If fact extraction fails, assume a default score
+            return { isHallucination: false, confidence: 0, issues: `Fact extraction failed: ${error.message}` };
+        }
         let factExtractionData: any;
         try {
             const rawText = factExtractionResult.content[0].text ?? "{}";

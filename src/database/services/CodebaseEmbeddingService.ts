@@ -95,12 +95,13 @@ export class CodebaseEmbeddingService {
     ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
 
         const chunksToEmbed: Array<{ chunk: any, fileInfo: any }> = [];
-        const report = {
+        const report: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'> = {
             newEmbeddingsCount: 0,
             reusedEmbeddingsCount: 0,
-            newEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
-            reusedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
-            deletedEmbeddings: [] as Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null }>,
+            newEmbeddings: [],
+            reusedEmbeddings: [],
+            deletedEmbeddings: [],
+            scannedFiles: [], // Initialize new field
             embeddingRequestCount: 0,
             embeddingRetryCount: 0,
             totalTokensProcessed: 0,
@@ -110,17 +111,19 @@ export class CodebaseEmbeddingService {
             dbCallLatencyMs: 0
         };
 
-        // --- MODIFICATION: This entire block is updated for the new ingestion strategy ---
-
         // Step 1: Concurrently process files to generate chunks and identify stale ones
         await Promise.all(filesToProcess.map(async (fileInfo) => {
             try {
                 const fileContent = await fs.readFile(fileInfo.absolutePath, 'utf-8');
-                if (!fileContent.trim()) return;
+                if (!fileContent.trim()) {
+                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'skipped' });
+                    return;
+                }
 
                 const currentFileHash = this.generateFileHash(fileContent);
                 if (existingFileHashes.get(fileInfo.relativePath) === currentFileHash) {
                     console.log(`[Idempotency Skip] File has not changed: ${fileInfo.relativePath}`);
+                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'skipped' });
                     return;
                 }
 
@@ -141,9 +144,11 @@ export class CodebaseEmbeddingService {
                 for (const chunk of multiVectorChunks) {
                     chunksToEmbed.push({ chunk, fileInfo: { ...fileInfo, fileHash: currentFileHash } });
                 }
+                report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'processed' });
 
             } catch (err) {
                 console.error(`Error processing file ${fileInfo.absolutePath}:`, err);
+                report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'error' });
             }
         }));
 

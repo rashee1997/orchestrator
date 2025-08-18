@@ -281,18 +281,13 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             aggregate(resultCounts.deletedEmbeddings, 'deleted');
 
             if (fileStats.size > 0) {
-                detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files affected):\n`;
+detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files processed):\n`;
                 const sortedFiles = Array.from(fileStats.keys()).sort();
-                const filesToShow = 30;
 
-                sortedFiles.slice(0, filesToShow).forEach(filePath => {
+                sortedFiles.forEach(filePath => {
                     const counts = fileStats.get(filePath)!;
                     detailedOutput += `- \`${filePath}\` (New: ${counts.new}, Reused: ${counts.reused}, Deleted: ${counts.deleted})\n`;
                 });
-
-                if (sortedFiles.length > filesToShow) {
-                    detailedOutput += `- ...and ${sortedFiles.length - filesToShow} more files.\n`;
-                }
             }
 
             detailedOutput += `\n### Performance Metrics:\n`;

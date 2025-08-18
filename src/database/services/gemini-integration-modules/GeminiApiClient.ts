@@ -65,14 +65,14 @@ export class GeminiApiClient {
     public getGenAIInstance(): GoogleGenAI | undefined {
         return this.genAI;
     }
-    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<{ content: Part[], confidenceScore?: number }> {
-        const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig);
+    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number }> {
+        const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
         }
         throw new Error("Failed to get response from Gemini.");
     }
-    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
         if (queries.length === 0) return [];
         const availableApiKeys = this.apiKeys;
         if (availableApiKeys.length === 0) {
@@ -136,9 +136,17 @@ export class GeminiApiClient {
                             generationConfig: modifiedGenerationConfig,
                         };
 
-                        // Add config if it has any properties
+                        // Add thinking config if it has any properties
                         if (Object.keys(config).length > 0) {
                             request.config = config;
+                        }
+
+                        // Add tool config if provided, merging it correctly
+                        if (toolConfig && toolConfig.tools && toolConfig.tools.length > 0) {
+                            if (!request.config) {
+                                request.config = {};
+                            }
+                            request.config.tools = toolConfig.tools;
                         }
 
                         const result = await genAIInstance.models.generateContent(request);
@@ -161,28 +169,19 @@ export class GeminiApiClient {
                             console.warn(`Received 429 Too Many Requests. Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying batch after ${backoffTime}ms...`);
                             await new Promise(resolve => setTimeout(resolve, backoffTime));
                         } else {
-                            console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. Skipping batch.`);
-                            for (let j = 0; j < batchQueries.length; j++) {
-                                allResults.push({ content: [{ text: "Error: Max retries reached for this query." }] });
-                            }
-                            success = true;
+                            console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. All API keys exhausted.`);
+                            throw lastError; // Re-throw the last 429 error
                         }
                     } else {
                         console.error(`Non-retryable error for batch starting at index ${i}:`, error);
-                        // For non-retryable errors, we still want to log and move on,
-                        // but not mark as success if it was a critical failure.
-                        for (let j = 0; j < batchQueries.length; j++) {
-                            allResults.push({ content: [{ text: `Error: ${error.message}` }] });
-                        }
-                        success = true; // Mark as success to break the while loop for this batch
+                        throw error; // Re-throw non-retryable errors immediately
                     }
                 }
             }
             if (!success) {
                 // This block will only be reached if an unhandled error occurred and success was never true
-                for (let j = 0; j < batchQueries.length; j++) {
-                    allResults.push({ content: [{ text: `Error: Failed after all retries. Last error: ${lastError ? lastError.message : 'Unknown'}` }] });
-                }
+                // In this case, we should re-throw the last error to propagate it.
+                throw lastError || new Error("Unknown error occurred during batch processing.");
             }
             if (i + batchSize < queries.length) {
                 await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
