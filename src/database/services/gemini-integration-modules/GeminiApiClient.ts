@@ -65,14 +65,14 @@ export class GeminiApiClient {
     public getGenAIInstance(): GoogleGenAI | undefined {
         return this.genAI;
     }
-    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number }> {
+    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> {
         const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
         }
         throw new Error("Failed to get response from Gemini.");
     }
-    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
         if (queries.length === 0) return [];
         const availableApiKeys = this.apiKeys;
         if (availableApiKeys.length === 0) {
@@ -80,7 +80,7 @@ export class GeminiApiClient {
         }
         const batchSize = 10;
         const delayBetweenBatches = 10000; // Increased delay to 10 seconds
-        const allResults: Array<{ content: Part[], confidenceScore?: number }> = [];
+        const allResults: Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> = [];
 
         // Create a modified generation config
         const modifiedGenerationConfig = { ...this.generationConfig };
@@ -127,7 +127,7 @@ export class GeminiApiClient {
                         parts.push({ text: query });
                         return { role: "user", parts };
                     });
-                    const batchResponses: Array<{ content: Part[], confidenceScore?: number }> = [];
+                    const batchResponses: Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> = [];
                     for (const content of batchContents) {
                         const request: any = {
                             model: modelName,
@@ -154,7 +154,10 @@ export class GeminiApiClient {
                         if (!responseText && typeof result.text === "string") {
                             responseText = result.text;
                         }
-                        batchResponses.push({ content: [{ text: responseText }] });
+                        batchResponses.push({
+                            content: [{ text: responseText }],
+                            groundingMetadata: result.candidates?.[0]?.groundingMetadata
+                        });
                     }
                     allResults.push(...batchResponses);
                     success = true;

@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS codebase_embeddings (
     agent_id TEXT NOT NULL,
     file_path_relative TEXT NOT NULL,
     entity_name TEXT,
+    entity_name_vector_blob BLOB,
+    entity_name_vector_dimensions INTEGER,
     chunk_text TEXT NOT NULL,
     ai_summary_text TEXT,
     vector_dimensions INTEGER NOT NULL,

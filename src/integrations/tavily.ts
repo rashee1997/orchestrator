@@ -1,5 +1,12 @@
 import axios from 'axios'; // Import axios
 import { MemoryManager } from '../database/memory_manager.js';
+
+export interface WebSearchResult {
+    title: string;
+    url: string;
+    content: string;
+}
+
 const TAVILY_MOCK_MODE = process.env.TAVILY_MOCK_MODE === 'true';
 const TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'; // Define endpoint
 export async function callTavilyApi(

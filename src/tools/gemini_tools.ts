@@ -1,4 +1,3 @@
-// src/tools/gemini_tools.ts
 import { MemoryManager } from '../database/memory_manager.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -7,7 +6,7 @@ import { GeminiIntegrationService } from '../database/services/GeminiIntegration
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, CODE_ANALYSIS_META_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
@@ -18,7 +17,6 @@ import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from '
 import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
 import { randomUUID } from 'crypto';
 import { ConversationMessage, ConversationSession } from '../database/managers/ConversationHistoryManager.js';
-
 
 const VALID_FOCUS_AREAS = [
     "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
@@ -151,13 +149,17 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             continue: continue_session
         } = args;
 
+        // Preserve user's explicit RAG/iterative search settings
+        const userExplicitlyEnabledRag = enable_rag;
+        const userExplicitlyEnabledIterativeSearch = enable_iterative_search;
+
         let mutable_live_review_paths = live_review_file_paths ? [...live_review_file_paths] : [];
         let mutable_enable_rag = enable_rag;
         let mutable_enable_iterative_search = enable_iterative_search;
 
         const geminiService = memoryManagerInstance.getGeminiIntegrationService();
         if (!geminiService) {
-            throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available.");
+            throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available via MemoryManager.");
         }
         if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY) {
             throw new McpError(ErrorCode.InternalError, "Gemini/Google API key is not set.");
@@ -191,9 +193,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         if (hasConversationHistory) {
             conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
-            const isRagEnabled = mutable_enable_rag || mutable_enable_iterative_search || (mutable_live_review_paths && mutable_live_review_paths.length > 0);
+            const isRagEnabledByCurrentSettings = mutable_enable_rag || mutable_enable_iterative_search || (mutable_live_review_paths && mutable_live_review_paths.length > 0);
 
-            if (isRagEnabled) {
+            // Only run RAG decision prompt if user hasn't explicitly enabled RAG/iterative search
+            // This ensures user's explicit intent overrides autonomous decision
+            if (isRagEnabledByCurrentSettings && !userExplicitlyEnabledRag && !userExplicitlyEnabledIterativeSearch) {
                 try {
                     const decisionPrompt = RAG_DECISION_PROMPT
                         .replace('{conversation_history}', conversationHistoryForPrompt)
@@ -226,7 +230,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let decisionLog: any[] = [];
 
         try {
-            if (mutable_enable_iterative_search) {
+            // Ensure user's explicit settings are respected here
+            if (userExplicitlyEnabledIterativeSearch || mutable_enable_iterative_search) {
                 const iterativeResult = await _performIterativeRagSearch({ ...args, query: ragQuery }, memoryManagerInstance, geminiService);
                 finalContext = iterativeResult.accumulatedContext;
                 webSearchSources = iterativeResult.webSearchSources;
@@ -243,7 +248,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         finalContext.push({ type: 'file_snippet', sourcePath: filePath, entityName: `chunk_${index + 1}`, content: chunk.chunk_text, metadata: { language } });
                     });
                 }
-            } else if (mutable_enable_rag) {
+            } else if (userExplicitlyEnabledRag || mutable_enable_rag) { // Ensure user's explicit RAG is respected
                 const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
                 finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, ragQuery, context_options || {});
             }
@@ -310,11 +315,34 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{conversation_history}', conversationHistoryForPrompt);
 
                 const toolConfig = google_search ? { tools: [{ googleSearch: {} }] } : undefined;
-                const response = await geminiService.askGemini(finalPromptContent, model, systemInstruction, undefined, undefined, toolConfig);
-                const geminiText = response.content?.[0]?.text ?? '';
+                const geminiResponse = await geminiService.askGemini(finalPromptContent, model, systemInstruction, undefined, toolConfig);
+                const geminiText = geminiResponse.content?.[0]?.text ?? '';
+                
+                // Extract grounding metadata if available
+                let citations: Array<{ title: string; url: string }> = [];
+                if (google_search && geminiResponse.groundingMetadata?.groundingChunks) {
+                    for (const chunk of geminiResponse.groundingMetadata.groundingChunks) {
+                        if (chunk.web?.uri && chunk.web?.title) {
+                            citations.push({
+                                title: chunk.web.title,
+                                url: chunk.web.uri
+                            });
+                        }
+                    }
+                }
+                
                 markdownOutput = `## Gemini Response for Query:\n> "${query}"\n\n### AI Answer:\n${formatJsonToMarkdownCodeBlock(geminiText, 'text')}\n\n`;
+                
+                // Add citations section if available
+                if (citations.length > 0) {
+                    markdownOutput += `### Citations:\n`;
+                    citations.forEach((citation, index) => {
+                        markdownOutput += `${index + 1}. [${citation.title}](${citation.url})\n`;
+                    });
+                    markdownOutput += `\n`;
+                }
             }
-
+            
             const isContextProvided = finalContext.length > 0;
             if (isContextProvided) {
                 const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text;

@@ -6,6 +6,8 @@ export interface CodebaseEmbeddingRecord {
     agent_id: string;
     chunk_text: string;
     entity_name: string | null;
+    entity_name_vector_blob?: Buffer | null;
+    entity_name_vector_dimensions?: number | null;
     vector_blob: Buffer;
     vector_dimensions: number;
     model_name: string;
