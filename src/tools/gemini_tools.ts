@@ -74,9 +74,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
             session_id: { type: ['string', 'null'], description: 'The UUID of a past conversation to continue. Use this with `continue: true`.', nullable: true },
+            session_name: { type: ['string', 'null'], description: 'Optional: A human-readable name for the session to continue or create. If provided with `continue: true`, it will try to find a session by this name.', nullable: true },
+            session_sequence_number: { type: ['number', 'null'], description: 'Optional: A sequence number for the session to continue or create. If provided with `continue: true`, it will try to find a session by this sequence number among your created sessions.', nullable: true },
             continue: {
                 type: 'boolean',
-                description: 'If true, continues a conversation. If `session_id` is provided, it continues that specific session. If not, it continues the most recent one. If false, it starts a new session.',
+                description: 'If true, continues a conversation. If `session_id` is provided, it continues that specific session. If not, it tries to find the most recent session, or a session by `session_name` or `session_sequence_number`. If false, it starts a new session.',
                 default: false,
                 nullable: true
             },
@@ -145,7 +147,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             target_ai_persona, conversation_context_ids, enable_web_search, max_iterations,
             hallucination_check_threshold,
             google_search,
-            session_id, conversation_history_limit,
+            session_id, session_name, session_sequence_number, conversation_history_limit,
             continue: continue_session
         } = args;
 
@@ -170,17 +172,37 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         if (continue_session) {
             if (!currentSessionId) {
-                const sessions = await conversationHistoryManager.getConversationSessions(agent_id, null, 1);
-                if (sessions.length > 0) {
-                    currentSessionId = sessions[0].session_id;
-                    console.log(`[ask_gemini] Continuing most recent session ID: ${currentSessionId}`);
+                let sessions: ConversationSession[] = [];
+                if (session_name) {
+                    sessions = await conversationHistoryManager.getConversationSessionsByTitle(agent_id, session_name);
+                    if (sessions.length > 0) {
+                        currentSessionId = sessions[0].session_id;
+                        console.log(`[ask_gemini] Continuing session by name: "${session_name}" (ID: ${currentSessionId})`);
+                    } else {
+                        throw new McpError(ErrorCode.InvalidParams, `No session found with title: "${session_name}" for agent: ${agent_id}`);
+                    }
+                } else if (session_sequence_number !== null && session_sequence_number !== undefined) {
+                    sessions = await conversationHistoryManager.getConversationSessionsBySequence(agent_id, session_sequence_number);
+                    if (sessions.length > 0) {
+                        currentSessionId = sessions[0].session_id;
+                        console.log(`[ask_gemini] Continuing session by sequence number: ${session_sequence_number} (ID: ${currentSessionId})`);
+                    } else {
+                        throw new McpError(ErrorCode.InvalidParams, `No session found with sequence number: ${session_sequence_number} for agent: ${agent_id}`);
+                    }
+                } else {
+                    sessions = await conversationHistoryManager.getConversationSessions(agent_id, null, 1);
+                    if (sessions.length > 0) {
+                        currentSessionId = sessions[0].session_id;
+                        console.log(`[ask_gemini] Continuing most recent session ID: ${currentSessionId}`);
+                    }
                 }
             }
         }
 
         if (!currentSessionId) {
-            currentSessionId = await conversationHistoryManager.createConversationSession(agent_id, query.substring(0, 75) + (query.length > 75 ? "..." : ""));
-            console.log(`[ask_gemini] Starting new session: ${currentSessionId}`);
+            const conversationTitle = await geminiService.generateConversationTitle(query);
+            currentSessionId = await conversationHistoryManager.createConversationSession(agent_id, conversationTitle);
+            console.log(`[ask_gemini] Starting new session: ${currentSessionId} with title: "${conversationTitle}"`);
         }
 
         const userMessage = { sender: 'user', message_content: query };
