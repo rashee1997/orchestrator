@@ -40,7 +40,7 @@ function getParsedArrayField<T = string>(input: any): T[] {
 // - isCodeOrId: if true, wraps in single backticks (for IDs, paths, etc.)
 // - isBlockContent: if true, wraps in triple backticks (for messages, stack traces)
 // - otherwise, applies minimal escaping for general text.
-function formatValue(value: any, options: { isCodeOrId?: boolean, isBlockContent?: boolean, lang?: string } = {}): string {
+export function formatValue(value: any, options: { isCodeOrId?: boolean, isBlockContent?: boolean, lang?: string } = {}): string {
     if (value === null || typeof value === 'undefined') {
         return '*N/A*';
     }
@@ -471,5 +471,72 @@ export function formatErrorLogToMarkdown(log: any): string {
     }
     if (log.resolution_details) md += `  - **Resolution:** ${formatValue(log.resolution_details)}\n`;
     if (log.error_timestamp_iso) md += `  - **Occurred At:** ${formatValue(log.error_timestamp_iso ? new Date(log.error_timestamp_iso) : null)}\n`;
+    return md;
+}
+
+export function formatPlanGenerationResponseToMarkdown(response: any): string {
+    if (!response) {
+        return "*No plan generation response provided.*\n";
+    }
+
+    let md = `## Refined Prompt & Plan Generation Summary\n\n`;
+
+    md += `### Generated Plan Details:\n`;
+    md += `- **Plan Title:** ${formatValue(response.plan_title || 'N/A')}\n`;
+    md += `- **Estimated Duration:** ${formatValue(response.estimated_duration_days)} days\n`;
+    md += `- **Target Dates:** ${formatValue(response.target_start_date)} to ${formatValue(response.target_end_date)}\n`;
+    if (response.refinement_engine_model) {
+        md += `- **Refinement Model:** ${formatValue(response.refinement_engine_model)}\n`;
+    }
+    if (response.refinement_timestamp) {
+        md += `- **Generated At:** ${formatValue(new Date(response.refinement_timestamp))}\n`;
+    }
+    if (response.original_prompt_text) {
+        md += `- **Original Query:** ${formatValue(response.original_prompt_text)}\n`;
+    }
+    if (response.target_ai_persona) {
+        md += `- **Target AI Persona:** ${formatValue(response.target_ai_persona)}\n`;
+    }
+    if (response.refined_prompt_id) {
+        md += `- **Refined Prompt ID:** ${formatValue(response.refined_prompt_id, { isCodeOrId: true })}\n`;
+    }
+
+    if (response.plan_risks_and_mitigations && response.plan_risks_and_mitigations.length > 0) {
+        md += `\n### Identified Risks and Mitigations:\n`;
+        response.plan_risks_and_mitigations.forEach((risk: any, index: number) => {
+            md += `\n**Risk ${index + 1}:**\n`;
+            md += `- **Description:** ${formatValue(risk.risk_description)}\n`;
+            md += `- **Mitigation Strategy:** ${formatValue(risk.mitigation_strategy)}\n`;
+        });
+    }
+
+    if (response.tasks && response.tasks.length > 0) {
+        md += `\n### Proposed Tasks:\n`;
+        response.tasks.forEach((task: any) => {
+            md += `\n--- Task ${formatValue(task.task_number)} ---\n`;
+            md += `- **Title:** ${formatValue(task.title)}\n`;
+            md += `- **Description:** ${formatValue(task.description)}\n`;
+            md += `- **Purpose:** ${formatValue(task.purpose)}\n`;
+
+            if (task.suggested_files_involved && task.suggested_files_involved.length > 0) {
+                md += `- **Suggested Files Involved:** ${task.suggested_files_involved.map((f: string) => formatValue(f, { isCodeOrId: true })).join(', ')}\n`;
+            }
+            if (task.dependencies_task_ids_json && task.dependencies_task_ids_json.length > 0) {
+                md += `- **Dependencies:** ${task.dependencies_task_ids_json.map((d: string) => formatValue(d, { isCodeOrId: true })).join(', ')}\n`;
+            }
+            if (task.completion_criteria) {
+                md += `- **Completion Criteria:** ${formatValue(task.completion_criteria)}\n`;
+            }
+            if (task.code_content) {
+                const files = task.suggested_files_involved || [];
+                const language = files.length > 0 ? (files[0].split('.').pop() || 'text') : 'text';
+                const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
+                md += `- **Proposed Code Content:**\n${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 2)}\n`;
+            }
+        });
+    } else {
+        md += "\n*No specific tasks proposed in this plan.*\n";
+    }
+
     return md;
 }

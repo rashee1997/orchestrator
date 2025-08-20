@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
 import { InternalToolDefinition } from './index.js';
-import { formatSimpleMessage, formatJsonToMarkdownCodeBlock } from '../utils/formatters.js';
+import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatPlanGenerationResponseToMarkdown } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
@@ -303,11 +303,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const real_stored_id = await geminiService.storeRefinedPrompt(parsedResponse);
                 parsedResponse.refined_prompt_id = real_stored_id;
 
-                const aiResponseText = JSON.stringify(parsedResponse, null, 2);
-
-                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
-
-                return { content: [{ type: 'text', text: aiResponseText }] };
+                const aiResponseText = formatPlanGenerationResponseToMarkdown(parsedResponse);
+ 
+                 await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
+ 
+                 return { content: [{ type: 'text', text: aiResponseText }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Failed to generate plan using Gemini API: ${error.message}`);
             }
