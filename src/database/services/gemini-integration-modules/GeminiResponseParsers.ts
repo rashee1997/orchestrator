@@ -1,42 +1,77 @@
 export function parseGeminiJsonResponse(textResponse: string): any {
     try {
-        let jsonString = textResponse;
-        const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch && jsonMatch[1]) {
-            jsonString = jsonMatch[1];
-        } else if (!(jsonString.startsWith("{") && jsonString.endsWith("}"))) {
-            const firstBrace = jsonString.indexOf('{');
-            const lastBrace = jsonString.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                jsonString = jsonString.substring(firstBrace, lastBrace + 1);
+        let jsonString = textResponse.trim();
+
+        // 1. Extract content from markdown block if present. Handles variations like ```json{...}
+        const markdownMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (markdownMatch && markdownMatch[1]) {
+            jsonString = markdownMatch[1].trim();
+        }
+
+        // 2. Isolate the main JSON object/array to handle extraneous text and truncation.
+        const firstBrace = jsonString.indexOf('{');
+        const firstBracket = jsonString.indexOf('[');
+        let startIndex = -1;
+
+        if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+            startIndex = firstBrace;
+        } else if (firstBracket !== -1) {
+            startIndex = firstBracket;
+        }
+
+        if (startIndex === -1) {
+            throw new Error("Could not find start of JSON object or array in response.");
+        }
+
+        const endChar = jsonString.charAt(startIndex) === '{' ? '}' : ']';
+        const lastIndex = jsonString.lastIndexOf(endChar);
+
+        if (lastIndex <= startIndex) {
+            throw new Error("Mismatched JSON delimiters; response may be truncated.");
+        }
+
+        let dirtyJson = jsonString.substring(startIndex, lastIndex + 1);
+
+        // 3. Clean unescaped control characters within string literals.
+        let cleanedJson = '';
+        let inString = false;
+        let isEscaped = false;
+        for (const char of dirtyJson) {
+            if (isEscaped) {
+                cleanedJson += char;
+                isEscaped = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                cleanedJson += char;
+                isEscaped = true;
+                continue;
+            }
+
+            if (char === '"') {
+                inString = !inString;
+            }
+
+            if (inString) {
+                if (char === '\n') cleanedJson += '\\n';
+                else if (char === '\r') cleanedJson += '\\r';
+                else if (char === '\t') cleanedJson += '\\t';
+                else if (char === '\b') cleanedJson += '\\b';
+                else if (char === '\f') cleanedJson += '\\f';
+                else cleanedJson += char;
             } else {
-                throw new Error("Response from Gemini was not in a recognizable JSON format.");
+                cleanedJson += char;
             }
         }
-        // Remove single-line comments (// ...) that might be present in the JSON string
-        jsonString = jsonString.replace(/\/\/.*$/gm, '');
 
-        // Attempt to fix common JSON parsing issues: unescaped newlines, tabs, etc. within string literals
-        // This is a heuristic and might not cover all cases, but targets common LLM output issues.
-        // It looks for unescaped newlines or tabs within double-quoted strings and escapes them.
-        jsonString = jsonString.replace(/\"([^\"\\]*(?:\\.[^\"\\]*)*)\"/g, (match, p1) => {
-            // p1 is the content inside the quotes
-            // Escape backslashes first, then double quotes, then newlines/tabs/returns
-            let escapedP1 = p1.replace(/\\/g, '\\\\') // Escape existing backslashes
-                              .replace(/"/g, '\\"')   // Escape existing double quotes
-                              .replace(/\n/g, '\\n')
-                              .replace(/\t/g, '\\t')
-                              .replace(/\r/g, '\\r');
-            return '"' + escapedP1 + '"';
-        });
+        // 4. Remove trailing commas. This is another common LLM error.
+        const finalJson = cleanedJson.replace(/,\s*([}\]])/g, '$1');
 
-        // Remove any remaining invalid control characters that JSON.parse would reject
-        // (ASCII 0-31, excluding tab \t, newline \n, carriage return \r which are handled by JSON.parse when escaped)
-        jsonString = jsonString.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+        return JSON.parse(finalJson);
 
-        return JSON.parse(jsonString);
     } catch (parseError: any) {
         console.error(`Error parsing Gemini API JSON response. Raw response: "${textResponse}". Parse error:`, parseError);
-        throw new Error(`Failed to parse Gemini API response. Raw response: "${textResponse.substring(0,200)}...". Error: ${parseError.message}`);
+        throw new Error(`Failed to parse Gemini API response. Raw response: "${textResponse.substring(0, 200)}...". Error: ${parseError.message}`);
     }
 }

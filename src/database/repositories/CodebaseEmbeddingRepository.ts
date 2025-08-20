@@ -104,6 +104,13 @@ export class CodebaseEmbeddingRepository {
         }, 'bulkInsertEmbeddings');
     }
 
+    public async updateFileHashForEmbedding(embeddingId: string, newFileHash: string): Promise<void> {
+        await this._executeWithRetry(() => {
+            const sql = `UPDATE ${this.metadataTable} SET file_hash = ? WHERE embedding_id = ?`;
+            this.db.prepare(sql).run(newFileHash, embeddingId);
+        }, 'updateFileHashForEmbedding');
+    }
+
     public async getEmbeddingsForFile(filePathRelative: string, agentId?: string): Promise<CodebaseEmbeddingRecord[]> {
         return this._executeWithRetry(() => {
             let sql = `SELECT * FROM ${this.metadataTable} WHERE file_path_relative = ?`;

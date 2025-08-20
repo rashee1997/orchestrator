@@ -2,6 +2,14 @@ import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { CorrectionLog } from '../../types/index.js';
 
+// NEW: Define a type for the log after JSON fields have been parsed.
+export type ParsedCorrectionLog = CorrectionLog & {
+    original_value_parsed?: any;
+    corrected_value_parsed?: any;
+    original_value_json_parsing_error?: boolean;
+    corrected_value_json_parsing_error?: boolean;
+};
+
 export class CorrectionLogManager {
     private dbService: DatabaseService;
 
@@ -58,36 +66,37 @@ export class CorrectionLogManager {
         }
     }
 
-    private parseJsonFields(log: any): any {
-        if (log) {
+    private parseJsonFields(log: CorrectionLog): ParsedCorrectionLog {
+        const parsedLog: ParsedCorrectionLog = { ...log };
+        if (parsedLog) {
             // Parse original_value_json
-            if (typeof log.original_value_json === 'string') {
+            if (typeof parsedLog.original_value_json === 'string') {
                 try {
-                    log.original_value_parsed = JSON.parse(log.original_value_json);
+                    parsedLog.original_value_parsed = JSON.parse(parsedLog.original_value_json);
                 } catch (e) {
-                    console.error(`Failed to parse original_value_json for correction_id ${log.correction_id}:`, e);
-                    log.original_value_parsed = null;
-                    log.original_value_json_parsing_error = true;
+                    console.error(`Failed to parse original_value_json for correction_id ${parsedLog.correction_id}:`, e);
+                    parsedLog.original_value_parsed = null;
+                    parsedLog.original_value_json_parsing_error = true;
                 }
             } else {
-                log.original_value_parsed = null;
+                parsedLog.original_value_parsed = null;
             }
 
             // Parse corrected_value_json
-            if (typeof log.corrected_value_json === 'string') {
+            if (typeof parsedLog.corrected_value_json === 'string') {
                 try {
-                    log.corrected_value_parsed = JSON.parse(log.corrected_value_json);
+                    parsedLog.corrected_value_parsed = JSON.parse(parsedLog.corrected_value_json);
                 } catch (e) {
-                    console.error(`Failed to parse corrected_value_json for correction_id ${log.correction_id}:`, e);
-                    log.corrected_value_parsed = null;
-                    log.corrected_value_json_parsing_error = true;
+                    console.error(`Failed to parse corrected_value_json for correction_id ${parsedLog.correction_id}:`, e);
+                    parsedLog.corrected_value_parsed = null;
+                    parsedLog.corrected_value_json_parsing_error = true;
                 }
             } else {
-                log.corrected_value_parsed = null;
+                parsedLog.corrected_value_parsed = null;
             }
         }
         // The original _json fields (e.g., log.original_value_json) are preserved as they came from the DB.
-        return log;
+        return parsedLog;
     }
 
     async getCorrectionLogs(
@@ -95,7 +104,7 @@ export class CorrectionLogManager {
         correction_type: string | null = null,
         limit: number = 100,
         offset: number = 0
-    ): Promise<CorrectionLog[]> { // Adjusted return type if parseJsonFields modifies structure significantly
+    ): Promise<ParsedCorrectionLog[]> { // Use the new ParsedCorrectionLog type
         const db = this.dbService.getDb();
         let query = `SELECT * FROM correction_logs WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];

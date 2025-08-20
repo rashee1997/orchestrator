@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS refined_prompts (
     relevant_code_elements_analyzed TEXT,
     confidence_in_refinement_score TEXT,
     refinement_error_message TEXT,
+    generation_metadata_json TEXT, -- NEW: Add column for RAG metrics
     FOREIGN KEY (agent_id) REFERENCES agents (agent_id)
 );
 CREATE INDEX IF NOT EXISTS idx_refined_prompts_agent_id ON refined_prompts (agent_id);

@@ -2,6 +2,14 @@ import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { TaskProgressLog } from '../../types/index.js';
 
+// NEW: Define a type for the log after JSON fields have been parsed.
+export type ParsedTaskProgressLog = TaskProgressLog & {
+  tool_parameters_summary_parsed?: any;
+  files_modified_list_parsed?: any;
+  tool_parameters_summary_json_parsing_error?: boolean;
+  files_modified_list_json_parsing_error?: boolean;
+};
+
 export class TaskProgressLogManager {
   private db: DatabaseService;
 
@@ -10,7 +18,7 @@ export class TaskProgressLogManager {
   }
 
   public async createTaskProgressLog(log: Omit<TaskProgressLog, 'progress_log_id' | 'execution_timestamp_unix' | 'execution_timestamp_iso' | 'log_creation_timestamp_unix' | 'log_creation_timestamp_iso' | 'last_updated_timestamp_unix' | 'last_updated_timestamp_iso'>): Promise<string> {
-    const progress_log_id = randomUUID(); 
+    const progress_log_id = randomUUID();
     const now = Date.now();
     const isoNow = new Date(now).toISOString();
 
@@ -36,7 +44,7 @@ export class TaskProgressLogManager {
       last_updated_timestamp_iso
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const params = [
-      progress_log_id, 
+      progress_log_id,
       log.agent_id,
       log.associated_plan_id,
       log.associated_task_id,
@@ -48,51 +56,52 @@ export class TaskProgressLogManager {
       typeof log.tool_parameters_summary_json === 'string' ? log.tool_parameters_summary_json : JSON.stringify(log.tool_parameters_summary_json),
       typeof log.files_modified_list_json === 'string' ? log.files_modified_list_json : JSON.stringify(log.files_modified_list_json),
       log.change_summary_text,
-      now, 
-      isoNow, 
+      now,
+      isoNow,
       log.status_of_step_execution,
       log.output_summary_or_error,
-      now, 
-      isoNow, 
-      now, 
-      isoNow 
+      now,
+      isoNow,
+      now,
+      isoNow
     ];
     await this.db.getDb().run(query, params);
-    return progress_log_id; 
+    return progress_log_id;
   }
 
-  private parseJsonFields(log: any): any {
-    if (log) {
-        // Parse tool_parameters_summary_json
-        if (typeof log.tool_parameters_summary_json === 'string') {
-            try {
-                log.tool_parameters_summary_parsed = JSON.parse(log.tool_parameters_summary_json);
-            } catch (e) {
-                console.error(`Failed to parse tool_parameters_summary_json for progress_log_id ${log.progress_log_id}:`, e);
-                log.tool_parameters_summary_parsed = null; // Or {}
-                log.tool_parameters_summary_json_parsing_error = true;
-            }
-        } else {
-            log.tool_parameters_summary_parsed = null; // Or {}
+  private parseJsonFields(log: TaskProgressLog): ParsedTaskProgressLog {
+    const parsedLog: ParsedTaskProgressLog = { ...log };
+    if (parsedLog) {
+      // Parse tool_parameters_summary_json
+      if (typeof parsedLog.tool_parameters_summary_json === 'string') {
+        try {
+          parsedLog.tool_parameters_summary_parsed = JSON.parse(parsedLog.tool_parameters_summary_json);
+        } catch (e) {
+          console.error(`Failed to parse tool_parameters_summary_json for progress_log_id ${parsedLog.progress_log_id}:`, e);
+          parsedLog.tool_parameters_summary_parsed = null; // Or {}
+          parsedLog.tool_parameters_summary_json_parsing_error = true;
         }
+      } else {
+        parsedLog.tool_parameters_summary_parsed = null; // Or {}
+      }
 
-        // Parse files_modified_list_json
-        if (typeof log.files_modified_list_json === 'string') {
-            try {
-                log.files_modified_list_parsed = JSON.parse(log.files_modified_list_json);
-            } catch (e) {
-                console.error(`Failed to parse files_modified_list_json for progress_log_id ${log.progress_log_id}:`, e);
-                log.files_modified_list_parsed = null; // Or []
-                log.files_modified_list_json_parsing_error = true;
-            }
-        } else {
-            log.files_modified_list_parsed = null; // Or []
+      // Parse files_modified_list_json
+      if (typeof parsedLog.files_modified_list_json === 'string') {
+        try {
+          parsedLog.files_modified_list_parsed = JSON.parse(parsedLog.files_modified_list_json);
+        } catch (e) {
+          console.error(`Failed to parse files_modified_list_json for progress_log_id ${parsedLog.progress_log_id}:`, e);
+          parsedLog.files_modified_list_parsed = null; // Or []
+          parsedLog.files_modified_list_json_parsing_error = true;
         }
+      } else {
+        parsedLog.files_modified_list_parsed = null; // Or []
+      }
     }
-    return log;
+    return parsedLog;
   }
 
-  public async getTaskProgressLogById(logId: string): Promise<TaskProgressLog | null> {
+  public async getTaskProgressLogById(logId: string): Promise<ParsedTaskProgressLog | null> {
     const query = `SELECT * FROM task_progress_logs WHERE progress_log_id = ?`;
     const row: TaskProgressLog | undefined = await this.db.getDb().get(query, [logId]);
     if (row) {
@@ -101,7 +110,7 @@ export class TaskProgressLogManager {
     return null;
   }
 
-  public async getTaskProgressLogsByAgentId(agentId: string, limit: number = 100, offset: number = 0): Promise<TaskProgressLog[]> {
+  public async getTaskProgressLogsByAgentId(agentId: string, limit: number = 100, offset: number = 0): Promise<ParsedTaskProgressLog[]> {
     const query = `SELECT * FROM task_progress_logs WHERE agent_id = ? ORDER BY log_creation_timestamp_unix DESC LIMIT ? OFFSET ?`;
     const rows: TaskProgressLog[] = await this.db.getDb().all(query, [agentId, limit, offset]);
     return rows.map(row => this.parseJsonFields(row));

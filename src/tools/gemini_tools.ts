@@ -293,6 +293,19 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
                 let parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
 
+                // MODIFICATION: Inject RAG metrics into the plan object
+                parsedResponse.generation_metadata = {
+                    rag_metrics: searchMetrics,
+                    context_summary: finalContext.map(ctx => ({
+                        source: ctx.sourcePath,
+                        entity: ctx.entityName,
+                        type: ctx.type,
+                        score: ctx.relevanceScore
+                    })).slice(0, 20), // Limit summary size
+                    web_sources: webSearchSources,
+                    decision_log: decisionLog
+                };
+
                 parsedResponse.agent_id = agent_id;
                 parsedResponse.refinement_engine_model = modelToUse;
                 parsedResponse.refinement_timestamp = new Date().toISOString();
@@ -304,10 +317,10 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 parsedResponse.refined_prompt_id = real_stored_id;
 
                 const aiResponseText = formatPlanGenerationResponseToMarkdown(parsedResponse);
- 
-                 await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
- 
-                 return { content: [{ type: 'text', text: aiResponseText }] };
+
+                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
+
+                return { content: [{ type: 'text', text: aiResponseText }] };
             } catch (error: any) {
                 throw new McpError(ErrorCode.InternalError, `Failed to generate plan using Gemini API: ${error.message}`);
             }
@@ -340,7 +353,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const toolConfig = google_search ? { tools: [{ googleSearch: {} }] } : undefined;
                 const geminiResponse = await geminiService.askGemini(finalPromptContent, model, systemInstruction, undefined, toolConfig);
                 const geminiText = geminiResponse.content?.[0]?.text ?? '';
-                
+
                 // Extract grounding metadata if available
                 let citations: Array<{ title: string; url: string }> = [];
                 if (google_search && geminiResponse.groundingMetadata?.groundingChunks) {
@@ -353,9 +366,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         }
                     }
                 }
-                
+
                 markdownOutput = `## Gemini Response for Query:\n> "${query}"\n\n### AI Answer:\n${formatJsonToMarkdownCodeBlock(geminiText, 'text')}\n\n`;
-                
+
                 // Add citations section if available
                 if (citations.length > 0) {
                     markdownOutput += `### Citations:\n`;
@@ -365,7 +378,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     markdownOutput += `\n`;
                 }
             }
-            
+
             const isContextProvided = finalContext.length > 0;
             if (isContextProvided) {
                 const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text;
@@ -382,7 +395,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             }
 
             if (searchMetrics) {
-                markdownOutput += `\n### Search Metrics:\n- Total Iterations: ${searchMetrics.totalIterations}\n- Context Items Added: ${searchMetrics.contextItemsAdded}\n- Web Searches Performed: ${searchMetrics.webSearchesPerformed}\n- Hallucination Checks Passed: ${searchMetrics.hallucinationChecksPassed}\n`;
+                markdownOutput += `\n### Search Metrics:\n- Total Iterations: ${searchMetrics.totalIterations}\n- Context Items Added: ${searchMetrics.contextItemsAdded}\n- Web Searches Performed: ${searchMetrics.webSearchesPerformed}\n- Hallucination Checks Passed: ${searchMetrics.hallucinationChecksPerformed}\n`;
                 if (searchMetrics.earlyTerminationReason) markdownOutput += `- Early Termination Reason: ${searchMetrics.earlyTerminationReason}\n`;
             }
 

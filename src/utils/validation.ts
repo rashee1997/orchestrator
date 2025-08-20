@@ -81,13 +81,13 @@ export const schemas = {
         properties: {
             agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
             plan_id: { type: 'string', description: 'ID of the plan the parent task belongs to.' },
-            parent_task_id: { type: 'string', description: 'The ID of the parent task for which subtasks are being suggested.' },
+            parent_task_id: { type: ['string', 'null'], description: 'Optional: The ID of the parent task for which subtasks are being suggested. If not provided, suggestions will be for the entire plan.', nullable: true },
             parent_task_title: { type: 'string', description: 'Optional: Title of the parent task (provides more context to AI). If not provided, it will be fetched.', nullable: true },
             parent_task_description: { type: 'string', description: 'Optional: Description of the parent task. If not provided, it will be fetched.', nullable: true },
             max_suggestions: { type: 'number', default: 5, minimum: 1, maximum: 10, description: 'Maximum number of subtasks to suggest.' },
             codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context (e.g., related file names, function signatures).', nullable: true },
         },
-        required: ['agent_id', 'plan_id', 'parent_task_id'],
+        required: ['agent_id', 'plan_id'],
         additionalProperties: false,
     },
     aiAnalyzePlan: {

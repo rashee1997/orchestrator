@@ -39,8 +39,8 @@ export class GeminiDbUtils {
                 suggested_ai_role_for_agent, suggested_reasoning_strategy_for_agent,
                 desired_output_characteristics_inferred, suggested_context_analysis_for_agent,
                 codebase_context_summary_by_ai, relevant_code_elements_analyzed,
-                confidence_in_refinement_score, refinement_error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                confidence_in_refinement_score, refinement_error_message, generation_metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             refinedPrompt.refined_prompt_id,
             refinedPrompt.agent_id,
             refinedPrompt.original_prompt_text,
@@ -58,7 +58,8 @@ export class GeminiDbUtils {
             refinedPrompt.codebase_context_summary_by_ai || null,
             refinedPrompt.relevant_code_elements_analyzed ? JSON.stringify(refinedPrompt.relevant_code_elements_analyzed) : null,
             refinedPrompt.confidence_in_refinement_score || null,
-            refinedPrompt.refinement_error_message || null
+            refinedPrompt.refinement_error_message || null,
+            refinedPrompt.generation_metadata ? JSON.stringify(refinedPrompt.generation_metadata) : null // MODIFICATION: Store metadata
         );
         return refined_prompt_id;
     }
@@ -75,21 +76,25 @@ export class GeminiDbUtils {
                 'decomposed_tasks', 'key_entities_identified', 
                 'implicit_assumptions_made_by_refiner', 'explicit_constraints_from_prompt',
                 'desired_output_characteristics_inferred', 'suggested_context_analysis_for_agent',
-                'relevant_code_elements_analyzed'
+                'relevant_code_elements_analyzed', 'generation_metadata_json' // MODIFICATION: Parse new metadata
             ];
             for (const field of fieldsToParse) {
                 const jsonField = result[field]; 
                 if (jsonField && typeof jsonField === 'string') {
                     try {
-                        result[`${field}_parsed`] = JSON.parse(jsonField);
+                        // MODIFICATION: Handle the new field name
+                        const parsedFieldKey = field === 'generation_metadata_json' ? 'generation_metadata_parsed' : `${field}_parsed`;
+                        result[parsedFieldKey] = JSON.parse(jsonField);
                     } catch (e) {
                         console.error(`Failed to parse ${field} for refined_prompt_id ${refined_prompt_id}:`, e);
-                        result[`${field}_parsed`] = null;
+                        const parsedFieldKey = field === 'generation_metadata_json' ? 'generation_metadata_parsed' : `${field}_parsed`;
+                        result[parsedFieldKey] = null;
                         result[`${field}_parsing_error`] = true;
                         result[`raw_${field}`] = jsonField; 
                     }
                 } else {
-                     result[`${field}_parsed`] = jsonField === null ? null : jsonField; 
+                     const parsedFieldKey = field === 'generation_metadata_json' ? 'generation_metadata_parsed' : `${field}_parsed`;
+                     result[parsedFieldKey] = jsonField === null ? null : jsonField; 
                 }
             }
             if (result.refinement_timestamp) {

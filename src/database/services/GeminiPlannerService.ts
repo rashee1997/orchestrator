@@ -4,6 +4,7 @@ import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
 import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { GeminiPlannerResponseSchema } from './gemini-integration-modules/GeminiSchema.js';
+import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -15,7 +16,7 @@ interface GeminiDetailedPlanGenerationResponse {
         risk_description: string;
         mitigation_strategy: string;
     }>;
-    tasks?: Array<{ // Added tasks to the response interface
+    tasks: Array<{ // Made tasks required
         task_number: number;
         title: string;
         description: string;
@@ -23,11 +24,11 @@ interface GeminiDetailedPlanGenerationResponse {
         estimated_effort_hours?: number;
         task_risks?: string[];
         micro_steps?: string[];
-        suggested_files_involved?: string[]; // Added suggested_files_involved here
-        task_dependencies?: string[]; // Added for explicit dependencies
-        roles_required?: string[]; // Added for roles/skills
-        completion_criteria?: string; // Added for clear completion criteria
-        code_content?: string; // NEW: For code diffs or full code
+        suggested_files_involved?: string[];
+        task_dependencies?: string[];
+        roles_required?: string[];
+        completion_criteria?: string;
+        code_content?: string;
     }>;
 }
 
@@ -193,50 +194,55 @@ export class GeminiPlannerService {
     }
 
     private getSystemInstructionForRefinedPrompt(): string {
-        return `You are an expert project planning assistant and senior software engineer.  
-You will be given a structured input object (\`Goal Object\` or \`Refined Prompt Object\`).  
+        return `You are an expert project planning assistant and senior software engineer.
+You will be given a structured input object (\`Goal Object\` or \`Refined Prompt Object\`).
 Your task is to generate a **complete, structured project plan** in JSON format.
 
-⚠️ Output Rules
-- You MUST output only a valid JSON object.
-- Do NOT include any explanations, markdown, comments, or text outside the JSON.
-- The JSON must strictly follow the schema below.
+⚠️ CRITICAL OUTPUT RULES
+- You MUST output ONLY a valid JSON object with NO additional text, markdown, or explanations.
+- Start your response directly with \`{\` and end with \`}\`.
+- Do NOT include \`\`\`json\` markers or any other formatting.
+- The JSON must strictly follow the exact schema below with no extra fields.
 
-Schema for Each Task
-- task_number → sequential number of the task
-- title → short (≤ 10 words), non-empty string
-- description → detailed explanation of the task
-- purpose → why this task is necessary
-- suggested_files_involved → list of file names involved
-- code_content → required for all coding tasks (rules below)
-- completion_criteria → measurable criteria to confirm the task is done
-- dependencies_task_ids_json → array of strings, each exactly matching the title of another task in the plan
+Required JSON Schema:
+{
+  "plan_title": "string (max 10 words)",
+  "estimated_duration_days": number,
+  "target_start_date": "YYYY-MM-DD",
+  "target_end_date": "YYYY-MM-DD",
+  "plan_risks_and_mitigations": [
+    {
+      "risk_description": "string",
+      "mitigation_strategy": "string"
+    }
+  ],
+  "tasks": [
+    {
+      "task_number": number,
+      "title": "string (≤ 10 words, non-empty)",
+      "description": "string (detailed explanation)",
+      "purpose": "string (why this task is necessary)",
+      "suggested_files_involved": ["array", "of", "file", "paths"],
+      "code_content": "string (full code for new files OR unified diff for existing files)",
+      "completion_criteria": "string (measurable criteria)",
+      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
+    }
+  ]
+}
 
-Task Generation Rules
+Task Generation Rules:
 1. Break down the input into clear, ordered tasks.
 2. Merge or consolidate redundant steps.
-3. Dependencies must reference task titles exactly.
-4. Always include these phases explicitly:
-   - Requirement clarification
-   - Architecture/Design definition
-   - Development tasks
-   - Integration testing
-   - Performance benchmarking
-   - Code reviews
-   - Documentation updates
-   - Deployment plan
-5. If file references are available (either inferred from the goal or given explicitly), include them in both \`suggested_files_involved\` and \`code_content\`.
+3. Dependencies must reference exact task titles.
+4. Always include these phases: requirements, architecture, development, testing, reviews, documentation, deployment.
+5. For coding tasks, ALWAYS provide complete code_content - never use placeholders.
 
-Code Content Rules
-- \`code_content\` is mandatory and non-empty for all coding tasks.
-- If creating a new file → include the full, complete source code, with a comment at the top specifying the file path (e.g., \`// src/app/main.ts\`).
-- If modifying an existing file → include a valid unified diff patch, beginning with \`--- a/...\` and \`+++ b/...\`.
-- Placeholders (e.g., empty strings, \`// TODO\`) are strictly forbidden.
+Code Content Rules:
+- For NEW files: Include complete source code with file path comment at top.
+- For EXISTING files: Include valid unified diff starting with --- and +++ lines.
+- Never use placeholders like "// TODO" or empty strings.
 
-What Not to Do
-- Do NOT return prose, explanations, or reasoning outside JSON.
-- Do NOT use placeholders in \`code_content\`.
-- Do NOT break schema field names.`;
+FINAL REMINDER: Output ONLY the JSON object. No explanations, no markdown, no additional text.`;
     }
 
     private getSystemInstructionForGoal(): string {
@@ -287,37 +293,42 @@ Enhancements:
         return `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
 
 Refined Prompt Object:
-\`\`\`json
 ${JSON.stringify(payload, null, 2)}
-\`\`\`
 
 Consider the following codebase context and live file content when generating the plan and tasks:
 Refined Prompt Context Summary:
-\`\`\`
 ${refined.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
-\`\`\`
+
 Live File Content:
-\`\`\`
 ${liveFilesString}
-\`\`\`
 
-Provide a JSON object with:
-1. plan_title (max 10 words)
-2. estimated_duration_days (integer)
-3. target_start_date ("YYYY-MM-DD", today = ${today})
-4. target_end_date (calculated)
-5. plan_risks_and_mitigations: an array of objects, each with "risk_description" and "mitigation_strategy" string properties.
-6. tasks: an array of task objects, each containing:
-   - task_number (integer)
-   - title (string)
-   - description (string)
-   - purpose (string)
-   - suggested_files_involved (array of strings)
-   - code_content (string, either full code for new files or a diff for existing files, mandatory for coding tasks)
-   - completion_criteria (string)
-   - dependencies_task_ids_json (array of strings, referencing other task titles)
+Generate a JSON object with this EXACT structure:
+{
+  "plan_title": "string (max 10 words)",
+  "estimated_duration_days": number,
+  "target_start_date": "YYYY-MM-DD",
+  "target_end_date": "YYYY-MM-DD",
+  "plan_risks_and_mitigations": [
+    {
+      "risk_description": "string",
+      "mitigation_strategy": "string"
+    }
+  ],
+  "tasks": [
+    {
+      "task_number": number,
+      "title": "string (≤ 10 words, non-empty)",
+      "description": "string (detailed explanation)",
+      "purpose": "string (why this task is necessary)",
+      "suggested_files_involved": ["array", "of", "file", "paths"],
+      "code_content": "string (full code for new files OR unified diff for existing files)",
+      "completion_criteria": "string (measurable criteria)",
+      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
+    }
+  ]
+}
 
-Return ONLY the JSON object.`;
+IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdown, or additional text. Start with { and end with }.`;
     }
 
     private async resolveCodebaseContext(agentId: string, fallback?: string): Promise<string | undefined> {
@@ -391,24 +402,9 @@ Return ONLY the JSON object.`;
     // Helper: Robust JSON extraction & parsing
     // -----------------------------------------------------------------
     private parseGeminiResponse(raw: string): GeminiDetailedPlanGenerationResponse {
-        // Helper to find and extract a JSON object from a string that might be wrapped in markdown
-        const extractJson = (text: string): string | null => {
-            const match = text.match(/```json\s*([\s\S]*?)\s*```|({[\s\S]*})/);
-            if (match) {
-                // If ```json block is found, use that. Otherwise, use the second group which should be the JSON object itself.
-                return match[1] || match[2];
-            }
-            return null;
-        };
-
-        const jsonString = extractJson(raw);
-        if (!jsonString) {
-            console.error("Fatal error: No JSON object found in the raw response.", raw);
-            throw new Error("AI plan generation failed: No JSON object found in the response.");
-        }
-
         try {
-            const parsedJson = JSON.parse(jsonString);
+            // Use the robust, centralized parser instead of a local implementation
+            const parsedJson = parseGeminiJsonResponse(raw);
             const validationResult = GeminiPlannerResponseSchema.safeParse(parsedJson);
 
             if (!validationResult.success) {
@@ -419,8 +415,7 @@ Return ONLY the JSON object.`;
 
             return validationResult.data as GeminiDetailedPlanGenerationResponse;
         } catch (error) {
-            console.error("Fatal error during JSON.parse. Raw response:", raw);
-            console.error("JSON String that failed parsing:", jsonString);
+            console.error("Fatal error during JSON parsing. Raw response:", raw);
             throw new Error(`AI plan generation failed: Invalid JSON format. ${error instanceof Error ? error.message : String(error)}`);
         }
     }

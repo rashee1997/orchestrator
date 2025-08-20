@@ -165,8 +165,6 @@ ${formatChangeList(trulyNew)}
 **Removed Entities:**
 ${formatChangeList(trulyDeleted)}
 
-**Reused Unchanged Entities:**
-${formatChangeList(reusedEmbeddings)}
 `;
 
     const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for a pull request. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
@@ -290,6 +288,49 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 sortedFiles.forEach(filePath => {
                     const counts = fileStats.get(filePath)!;
                     detailedOutput += `- \`${filePath}\` (New: ${counts.new}, Reused: ${counts.reused}, Deleted: ${counts.deleted})\n`;
+                });
+            }
+
+            // New section: Detailed Chunk Changes
+            const addedChunksByFile = new Map<string, typeof resultCounts.newEmbeddings>();
+            resultCounts.newEmbeddings.forEach(chunk => {
+                const list = addedChunksByFile.get(chunk.file_path_relative) || [];
+                list.push(chunk);
+                addedChunksByFile.set(chunk.file_path_relative, list);
+            });
+
+            const deletedChunksByFile = new Map<string, typeof resultCounts.deletedEmbeddings>();
+            resultCounts.deletedEmbeddings.forEach(chunk => {
+                const list = deletedChunksByFile.get(chunk.file_path_relative) || [];
+                list.push(chunk);
+                deletedChunksByFile.set(chunk.file_path_relative, list);
+            });
+
+            if (addedChunksByFile.size > 0 || deletedChunksByFile.size > 0) {
+                detailedOutput += `\n### Detailed Chunk Changes:\n`;
+                const allAffectedFiles = new Set([...Array.from(addedChunksByFile.keys()), ...Array.from(deletedChunksByFile.keys())]);
+                const sortedAffectedFiles = Array.from(allAffectedFiles).sort();
+
+                sortedAffectedFiles.forEach(filePath => {
+                    detailedOutput += `\n#### File: \`${filePath}\`\n`;
+
+                    const added = addedChunksByFile.get(filePath);
+                    if (added && added.length > 0) {
+                        detailedOutput += `##### Added Chunks:\n`;
+                        added.forEach((chunk, index) => {
+                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
+                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
+                        });
+                    }
+
+                    const deleted = deletedChunksByFile.get(filePath);
+                    if (deleted && deleted.length > 0) {
+                        detailedOutput += `##### Deleted Chunks:\n`;
+                        deleted.forEach((chunk, index) => {
+                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
+                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
+                        });
+                    }
                 });
             }
 

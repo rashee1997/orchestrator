@@ -135,26 +135,12 @@ export class CodebaseEmbeddingService {
                     return;
                 }
 
-                // Delete existing embeddings for this file
-                try {
-                    const existingEmbeddings = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
-                    if (existingEmbeddings.length > 0) {
-                        const idsToDelete = existingEmbeddings.map(e => e.embedding_id);
-                        await this.repository.bulkDeleteEmbeddings(idsToDelete);
-                        existingEmbeddings.forEach(e => report.deletedEmbeddings.push({
-                            file_path_relative: e.file_path_relative,
-                            chunk_text: e.chunk_text,
-                            entity_name: e.entity_name
-                        }));
-                    }
-                } catch (error) {
-                    console.error(`Error deleting existing embeddings for ${fileInfo.relativePath}:`, error);
-                    // Continue processing even if deletion fails
-                }
+                const existingEmbeddingsForFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+                const existingChunkHashesMap = new Map<string, CodebaseEmbeddingRecord>();
+                existingEmbeddingsForFile.forEach(e => existingChunkHashesMap.set(e.chunk_hash, e));
 
                 const language = await this.introspectionService.detectLanguage(agentId, fileInfo.absolutePath, path.basename(fileInfo.absolutePath));
 
-                // Use the enhanced multi-vector chunking service with error handling
                 let multiVectorChunks;
                 let summarizationApiCallCount = 0;
                 try {
@@ -175,12 +161,61 @@ export class CodebaseEmbeddingService {
 
                 report.summarizationApiCallCount += summarizationApiCallCount;
 
-                for (const chunk of multiVectorChunks) {
-                    chunksToEmbed.push({
-                        chunk,
-                        fileInfo: { ...fileInfo, fileHash: currentFileHash }
-                    });
+                const currentFileChunksToEmbed: Array<{ chunk: any, fileInfo: any }> = [];
+                const idsToDelete: string[] = [];
+                const retainedEmbeddingIds = new Set<string>();
+
+                for (const newChunk of multiVectorChunks) {
+                    const newChunkHash = this.generateChunkHash(newChunk.chunk_text);
+                    newChunk.chunk_hash = newChunkHash; // Ensure chunk has hash for comparison
+
+                    const existingEmbedding = existingChunkHashesMap.get(newChunkHash);
+
+                    if (existingEmbedding) {
+                        // Chunk exists and is unchanged, reuse it
+                        report.reusedEmbeddings.push({
+                            file_path_relative: fileInfo.relativePath,
+                            chunk_text: newChunk.chunk_text,
+                            entity_name: newChunk.entity_name
+                        });
+                        report.reusedEmbeddingsCount++;
+                        retainedEmbeddingIds.add(existingEmbedding.embedding_id);
+                        // Update file hash if necessary for the reused embedding record
+                        if (existingEmbedding.file_hash !== currentFileHash) {
+                            await this.repository.updateFileHashForEmbedding(existingEmbedding.embedding_id, currentFileHash);
+                        }
+                    } else {
+                        // New or modified chunk, needs new embedding
+                        currentFileChunksToEmbed.push({
+                            chunk: newChunk,
+                            fileInfo: { ...fileInfo, fileHash: currentFileHash }
+                        });
+                    }
                 }
+
+                // Identify chunks to be deleted (those that existed but are no longer present or modified)
+                for (const existingEmbedding of existingEmbeddingsForFile) {
+                    if (!retainedEmbeddingIds.has(existingEmbedding.embedding_id)) {
+                        idsToDelete.push(existingEmbedding.embedding_id);
+                        report.deletedEmbeddings.push({
+                            file_path_relative: existingEmbedding.file_path_relative,
+                            chunk_text: existingEmbedding.chunk_text,
+                            entity_name: existingEmbedding.entity_name
+                        });
+                    }
+                }
+
+                // Perform deletions before new insertions
+                if (idsToDelete.length > 0) {
+                    try {
+                        await this.repository.bulkDeleteEmbeddings(idsToDelete);
+                    } catch (error) {
+                        console.error(`Error deleting stale embeddings for ${fileInfo.relativePath}:`, error);
+                    }
+                }
+
+                // Add new/modified chunks to the global list for embedding generation
+                chunksToEmbed.push(...currentFileChunksToEmbed);
 
                 report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'processed' });
             } catch (err) {

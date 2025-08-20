@@ -1,7 +1,58 @@
-// src/database/managers/PlanTaskManager.ts
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { validate, schemas } from '../../utils/validation.js';
+
+// NEW: Define types for parsed plan and task objects to improve type safety.
+export interface ParsedPlan {
+    plan_id: string;
+    agent_id: string;
+    title: string;
+    overall_goal?: string;
+    status: string;
+    version: number;
+    creation_timestamp_unix: number;
+    creation_timestamp_iso: string;
+    last_updated_timestamp_unix: number;
+    last_updated_timestamp_iso: string;
+    refined_prompt_id_associated?: string;
+    analysis_report_id_referenced?: string;
+    metadata?: string;
+    metadata_parsed?: any;
+    metadata_parsing_error?: boolean;
+}
+
+export interface ParsedTask {
+    task_id: string;
+    plan_id: string;
+    agent_id: string;
+    task_number: number;
+    title: string;
+    description?: string;
+    status: string;
+    purpose?: string;
+    action_description?: string;
+    files_involved_json?: string;
+    dependencies_task_ids_json?: string;
+    tools_required_list_json?: string;
+    inputs_summary?: string;
+    outputs_summary?: string;
+    success_criteria_text?: string;
+    estimated_effort_hours?: number;
+    assigned_to?: string;
+    verification_method?: string;
+    code_content?: string;
+    creation_timestamp_unix: number;
+    creation_timestamp_iso: string;
+    last_updated_timestamp_unix: number;
+    last_updated_timestamp_iso: string;
+    notes_json?: string;
+    files_involved?: any[];
+    dependencies_task_ids?: any[];
+    tools_required_list?: any[];
+    notes?: any;
+    [key: string]: any; // for other dynamic properties
+}
+
 
 export class PlanTaskManager {
     private dbService: DatabaseService;
@@ -120,9 +171,9 @@ export class PlanTaskManager {
         }
     }
 
-    async getPlan(agent_id: string, plan_id: string): Promise<object | null> {
+    async getPlan(agent_id: string, plan_id: string): Promise<ParsedPlan | null> {
         const db = this.dbService.getDb();
-        const plan = await db.get(
+        const plan: ParsedPlan | undefined = await db.get(
             `SELECT * FROM plans WHERE agent_id = ? AND plan_id = ?`,
             agent_id, plan_id
         );
@@ -138,10 +189,10 @@ export class PlanTaskManager {
         } else if (plan) {
             plan.metadata_parsed = null; // Ensure metadata_parsed exists even if metadata was null/undefined
         }
-        return plan;
+        return plan || null;
     }
 
-    async getPlans(agent_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<object[]> {
+    async getPlans(agent_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<ParsedPlan[]> {
         const db = this.dbService.getDb();
         let query = `SELECT * FROM plans WHERE agent_id = ?`;
         const params: (string | number)[] = [agent_id];
@@ -154,8 +205,8 @@ export class PlanTaskManager {
         query += ` ORDER BY creation_timestamp_unix DESC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
-        const results = await db.all(query, ...params as any[]);
-        return results.map((row: any) => {
+        const results: ParsedPlan[] = await db.all(query, ...params as any[]);
+        return results.map((row) => {
             if (row.metadata) { // Check if metadata exists and is a string
                 try {
                     row.metadata_parsed = JSON.parse(row.metadata);
@@ -173,7 +224,7 @@ export class PlanTaskManager {
     }
 
 
-    async getPlanTasks(agent_id: string, plan_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<object[]> {
+    async getPlanTasks(agent_id: string, plan_id: string, status_filter?: string, limit: number = 100, offset: number = 0): Promise<ParsedTask[]> {
         const db = this.dbService.getDb();
         let query = `SELECT * FROM plan_tasks WHERE agent_id = ? AND plan_id = ?`;
         const params: (string | number)[] = [agent_id, plan_id];
@@ -186,8 +237,8 @@ export class PlanTaskManager {
         query += ` ORDER BY task_number ASC LIMIT ? OFFSET ?`;
         params.push(limit, offset);
 
-        const results = await db.all(query, ...params as any[]);
-        return results.map((row: any) => {
+        const results: ParsedTask[] = await db.all(query, ...params as any[]);
+        return results.map((row) => {
             // Safely parse JSON fields, adding error flags and keeping raw data if parsing fails
             const parseJsonSafe = (jsonString: string, fieldName: string) => {
                 if (jsonString) {
@@ -203,11 +254,11 @@ export class PlanTaskManager {
                 return []; // Return empty array for consistency if field is null
             };
 
-            row.files_involved = parseJsonSafe(row.files_involved_json, 'files_involved_json');
-            row.dependencies_task_ids = parseJsonSafe(row.dependencies_task_ids_json, 'dependencies_task_ids_json');
-            row.tools_required_list = parseJsonSafe(row.tools_required_list_json, 'tools_required_list_json');
-            row.notes = parseJsonSafe(row.notes_json, 'notes_json');
-            
+            row.files_involved = parseJsonSafe(row.files_involved_json!, 'files_involved_json');
+            row.dependencies_task_ids = parseJsonSafe(row.dependencies_task_ids_json!, 'dependencies_task_ids_json');
+            row.tools_required_list = parseJsonSafe(row.tools_required_list_json!, 'tools_required_list_json');
+            row.notes = parseJsonSafe(row.notes_json!, 'notes_json');
+
             return row;
         });
     }
@@ -334,14 +385,14 @@ export class PlanTaskManager {
         return (result?.changes || 0) > 0;
     }
 
-    async getTask(agent_id: string, task_id: string): Promise<object | null> {
+    async getTask(agent_id: string, task_id: string): Promise<ParsedTask | null> {
         const db = this.dbService.getDb();
-        const task = await db.get(
+        const task: ParsedTask | undefined = await db.get(
             `SELECT * FROM plan_tasks WHERE agent_id = ? AND task_id = ?`,
             agent_id, task_id
         );
         if (task) {
-             const parseJsonSafe = (jsonString: string, fieldName: string) => {
+            const parseJsonSafe = (jsonString: string, fieldName: string) => {
                 if (jsonString) {
                     try {
                         return JSON.parse(jsonString);
@@ -355,12 +406,12 @@ export class PlanTaskManager {
                 return []; // Return empty array for consistency if field is null
             };
 
-            (task as any).files_involved = parseJsonSafe(task.files_involved_json, 'files_involved_json');
-            (task as any).dependencies_task_ids = parseJsonSafe(task.dependencies_task_ids_json, 'dependencies_task_ids_json');
-            (task as any).tools_required_list = parseJsonSafe(task.tools_required_list_json, 'tools_required_list_json');
-            (task as any).notes = parseJsonSafe(task.notes_json, 'notes_json');
+            task.files_involved = parseJsonSafe(task.files_involved_json!, 'files_involved_json');
+            task.dependencies_task_ids = parseJsonSafe(task.dependencies_task_ids_json!, 'dependencies_task_ids_json');
+            task.tools_required_list = parseJsonSafe(task.tools_required_list_json!, 'tools_required_list_json');
+            task.notes = parseJsonSafe(task.notes_json!, 'notes_json');
         }
-        return task;
+        return task || null;
     }
 
     async addTaskToPlan(
