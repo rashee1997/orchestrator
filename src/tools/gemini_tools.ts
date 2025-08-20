@@ -61,7 +61,8 @@ async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrati
 }
 
 async function _performIterativeRagSearch(args: IterativeRagArgs, memoryManagerInstance: MemoryManager, geminiService: GeminiIntegrationService): Promise<IterativeRagResult> {
-    const orchestrator = new IterativeRagOrchestrator(memoryManagerInstance, geminiService);
+    const diverseQueryRewriterService = new (await import('./rag/diverse_query_rewriter_service.js')).DiverseQueryRewriterService(geminiService, memoryManagerInstance);
+    const orchestrator = new IterativeRagOrchestrator(memoryManagerInstance, geminiService, diverseQueryRewriterService);
     return await orchestrator.performIterativeSearch(args);
 }
 

@@ -5,6 +5,7 @@ import { ContextRetrievalOptions } from '../../database/services/CodebaseContext
 import { RagPromptTemplates } from './rag_prompt_templates.js';
 import { RagAnalysisResponse } from './rag_response_parser.js';
 import { RagResponseParser } from './rag_response_parser.js';
+import { DiverseQueryRewriterService } from './diverse_query_rewriter_service.js';
 import { callTavilyApi } from '../../integrations/tavily.js';
 import { formatRetrievedContextForPrompt as formatContextForGemini } from '../../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { GeminiApiNotInitializedError } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
@@ -15,13 +16,13 @@ export interface IterativeRagResult {
     webSearchSources: { title: string; url: string }[];
     finalAnswer?: string;
     decisionLog: RagAnalysisResponse[];
-    searchMetrics: {
-        totalIterations: number;
-        contextItemsAdded: number;
-        webSearchesPerformed: number;
-        hallucinationChecksPassed: number;
-        earlyTerminationReason?: string;
-    };
+        searchMetrics: {
+            totalIterations: number;
+            contextItemsAdded: number;
+            webSearchesPerformed: number;
+            hallucinationChecksPerformed: number;
+            earlyTerminationReason?: string;
+        };
 }
 
 export interface IterativeRagArgs {
@@ -29,7 +30,7 @@ export interface IterativeRagArgs {
     query: string;
     model?: string;
     systemInstruction?: string;
-    
+
     context_options?: ContextRetrievalOptions;
     focus_area?: string;
     analysis_focus_points?: string[];
@@ -44,15 +45,19 @@ export interface IterativeRagArgs {
     tavily_time_period?: string;
     tavily_topic?: string;
     thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' };
+    enable_dmqr?: boolean;
+    dmqr_query_count?: number;
 }
 
 export class IterativeRagOrchestrator {
     private memoryManagerInstance: MemoryManager;
     private geminiService: GeminiIntegrationService;
+    private diverseQueryRewriterService: DiverseQueryRewriterService;
 
-    constructor(memoryManagerInstance: MemoryManager, geminiService: GeminiIntegrationService) {
+    constructor(memoryManagerInstance: MemoryManager, geminiService: GeminiIntegrationService, diverseQueryRewriterService: DiverseQueryRewriterService) {
         this.memoryManagerInstance = memoryManagerInstance;
         this.geminiService = geminiService;
+        this.diverseQueryRewriterService = diverseQueryRewriterService;
     }
 
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
@@ -73,7 +78,9 @@ export class IterativeRagOrchestrator {
             tavily_include_image_descriptions = false,
             tavily_time_period,
             tavily_topic,
-            thinkingConfig
+            thinkingConfig,
+            enable_dmqr,
+            dmqr_query_count
         } = args;
 
         const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
@@ -88,7 +95,7 @@ export class IterativeRagOrchestrator {
             totalIterations: 0,
             contextItemsAdded: 0,
             webSearchesPerformed: 0,
-            hallucinationChecksPassed: 0,
+            hallucinationChecksPerformed: 0,
             earlyTerminationReason: undefined as string | undefined
         };
 
@@ -96,6 +103,23 @@ export class IterativeRagOrchestrator {
         const focusString = RagPromptTemplates.generateFocusString(focus_area, analysis_focus_points);
 
         console.log(`[Iterative RAG] Starting iterative search for query: "${query}"`);
+
+        // DMQR: Apply diverse multi-query rewriting at the beginning if enabled
+        if (enable_dmqr) {
+            console.log(`[Iterative RAG] DMQR enabled: Generating diverse queries and performing multi-retrieval (count: ${dmqr_query_count || 'default'})...`);
+            try {
+                const dmqrContext = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
+                    queryCount: dmqr_query_count,
+                });
+                accumulatedContext.push(...dmqrContext);
+                searchMetrics.contextItemsAdded += dmqrContext.length;
+                console.log(`[Iterative RAG] DMQR retrieved ${dmqrContext.length} unique context items.`);
+            } catch (error) {
+                console.error(`[Iterative RAG] DMQR failed:`, error);
+                // Continue with regular single-query retrieval if DMQR fails
+                console.log(`[Iterative RAG] Falling back to single-query retrieval due to DMQR failure.`);
+            }
+        }
 
         for (let i = 0; i < max_iterations; i++) {
             searchMetrics.totalIterations = i + 1;
@@ -119,10 +143,68 @@ export class IterativeRagOrchestrator {
                 return false;
             });
 
+            // Intelligent handling: Don't terminate immediately if no new context found
             if (newContext.length === 0 && i > 0) {
-                console.log(`[Iterative RAG] Turn ${i + 1}: No new context found. Concluding search.`);
-                searchMetrics.earlyTerminationReason = "No new context found";
-                break;
+                console.log(`[Iterative RAG] Turn ${i + 1}: No new context found from codebase search.`);
+
+                // Strategy 1: Check if we have sufficient accumulated context to attempt an answer
+                if (accumulatedContext.length > 0) {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: Have ${accumulatedContext.length} accumulated context items. Attempting to answer with existing context.`);
+
+                    // Force an attempt to generate an answer with existing context
+                    const formattedContextParts = formatContextForGemini(accumulatedContext);
+                    const contextString = formattedContextParts[0].text || '';
+
+                    const answerPrompt = RagPromptTemplates.generateAnswerPrompt({
+                        originalQuery: query,
+                        contextString: contextString,
+                        focusString
+                    });
+
+                    try {
+                        const answerResult = await this.geminiService.askGemini(
+                            answerPrompt,
+                            model,
+                            "You are a helpful AI assistant providing accurate answers based on the given context.",
+                            thinkingConfig
+                        );
+
+                        const generatedAnswer = answerResult.content[0].text ?? "";
+                        const verificationResult = await this.performEnhancedHallucinationCheck({
+                            originalQuery: query,
+                            contextString: contextString,
+                            generatedAnswer: generatedAnswer,
+                            model,
+                            threshold: hallucination_check_threshold,
+                            thinkingConfig
+                        });
+
+                        // Increment counter for every hallucination check performed
+                        searchMetrics.hallucinationChecksPerformed++;
+
+                        if (!verificationResult.isHallucination) {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Successfully generated answer with existing context.`);
+                            finalAnswer = generatedAnswer;
+                            break;
+                        } else {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Answer verification failed with existing context.`);
+                        }
+                    } catch (error: any) {
+                        console.error(`[Iterative RAG] Turn ${i + 1}: Error generating answer with existing context:`, error);
+                    }
+                }
+
+                // Strategy 2: If web search is enabled and we haven't tried it yet, suggest web search
+                if (enable_web_search && searchMetrics.webSearchesPerformed === 0) {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: No new codebase context found. Considering web search as fallback.`);
+                    // Instead of terminating, we'll let the decision logic handle web search in the next part
+                    // Don't break here - let the normal flow continue to the analysis phase
+                } else {
+                    // Only terminate if we have no accumulated context and web search is disabled or already tried
+                    console.log(`[Iterative RAG] Turn ${i + 1}: No viable options remaining. Concluding search.`);
+                    searchMetrics.earlyTerminationReason = "No new context found and no alternatives available";
+                    break;
+                }
             }
 
             accumulatedContext.push(...newContext);
@@ -220,7 +302,7 @@ export class IterativeRagOrchestrator {
                     }
                 } else {
                     console.log(`[Iterative RAG] Turn ${i + 1}: Answer verified with confidence ${verificationResult.confidence}. Concluding search.`);
-                    searchMetrics.hallucinationChecksPassed++;
+                    searchMetrics.hallucinationChecksPerformed++;
                     finalAnswer = generatedAnswer;
                     break;
                 }

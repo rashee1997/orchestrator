@@ -151,4 +151,25 @@ Please provide your answer:`;
         }
         return focusString;
     }
+
+    /**
+     * Generates a prompt for an LLM to create diverse multi-queries.
+     * @param originalQuery The user's original query.
+     * @param numQueries The number of diverse queries to generate.
+     * @returns A structured prompt string for the LLM.
+     */
+    static generateDiverseQueriesPrompt(originalQuery: string, numQueries: number = 3): string {
+        const promptContent = `
+You are an expert query rewriter for a codebase search system.
+Your task is to generate ${numQueries} semantically diverse search queries based on the original user query.
+These queries should explore different facets or interpretations of the original query to maximize relevant document retrieval.
+
+Original Query: "${originalQuery}"
+
+Generate ${numQueries} diverse queries. Each query should be concise and focused.
+Provide the output as a JSON array of strings.
+For example: ["query 1", "query 2", "query 3"]
+`;
+        return promptContent.trim();
+    }
 }
