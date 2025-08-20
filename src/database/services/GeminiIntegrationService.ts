@@ -499,6 +499,40 @@ export class GeminiIntegrationService {
         }
     }
 
+    public async generateConversationTitle(initialQuery: string): Promise<string> {
+        const cacheKey = this._generateCacheKey('generateConversationTitle', initialQuery);
+        const cached = this.requestCache.get(cacheKey);
+
+        if (cached && this._isCacheValid(cached.timestamp)) {
+            return cached.data;
+        }
+
+        try {
+            // Import the new prompt template
+            const { GENERATE_CONVERSATION_TITLE_PROMPT } = await import('./gemini-integration-modules/GeminiPromptTemplates.js');
+
+            const prompt = GENERATE_CONVERSATION_TITLE_PROMPT.replace('{initial_query}', initialQuery);
+
+            const result = await this._executeWithRetry(
+                () => this.askGemini(prompt, this.summarizationModelName),
+                'generateConversationTitle'
+            );
+
+            let title = result.content[0].text ?? 'New Conversation';
+            // Clean up any extraneous characters like quotes or newlines from the AI response
+            title = title.replace(/^["'\s]+|["'\s]+$/g, '').trim();
+
+            this.requestCache.set(cacheKey, { data: title, timestamp: Date.now() });
+            this._cleanupCache();
+
+            return title;
+        } catch (error: any) {
+            console.error(`Error generating conversation title for query "${initialQuery}":`, error);
+            // Fallback to a generic title if AI generation fails
+            return initialQuery.substring(0, 50) + (initialQuery.length > 50 ? "..." : "");
+        }
+    }
+
     public async getRefinedPrompt(agent_id: string, refined_prompt_id: string): Promise<any | null> {
         try {
             return await this._executeWithRetry(

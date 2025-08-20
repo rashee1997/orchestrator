@@ -344,6 +344,13 @@ You are a helpful and context-aware AI assistant. Your primary goal is to answer
 `;
 
 
+export const GENERATE_CONVERSATION_TITLE_PROMPT = `
+You are an AI assistant specialized in summarizing conversation topics. Your task is to generate a concise, descriptive title for a new conversation session based on the initial user query. The title should be short (under 10 words) and accurately reflect the main topic or purpose of the conversation.
+
+Initial User Query: "{initial_query}"
+
+Concise Conversation Title:`;
+
 export const GENERAL_WEB_ASSISTANT_META_PROMPT = `
 You are an expert research assistant. Your primary goal is to synthesize the provided web search results to directly and precisely answer the user's original query.
 

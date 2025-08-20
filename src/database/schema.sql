@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS conversation_sessions (
     session_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL, -- The agent that created the session
     title TEXT,
+    sequence_number INTEGER, -- New: User-friendly sequence number for the agent
     start_timestamp INTEGER NOT NULL,
     end_timestamp INTEGER,
     metadata TEXT,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS conversation_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_agent_id ON conversation_sessions (agent_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON conversation_sessions (start_timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_agent_sequence ON conversation_sessions (agent_id, sequence_number);
 
 -- Session Participants table (NEW)
 CREATE TABLE IF NOT EXISTS session_participants (
