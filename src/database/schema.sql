@@ -57,13 +57,11 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     message_type TEXT NOT NULL,
     tool_info TEXT,
     context_snapshot_id TEXT,
-    source_attribution_id TEXT,
     metadata TEXT,
     embedding BLOB,
     FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE,
     FOREIGN KEY (parent_message_id) REFERENCES conversation_messages (message_id) ON DELETE SET NULL,
-    FOREIGN KEY (context_snapshot_id) REFERENCES context_information (context_id),
-    FOREIGN KEY (source_attribution_id) REFERENCES source_attribution (attribution_id)
+    FOREIGN KEY (context_snapshot_id) REFERENCES context_information (context_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON conversation_messages (session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON conversation_messages (parent_message_id);
@@ -100,58 +98,6 @@ CREATE TABLE IF NOT EXISTS reference_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_reference_keys_agent_type_value ON reference_keys (agent_id, key_type, key_value);
 CREATE INDEX IF NOT EXISTS idx_reference_keys_timestamp ON reference_keys (timestamp);
-
--- Source Attribution table
-CREATE TABLE IF NOT EXISTS source_attribution (
-    attribution_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    source_uri TEXT,
-    retrieval_timestamp INTEGER NOT NULL,
-    content_summary TEXT,
-    full_content_hash TEXT,
-    full_content_json TEXT,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_source_attribution_agent_type_ts ON source_attribution (agent_id, source_type, retrieval_timestamp);
-CREATE INDEX IF NOT EXISTS idx_source_attribution_content_hash ON source_attribution (full_content_hash);
-
--- Correction Logs table
-CREATE TABLE IF NOT EXISTS correction_logs (
-    correction_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    correction_type TEXT NOT NULL,
-    original_entry_id TEXT,
-    original_value_json TEXT,
-    corrected_value_json TEXT,
-    reason TEXT,
-    correction_summary TEXT,
-    applied_automatically BOOLEAN NOT NULL,
-    creation_timestamp_unix INTEGER NOT NULL,
-    creation_timestamp_iso TEXT NOT NULL,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    status TEXT DEFAULT 'LOGGED',
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_correction_logs_agent_id_type ON correction_logs (agent_id, correction_type);
-CREATE INDEX IF NOT EXISTS idx_correction_logs_status ON correction_logs (status);
-CREATE INDEX IF NOT EXISTS idx_correction_logs_creation_ts ON correction_logs (creation_timestamp_unix);
-
--- Success Metrics table
-CREATE TABLE IF NOT EXISTS success_metrics (
-    metric_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    metric_name TEXT NOT NULL,
-    metric_value REAL NOT NULL,
-    unit TEXT,
-    associated_task_id TEXT,
-    metadata TEXT,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_success_metrics_agent_name_ts ON success_metrics (agent_id, metric_name, timestamp);
-CREATE INDEX IF NOT EXISTS idx_success_metrics_timestamp ON success_metrics (timestamp);
 
 -- Plans table
 CREATE TABLE IF NOT EXISTS plans (
@@ -260,157 +206,6 @@ CREATE TABLE IF NOT EXISTS refined_prompts (
 );
 CREATE INDEX IF NOT EXISTS idx_refined_prompts_agent_id ON refined_prompts (agent_id);
 CREATE INDEX IF NOT EXISTS idx_refined_prompts_timestamp ON refined_prompts (refinement_timestamp);
-
--- Tool Execution Logs table
-CREATE TABLE IF NOT EXISTS tool_execution_logs (
-    log_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    plan_id TEXT,
-    task_id TEXT,
-    subtask_id TEXT,
-    tool_name TEXT NOT NULL,
-    arguments_json TEXT,
-    status TEXT NOT NULL,
-    output_summary TEXT,
-    execution_start_timestamp_unix INTEGER NOT NULL,
-    execution_start_timestamp_iso TEXT NOT NULL,
-    execution_end_timestamp_unix INTEGER,
-    execution_end_timestamp_iso TEXT,
-    duration_ms INTEGER,
-    step_number_executed TEXT,
-    plan_step_title TEXT,
-    log_creation_timestamp_unix INTEGER NOT NULL,
-    log_creation_timestamp_iso TEXT NOT NULL,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (plan_id) REFERENCES plans (plan_id) ON DELETE SET NULL,
-    FOREIGN KEY (task_id) REFERENCES plan_tasks (task_id) ON DELETE SET NULL,
-    FOREIGN KEY (subtask_id) REFERENCES subtasks (subtask_id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_agent_start_ts ON tool_execution_logs (agent_id, execution_start_timestamp_unix);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_plan_id ON tool_execution_logs (plan_id);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_task_id ON tool_execution_logs (task_id);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_subtask_id ON tool_execution_logs (subtask_id);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_tool_name ON tool_execution_logs (tool_name);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_status ON tool_execution_logs (status);
-CREATE INDEX IF NOT EXISTS idx_tool_exec_logs_creation_ts ON tool_execution_logs (log_creation_timestamp_unix);
-
--- Task Progress Logs table
-CREATE TABLE IF NOT EXISTS task_progress_logs (
-    progress_log_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    associated_plan_id TEXT NOT NULL,
-    associated_task_id TEXT NOT NULL,
-    associated_subtask_id TEXT,
-    step_number_executed TEXT,
-    plan_step_title TEXT,
-    action_tool_used TEXT,
-    tool_parameters_summary_json TEXT,
-    files_modified_list_json TEXT,
-    change_summary_text TEXT,
-    execution_timestamp_unix INTEGER NOT NULL,
-    execution_timestamp_iso TEXT NOT NULL,
-    status_of_step_execution TEXT NOT NULL,
-    output_summary_or_error TEXT,
-    log_creation_timestamp_unix INTEGER NOT NULL,
-    log_creation_timestamp_iso TEXT NOT NULL,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (associated_plan_id) REFERENCES plans (plan_id) ON DELETE CASCADE,
-    FOREIGN KEY (associated_task_id) REFERENCES plan_tasks (task_id) ON DELETE CASCADE,
-    FOREIGN KEY (associated_subtask_id) REFERENCES subtasks (subtask_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_agent_exec_ts ON task_progress_logs (agent_id, execution_timestamp_unix);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_plan_id ON task_progress_logs (associated_plan_id);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_task_id ON task_progress_logs (associated_task_id);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_subtask_id ON task_progress_logs (associated_subtask_id);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_status ON task_progress_logs (status_of_step_execution);
-CREATE INDEX IF NOT EXISTS idx_task_prog_logs_creation_ts ON task_progress_logs (log_creation_timestamp_unix);
-
--- Error Logs table
-CREATE TABLE IF NOT EXISTS error_logs (
-    error_log_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    associated_plan_id TEXT,
-    associated_task_id TEXT,
-    associated_subtask_id TEXT,
-    associated_tool_execution_log_id TEXT,
-    error_type TEXT NOT NULL,
-    error_message TEXT NOT NULL,
-    stack_trace TEXT,
-    source_file TEXT,
-    source_line INTEGER,
-    severity TEXT DEFAULT 'MEDIUM',
-    status TEXT NOT NULL DEFAULT 'NEW',
-    resolution_details TEXT,
-    error_timestamp_unix INTEGER NOT NULL,
-    error_timestamp_iso TEXT NOT NULL,
-    log_creation_timestamp_unix INTEGER NOT NULL,
-    log_creation_timestamp_iso TEXT NOT NULL,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (associated_plan_id) REFERENCES plans (plan_id) ON DELETE SET NULL,
-    FOREIGN KEY (associated_task_id) REFERENCES plan_tasks (task_id) ON DELETE SET NULL,
-    FOREIGN KEY (associated_subtask_id) REFERENCES subtasks (subtask_id) ON DELETE SET NULL,
-    FOREIGN KEY (associated_tool_execution_log_id) REFERENCES tool_execution_logs (log_id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_error_logs_agent_error_ts ON error_logs (agent_id, error_timestamp_unix);
-CREATE INDEX IF NOT EXISTS idx_error_logs_type ON error_logs (error_type);
-CREATE INDEX IF NOT EXISTS idx_error_logs_severity ON error_logs (severity);
-CREATE INDEX IF NOT EXISTS idx_error_logs_status ON error_logs (status);
-CREATE INDEX IF NOT EXISTS idx_error_logs_plan_id ON error_logs (associated_plan_id);
-CREATE INDEX IF NOT EXISTS idx_error_logs_task_id ON error_logs (associated_task_id);
-CREATE INDEX IF NOT EXISTS idx_error_logs_creation_ts ON error_logs (log_creation_timestamp_unix);
-
--- Task Review Logs table
-CREATE TABLE IF NOT EXISTS task_review_logs (
-    review_log_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    plan_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    reviewer TEXT,
-    review_timestamp_unix INTEGER NOT NULL,
-    review_timestamp_iso TEXT NOT NULL,
-    review_status TEXT NOT NULL,
-    review_notes_md TEXT,
-    issues_found_json TEXT,
-    resolution_notes_md TEXT,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (plan_id) REFERENCES plans (plan_id) ON DELETE CASCADE,
-    FOREIGN KEY (task_id) REFERENCES plan_tasks (task_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_task_review_logs_plan_id ON task_review_logs (plan_id);
-CREATE INDEX IF NOT EXISTS idx_task_review_logs_task_id ON task_review_logs (task_id);
-CREATE INDEX IF NOT EXISTS idx_task_review_logs_agent_id ON task_review_logs (agent_id);
-CREATE INDEX IF NOT EXISTS idx_task_review_logs_status ON task_review_logs (review_status);
-CREATE INDEX IF NOT EXISTS idx_task_review_logs_timestamp ON task_review_logs (review_timestamp_unix);
-
--- Final Plan Review Logs table
-CREATE TABLE IF NOT EXISTS final_plan_review_logs (
-    final_review_log_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    plan_id TEXT NOT NULL,
-    reviewer TEXT,
-    review_timestamp_unix INTEGER NOT NULL,
-    review_timestamp_iso TEXT NOT NULL,
-    review_status TEXT NOT NULL,
-    review_notes_md TEXT,
-    issues_found_json TEXT,
-    resolution_notes_md TEXT,
-    last_updated_timestamp_unix INTEGER NOT NULL,
-    last_updated_timestamp_iso TEXT NOT NULL,
-    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE,
-    FOREIGN KEY (plan_id) REFERENCES plans (plan_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_plan_id ON final_plan_review_logs (plan_id);
-CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_agent_id ON final_plan_review_logs (agent_id);
-CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_status ON final_plan_review_logs (review_status);
-CREATE INDEX IF NOT EXISTS idx_final_plan_review_logs_timestamp ON final_plan_review_logs (review_timestamp_unix);
 
 -- Insert default agents
 INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)

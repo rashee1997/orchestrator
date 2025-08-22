@@ -3,7 +3,6 @@ import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { PlanTaskManager } from '../managers/PlanTaskManager.js';
-import { TaskProgressLogManager } from '../managers/TaskProgressLogManager.js';
 
 export interface ContextRetrievalOptions {
     topKEmbeddings?: number;
@@ -49,7 +48,6 @@ export class CodebaseContextRetrieverService {
     private kgManager: IKnowledgeGraphManager;
     private geminiService: GeminiIntegrationService;
     private planTaskManager: PlanTaskManager;
-    private taskProgressLogManager: TaskProgressLogManager;
     private contextCache: Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>;
     private cacheTTL: number;
     private maxCacheSize: number;
@@ -61,7 +59,6 @@ export class CodebaseContextRetrieverService {
         this.kgManager = memoryManager.knowledgeGraphManager;
         this.geminiService = memoryManager.getGeminiIntegrationService();
         this.planTaskManager = memoryManager.planTaskManager;
-        this.taskProgressLogManager = memoryManager.taskProgressLogManager;
         this.contextCache = new Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>();
         this.cacheTTL = 5 * 60 * 1000; // 5 minutes
         this.maxCacheSize = 1000;
@@ -402,24 +399,7 @@ Respond with only the category name.`;
     }
 
     private async searchTaskLogs(agentId: string, keywords: string[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
-        try {
-            const allLogs = await this.taskProgressLogManager.getTaskProgressLogsByAgentId(agentId, 1000);
-            const relevantLogs = allLogs.filter(log =>
-                keywords.some(kw => (log.change_summary_text || '').includes(kw) || (log.output_summary_or_error || '').includes(kw))
-            );
-
-            return relevantLogs.slice(0, 5).map((log, index: number) => ({
-                type: 'task_log',
-                sourcePath: `log_id:${log.progress_log_id}`,
-                entityName: `Task: ${log.associated_task_id}`,
-                content: `Log: ${log.change_summary_text}\nStatus: ${log.status_of_step_execution}\nOutput: ${log.output_summary_or_error}`,
-                relevanceScore: 0.8 / (index + 1),
-                metadata: { timestamp: log.execution_timestamp_iso }
-            }));
-        } catch (error) {
-            console.error("Error searching task logs:", error);
-        }
-
+        console.warn("Task log search is disabled due to removal of TaskProgressLogManager.");
         return [];
     }
 

@@ -1,3 +1,4 @@
+// src/database/managers/ConversationHistoryManager.ts
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
@@ -30,7 +31,6 @@ export interface ConversationMessage {
     message_type: string;
     tool_info: any | null;
     context_snapshot_id: string | null;
-    source_attribution_id: string | null;
     metadata: any;
     embedding: number[] | null;
 }
@@ -41,7 +41,6 @@ export interface NewMessage {
     message_type?: string;
     tool_info?: any;
     context_snapshot_id?: string | null;
-    source_attribution_id?: string | null;
     parent_message_id?: string | null;
     metadata?: any;
     generateEmbedding?: boolean;
@@ -97,7 +96,6 @@ export class ConversationHistoryManager {
                 message_type TEXT NOT NULL,
                 tool_info TEXT,
                 context_snapshot_id TEXT,
-                source_attribution_id TEXT,
                 metadata TEXT,
                 embedding BLOB,
                 FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE,
@@ -165,14 +163,13 @@ export class ConversationHistoryManager {
         message_type: string = 'text',
         tool_info: any = null,
         context_snapshot_id: string | null = null,
-        source_attribution_id: string | null = null,
         parent_message_id: string | null = null,
         metadata: any = null,
         generateEmbedding: boolean = false
     ): Promise<string> {
         const result = await this.storeConversationMessagesBulk(session_id, [{
             sender, message_content, message_type, tool_info, context_snapshot_id,
-            source_attribution_id, parent_message_id, metadata, generateEmbedding
+            parent_message_id, metadata, generateEmbedding
         }]);
         return result[0];
     }
@@ -187,8 +184,8 @@ export class ConversationHistoryManager {
         const insertStatement = await db.prepare(
             `INSERT INTO conversation_messages (
                 message_id, session_id, parent_message_id, timestamp, sender, message_content,
-                message_type, tool_info, context_snapshot_id, source_attribution_id, metadata, embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                message_type, tool_info, context_snapshot_id, metadata, embedding
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
         try {
@@ -210,7 +207,7 @@ export class ConversationHistoryManager {
                 await insertStatement.run(
                     message_id, session_id, message.parent_message_id, timestamp, message.sender, message.message_content,
                     message.message_type ?? 'text', JSON.stringify(message.tool_info), message.context_snapshot_id,
-                    message.source_attribution_id, JSON.stringify(message.metadata), embeddingBlob
+                    JSON.stringify(message.metadata), embeddingBlob
                 );
             }
             await db.exec('COMMIT');
@@ -281,7 +278,6 @@ export class ConversationHistoryManager {
             message_type: row.message_type,
             tool_info: row.tool_info ? JSON.parse(row.tool_info) : null,
             context_snapshot_id: row.context_snapshot_id,
-            source_attribution_id: row.source_attribution_id,
             metadata: row.metadata ? JSON.parse(row.metadata) : null,
             embedding: includeEmbeddings && row.embedding ?
                 Array.from(new Float32Array(row.embedding.buffer)) : null

@@ -4,8 +4,6 @@ import { CodebaseContextRetrieverService } from '../database/services/CodebaseCo
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
 import { PlanTaskManager, ParsedTask } from '../database/managers/PlanTaskManager.js';
 import { SubtaskManager } from '../database/managers/SubtaskManager.js';
-import { TaskProgressLogManager } from '../database/managers/TaskProgressLogManager.js';
-import { TaskProgressLog } from '../types/index.js';
 import { formatJsonToMarkdownCodeBlock, formatPlanToMarkdown, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
 
@@ -49,18 +47,6 @@ interface AiPlanAnalysis {
     suggestions_for_improvement?: string[];
     codebase_context_impact?: string;
     overall_summary: string;
-}
-
-interface AiTaskProgressSummary {
-    plan_id: string;
-    task_id?: string;
-    overall_status_assessment: string;
-    key_accomplishments: string[];
-    identified_blockers_or_issues: string[];
-    next_steps_or_outlook: string;
-    estimated_completion_percentage?: number;
-    confidence_in_current_timeline?: string;
-    detailed_summary_text: string;
 }
 
 interface TaskComplexityAnalysis {
@@ -133,22 +119,6 @@ const aiAnalyzePlanToolDefinition = {
                 description: 'Optional: Specific areas to focus the analysis on (e.g., "risk_assessment", "task_dependencies", "resource_allocation", "goal_alignment").'
             },
             codebase_context_summary: { type: 'string', description: 'Optional: A summary string of relevant codebase context to consider during plan analysis.', nullable: true },
-        },
-        required: ['agent_id', 'plan_id'],
-        additionalProperties: false,
-    },
-};
-
-const aiSummarizeTaskProgressToolDefinition = {
-    name: 'ai_summarize_task_progress',
-    description: 'Retrieves task progress logs for a given plan (and optionally a specific task) and uses an AI model (Gemini) to generate a concise summary of progress, blockers, and overall status. Output is a structured summary in Markdown format.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            plan_id: { type: 'string', description: 'The ID of the plan for which progress is being summarized.' },
-            task_id: { type: 'string', description: 'Optional: The ID of a specific task within the plan to focus the summary on. If omitted, summarizes progress for all tasks in the plan.', nullable: true },
-            max_logs_to_consider: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Maximum number of recent progress logs to consider for the summary.' },
         },
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
@@ -603,101 +573,6 @@ Provide only the JSON object.`;
 
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
-
-async function aiSummarizeTaskProgressHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
-    const validationResult = validate('aiSummarizeTaskProgress', args);
-    if (!validationResult.valid) {
-        throw new McpError(ErrorCode.InvalidParams, `Validation failed for ai_summarize_task_progress: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
-    }
-
-    const { agent_id, plan_id, task_id, max_logs_to_consider = 50 } = args;
-
-    // 1. Get services and fetch progress logs
-    const taskProgressLogManager = memoryManager.taskProgressLogManager;
-    const planTaskManager = memoryManager.planTaskManager;
-    const geminiService = memoryManager.getGeminiIntegrationService();
-
-    const allAgentLogs = await taskProgressLogManager.getTaskProgressLogsByAgentId(agent_id, max_logs_to_consider * 5);
-    const progressLogs = allAgentLogs
-        .filter(log => log.associated_plan_id === plan_id && (!task_id || log.associated_task_id === task_id))
-        .sort((a, b) => a.execution_timestamp_unix - b.execution_timestamp_unix)
-        .slice(-max_logs_to_consider);
-
-    if (progressLogs.length === 0) {
-        return { content: [{ type: 'text', text: formatSimpleMessage(`No task progress logs found for Plan ID: \`${plan_id}\`${task_id ? ` (Task ID: \`${task_id}\`)` : ''}.`, "Task Progress Summary") }] };
-    }
-
-    let taskTitle = "Overall Plan";
-    if (task_id) {
-        const task = await planTaskManager.getTask(agent_id, task_id);
-        taskTitle = task ? (task as any).title : `Task ID ${task_id}`;
-    }
-
-    const formattedLogs = progressLogs.map(log =>
-        `Log ID: ${log.progress_log_id}\n` +
-        `Task ID: ${log.associated_task_id}\n` +
-        `Status: ${log.status_of_step_execution}\n` +
-        `Summary/Error: ${log.output_summary_or_error || 'N/A'}\n` +
-        `Timestamp: ${new Date(log.execution_timestamp_iso).toLocaleString()}`
-    ).join('\n---\n');
-
-    // 2. Build prompt
-    const prompt = `You are an expert AI project reporter. Analyze the provided task progress logs and generate a concise summary.
-Focus on overall status, key accomplishments, blockers, next steps, and estimated completion.
-
-Target: Summarize progress for ${task_id ? `Task "${taskTitle}" (ID: ${task_id})` : `Plan ID: ${plan_id}`}.
-
-Progress Logs:
----
-${formattedLogs}
----
-
-Please provide your summary as a single JSON object.
-
-JSON Output Schema:
-{
-  "plan_id": "${plan_id}",
-  "task_id": ${task_id ? `"${task_id}"` : null},
-  "overall_status_assessment": "string",
-  "key_accomplishments": ["string"],
-  "identified_blockers_or_issues": ["string"],
-  "next_steps_or_outlook": "string",
-  "estimated_completion_percentage": "number (0-100, optional)",
-  "confidence_in_current_timeline": "string ('High', 'Medium', 'Low', optional)",
-  "detailed_summary_text": "string (A narrative summary of the progress.)"
-}
-
-Provide only the JSON object.`;
-
-    // 3. Get summary from AI
-    let progressSummary: AiTaskProgressSummary;
-    try {
-        progressSummary = await callGeminiAndParseJson<AiTaskProgressSummary>(geminiService, prompt);
-    } catch (error: any) {
-        console.error(`Error summarizing task progress for plan ${plan_id} (agent: ${agent_id}):`, error);
-        throw new McpError(ErrorCode.InternalError, `Failed to get task progress summary from AI: ${error.message}`);
-    }
-
-    // 4. Format output
-    let markdownOutput = `## AI Task Progress Summary\n\n`;
-    markdownOutput += `**Plan ID:** \`${progressSummary.plan_id}\`\n`;
-    if (progressSummary.task_id) markdownOutput += `**Task ID:** \`${progressSummary.task_id}\` (Task: "${taskTitle}")\n`;
-    markdownOutput += `**Overall Status Assessment:** ${progressSummary.overall_status_assessment || 'Not Assessed'}\n`;
-    if (progressSummary.estimated_completion_percentage !== undefined) markdownOutput += `**Estimated Completion:** ${progressSummary.estimated_completion_percentage}%\n`;
-    if (progressSummary.confidence_in_current_timeline) markdownOutput += `**Timeline Confidence:** ${progressSummary.confidence_in_current_timeline}\n\n`;
-
-    if (progressSummary.key_accomplishments?.length) {
-        markdownOutput += "### Key Accomplishments:\n" + progressSummary.key_accomplishments.map(s => `- ${s}`).join('\n') + "\n\n";
-    }
-    if (progressSummary.identified_blockers_or_issues?.length) {
-        markdownOutput += "### Identified Blockers/Issues:\n" + progressSummary.identified_blockers_or_issues.map(s => `- ${s}`).join('\n') + "\n\n";
-    }
-    if (progressSummary.next_steps_or_outlook) markdownOutput += `### Next Steps/Outlook:\n${progressSummary.next_steps_or_outlook}\n\n`;
-    if (progressSummary.detailed_summary_text) markdownOutput += `### Detailed Summary:\n${progressSummary.detailed_summary_text}\n\n`;
-
-
-    return { content: [{ type: 'text', text: markdownOutput }] };
-}
 // #endregion
 
 // #region Exports
@@ -705,7 +580,6 @@ export const aiTaskEnhancementToolDefinitions = [
     aiSuggestSubtasksToolDefinition,
     aiSuggestTaskDetailsToolDefinition,
     aiAnalyzePlanToolDefinition,
-    aiSummarizeTaskProgressToolDefinition,
 ];
 
 export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
@@ -713,7 +587,6 @@ export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
         'ai_suggest_subtasks': (args: any) => aiSuggestSubtasksHandler(args, memoryManager),
         'ai_suggest_task_details': (args: any) => aiSuggestTaskDetailsHandler(args, memoryManager),
         'ai_analyze_plan': (args: any) => aiAnalyzePlanHandler(args, memoryManager),
-        'ai_summarize_task_progress': (args: any) => aiSummarizeTaskProgressHandler(args, memoryManager),
     };
 }
 // #endregion

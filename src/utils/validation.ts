@@ -106,17 +106,6 @@ export const schemas = {
         required: ['agent_id', 'plan_id'],
         additionalProperties: false,
     },
-    aiSummarizeTaskProgress: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            plan_id: { type: 'string', description: 'The ID of the plan for which progress is being summarized.' },
-            task_id: { type: 'string', description: 'Optional: The ID of a specific task within the plan to focus the summary on. If omitted, summarizes progress for all tasks in the plan.', nullable: true },
-            max_logs_to_consider: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Maximum number of recent progress logs to consider for the summary.' },
-        },
-        required: ['agent_id', 'plan_id'],
-        additionalProperties: false,
-    },
     queryCodebaseEmbeddings: {
         type: 'object',
         properties: {
@@ -248,49 +237,6 @@ export const schemas = {
             associated_conversation_id: { type: ['string', 'null'] },
         },
         required: ['agent_id', 'key_type', 'key_value'],
-        additionalProperties: false,
-    },
-    sourceAttribution: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            source_type: { type: 'string' },
-            source_uri: { type: ['string', 'null'] },
-            retrieval_timestamp: { type: 'number' },
-            content_summary: { type: ['string', 'null'] },
-            full_content_hash: { type: ['string', 'null'] },
-            full_content_json: { type: ['string', 'object', 'null'] },
-        },
-        required: ['agent_id', 'source_type', 'retrieval_timestamp'],
-        additionalProperties: false,
-    },
-    correctionLog: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            correction_type: { type: 'string' },
-            original_entry_id: { type: ['string', 'null'] },
-            original_value: { type: ['object', 'null'] },
-            corrected_value: { type: ['object', 'null'] },
-            reason: { type: ['string', 'null'] },
-            correction_summary: { type: ['string', 'null'] },
-            applied_automatically: { type: 'boolean' },
-            status: { type: 'string', default: 'LOGGED' },
-        },
-        required: ['agent_id', 'correction_type', 'applied_automatically'],
-        additionalProperties: false,
-    },
-    successMetric: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            metric_name: { type: 'string' },
-            metric_value: { type: 'number' },
-            unit: { type: ['string', 'null'] },
-            associated_task_id: { type: ['string', 'null'] },
-            metadata: { type: ['object', 'null'] },
-        },
-        required: ['agent_id', 'metric_name', 'metric_value'],
         additionalProperties: false,
     },
     tavilySearch: {
@@ -675,94 +621,6 @@ export const schemas = {
             subtask_ids: { type: 'array', items: { type: 'string' } }
         },
         required: ['agent_id', 'subtask_ids'],
-        additionalProperties: false
-    },
-    create_task_review_log: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            plan_id: { type: 'string' },
-            task_id: { type: 'string' },
-            reviewer: { type: ['string', 'null'] },
-            review_status: { type: 'string' },
-            review_notes_md: { type: ['string', 'null'] },
-            issues_found_json: { type: ['string', 'null'] },
-            resolution_notes_md: { type: ['string', 'null'] }
-        },
-        required: ['agent_id', 'plan_id', 'task_id', 'review_status'],
-        additionalProperties: false
-    },
-    get_task_review_logs: {
-        type: 'object',
-        properties: {
-            agent_id: { type: ['string', 'null'] },
-            plan_id: { type: ['string', 'null'] },
-            task_id: { type: ['string', 'null'] },
-            review_status: { type: ['string', 'null'] }
-        },
-        additionalProperties: false
-    },
-    update_task_review_log: {
-        type: 'object',
-        properties: {
-            review_log_id: { type: 'string' },
-            updates: {
-                type: 'object',
-                additionalProperties: true
-            }
-        },
-        required: ['review_log_id', 'updates'],
-        additionalProperties: false
-    },
-    delete_task_review_log: {
-        type: 'object',
-        properties: {
-            review_log_id: { type: 'string' }
-        },
-        required: ['review_log_id'],
-        additionalProperties: false
-    },
-    create_final_plan_review_log: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            plan_id: { type: 'string' },
-            reviewer: { type: ['string', 'null'] },
-            review_status: { type: 'string' },
-            review_notes_md: { type: ['string', 'null'] },
-            issues_found_json: { type: ['string', 'null'] },
-            resolution_notes_md: { type: ['string', 'null'] }
-        },
-        required: ['agent_id', 'plan_id', 'review_status'],
-        additionalProperties: false
-    },
-    get_final_plan_review_logs: {
-        type: 'object',
-        properties: {
-            agent_id: { type: ['string', 'null'] },
-            plan_id: { type: ['string', 'null'] },
-            review_status: { type: ['string', 'null'] }
-        },
-        additionalProperties: false
-    },
-    update_final_plan_review_log: {
-        type: 'object',
-        properties: {
-            final_review_log_id: { type: 'string' },
-            updates: {
-                type: 'object',
-                additionalProperties: true
-            }
-        },
-        required: ['final_review_log_id', 'updates'],
-        additionalProperties: false
-    },
-    delete_final_plan_review_log: {
-        type: 'object',
-        properties: {
-            final_review_log_id: { type: 'string' }
-        },
-        required: ['final_review_log_id'],
         additionalProperties: false
     },
     askGemini: {

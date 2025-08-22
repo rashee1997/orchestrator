@@ -318,7 +318,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
                 const aiResponseText = formatPlanGenerationResponseToMarkdown(parsedResponse);
 
-                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
+                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', null, null, null, { context: finalContext.length > 0 ? finalContext : undefined });
 
                 return { content: [{ type: 'text', text: aiResponseText }] };
             } catch (error: any) {
@@ -403,7 +403,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += `\n### Web Search Sources:\n` + webSearchSources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
             }
 
-            await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', markdownOutput, 'text', null, null, null, null, {
+            await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', markdownOutput, 'text', null, null, null, {
                 context: finalContext.length > 0 ? finalContext : undefined,
                 sources: webSearchSources.length > 0 ? webSearchSources : undefined,
                 metrics: searchMetrics,
