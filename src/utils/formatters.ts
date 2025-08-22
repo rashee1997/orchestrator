@@ -262,7 +262,7 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
     return md;
 }
 
-// *** MODIFIED FUNCTION TO DISPLAY FULL TASK DETAILS ***
+// *** MODIFIED FUNCTION TO DISPLAY FULL TASK DETAILS WITH SUBTASKS ***
 export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = [], taskMap: Map<string, any> = new Map()): string {
     if (!plan) return "*No plan details provided.*\n";
 
@@ -320,6 +320,30 @@ export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks:
 
                 md += `- **Proposed Code Changes:**\n`;
                 md += `${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 2)}\n`;
+            }
+
+            // Display subtasks for this specific task
+            if (task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
+                md += `\n#### Subtasks for Task ${task.task_number}:\n`;
+                task.subtasks.forEach((subtask: any) => {
+                    md += `\n- **Subtask ID:** ${formatValue(subtask.subtask_id, { isCodeOrId: true })}\n`;
+                    md += `  - **Title:** ${formatValue(subtask.title || 'N/A')}\n`;
+                    md += `  - **Status:** ${formatValue(subtask.status || 'N/A')}\n`;
+                    md += `  - **Description:** ${formatValue(subtask.description || 'N/A')}\n`;
+                    if (subtask.parent_task_id) {
+                        md += `  - **Parent Task ID:** ${formatValue(subtask.parent_task_id, { isCodeOrId: true })}\n`;
+                    }
+                    if (subtask.creation_timestamp_iso) {
+                        md += `  - **Created:** ${formatValue(subtask.creation_timestamp_iso ? new Date(subtask.creation_timestamp_iso) : null)}\n`;
+                    }
+                    if (subtask.last_updated_timestamp_iso) {
+                        md += `  - **Last Updated:** ${formatValue(subtask.last_updated_timestamp_iso ? new Date(subtask.last_updated_timestamp_iso) : null)}\n`;
+                    }
+                    if (subtask.completion_timestamp_iso) {
+                        md += `  - **Completed:** ${formatValue(subtask.completion_timestamp_iso ? new Date(subtask.completion_timestamp_iso) : null)}\n`;
+                    }
+                });
+                md += `\n`;
             }
         });
     }

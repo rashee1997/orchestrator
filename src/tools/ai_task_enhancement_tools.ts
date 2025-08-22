@@ -62,6 +62,15 @@ interface AiTaskProgressSummary {
     confidence_in_current_timeline?: string;
     detailed_summary_text: string;
 }
+
+interface TaskComplexityAnalysis {
+    task_id: string;
+    title: string;
+    complexity_score: number; // 1-10 scale
+    complexity_factors: string[];
+    reasoning: string;
+    recommended_action: 'HIGH_COMPLEXITY_SUBTASKS' | 'MEDIUM_COMPLEXITY_SUBTASKS' | 'LOW_COMPLEXITY_NO_SUBTASKS' | 'SKIP_COMPLETELY';
+}
 // #endregion
 
 // #region Helper Functions
@@ -288,23 +297,94 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
             return { content: [{ type: 'text', text: formatSimpleMessage(`All tasks in plan \`${plan_id}\` already have subtasks. No new suggestions generated.`, "AI Subtask Suggestions") }] };
         }
 
-        const selectionPrompt = `You are an expert project manager. From the following list of tasks, identify ALL tasks that are sufficiently complex or high-level to be considered good candidates for being broken down into smaller subtasks. Exclude simple, straightforward tasks.
-        
-Tasks available for breakdown:
+        // === AGENT 1: Task Complexity Analyzer ===
+        const complexityAnalysisPrompt = `You are an expert Task Complexity Analyzer AI. Your role is to analyze each task and provide a detailed complexity assessment.
+
+For each task, provide:
+- Complexity Score (1-10, where 10 is extremely complex)
+- Specific Complexity Factors (list the reasons why this task is complex)
+- Detailed Reasoning (explain your analysis)
+- Recommended Action (HIGH_COMPLEXITY_SUBTASKS, MEDIUM_COMPLEXITY_SUBTASKS, LOW_COMPLEXITY_NO_SUBTASKS, or SKIP_COMPLETELY)
+
+**Complexity Guidelines:**
+- HIGH_COMPLEXITY_SUBTASKS (8-10): Multi-step, multi-system, requires detailed planning, parallel execution
+- MEDIUM_COMPLEXITY_SUBTASKS (5-7): Several steps, some technical complexity, moderate planning needed
+- LOW_COMPLEXITY_NO_SUBTASKS (1-4): Simple, straightforward, single-step tasks.
+- SKIP_COMPLETELY: Administrative, trivial, or already too detailed.
+
+**Special Instruction:** You MUST recommend \`HIGH_COMPLEXITY_SUBTASKS\` or \`MEDIUM_COMPLEXITY_SUBTASKS\` ONLY IF the task's title or description explicitly contains keywords indicating code-related work, such as "code changes", "implementation", "development", "bug fix", "refactoring", "unit tests", or "integration tests". For all other tasks, you MUST recommend \`LOW_COMPLEXITY_NO_SUBTASKS\` or \`SKIP_COMPLETELY\`.
+
+Tasks to analyze:
 ${JSON.stringify(tasksWithoutSubtasks.map(({ has_subtasks, ...rest }) => rest), null, 2)}
 
-Respond with only a JSON array of the \`task_id\` strings for your selected candidates. If no tasks are complex enough, return an empty array.
-Example: ["task-id-1", "task-id-2"]`;
+Respond with a JSON array of objects with this exact structure:
+[{
+  "task_id": "string",
+  "title": "string",
+  "complexity_score": number,
+  "complexity_factors": ["string"],
+  "reasoning": "string",
+  "recommended_action": "string"
+}]
 
-        let complexTaskIds: string[];
+Provide ONLY the JSON array.`;
+
+        let complexityAnalyses: TaskComplexityAnalysis[];
         try {
-            complexTaskIds = await callGeminiAndParseJson<string[]>(geminiService, selectionPrompt);
+            complexityAnalyses = await callGeminiAndParseJson<TaskComplexityAnalysis[]>(geminiService, complexityAnalysisPrompt);
         } catch (e) {
-            throw new McpError(ErrorCode.InternalError, "AI failed to identify complex tasks for breakdown.");
+            throw new McpError(ErrorCode.InternalError, "Task Complexity Analyzer AI failed to analyze tasks.");
         }
 
-        if (!complexTaskIds || complexTaskIds.length === 0) {
-            return { content: [{ type: 'text', text: formatSimpleMessage(`AI analysis concluded that no tasks in plan \`${plan_id}\` require further breakdown at this time.`, "AI Subtask Suggestions") }] };
+        // Filter for tasks that should get subtasks
+        const tasksForSubtaskGeneration = complexityAnalyses.filter(analysis =>
+            analysis.recommended_action === 'HIGH_COMPLEXITY_SUBTASKS' ||
+            analysis.recommended_action === 'MEDIUM_COMPLEXITY_SUBTASKS'
+        );
+
+        if (tasksForSubtaskGeneration.length === 0) {
+            const analysisSummary = complexityAnalyses.map(a =>
+                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+            ).join('\n');
+
+            return { content: [{ type: 'text', text: formatSimpleMessage(
+                `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                "AI Subtask Suggestions"
+            ) }] };
+        }
+
+        // DEBUG: Log the complexity analysis results
+        console.log('=== COMPLEXITY ANALYSIS DEBUG ===');
+        complexityAnalyses.forEach(analysis => {
+            console.log(`Task: ${analysis.title}`);
+            console.log(`Score: ${analysis.complexity_score}/10`);
+            console.log(`Action: ${analysis.recommended_action}`);
+            console.log(`Factors: ${analysis.complexity_factors.join(', ')}`);
+            console.log('---');
+        });
+        console.log(`Tasks for subtask generation: ${tasksForSubtaskGeneration.length}`);
+        console.log('=== END DEBUG ===');
+
+        // === AGENT 2: Subtask Generator (only gets high/medium complexity tasks) ===
+        const complexTaskIds = tasksForSubtaskGeneration.map(t => t.task_id);
+
+        // Generate analysis summary for context
+        const analysisSummary = tasksForSubtaskGeneration.map(a =>
+            `- **${a.title}** (Score: ${a.complexity_score}/10): ${a.complexity_factors.slice(0, 2).join(', ')}`
+        ).join('\n');
+
+        // Use Agent 1's analysis directly - no need for second AI call since we already have the complex task IDs
+        // The complexTaskIds are already determined by Agent 1's analysis
+
+        if (complexTaskIds.length === 0) {
+            const analysisSummary = complexityAnalyses.map(a =>
+                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+            ).join('\n');
+
+            return { content: [{ type: 'text', text: formatSimpleMessage(
+                `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                "AI Subtask Suggestions"
+            ) }] };
         }
 
         let fullMarkdownReport = `## AI-Suggested Subtasks for Complex Tasks in Plan \`${plan_id}\`\n`;
