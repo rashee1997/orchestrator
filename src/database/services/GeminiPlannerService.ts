@@ -12,6 +12,8 @@ interface GeminiDetailedPlanGenerationResponse {
     estimated_duration_days: number;
     target_start_date: string;
     target_end_date: string;
+    kpis?: string[];
+    dependency_analysis?: string;
     plan_risks_and_mitigations: Array<{
         risk_description: string;
         mitigation_strategy: string;
@@ -21,6 +23,7 @@ interface GeminiDetailedPlanGenerationResponse {
         title: string;
         description: string;
         purpose: string;
+        estimated_duration_days?: number;
         estimated_effort_hours?: number;
         task_risks?: string[];
         micro_steps?: string[];
@@ -52,6 +55,8 @@ export interface InitialDetailedPlanAndTasks {
             target_start_date?: string;
             target_end_date?: string;
             plan_risks_and_mitigations?: Array<{ risk_description: string; mitigation_strategy: string; }>;
+            kpis?: string[];
+            dependency_analysis?: string;
             [key: string]: any; // Allow other metadata
         };
     };
@@ -61,6 +66,7 @@ export interface InitialDetailedPlanAndTasks {
         description: string;
         purpose: string;
         status: string; // e.g., 'PLANNED'
+        estimated_duration_days?: number;
         estimated_effort_hours?: number; // This field exists in plan_tasks schema
         task_risks?: string[]; // Add this
         micro_steps?: string[]; // Add this
@@ -210,6 +216,8 @@ Required JSON Schema:
   "estimated_duration_days": number,
   "target_start_date": "YYYY-MM-DD",
   "target_end_date": "YYYY-MM-DD",
+  "kpis": ["string (e.g., 'Reduce hallucination rate by 15%')"],
+  "dependency_analysis": "string (A brief explanation of critical task interdependencies to avoid blockers.)",
   "plan_risks_and_mitigations": [
     {
       "risk_description": "string",
@@ -222,6 +230,7 @@ Required JSON Schema:
       "title": "string (≤ 10 words, non-empty)",
       "description": "string (detailed explanation)",
       "purpose": "string (why this task is necessary)",
+      "estimated_duration_days": "number",
       "suggested_files_involved": ["array", "of", "file", "paths"],
       "code_content": "string (full code for new files OR unified diff for existing files)",
       "completion_criteria": "string (measurable criteria)",
@@ -231,11 +240,13 @@ Required JSON Schema:
 }
 
 Task Generation Rules:
-1. Break down the input into clear, ordered tasks.
+1. Break down the input into clear, ordered tasks with realistic 'estimated_duration_days'.
 2. Merge or consolidate redundant steps.
 3. Dependencies must reference exact task titles.
-4. Always include these phases: requirements, architecture, development, testing, reviews, documentation, deployment.
-5. For coding tasks, ALWAYS provide complete code_content - never use placeholders.
+4. Populate 'kpis' with specific, measurable success metrics.
+5. Provide a 'dependency_analysis' explaining critical inter-task relationships.
+6. Always include these phases: requirements, architecture, development, testing, reviews, documentation, deployment.
+7. For coding tasks, ALWAYS provide complete code_content - never use placeholders.
 
 Code Content Rules:
 - For NEW files: Include complete source code with file path comment at top.
@@ -290,7 +301,7 @@ Enhancements:
             }).join('\n\n');
         }
 
-        return `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
+        return `Analyze the following 'Refined Prompt Object' and generate a complete project plan. Today's date is ${today}. Use this for start and end dates.
 
 Refined Prompt Object:
 ${JSON.stringify(payload, null, 2)}
@@ -346,7 +357,7 @@ IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdow
             }).join('\n\n');
         }
 
-        return `Analyze the following user goal and generate a detailed project plan.
+        return `Analyze the following user goal and generate a detailed project plan. Today's date is ${today}. Use this for start and end dates.
 
 User Goal:
 "${goal}"
@@ -442,6 +453,8 @@ Return ONLY the JSON object.`;
                 target_start_date: resp.target_start_date,
                 target_end_date: resp.target_end_date,
                 plan_risks_and_mitigations: resp.plan_risks_and_mitigations,
+                kpis: resp.kpis,
+                dependency_analysis: resp.dependency_analysis,
             },
         };
     }
@@ -487,6 +500,7 @@ Return ONLY the JSON object.`;
                 description: safeDescription,
                 purpose: safePurpose,
                 status: TASK_STATUS_PLANNED,
+                estimated_duration_days: t.estimated_duration_days,
                 estimated_effort_hours: t.estimated_effort_hours,
                 task_risks: t.task_risks,
                 micro_steps: t.micro_steps,
