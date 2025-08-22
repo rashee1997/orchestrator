@@ -94,6 +94,18 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             },
             enable_web_search: { type: 'boolean', description: 'Allow autonomous web searches during iterative RAG.', default: false },
             max_iterations: { type: 'number', description: 'Max iterations for iterative search.', default: 3, minimum: 1, maximum: 5 },
+            enable_dmqr: {
+                type: 'boolean',
+                description: 'Enable Diverse Multi-Query Rewriting (DMQR) for the initial RAG context.',
+                default: false
+            },
+            dmqr_query_count: {
+                type: 'number',
+                description: 'The number of diverse queries to generate for DMQR.',
+                default: 3,
+                minimum: 2,
+                maximum: 5
+            },
             live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Array of full file paths for live chunking and review.', nullable: true },
             focus_area: { type: 'string', description: 'Manually set a focus area to override autonomous selection.', enum: VALID_FOCUS_AREAS, nullable: true },
             analysis_focus_points: {
@@ -148,6 +160,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             target_ai_persona, conversation_context_ids, enable_web_search, max_iterations,
             hallucination_check_threshold,
             google_search,
+            enable_dmqr,
+            dmqr_query_count,
             session_id, session_name, session_sequence_number, conversation_history_limit,
             continue: continue_session
         } = args;
@@ -255,7 +269,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         try {
             // Ensure user's explicit settings are respected here
             if (userExplicitlyEnabledIterativeSearch || mutable_enable_iterative_search) {
-                const iterativeResult = await _performIterativeRagSearch({ ...args, query: ragQuery }, memoryManagerInstance, geminiService);
+                const iterativeResult = await _performIterativeRagSearch({ ...args, query: ragQuery, enable_dmqr, dmqr_query_count }, memoryManagerInstance, geminiService);
                 finalContext = iterativeResult.accumulatedContext;
                 webSearchSources = iterativeResult.webSearchSources;
                 finalAnswerFromIteration = iterativeResult.finalAnswer;
