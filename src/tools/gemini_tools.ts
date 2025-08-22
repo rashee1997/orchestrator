@@ -93,7 +93,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 default: false
             },
             enable_web_search: { type: 'boolean', description: 'Allow autonomous web searches during iterative RAG.', default: false },
-            max_iterations: { type: 'number', description: 'Max iterations for iterative search.', default: 3, minimum: 1, maximum: 5 },
+            max_iterations: {
+                type: 'number',
+                description: 'Max iterations for iterative search. If DMQR is enabled, this is the number of iterations *per* generated query.',
+                default: 3,
+                minimum: 1,
+                maximum: 5
+            },
             enable_dmqr: {
                 type: 'boolean',
                 description: 'Enable Diverse Multi-Query Rewriting (DMQR) for the initial RAG context.',

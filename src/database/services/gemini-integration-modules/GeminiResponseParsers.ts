@@ -30,42 +30,26 @@ export function parseGeminiJsonResponse(textResponse: string): any {
             throw new Error("Mismatched JSON delimiters; response may be truncated.");
         }
 
-        let dirtyJson = jsonString.substring(startIndex, lastIndex + 1);
+        let extractedJsonString = jsonString.substring(startIndex, lastIndex + 1);
 
-        // 3. Clean unescaped control characters within string literals.
-        let cleanedJson = '';
-        let inString = false;
-        let isEscaped = false;
-        for (const char of dirtyJson) {
-            if (isEscaped) {
-                cleanedJson += char;
-                isEscaped = false;
-                continue;
-            }
+        // Aggressively remove common non-JSON friendly characters/sequences
+        // This includes BOM, zero-width spaces, and other non-printable characters.
+        // Also ensure consistent newline escaping.
+        let cleanedJson = extractedJsonString
+            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Remove non-printable ASCII and Latin-1 Supplement characters
+            .replace(/\\n/g, '\\n') // Ensure newlines are correctly escaped
+            .replace(/\\r/g, '\\r') // Ensure carriage returns are correctly escaped
+            .replace(/\\t/g, '\\t') // Ensure tabs are correctly escaped
+            .replace(/\\b/g, '\\b') // Ensure backspaces are correctly escaped
+            .replace(/\\f/g, '\\f'); // Ensure form feeds are correctly escaped
 
-            if (char === '\\') {
-                cleanedJson += char;
-                isEscaped = true;
-                continue;
-            }
+        // This regex attempts to escape unescaped backslashes outside of already valid escape sequences.
+        // It's crucial for file paths and other code content that might contain single backslashes.
+        // It specifically targets backslashes that are NOT part of a valid JSON escape sequence (e.g., \\", \\n, \\t, etc.)
+        // or a unicode escape sequence (\\uXXXX).
+        cleanedJson = cleanedJson.replace(/(?<!\\)\\(?!["\\/bfnrtu])/g, '\\\\');
 
-            if (char === '"') {
-                inString = !inString;
-            }
-
-            if (inString) {
-                if (char === '\n') cleanedJson += '\\n';
-                else if (char === '\r') cleanedJson += '\\r';
-                else if (char === '\t') cleanedJson += '\\t';
-                else if (char === '\b') cleanedJson += '\\b';
-                else if (char === '\f') cleanedJson += '\\f';
-                else cleanedJson += char;
-            } else {
-                cleanedJson += char;
-            }
-        }
-
-        // 4. Remove trailing commas. This is another common LLM error.
+        // Remove trailing commas before parsing - common LLM issue.
         const finalJson = cleanedJson.replace(/,\s*([}\]])/g, '$1');
 
         return JSON.parse(finalJson);

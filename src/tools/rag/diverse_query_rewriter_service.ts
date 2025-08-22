@@ -23,10 +23,11 @@ export class DiverseQueryRewriterService {
     }
 
     /**
-     * Generates diverse queries, performs parallel retrievals, and aggregates results.
+     * Generates diverse queries. The retrieval step is now handled by the iterative orchestrator
+     * to allow for deep searches on each generated query.
      * @param originalQuery The initial query from the user.
      * @param options Configuration for query rewriting (e.g., number of queries).
-     * @returns A promise resolving to a DiverseQueryResult with generated queries and contexts.
+     * @returns A promise resolving to a DiverseQueryResult with generated queries and an empty contexts array.
      */
     async rewriteAndRetrieve(
         originalQuery: string,
@@ -69,22 +70,11 @@ export class DiverseQueryRewriterService {
 
         console.log(`[DiverseQueryRewriter] Generated ${generatedQueries.length} queries:`, generatedQueries);
 
-        // 3. Perform parallel retrievals for all generated queries
-        const contextPromises = generatedQueries.map(query =>
-            this.memoryManager.getCodebaseContextRetrieverService().retrieveContextForPrompt('dmqr-agent', query)
-        );
-
-        const allContextsArrays = await Promise.all(contextPromises);
-
-        // 4. Aggregate and de-duplicate the RetrievedCodeContext
-        const flatContexts = allContextsArrays.flat();
-        const uniqueContexts = deduplicateContexts(flatContexts);
-
-        console.log(`[DiverseQueryRewriter] Retrieved ${flatContexts.length} total contexts, ${uniqueContexts.length} unique contexts`);
-
+        // Retrieval is now handled by the orchestrator in a deep-search loop.
+        // This method now focuses solely on rewriting queries.
         return {
             generatedQueries,
-            contexts: uniqueContexts
+            contexts: [] // Return empty context array, as per new architecture
         };
     }
 }

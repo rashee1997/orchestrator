@@ -16,21 +16,21 @@ export interface IterativeRagResult {
     webSearchSources: { title: string; url: string }[];
     finalAnswer?: string;
     decisionLog: RagAnalysisResponse[];
-        searchMetrics: {
-            totalIterations: number;
-            contextItemsAdded: number;
-            webSearchesPerformed: number;
-            hallucinationChecksPerformed: number;
-            earlyTerminationReason?: string;
-            dmqr?: {
-                enabled: boolean;
-                queryCount?: number;
-                generatedQueries?: string[];
-                success: boolean;
-                contextItemsGenerated: number;
-                error?: string;
-            };
+    searchMetrics: {
+        totalIterations: number;
+        contextItemsAdded: number;
+        webSearchesPerformed: number;
+        hallucinationChecksPerformed: number;
+        earlyTerminationReason?: string;
+        dmqr: {
+            enabled: boolean;
+            queryCount?: number;
+            generatedQueries?: string[];
+            success: boolean;
+            contextItemsGenerated: number;
+            error?: string;
         };
+    };
 }
 
 export interface IterativeRagArgs {
@@ -94,436 +94,163 @@ export class IterativeRagOrchestrator {
         const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
         let accumulatedContext: RetrievedCodeContext[] = [];
         const processedEntities = new Set<string>();
-        let currentSearchQuery = query;
         const webSearchSources: { title: string; url: string }[] = [];
         let finalAnswer: string | undefined = undefined;
         const decisionLog: RagAnalysisResponse[] = [];
 
-        const searchMetrics: {
-            totalIterations: number;
-            contextItemsAdded: number;
-            webSearchesPerformed: number;
-            hallucinationChecksPerformed: number;
-            earlyTerminationReason?: string;
-            dmqr?: {
-                enabled: boolean;
-                queryCount?: number;
-                generatedQueries?: string[];
-                success: boolean;
-                contextItemsGenerated: number;
-                error?: string;
-            };
-        } = {
+        const searchMetrics: IterativeRagResult['searchMetrics'] = {
             totalIterations: 0,
             contextItemsAdded: 0,
             webSearchesPerformed: 0,
             hallucinationChecksPerformed: 0,
-            earlyTerminationReason: undefined
+            earlyTerminationReason: undefined,
+            dmqr: {
+                enabled: !!enable_dmqr,
+                queryCount: dmqr_query_count,
+                generatedQueries: [],
+                success: false,
+                contextItemsGenerated: 0,
+                error: undefined
+            }
         };
 
-        const queryHistory: string[] = [];
         const focusString = RagPromptTemplates.generateFocusString(focus_area, analysis_focus_points);
-
         console.log(`[Iterative RAG] Starting iterative search for query: "${query}"`);
 
-        // Initialize DMQR metadata
-        searchMetrics.dmqr = {
-            enabled: !!enable_dmqr,
-            queryCount: dmqr_query_count,
-            generatedQueries: [],
-            success: false,
-            contextItemsGenerated: 0,
-            error: undefined
-        };
+        let baseQueries: string[] = [query];
 
-        // DMQR: Apply diverse multi-query rewriting at the beginning if enabled
         if (enable_dmqr) {
-            console.log(`[Iterative RAG] DMQR enabled: Generating diverse queries and performing multi-retrieval (count: ${dmqr_query_count || 'default'})...`);
+            console.log(`[Iterative RAG] DMQR enabled: Generating diverse queries...`);
             try {
                 const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
                     queryCount: dmqr_query_count,
                 });
-
-                // Extract queries and contexts from the new DiverseQueryResult format
-                const { generatedQueries, contexts: dmqrContexts } = dmqrResult;
-
-                accumulatedContext.push(...dmqrContexts);
-
-                // Update DMQR metadata
-                searchMetrics.dmqr.generatedQueries = generatedQueries;
+                baseQueries = dmqrResult.generatedQueries;
+                searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
-                searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
-                searchMetrics.contextItemsAdded += dmqrContexts.length;
-
-                console.log(`[Iterative RAG] DMQR retrieved ${dmqrContexts.length} unique context items from ${generatedQueries.length} generated queries.`);
-                console.log(`[Iterative RAG] DMQR generated queries: ${generatedQueries.map(q => `"${q}"`).join(', ')}`);
-
+                console.log(`[Iterative RAG] DMQR generated ${baseQueries.length} queries: ${baseQueries.map(q => `"${q}"`).join(', ')}`);
             } catch (error: any) {
-                console.error(`[Iterative RAG] DMQR failed:`, error);
-                // Update DMQR metadata with failure info
+                console.error(`[Iterative RAG] DMQR failed, falling back to original query:`, error);
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = error.message || 'Unknown DMQR error';
-                // Continue with regular single-query retrieval if DMQR fails
-                console.log(`[Iterative RAG] Falling back to single-query retrieval due to DMQR failure.`);
             }
         }
 
-        for (let i = 0; i < max_iterations; i++) {
-            searchMetrics.totalIterations = i + 1;
-            console.log(`[Iterative RAG] Turn ${i + 1}/${max_iterations}: Searching for "${currentSearchQuery.substring(0, 100)}"...`);
+        const totalMaxIterations = baseQueries.length * max_iterations;
+        let totalIterationCount = 0;
 
-            queryHistory.push(currentSearchQuery.toLowerCase().trim());
+        outerLoop: for (const baseQuery of baseQueries) {
+            let currentSearchQuery = baseQuery;
+            const queryHistoryForThisCycle: string[] = [baseQuery.toLowerCase().trim()];
 
-            if (i > 0 && this.isQueryRepetitive(queryHistory)) {
-                console.log(`[Iterative RAG] Turn ${i + 1}: Detected repetitive query pattern. Concluding search.`);
-                searchMetrics.earlyTerminationReason = "Repetitive query pattern detected";
-                break;
-            }
+            for (let i = 0; i < max_iterations; i++) {
+                totalIterationCount++;
+                searchMetrics.totalIterations = totalIterationCount;
+                console.log(`[Iterative RAG] Main Turn ${totalIterationCount}/${totalMaxIterations} (Query Cycle for: "${baseQuery.substring(0, 50)}...", Turn ${i + 1}/${max_iterations})`);
 
-            const contextResults = await contextRetriever.retrieveContextForPrompt(agent_id, currentSearchQuery, context_options || {});
-            const newContext = contextResults.filter(ctx => {
-                const entityKey = `${ctx.sourcePath}::${ctx.entityName || ''}`;
-                if (!processedEntities.has(entityKey)) {
-                    processedEntities.add(entityKey);
-                    return true;
+                if (i > 0 && this.isQueryRepetitive(queryHistoryForThisCycle)) {
+                    console.log(`[Iterative RAG] Detected repetitive query pattern in this cycle. Moving to next diverse query.`);
+                    break; // Break inner loop, move to next diverse query
                 }
-                return false;
-            });
 
-            // Intelligent context utilization - don't terminate just because no new context found
-            if (newContext.length === 0 && i > 0) {
-                console.log(`[Iterative RAG] Turn ${i + 1}: No new context found from codebase search.`);
-
-                // Strategy 1: Try to generate answer with existing accumulated context
-                if (accumulatedContext.length > 0) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Attempting to answer with ${accumulatedContext.length} accumulated context items.`);
-
-                    const formattedContextParts = formatContextForGemini(accumulatedContext);
-                    const contextString = formattedContextParts[0].text || '';
-
-                    const answerPrompt = RagPromptTemplates.generateAnswerPrompt({
-                        originalQuery: query,
-                        contextString: contextString,
-                        focusString
-                    });
-
-                    try {
-                        const answerResult = await this.geminiService.askGemini(
-                            answerPrompt,
-                            model,
-                            "You are a helpful AI assistant providing accurate answers based on the given context.",
-                            thinkingConfig
-                        );
-
-                        const generatedAnswer = answerResult.content[0].text ?? "";
-                        const verificationResult = await this.performEnhancedHallucinationCheck({
-                            originalQuery: query,
-                            contextString: contextString,
-                            generatedAnswer: generatedAnswer,
-                            model,
-                            threshold: hallucination_check_threshold,
-                            thinkingConfig
-                        });
-
-                        searchMetrics.hallucinationChecksPerformed++;
-
-                        if (!verificationResult.isHallucination) {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Successfully generated verified answer with existing context.`);
-                            finalAnswer = generatedAnswer;
-                            break;
-                        } else {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Answer verification failed (confidence: ${verificationResult.confidence}).`);
-                        }
-                    } catch (error: any) {
-                        console.error(`[Iterative RAG] Turn ${i + 1}: Error generating answer with existing context:`, error);
+                const contextResults = await contextRetriever.retrieveContextForPrompt(agent_id, currentSearchQuery, context_options || {});
+                const newContext = contextResults.filter(ctx => {
+                    const entityKey = `${ctx.sourcePath}::${ctx.entityName || ''}`;
+                    if (!processedEntities.has(entityKey)) {
+                        processedEntities.add(entityKey);
+                        return true;
                     }
-                }
-
-                // Strategy 2: Try web search if enabled and not exhausted
-                if (enable_web_search && searchMetrics.webSearchesPerformed === 0) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: No new codebase context. Will attempt web search as fallback.`);
-
-                    // Create a web search query from the original query
-                    const webSearchQuery = query.length > 100 ? query.substring(0, 100) + "..." : query;
-
-                    try {
-                        console.log(`[Iterative RAG] Turn ${i + 1}: Performing web search for: "${webSearchQuery}"`);
-                        searchMetrics.webSearchesPerformed++;
-
-                        const webResults = await callTavilyApi(webSearchQuery, {
-                            search_depth: tavily_search_depth,
-                            max_results: tavily_max_results,
-                            include_raw_content: tavily_include_raw_content,
-                            include_images: tavily_include_images,
-                            include_image_descriptions: tavily_include_image_descriptions,
-                            time_period: tavily_time_period,
-                            topic: tavily_topic
-                        });
-
-                        if (webResults.length > 0) {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Found ${webResults.length} web results. Adding to context.`);
-                            webResults.forEach((res: any) => {
-                                webSearchSources.push({ title: res.title, url: res.url });
-                                const webContext: RetrievedCodeContext = {
-                                    type: 'documentation',
-                                    sourcePath: res.url,
-                                    entityName: res.title,
-                                    content: res.content,
-                                    relevanceScore: 0.9,
-                                };
-                                accumulatedContext.push(webContext);
-                                processedEntities.add(`${res.url}::${res.title}`);
-                            });
-                            searchMetrics.contextItemsAdded += webResults.length;
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Total context items now: ${accumulatedContext.length}`);
-                        } else {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Web search returned no results.`);
-                        }
-                    } catch (webError: any) {
-                        console.error(`[Iterative RAG] Turn ${i + 1}: Web search failed: ${webError.message}`);
-                    }
-                }
-
-                // Strategy 3: Try query expansion and reformulation
-                if (i < max_iterations - 1) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Attempting query expansion for better results.`);
-                    try {
-                        const expandedQuery = await this.expandQuery(query, accumulatedContext, model, thinkingConfig);
-                        if (expandedQuery && expandedQuery !== query) {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Using expanded query: "${expandedQuery}"`);
-                            currentSearchQuery = expandedQuery;
-                            continue; // Continue to next iteration with new query
-                        }
-                    } catch (error: any) {
-                        console.error(`[Iterative RAG] Turn ${i + 1}: Query expansion failed:`, error);
-                    }
-                }
-
-                // Strategy 4: Analyze existing context for deeper insights
-                if (accumulatedContext.length > 5) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Analyzing existing context for deeper insights.`);
-                    try {
-                        const deeperInsights = await this.extractDeeperInsights(query, accumulatedContext, model, thinkingConfig);
-                        if (deeperInsights) {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Found deeper insights from existing context.`);
-                            finalAnswer = deeperInsights;
-                            break;
-                        }
-                    } catch (error: any) {
-                        console.error(`[Iterative RAG] Turn ${i + 1}: Deep analysis failed:`, error);
-                    }
-                }
-
-                // Only terminate if ALL strategies have been exhausted
-                const strategiesExhausted =
-                    (accumulatedContext.length === 0 || (finalAnswer && !finalAnswer.trim())) &&
-                    (!enable_web_search || searchMetrics.webSearchesPerformed > 0) &&
-                    i >= max_iterations - 1;
-
-                if (strategiesExhausted) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: All intelligent strategies exhausted.`);
-                    searchMetrics.earlyTerminationReason = "All search strategies exhausted - no viable alternatives available";
-                    break;
-                } else {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Continuing with alternative strategies.`);
-                    // Continue to analysis phase instead of breaking
-                }
-            }
-
-            accumulatedContext.push(...newContext);
-            searchMetrics.contextItemsAdded += newContext.length;
-            console.log(`[Iterative RAG] Turn ${i + 1}: Added ${newContext.length} new context items. Total context items: ${accumulatedContext.length}.`);
-
-            const formattedContextParts = formatContextForGemini(accumulatedContext);
-            const contextString = formattedContextParts[0].text || '';
-
-            const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
-                originalQuery: query,
-                currentTurn: i + 1,
-                maxIterations: max_iterations.toString(),
-                accumulatedContext: contextString,
-                focusString,
-                enableWebSearch: !!enable_web_search
-            });
-
-            let analysisResult;
-            try {
-                analysisResult = await this.geminiService.askGemini(
-                    analysisPrompt,
-                    model,
-                    RagPromptTemplates.generateAnalysisSystemInstruction(),
-                    thinkingConfig
-                );
-            } catch (error: any) {
-                console.error(`[Iterative RAG] Turn ${i + 1}: Error during Gemini analysis:`, error);
-                if (error instanceof GeminiApiNotInitializedError || (error && typeof error === 'object' && 'message' in error && (error.message as string).includes('429') || (error.message as string).includes('Quota exceeded'))) {
-                    searchMetrics.earlyTerminationReason = "Gemini API quota exhausted or not initialized.";
-                } else {
-                    searchMetrics.earlyTerminationReason = `Gemini analysis failed: ${error.message}`;
-                }
-                break;
-            }
-
-            const rawResponseText = analysisResult.content[0].text ?? "";
-            const parsedResponse = RagResponseParser.parseAnalysisResponse(rawResponseText, contextString, analysisPrompt);
-
-            if (parsedResponse) {
-                decisionLog.push(parsedResponse);
-            }
-
-            if (!parsedResponse || !RagResponseParser.validateResponse(parsedResponse)) {
-                console.warn(`[Iterative RAG] Turn ${i + 1}: Failed to parse or validate Gemini response. Concluding search.`);
-                searchMetrics.earlyTerminationReason = "Failed to parse Gemini response";
-                break;
-            }
-
-            let { decision, nextCodebaseQuery, nextWebQuery } = parsedResponse;
-            let shouldContinueSearching = false;
-
-            if (decision === "ANSWER") {
-                console.log(`[Iterative RAG] Turn ${i + 1}: Decision is to ANSWER. Performing enhanced hallucination check.`);
-
-                const answerPrompt = RagPromptTemplates.generateAnswerPrompt({
-                    originalQuery: query,
-                    contextString: contextString,
-                    focusString
+                    return false;
                 });
 
-                let answerResult;
+                if (newContext.length > 0) {
+                    accumulatedContext.push(...newContext);
+                    searchMetrics.contextItemsAdded += newContext.length;
+                    console.log(`[Iterative RAG] Added ${newContext.length} new context items. Total unique context items: ${accumulatedContext.length}.`);
+                } else {
+                    console.log(`[Iterative RAG] No new unique context found for this query.`);
+                }
+
+                const formattedContextParts = formatContextForGemini(accumulatedContext);
+                const contextString = formattedContextParts[0].text || '';
+
+                const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
+                    originalQuery: query, // Always use the original query for the top-level goal
+                    currentTurn: totalIterationCount,
+                    maxIterations: totalMaxIterations.toString(),
+                    accumulatedContext: contextString,
+                    focusString,
+                    enableWebSearch: !!enable_web_search
+                });
+
+                let analysisResult;
                 try {
-                    answerResult = await this.geminiService.askGemini(
-                        answerPrompt,
-                        model,
-                        "You are a helpful AI assistant providing accurate answers based on the given context.",
-                        thinkingConfig
+                    analysisResult = await this.geminiService.askGemini(
+                        analysisPrompt, model, RagPromptTemplates.generateAnalysisSystemInstruction(), thinkingConfig
                     );
                 } catch (error: any) {
-                    console.error(`[Iterative RAG] Turn ${i + 1}: Error during Gemini answer generation:`, error);
-                    if (error instanceof GeminiApiNotInitializedError || (error && typeof error === 'object' && 'message' in error && (error.message as string).includes('429') || (error.message as string).includes('Quota exceeded'))) {
-                        searchMetrics.earlyTerminationReason = "Gemini API quota exhausted or not initialized.";
-                    } else {
-                        searchMetrics.earlyTerminationReason = `Gemini answer generation failed: ${error.message}`;
-                    }
-                    break;
+                    console.error(`[Iterative RAG] Error during Gemini analysis:`, error);
+                    searchMetrics.earlyTerminationReason = `Gemini analysis failed: ${error.message}`;
+                    break outerLoop;
                 }
 
-                const generatedAnswer = answerResult.content[0].text ?? "";
-                const verificationResult = await this.performEnhancedHallucinationCheck({
-                    originalQuery: query,
-                    contextString: contextString,
-                    generatedAnswer: generatedAnswer,
-                    model,
-                    threshold: hallucination_check_threshold,
-                    thinkingConfig
-                });
+                const rawResponseText = analysisResult.content[0].text ?? "";
+                const parsedResponse = RagResponseParser.parseAnalysisResponse(rawResponseText, contextString, analysisPrompt);
+                if (parsedResponse) decisionLog.push(parsedResponse);
 
-                if (verificationResult.isHallucination) {
-                    console.warn(`[Iterative RAG] Turn ${i + 1}: Hallucination detected with confidence ${verificationResult.confidence}. ${verificationResult.issues}`);
-                    shouldContinueSearching = true;
-                    if (verificationResult.confidence > 0.9) {
-                        nextCodebaseQuery = `Find specific information to verify: "${query}". Focus on factual details.`;
-                    }
-                } else {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Answer verified with confidence ${verificationResult.confidence}. Concluding search.`);
-                    searchMetrics.hallucinationChecksPerformed++;
-                    finalAnswer = generatedAnswer;
-                    break;
+                if (!parsedResponse || !RagResponseParser.validateResponse(parsedResponse)) {
+                    console.warn(`[Iterative RAG] Failed to parse or validate Gemini response. Concluding search.`);
+                    searchMetrics.earlyTerminationReason = "Failed to parse Gemini response";
+                    break outerLoop;
                 }
-            }
 
-            if ((!shouldContinueSearching && decision === "ANSWER") || i === max_iterations - 1) {
-                console.log(`[Iterative RAG] Turn ${i + 1}: Decision is to ANSWER. Concluding search.`);
-                searchMetrics.earlyTerminationReason = "Max iterations reached or decided to answer";
-                break;
-            }
-
-            if (shouldContinueSearching) {
-                decision = "SEARCH_AGAIN";
-                if (!nextCodebaseQuery) {
-                    nextCodebaseQuery = `Find more context to support answering: "${query}"`;
+                if (parsedResponse.decision === "ANSWER") {
+                    console.log(`[Iterative RAG] Decision is to ANSWER. Generating final response and concluding search.`);
+                    const answerPrompt = RagPromptTemplates.generateAnswerPrompt({ originalQuery: query, contextString, focusString });
+                    const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
+                    finalAnswer = answerResult.content[0].text ?? "";
+                    break outerLoop;
                 }
-            }
 
-            if (enable_web_search && decision === "SEARCH_WEB" && nextWebQuery) {
-                console.log(`[Iterative RAG] Turn ${i + 1}: Decision is to SEARCH_WEB. Query: "${nextWebQuery}"`);
-                searchMetrics.webSearchesPerformed++;
-
-                try {
-                    const webResults = await callTavilyApi(nextWebQuery, {
-                        search_depth: tavily_search_depth,
-                        max_results: tavily_max_results,
-                        include_raw_content: tavily_include_raw_content,
-                        include_images: tavily_include_images,
-                        include_image_descriptions: tavily_include_image_descriptions,
-                        time_period: tavily_time_period,
-                        topic: tavily_topic
-                    });
-
-                    if (webResults.length === 0) {
-                        console.warn(`[Iterative RAG] Turn ${i + 1}: No web results found for query: "${nextWebQuery}"`);
-                        decision = "SEARCH_AGAIN";
-                        nextCodebaseQuery = `Find codebase information for: "${query}"`;
-                    } else {
-                        webResults.forEach((res: any) => {
-                            webSearchSources.push({ title: res.title, url: res.url });
-                            const webContext: RetrievedCodeContext = {
-                                type: 'documentation',
-                                sourcePath: res.url,
-                                entityName: res.title,
-                                content: res.content,
-                                relevanceScore: 0.95,
-                            };
-                            accumulatedContext.push(webContext);
-                            processedEntities.add(`${res.url}::${res.title}`);
-                        });
-
-                        const newContextString = formatContextForGemini(accumulatedContext)[0].text || '';
-                        const reanalysisResponse = await this._reanalyzeContextAndDecide(
-                            newContextString,
-                            query,
-                            focusString,
-                            model,
-                            thinkingConfig,
-                            newContextString,
-                            analysisPrompt
-                        );
-
-                        if (reanalysisResponse && RagResponseParser.validateResponse(reanalysisResponse)) {
-                            decisionLog.push(reanalysisResponse);
-                            decision = reanalysisResponse.decision;
-                            console.log(`[Iterative RAG] Post-web search re-analysis decision: ${decision}`);
-                        } else {
-                            decision = "SEARCH_AGAIN";
-                            nextCodebaseQuery = `Find codebase information for: "${query}"`;
+                if (enable_web_search && parsedResponse.decision === "SEARCH_WEB" && parsedResponse.nextWebQuery) {
+                    console.log(`[Iterative RAG] Decision is to SEARCH_WEB. Query: "${parsedResponse.nextWebQuery}"`);
+                    searchMetrics.webSearchesPerformed++;
+                    try {
+                        const webResults = await callTavilyApi(parsedResponse.nextWebQuery, { search_depth: tavily_search_depth, max_results: tavily_max_results });
+                        if (webResults.length > 0) {
+                            webResults.forEach((res: any) => {
+                                webSearchSources.push({ title: res.title, url: res.url });
+                                accumulatedContext.push({ type: 'documentation', sourcePath: res.url, entityName: res.title, content: res.content, relevanceScore: 0.95 });
+                            });
                         }
+                    } catch (webError: any) {
+                        console.error(`[Iterative RAG] Tavily web search failed: ${webError.message}`);
                     }
-                } catch (webError: any) {
-                    console.error(`[Iterative RAG] Tavily web search failed: ${webError.message}`);
-                    accumulatedContext.push({
-                        type: 'documentation',
-                        sourcePath: 'Tavily Error',
-                        content: `Web search for "${nextWebQuery}" failed: ${webError.message}`,
-                    });
-                    decision = "SEARCH_AGAIN";
-                    nextCodebaseQuery = `Find codebase information for: "${query}"`;
+                } else if (parsedResponse.decision === "SEARCH_AGAIN" && parsedResponse.nextCodebaseQuery) {
+                    currentSearchQuery = parsedResponse.nextCodebaseQuery;
+                    queryHistoryForThisCycle.push(currentSearchQuery.toLowerCase().trim());
+                    console.log(`[Iterative RAG] Decision is to SEARCH_AGAIN. New query: "${currentSearchQuery}"`);
+                } else {
+                    // If decision is not ANSWER but no valid next step, move to next diverse query
+                    console.log(`[Iterative RAG] No valid next action for this query cycle. Moving to next diverse query.`);
+                    break; // Break inner loop
                 }
-            } else if (decision === "SEARCH_AGAIN" && nextCodebaseQuery) {
-                currentSearchQuery = nextCodebaseQuery;
-                console.log(`[Iterative RAG] Turn ${i + 1}: Decision is to SEARCH_AGAIN. New query: "${currentSearchQuery}"`);
-            } else {
-                console.log(`[Iterative RAG] Turn ${i + 1}: No valid next action. Concluding search.`);
-                searchMetrics.earlyTerminationReason = "No valid next action";
-                break;
-            }
+            } // End of inner loop
+        } // End of outer loop
+
+        if (!finalAnswer && accumulatedContext.length > 0) {
+            console.log("[Iterative RAG] Search concluded without a direct ANSWER decision. Generating a final answer from all accumulated context.");
+            const contextString = formatContextForGemini(accumulatedContext)[0].text || '';
+            const answerPrompt = RagPromptTemplates.generateAnswerPrompt({ originalQuery: query, contextString, focusString });
+            const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
+            finalAnswer = answerResult.content[0].text ?? "Could not formulate a final answer based on the context.";
         }
 
-        return {
-            accumulatedContext,
-            webSearchSources,
-            finalAnswer,
-            decisionLog,
-            searchMetrics
-        };
+        if (!searchMetrics.earlyTerminationReason && totalIterationCount >= totalMaxIterations) {
+            searchMetrics.earlyTerminationReason = "Max iterations reached";
+        }
+
+        return { accumulatedContext, webSearchSources, finalAnswer, decisionLog, searchMetrics };
     }
 
     private async _reanalyzeContextAndDecide(
@@ -602,12 +329,12 @@ export class IterativeRagOrchestrator {
     }
 
     private isQueryRepetitive(queryHistory: string[]): boolean {
-        if (queryHistory.length < 3) {
+        if (queryHistory.length < 2) {
             return false;
         }
         const lastQuery = queryHistory[queryHistory.length - 1];
-        for (let i = 0; i < queryHistory.length - 2; i++) {
-            if (this.calculateSimilarity(lastQuery, queryHistory[i]) > 0.8) {
+        for (let i = 0; i < queryHistory.length - 1; i++) {
+            if (this.calculateSimilarity(lastQuery, queryHistory[i]) > 0.9) {
                 return true;
             }
         }

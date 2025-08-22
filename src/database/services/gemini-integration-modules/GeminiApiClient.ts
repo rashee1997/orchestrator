@@ -20,7 +20,7 @@ export class GeminiApiClient {
         temperature: 0.7,
         topK: 1,
         topP: 1,
-        maxOutputTokens: 8192,
+        maxOutputTokens: 32768,
     };
     constructor(genAIInstance?: GoogleGenAI) {
         if (genAIInstance) {

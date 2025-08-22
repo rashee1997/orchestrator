@@ -4,7 +4,7 @@ import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
 import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { GeminiPlannerResponseSchema } from './gemini-integration-modules/GeminiSchema.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js'; // Added this import
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -32,6 +32,8 @@ interface GeminiDetailedPlanGenerationResponse {
         roles_required?: string[];
         completion_criteria?: string;
         code_content?: string;
+        risks?: string[];
+        required_skills?: string[];
     }>;
 }
 
@@ -135,7 +137,7 @@ export class GeminiPlannerService {
         // -----------------------------------------------------------------
         // 3️⃣ Parse Gemini JSON response
         // -----------------------------------------------------------------
-        const parsedResponse = this.parseGeminiResponse(geminiResponseText);
+        const parsedResponse = parseGeminiJsonResponse(geminiResponseText);
 
         // -----------------------------------------------------------------
         // 4️⃣ Transform to domain objects
@@ -200,9 +202,9 @@ export class GeminiPlannerService {
     }
 
     private getSystemInstructionForRefinedPrompt(): string {
-        return `You are an expert project planning assistant and senior software engineer.
-You will be given a structured input object (\`Goal Object\` or \`Refined Prompt Object\`).
-Your task is to generate a **complete, structured project plan** in JSON format.
+        return `You are an expert project planning assistant and senior software engineer with expertise in risk mitigation and realistic project planning.
+
+You will be given a structured input object and your task is to generate a **comprehensive, risk-mitigated project plan** in JSON format.
 
 ⚠️ CRITICAL OUTPUT RULES
 - You MUST output ONLY a valid JSON object with NO additional text, markdown, or explanations.
@@ -216,42 +218,53 @@ Required JSON Schema:
   "estimated_duration_days": number,
   "target_start_date": "YYYY-MM-DD",
   "target_end_date": "YYYY-MM-DD",
-  "kpis": ["string (e.g., 'Reduce hallucination rate by 15%')"],
-  "dependency_analysis": "string (A brief explanation of critical task interdependencies to avoid blockers.)",
+  "kpis": ["string (e.g., 'Reduce response time by 30%', 'Improve accuracy by 25%', 'Reduce error rate to <5%')"],
+  "dependency_analysis": "string (Comprehensive explanation of task interdependencies, critical paths, and potential blockers)",
   "plan_risks_and_mitigations": [
     {
-      "risk_description": "string",
-      "mitigation_strategy": "string"
+      "risk_description": "string (specific technical, timeline, or resource risk)",
+      "mitigation_strategy": "string (concrete, actionable mitigation with responsible party and timeline)"
     }
   ],
   "tasks": [
     {
       "task_number": number,
       "title": "string (≤ 10 words, non-empty)",
-      "description": "string (detailed explanation)",
-      "purpose": "string (why this task is necessary)",
-      "estimated_duration_days": "number",
+      "description": "string (detailed explanation with technical considerations)",
+      "purpose": "string (why this task is necessary and its value proposition)",
+      "estimated_duration_days": "number (realistic, not optimistic)",
       "suggested_files_involved": ["array", "of", "file", "paths"],
-      "code_content": "string (full code for new files OR unified diff for existing files)",
-      "completion_criteria": "string (measurable criteria)",
-      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
+      "code_content": "string (PRODUCTION-READY code with error handling, logging, and tests)",
+      "completion_criteria": "string (specific, measurable, testable criteria)",
+      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
+      "risks": ["array", "of", "specific", "task-level", "risks"],
+      "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
     }
   ]
 }
 
 Task Generation Rules:
-1. Break down the input into clear, ordered tasks with realistic 'estimated_duration_days'.
-2. Merge or consolidate redundant steps.
-3. Dependencies must reference exact task titles.
-4. Populate 'kpis' with specific, measurable success metrics.
-5. Provide a 'dependency_analysis' explaining critical inter-task relationships.
-6. Always include these phases: requirements, architecture, development, testing, reviews, documentation, deployment.
-7. For coding tasks, ALWAYS provide complete code_content - never use placeholders.
+1. **Realistic Timeline**: Use conservative time estimates. Complex tasks should be 3-7 days minimum. Total project should be 2-4 weeks for typical implementations.
+2. **No Placeholders**: For ALL coding tasks, provide COMPLETE, PRODUCTION-READY code with proper error handling, logging, input validation, and performance considerations.
+3. **Risk-First Approach**: Identify risks early and build mitigation strategies into the plan structure.
+4. **Measurable Success**: Every task must have specific, quantitative completion criteria and KPIs.
+5. **Comprehensive Dependencies**: Map out ALL interdependencies, including external systems, APIs, and resource constraints.
+6. **Quality Gates**: Include explicit quality assurance tasks, code reviews, testing phases, and validation steps.
+7. **Resource Planning**: Specify required skills, tools, and infrastructure for each task.
+8. **Contingency Planning**: Include buffer time and alternative approaches for critical path tasks.
 
 Code Content Rules:
-- For NEW files: Include complete source code with file path comment at top.
-- For EXISTING files: Include valid unified diff starting with --- and +++ lines.
-- Never use placeholders like "// TODO" or empty strings.
+- **NEW Files**: Complete, documented source code with error handling, logging, and unit tests
+- **EXISTING Files**: Valid unified diffs that maintain system integrity and include proper error handling
+- **NEVER Use**: "// TODO", "placeholder", "implement later", or empty implementations
+- **ALWAYS Include**: Input validation, error handling, logging, performance considerations
+
+Quality Requirements:
+- Include unit tests and integration tests for all code
+- Add performance monitoring and alerting
+- Implement proper error handling and graceful degradation
+- Include comprehensive documentation and code comments
+- Plan for scalability and maintainability
 
 FINAL REMINDER: Output ONLY the JSON object. No explanations, no markdown, no additional text.`;
     }
@@ -412,24 +425,6 @@ Return ONLY the JSON object.`;
     // -----------------------------------------------------------------
     // Helper: Robust JSON extraction & parsing
     // -----------------------------------------------------------------
-    private parseGeminiResponse(raw: string): GeminiDetailedPlanGenerationResponse {
-        try {
-            // Use the robust, centralized parser instead of a local implementation
-            const parsedJson = parseGeminiJsonResponse(raw);
-            const validationResult = GeminiPlannerResponseSchema.safeParse(parsedJson);
-
-            if (!validationResult.success) {
-                console.error("Fatal error during Zod schema validation. Raw response:", raw);
-                console.error("Validation errors:", validationResult.error.flatten());
-                throw new Error(`AI plan generation failed: Schema validation error. ${validationResult.error.message}`);
-            }
-
-            return validationResult.data as GeminiDetailedPlanGenerationResponse;
-        } catch (error) {
-            console.error("Fatal error during JSON parsing. Raw response:", raw);
-            throw new Error(`AI plan generation failed: Invalid JSON format. ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
 
 
     // -----------------------------------------------------------------
@@ -494,6 +489,18 @@ Return ONLY the JSON object.`;
                 notes.micro_steps = t.micro_steps;
             }
 
+            // Handle new risk and skill fields
+            const allRisks = t.task_risks || t.risks || [];
+            const allSkills = t.roles_required || t.required_skills || [];
+
+            // Add new fields to notes if they exist
+            if (t.risks !== undefined && t.risks.length > 0) {
+                notes.task_risks = [...(notes.task_risks || []), ...t.risks];
+            }
+            if (t.required_skills !== undefined && t.required_skills.length > 0) {
+                notes.required_skills = t.required_skills;
+            }
+
             return {
                 task_number: taskNumber,
                 title: safeTitle,
@@ -502,10 +509,11 @@ Return ONLY the JSON object.`;
                 status: TASK_STATUS_PLANNED,
                 estimated_duration_days: t.estimated_duration_days,
                 estimated_effort_hours: t.estimated_effort_hours,
-                task_risks: t.task_risks,
+                task_risks: allRisks.length > 0 ? allRisks : t.task_risks,
                 micro_steps: t.micro_steps,
                 suggested_files_involved: t.suggested_files_involved ?? [],
                 dependencies_task_ids_json: t.task_dependencies ? JSON.stringify(t.task_dependencies) : null,
+                tools_required_list_json: allSkills.length > 0 ? JSON.stringify(allSkills) : (t.roles_required ? JSON.stringify(t.roles_required) : null),
                 assigned_to: t.roles_required ? JSON.stringify(t.roles_required) : null,
                 success_criteria_text: t.completion_criteria ?? null,
                 code_content: t.code_content ?? null,
