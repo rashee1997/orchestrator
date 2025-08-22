@@ -22,6 +22,14 @@ export interface IterativeRagResult {
             webSearchesPerformed: number;
             hallucinationChecksPerformed: number;
             earlyTerminationReason?: string;
+            dmqr?: {
+                enabled: boolean;
+                queryCount?: number;
+                generatedQueries?: string[];
+                success: boolean;
+                contextItemsGenerated: number;
+                error?: string;
+            };
         };
 }
 
@@ -91,12 +99,26 @@ export class IterativeRagOrchestrator {
         let finalAnswer: string | undefined = undefined;
         const decisionLog: RagAnalysisResponse[] = [];
 
-        const searchMetrics = {
+        const searchMetrics: {
+            totalIterations: number;
+            contextItemsAdded: number;
+            webSearchesPerformed: number;
+            hallucinationChecksPerformed: number;
+            earlyTerminationReason?: string;
+            dmqr?: {
+                enabled: boolean;
+                queryCount?: number;
+                generatedQueries?: string[];
+                success: boolean;
+                contextItemsGenerated: number;
+                error?: string;
+            };
+        } = {
             totalIterations: 0,
             contextItemsAdded: 0,
             webSearchesPerformed: 0,
             hallucinationChecksPerformed: 0,
-            earlyTerminationReason: undefined as string | undefined
+            earlyTerminationReason: undefined
         };
 
         const queryHistory: string[] = [];
@@ -104,18 +126,43 @@ export class IterativeRagOrchestrator {
 
         console.log(`[Iterative RAG] Starting iterative search for query: "${query}"`);
 
+        // Initialize DMQR metadata
+        searchMetrics.dmqr = {
+            enabled: !!enable_dmqr,
+            queryCount: dmqr_query_count,
+            generatedQueries: [],
+            success: false,
+            contextItemsGenerated: 0,
+            error: undefined
+        };
+
         // DMQR: Apply diverse multi-query rewriting at the beginning if enabled
         if (enable_dmqr) {
             console.log(`[Iterative RAG] DMQR enabled: Generating diverse queries and performing multi-retrieval (count: ${dmqr_query_count || 'default'})...`);
             try {
-                const dmqrContext = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
+                const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
                     queryCount: dmqr_query_count,
                 });
-                accumulatedContext.push(...dmqrContext);
-                searchMetrics.contextItemsAdded += dmqrContext.length;
-                console.log(`[Iterative RAG] DMQR retrieved ${dmqrContext.length} unique context items.`);
-            } catch (error) {
+
+                // Extract queries and contexts from the new DiverseQueryResult format
+                const { generatedQueries, contexts: dmqrContexts } = dmqrResult;
+
+                accumulatedContext.push(...dmqrContexts);
+
+                // Update DMQR metadata
+                searchMetrics.dmqr.generatedQueries = generatedQueries;
+                searchMetrics.dmqr.success = true;
+                searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
+                searchMetrics.contextItemsAdded += dmqrContexts.length;
+
+                console.log(`[Iterative RAG] DMQR retrieved ${dmqrContexts.length} unique context items from ${generatedQueries.length} generated queries.`);
+                console.log(`[Iterative RAG] DMQR generated queries: ${generatedQueries.map(q => `"${q}"`).join(', ')}`);
+
+            } catch (error: any) {
                 console.error(`[Iterative RAG] DMQR failed:`, error);
+                // Update DMQR metadata with failure info
+                searchMetrics.dmqr.success = false;
+                searchMetrics.dmqr.error = error.message || 'Unknown DMQR error';
                 // Continue with regular single-query retrieval if DMQR fails
                 console.log(`[Iterative RAG] Falling back to single-query retrieval due to DMQR failure.`);
             }
@@ -143,15 +190,14 @@ export class IterativeRagOrchestrator {
                 return false;
             });
 
-            // Intelligent handling: Don't terminate immediately if no new context found
+            // Intelligent context utilization - don't terminate just because no new context found
             if (newContext.length === 0 && i > 0) {
                 console.log(`[Iterative RAG] Turn ${i + 1}: No new context found from codebase search.`);
 
-                // Strategy 1: Check if we have sufficient accumulated context to attempt an answer
+                // Strategy 1: Try to generate answer with existing accumulated context
                 if (accumulatedContext.length > 0) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: Have ${accumulatedContext.length} accumulated context items. Attempting to answer with existing context.`);
+                    console.log(`[Iterative RAG] Turn ${i + 1}: Attempting to answer with ${accumulatedContext.length} accumulated context items.`);
 
-                    // Force an attempt to generate an answer with existing context
                     const formattedContextParts = formatContextForGemini(accumulatedContext);
                     const contextString = formattedContextParts[0].text || '';
 
@@ -179,31 +225,108 @@ export class IterativeRagOrchestrator {
                             thinkingConfig
                         });
 
-                        // Increment counter for every hallucination check performed
                         searchMetrics.hallucinationChecksPerformed++;
 
                         if (!verificationResult.isHallucination) {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Successfully generated answer with existing context.`);
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Successfully generated verified answer with existing context.`);
                             finalAnswer = generatedAnswer;
                             break;
                         } else {
-                            console.log(`[Iterative RAG] Turn ${i + 1}: Answer verification failed with existing context.`);
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Answer verification failed (confidence: ${verificationResult.confidence}).`);
                         }
                     } catch (error: any) {
                         console.error(`[Iterative RAG] Turn ${i + 1}: Error generating answer with existing context:`, error);
                     }
                 }
 
-                // Strategy 2: If web search is enabled and we haven't tried it yet, suggest web search
+                // Strategy 2: Try web search if enabled and not exhausted
                 if (enable_web_search && searchMetrics.webSearchesPerformed === 0) {
-                    console.log(`[Iterative RAG] Turn ${i + 1}: No new codebase context found. Considering web search as fallback.`);
-                    // Instead of terminating, we'll let the decision logic handle web search in the next part
-                    // Don't break here - let the normal flow continue to the analysis phase
-                } else {
-                    // Only terminate if we have no accumulated context and web search is disabled or already tried
-                    console.log(`[Iterative RAG] Turn ${i + 1}: No viable options remaining. Concluding search.`);
-                    searchMetrics.earlyTerminationReason = "No new context found and no alternatives available";
+                    console.log(`[Iterative RAG] Turn ${i + 1}: No new codebase context. Will attempt web search as fallback.`);
+
+                    // Create a web search query from the original query
+                    const webSearchQuery = query.length > 100 ? query.substring(0, 100) + "..." : query;
+
+                    try {
+                        console.log(`[Iterative RAG] Turn ${i + 1}: Performing web search for: "${webSearchQuery}"`);
+                        searchMetrics.webSearchesPerformed++;
+
+                        const webResults = await callTavilyApi(webSearchQuery, {
+                            search_depth: tavily_search_depth,
+                            max_results: tavily_max_results,
+                            include_raw_content: tavily_include_raw_content,
+                            include_images: tavily_include_images,
+                            include_image_descriptions: tavily_include_image_descriptions,
+                            time_period: tavily_time_period,
+                            topic: tavily_topic
+                        });
+
+                        if (webResults.length > 0) {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Found ${webResults.length} web results. Adding to context.`);
+                            webResults.forEach((res: any) => {
+                                webSearchSources.push({ title: res.title, url: res.url });
+                                const webContext: RetrievedCodeContext = {
+                                    type: 'documentation',
+                                    sourcePath: res.url,
+                                    entityName: res.title,
+                                    content: res.content,
+                                    relevanceScore: 0.9,
+                                };
+                                accumulatedContext.push(webContext);
+                                processedEntities.add(`${res.url}::${res.title}`);
+                            });
+                            searchMetrics.contextItemsAdded += webResults.length;
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Total context items now: ${accumulatedContext.length}`);
+                        } else {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Web search returned no results.`);
+                        }
+                    } catch (webError: any) {
+                        console.error(`[Iterative RAG] Turn ${i + 1}: Web search failed: ${webError.message}`);
+                    }
+                }
+
+                // Strategy 3: Try query expansion and reformulation
+                if (i < max_iterations - 1) {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: Attempting query expansion for better results.`);
+                    try {
+                        const expandedQuery = await this.expandQuery(query, accumulatedContext, model, thinkingConfig);
+                        if (expandedQuery && expandedQuery !== query) {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Using expanded query: "${expandedQuery}"`);
+                            currentSearchQuery = expandedQuery;
+                            continue; // Continue to next iteration with new query
+                        }
+                    } catch (error: any) {
+                        console.error(`[Iterative RAG] Turn ${i + 1}: Query expansion failed:`, error);
+                    }
+                }
+
+                // Strategy 4: Analyze existing context for deeper insights
+                if (accumulatedContext.length > 5) {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: Analyzing existing context for deeper insights.`);
+                    try {
+                        const deeperInsights = await this.extractDeeperInsights(query, accumulatedContext, model, thinkingConfig);
+                        if (deeperInsights) {
+                            console.log(`[Iterative RAG] Turn ${i + 1}: Found deeper insights from existing context.`);
+                            finalAnswer = deeperInsights;
+                            break;
+                        }
+                    } catch (error: any) {
+                        console.error(`[Iterative RAG] Turn ${i + 1}: Deep analysis failed:`, error);
+                    }
+                }
+
+                // Only terminate if ALL strategies have been exhausted
+                const strategiesExhausted =
+                    (accumulatedContext.length === 0 || (finalAnswer && !finalAnswer.trim())) &&
+                    (!enable_web_search || searchMetrics.webSearchesPerformed > 0) &&
+                    i >= max_iterations - 1;
+
+                if (strategiesExhausted) {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: All intelligent strategies exhausted.`);
+                    searchMetrics.earlyTerminationReason = "All search strategies exhausted - no viable alternatives available";
                     break;
+                } else {
+                    console.log(`[Iterative RAG] Turn ${i + 1}: Continuing with alternative strategies.`);
+                    // Continue to analysis phase instead of breaking
                 }
             }
 
@@ -489,6 +612,88 @@ export class IterativeRagOrchestrator {
             }
         }
         return false;
+    }
+
+    private async expandQuery(originalQuery: string, accumulatedContext: RetrievedCodeContext[], model?: string, thinkingConfig?: any): Promise<string> {
+        if (accumulatedContext.length === 0) {
+            return originalQuery;
+        }
+
+        const contextSummary = accumulatedContext.slice(0, 5).map(ctx =>
+            `${ctx.type}: ${ctx.entityName || 'Unknown'} - ${ctx.content?.substring(0, 100)}...`
+        ).join('\n');
+
+        const expansionPrompt = `Based on the following context from a codebase search, expand or reformulate the original query to find more relevant information:
+
+Original Query: "${originalQuery}"
+
+Available Context:
+${contextSummary}
+
+Instructions:
+- If the context suggests there are related topics or deeper aspects not covered by the original query, expand it
+- If the context shows the query is too narrow, broaden it appropriately
+- If the context reveals better terminology or concepts to use, incorporate them
+- Keep the expanded query focused and relevant
+- If no meaningful expansion is possible, return the original query unchanged
+
+Return only the expanded query, no explanation.`;
+
+        try {
+            const expansionResult = await this.geminiService.askGemini(
+                expansionPrompt,
+                model,
+                "You are a query expansion specialist. Return only the expanded query text.",
+                thinkingConfig
+            );
+
+            const expandedQuery = expansionResult.content[0].text?.trim();
+            return expandedQuery && expandedQuery !== originalQuery ? expandedQuery : originalQuery;
+        } catch (error: any) {
+            console.error(`[Iterative RAG] Query expansion failed:`, error);
+            return originalQuery;
+        }
+    }
+
+    private async extractDeeperInsights(query: string, accumulatedContext: RetrievedCodeContext[], model?: string, thinkingConfig?: any): Promise<string | null> {
+        if (accumulatedContext.length < 5) {
+            return null;
+        }
+
+        const contextString = formatContextForGemini(accumulatedContext)[0].text || '';
+
+        const insightPrompt = `Analyze the following context deeply to extract insights that directly answer: "${query}"
+
+Context:
+${contextString}
+
+Instructions:
+- Look for patterns, relationships, and connections in the code
+- Extract specific technical details that answer the query
+- Focus on factual information from the provided context
+- If you can form a coherent answer using only the context, provide it
+- If the context is insufficient, return "INSUFFICIENT_CONTEXT"
+
+Provide a direct answer based only on the context provided.`;
+
+        try {
+            const insightResult = await this.geminiService.askGemini(
+                insightPrompt,
+                model,
+                "You are a technical analyst. Extract insights directly from the provided context.",
+                thinkingConfig
+            );
+
+            const insights = insightResult.content[0].text?.trim();
+
+            if (insights && insights !== "INSUFFICIENT_CONTEXT") {
+                return insights;
+            }
+            return null;
+        } catch (error: any) {
+            console.error(`[Iterative RAG] Deep insight extraction failed:`, error);
+            return null;
+        }
     }
 
     private calculateSimilarity(str1: string, str2: string): number {

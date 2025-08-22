@@ -8,6 +8,11 @@ export interface DiverseQueryRewriterOptions {
     queryCount?: number;
 }
 
+export interface DiverseQueryResult {
+    generatedQueries: string[];
+    contexts: RetrievedCodeContext[];
+}
+
 export class DiverseQueryRewriterService {
     private geminiService: GeminiIntegrationService;
     private memoryManager: MemoryManager;
@@ -21,12 +26,12 @@ export class DiverseQueryRewriterService {
      * Generates diverse queries, performs parallel retrievals, and aggregates results.
      * @param originalQuery The initial query from the user.
      * @param options Configuration for query rewriting (e.g., number of queries).
-     * @returns A promise resolving to an array of unique RetrievedCodeContext objects.
+     * @returns A promise resolving to a DiverseQueryResult with generated queries and contexts.
      */
     async rewriteAndRetrieve(
         originalQuery: string,
         options: DiverseQueryRewriterOptions = {},
-    ): Promise<RetrievedCodeContext[]> {
+    ): Promise<DiverseQueryResult> {
         const numQueries = options.queryCount || 3; // Default to 3 queries
 
         // 1. Generate the prompt for diverse queries
@@ -77,6 +82,9 @@ export class DiverseQueryRewriterService {
 
         console.log(`[DiverseQueryRewriter] Retrieved ${flatContexts.length} total contexts, ${uniqueContexts.length} unique contexts`);
 
-        return uniqueContexts;
+        return {
+            generatedQueries,
+            contexts: uniqueContexts
+        };
     }
 }
