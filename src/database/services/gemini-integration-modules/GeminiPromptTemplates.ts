@@ -1,3 +1,78 @@
+// ============================================================================
+// General Purpose & Summarization Prompts
+// ============================================================================
+
+export const SUMMARIZE_CONTEXT_PROMPT = `Summarize the following text concisely:\n\n{textToSummarize}`;
+
+export const SUMMARIZE_CONVERSATION_PROMPT = `
+Summarize the following conversation involving agent_id "{agent_id}".
+Focus on:
+- Key topics discussed
+- Main actions taken
+- Important decisions made
+- Next steps identified
+- Any unresolved issues
+        
+Conversation Messages:
+{conversationMessages}
+
+Provide a concise yet comprehensive summary structured as:
+1. Overview
+2. Key Points
+3. Action Items
+4. Open Questions`;
+
+export const SUMMARIZE_CORRECTION_LOGS_PROMPT = `You are an expert AI assistant specialized in analyzing correction logs to identify patterns of mistakes and provide clear, actionable instructions to prevent recurrence. Carefully review the following correction logs and produce a concise, prioritized list of past mistakes along with strict guidelines the agent must follow to avoid repeating these errors. Emphasize clarity, specificity, and practical advice.\n\nCorrection Logs:\n{textToSummarize}`;
+
+
+export const GENERATE_CONVERSATION_TITLE_PROMPT = `
+You are an AI assistant specialized in summarizing conversation topics. Your task is to generate a concise, descriptive title for a new conversation session based on the initial user query. The title should be short (under 10 words) and accurately reflect the main topic or purpose of the conversation.
+
+Initial User Query: "{initial_query}"
+
+Concise Conversation Title:`;
+
+
+// ============================================================================
+// Code Analysis, Generation, and Embedding Prompts
+// ============================================================================
+
+export const DETECT_LANGUAGE_PROMPT = `Analyze the following code snippet and identify its primary programming language.
+Respond with only the lowercase name of the language (e.g., "python", "javascript", "java", "csharp", "html", "css", "unknown" if not identifiable or not code).
+
+Snippet:
+{fileContentSnippet}
+
+Language:`;
+
+export const GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT = `You are an expert software engineer. Analyze the following code snippet and provide a very concise (2-5 words) and meaningful name that describes its primary purpose or functionality. 
+The name should be suitable for an entity identifier and should not include any punctuation or special characters, only alphanumeric and underscores.
+Focus on the core functionality rather than implementation details.
+Code snippet (language: {language}):
+\`\`\`{language}
+{codeChunk}
+\`\`\`
+Concise Name:`;
+
+export const BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT = `You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
+Do not describe the code line-by-line. Focus on the high-level goal and functionality.
+Language: {language}
+Entity Type: {entityType}
+Code Snippet:
+\`\`\`{language}
+{codeChunk}
+\`\`\`
+One-sentence summary:`;
+
+export const CHUNK_FILE_SUMMARY_PROMPT = `You are a senior software engineer. Create a concise, high-level summary of the following code file.
+Focus on the file's primary purpose, key responsibilities, and how it might interact with other parts of a larger application.
+File Path: \`{relativeFilePath}\`
+Language: {language}
+\`\`\`{language}
+{fileContent}
+\`\`\`
+Concise Summary:`;
+
 export const SUMMARIZE_CODE_CHUNK_PROMPT = `
 You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
 Do not describe the code line-by-line. Focus on the high-level goal and functionality.
@@ -11,6 +86,11 @@ Code Snippet:
 
 One-sentence summary:
 `;
+
+
+// ============================================================================
+// Query & Intent Classification Prompts
+// ============================================================================
 
 export const QUERY_CLASSIFICATION_PROMPT = `
 You are a query classification expert. Your task is to classify the user's query into one of two categories based on its intent.
@@ -28,7 +108,302 @@ You are a query classification expert. Your task is to classify the user's query
 "{query}"
 `;
 
-// NEW: This prompt is for the pre-analysis RAG decision.
+export const INTENT_CLASSIFICATION_PROMPT = `
+You are a highly efficient intent classification AI. Your task is to analyze the user's query and determine which of the following categories it best fits into.
+
+**Available Categories:**
+-   code_review
+-   code_explanation
+-   enhancement_suggestions
+-   bug_fixing
+-   refactoring
+-   testing
+-   documentation
+-   code_modularization_orchestration
+-   codebase_analysis
+
+**Instructions:**
+1.  Read the user's query carefully.
+2.  Choose the single best category from the list above that matches the user's intent.
+3.  Your response MUST be ONLY the chosen category name (e.g., "bug_fixing").
+4.  Do NOT add any other words, explanations, or punctuation.
+
+**User Query:**
+"{query}"
+`;
+
+export const EXTRACT_ENTITIES_PROMPT = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: "entities" and "keywords".\n\nText:\n{textToExtractFrom}`;
+
+
+// ============================================================================
+// Plan & Task Management Prompts
+// ============================================================================
+
+export const AI_SUGGEST_SUBTASKS_PROMPT = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.
+You have been given the context of all other tasks in the plan to identify logical dependencies.
+
+**Parent Task to Decompose:**
+- **ID:** "{taskId}"
+- **Title:** "{taskTitle}"
+- **Description:** "{taskDescription}"
+
+**Other Tasks in the Plan (for dependency context):**
+{otherTasksContext}
+
+Please generate up to {maxSuggestions} subtasks for the parent task. Format your response as a JSON array of objects.
+{jsonOutputSchemaInstructions}`;
+
+
+export const AI_TASK_COMPLEXITY_ANALYSIS_PROMPT = `You are an expert Task Complexity Analyzer AI. Your role is to analyze each task and provide a detailed complexity assessment.
+
+For each task, provide:
+- Complexity Score (1-10, where 10 is extremely complex)
+- Specific Complexity Factors (list the reasons why this task is complex)
+- Detailed Reasoning (explain your analysis)
+- Recommended Action (HIGH_COMPLEXITY_SUBTASKS, MEDIUM_COMPLEXITY_SUBTASKS, LOW_COMPLEXITY_NO_SUBTASKS, or SKIP_COMPLETELY)
+
+**Complexity Guidelines:**
+- HIGH_COMPLEXITY_SUBTASKS (8-10): Multi-step, multi-system, requires detailed planning, parallel execution
+- MEDIUM_COMPLEXITY_SUBTASKS (5-7): Several steps, some technical complexity, moderate planning needed
+- LOW_COMPLEXITY_NO_SUBTASKS (1-4): Simple, straightforward, single-step tasks.
+- SKIP_COMPLETELY: Administrative, trivial, or already too detailed.
+
+**Special Instruction:** You MUST recommend \`HIGH_COMPLEXITY_SUBTASKS\` or \`MEDIUM_COMPLEXITY_SUBTASKS\` ONLY IF the task's title or description explicitly contains keywords indicating code-related work, such as "code changes", "implementation", "development", "bug fix", "refactoring", "unit tests", or "integration tests". For all other tasks, you MUST recommend \`LOW_COMPLEXITY_NO_SUBTASKS\` or \`SKIP_COMPLETELY\`.
+
+Tasks to analyze:
+{tasksToAnalyzeJson}
+
+Respond with a JSON array of objects with this exact structure:
+[{
+  "task_id": "string",
+  "title": "string",
+  "complexity_score": number,
+  "complexity_factors": ["string"],
+  "reasoning": "string",
+  "recommended_action": "string"
+}]
+
+Provide ONLY the JSON array.`;
+
+export const AI_SUGGEST_TASK_DETAILS_PROMPT = `You are an expert project planner AI. Your task is to flesh out the details for a given task.
+The goal is to provide comprehensive information that would be useful for someone picking up this task.
+
+Task Title: "{taskTitle}"
+Current Task Description: "{taskDescription}"
+{codebaseContext}
+Please suggest the following details for this task. Format your response as a single JSON object.
+If a detail is not applicable or cannot be reasonably inferred, use null or an empty array.
+
+JSON Output Schema:
+{
+  "task_id": "{taskId}",
+  "suggested_description": "string (A more detailed explanation of what the task involves, expanding on the title and current description. 2-4 sentences.)",
+  "suggested_purpose": "string (The reason this task is necessary for the overall plan/goal. 1-2 sentences.)",
+  "suggested_action_description": "string (A high-level summary of the primary action(s) to be performed. 1-2 sentences.)",
+  "suggested_files_involved": ["string"],
+  "suggested_dependencies_task_ids": ["string"],
+  "suggested_tools_required_list": ["string"],
+  "suggested_inputs_summary": "string (What information or resources are needed to start this task?)",
+  "suggested_outputs_summary": "string (What are the expected deliverables or outcomes of this task?)",
+  "suggested_success_criteria_text": "string (How will we know this task is completed successfully? Be specific and measurable if possible.)",
+  "suggested_estimated_effort_hours": "number (integer, e.g., 1, 2, 4, 8)",
+  "suggested_verification_method": "string (How will the completion and correctness of this task be verified?)",
+  "rationale_for_suggestions": "string (Briefly explain your reasoning for these suggestions, especially if codebase context was used.)"
+}
+
+Provide only the JSON object.`;
+
+export const AI_ANALYZE_PLAN_PROMPT = `You are an expert AI project analyst. Your task is to critically analyze the provided project plan.
+The plan includes an overall goal, a list of tasks, and potentially subtasks.
+
+Focus on the following areas during your analysis:
+{focusAreas}
+
+Plan Details:
+---
+{planStringRepresentation}
+---
+{codebaseContext}
+Please provide your analysis as a single JSON object with the following fields. Be thorough and provide actionable insights.
+
+JSON Output Schema:
+{
+  "plan_id": "{planId}",
+  "overall_coherence_score": "number (1-10, 10 being best)",
+  "clarity_of_goal_score": "number (1-10)",
+  "actionability_of_tasks_score": "number (1-10)",
+  "completeness_score": "number (1-10, considering if crucial steps are missing)",
+  "identified_strengths": ["string"],
+  "potential_risks_or_issues": [{"risk": "string", "mitigation_suggestion": "string", "related_tasks": ["string"]}],
+  "missing_tasks_or_steps": ["string"],
+  "dependency_concerns": ["string"],
+  "resource_allocation_comments": "string",
+  "suggestions_for_improvement": ["string"],
+  "codebase_context_impact": "string (How codebase context influenced this analysis)",
+  "overall_summary": "string (A concise overall summary of your analysis)"
+}
+
+Provide only the JSON object.`;
+
+// --- Prompts from GeminiPlannerService ---
+
+export const PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT = `You are an expert project planning assistant and senior software engineer with expertise in risk mitigation and realistic project planning.
+
+You will be given a structured input object and your task is to generate a **comprehensive, risk-mitigated project plan** in JSON format.
+
+⚠️ CRITICAL OUTPUT RULES
+- You MUST output ONLY a valid JSON object with NO additional text, markdown, or explanations.
+- Start your response directly with \`{\` and end with \`}\`.
+- Do NOT include \`\`\`json\` markers or any other formatting.
+- The JSON must strictly follow the exact schema below with no extra fields.
+
+Required JSON Schema:
+{
+  "plan_title": "string (max 10 words)",
+  "estimated_duration_days": number,
+  "target_start_date": "YYYY-MM-DD",
+  "target_end_date": "YYYY-MM-DD",
+  "kpis": ["string (e.g., 'Reduce response time by 30%', 'Improve accuracy by 25%', 'Reduce error rate to <5%')"],
+  "dependency_analysis": "string (Comprehensive explanation of task interdependencies, critical paths, and potential blockers, explicitly noting whether tasks incrementally modify shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.)",
+  "plan_risks_and_mitigations": [
+    {
+      "risk_description": "string (specific technical, timeline, or resource risk)",
+      "mitigation_strategy": "string (concrete, actionable mitigation with responsible party and timeline, including clear rollback procedures and verification steps)"
+    }
+  ],
+  "tasks": [
+    {
+      "task_number": number,
+      "title": "string (≤ 10 words, non-empty)",
+      "description": "string (detailed explanation with technical considerations)",
+      "purpose": "string (why this task is necessary and its value proposition)",
+      "estimated_duration_days": "number (realistic, not optimistic)",
+      "estimated_effort_hours": "number (realistic estimate in hours)",
+      "assigned_to": "string (e.g., 'Team A', 'Frontend Dev', 'AI Agent')",
+      "suggested_files_involved": ["array", "of", "file", "paths"],
+      "code_content": "string (PRODUCTION-READY code with error handling, logging, and tests)",
+      "completion_criteria": "string (specific, measurable, testable criteria)",
+      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
+      "risks": ["array", "of", "specific", "task-level", "risks"],
+      "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
+    }
+  ]
+}
+
+Task Generation Rules:
+1. **Realistic Timeline**: Use conservative time estimates. Complex tasks should be 3-7 days minimum. Total project should be 2-4 weeks for typical implementations.
+2. **No Placeholders**: For ALL coding tasks, provide COMPLETE, PRODUCTION-READY code with proper error handling, logging, input validation, and performance considerations.
+3. **Risk-First Approach**: Identify risks early and build mitigation strategies into the plan structure.
+4. **Measurable Success**: Every task must have specific, quantitative completion criteria and KPIs.
+5. **Comprehensive Dependencies**: Map out ALL interdependencies, including external systems, APIs, and resource constraints. Explicitly clarify if tasks involve incremental modifications to shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.
+6. **Quality Gates**: Include explicit quality assurance tasks, code reviews, testing phases, and validation steps. Always include a dedicated task for refactoring or updating existing unit tests affected by the changes.
+7. **Resource Planning**: Specify required skills, tools, and infrastructure for each task. Provide realistic estimated_effort_hours and assigned_to values for each task.
+8. **Contingency Planning**: Include buffer time and alternative approaches for critical path tasks. Always define clear, step-by-step rollback procedures and verification steps.
+
+Code Content Rules:
+- **NEW Files**: Complete, documented source code with error handling, logging, and unit tests
+- **EXISTING Files**: Valid unified diffs that maintain system integrity and include proper error handling
+- **NEVER Use**: "// TODO", "placeholder", "implement later", or empty implementations
+- **ALWAYS Include**: Input validation, error handling, logging, performance considerations
+
+Quality Requirements:
+- Include unit tests and integration tests for all code
+- Add performance monitoring and alerting
+- Implement proper error handling and graceful degradation
+- Include comprehensive documentation and code comments
+- Plan for scalability and maintainability
+
+FINAL REMINDER: Output ONLY the JSON object. No explanations, no markdown, no additional text.`;
+
+export const PLANNER_USER_QUERY_REFINED_PROMPT = `Analyze the following 'Refined Prompt Object' and generate a complete project plan. Today's date is {today}. Use this for start and end dates.
+
+Refined Prompt Object:
+{payloadJson}
+
+Consider the following codebase context and live file content when generating the plan and tasks:
+Refined Prompt Context Summary:
+{contextSummary}
+
+Live File Content:
+{liveFilesString}
+
+Generate a JSON object with this EXACT structure:
+{
+  "plan_title": "string (max 10 words)",
+  "estimated_duration_days": number,
+  "target_start_date": "YYYY-MM-DD",
+  "target_end_date": "YYYY-MM-DD",
+  "plan_risks_and_mitigations": [
+    {
+      "risk_description": "string",
+      "mitigation_strategy": "string"
+    }
+  ],
+  "tasks": [
+    {
+      "task_number": number,
+      "title": "string (≤ 10 words, non-empty)",
+      "description": "string (detailed explanation)",
+      "purpose": "string (why this task is necessary)",
+      "suggested_files_involved": ["array", "of", "file", "paths"],
+      "code_content": "string (full code for new files OR unified diff for existing files)",
+      "completion_criteria": "string (measurable criteria)",
+      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
+    }
+  ]
+}
+
+IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdown, or additional text. Start with { and end with }.`;
+
+export const PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT = `You are an expert project planning assistant. Your task is to take a user's high‑level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY‑MM‑DD if specific dates are not inferable), potential risks and mitigations, and a list of actionable high‑level tasks.
+
+Each task **must** contain a non‑empty \`title\` (≤ 10 words) and a non‑empty \`description\`. Do not emit placeholders such as “Untitled Task”.
+
+Enhancements:
+• Consolidate redundancy.  
+• Explicit dependencies.  
+• Add missing critical phases (code review, integration testing, performance profiling, documentation, deployment).  
+• Refined task descriptions with completion criteria and required roles/skills.  
+• Comprehensive details for each task (estimated effort, risks, micro‑steps, suggested files).`;
+
+export const PLANNER_USER_QUERY_GOAL_PROMPT = `Analyze the following user goal and generate a detailed project plan. Today's date is {today}. Use this for start and end dates.
+
+User Goal:
+"{goal}"
+
+Codebase context:
+\`\`\`
+{codebaseContext}
+\`\`\`
+Live File Content for analysis:
+\`\`\`
+{liveFilesString}
+\`\`\`
+
+Provide a JSON object with:
+1. plan_title (max 10 words)
+2. overall_plan_goal (re-phrased)
+3. estimated_duration_days (integer)
+4. target_start_date ("YYYY-MM-DD", today = {today})
+5. target_end_date (calculated)
+6. plan_risks_and_mitigations: an array of objects, each with "risk_description" and "mitigation_strategy" string properties.
+7. tasks: an array of task objects, each containing:
+   - task_number (integer)
+   - title (string)
+   - description (string)
+   - purpose (string)
+   - suggested_files_involved (array of strings)
+   - code_content (string, either full code for new files or a diff for existing files, mandatory for coding tasks)
+   - completion_criteria (string)
+   - dependencies_task_ids_json (array of strings, referencing other task titles)
+
+Return ONLY the JSON object.`;
+
+
+// ============================================================================
+// RAG (Retrieval-Augmented Generation) Prompts
+// ============================================================================
+
 export const RAG_DECISION_PROMPT = `
 You are a highly efficient AI assistant responsible for optimizing a Retrieval-Augmented Generation (RAG) system. Your task is to analyze an ongoing conversation and a new user query to decide if a new RAG search is necessary.
 
@@ -68,34 +443,76 @@ You MUST respond with ONLY a valid JSON object in the following format. Do not i
 Now, provide the JSON object only.
 `;
 
-
-export const SUMMARIZE_CONTEXT_PROMPT = `Summarize the following text concisely:\n\n{textToSummarize}`;
-
-export const EXTRACT_ENTITIES_PROMPT = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: "entities" and "keywords".\n\nText:\n{textToExtractFrom}`;
-
-export const INTENT_CLASSIFICATION_PROMPT = `
-You are a highly efficient intent classification AI. Your task is to analyze the user's query and determine which of the following categories it best fits into.
-
-**Available Categories:**
--   code_review
--   code_explanation
--   enhancement_suggestions
--   bug_fixing
--   refactoring
--   testing
--   documentation
--   code_modularization_orchestration
--   codebase_analysis
-
-**Instructions:**
-1.  Read the user's query carefully.
-2.  Choose the single best category from the list above that matches the user's intent.
-3.  Your response MUST be ONLY the chosen category name (e.g., "bug_fixing").
-4.  Do NOT add any other words, explanations, or punctuation.
-
-**User Query:**
-"{query}"
+export const RAG_ANALYSIS_PROMPT = `
+You are an intelligent search orchestrator. Your goal is to answer the user's original query by iteratively searching a codebase and, if necessary, the web.
+Original Query: "{originalQuery}"
+Current Search Turn: {currentTurn} of {maxIterations}
+{focusString}---
+Accumulated Context So Far:
+{accumulatedContext}
+---
+Based on the accumulated context, please make a decision. Respond in this exact plain text format:
+Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB]
+Reasoning: [Briefly explain your decision. If searching again, explain what is missing. If searching the web, explain why external info is needed.]
+Next Codebase Search Query: [Only if decision is SEARCH_AGAIN, provide a query to find missing code info.]
+Next Web Search Query: [Only if decision is SEARCH_WEB, provide a concise query for a web search engine.]
+Confidence: [A number between 0 and 1 indicating your confidence in this decision]
+---
+Instructions:
+- If the **accumulated context** (from codebase or web search) is sufficient to fully answer the original query, set "Decision" to "ANSWER".
+- If more **codebase** information is needed, set "Decision" to "SEARCH_AGAIN".
+- If the query requires **external, real-time, or third-party library information** not found in the code, set "Decision" to "SEARCH_WEB".
+- Consider the **relevance and completeness** of the current context. If key information is missing, continue searching.
+- Avoid repetitive queries. If you've already searched for similar information, try a different approach.
+- If you've reached the last turn ({maxIterations}), you MUST set "Decision" to "ANSWER".
 `;
+
+
+export const RAG_ANALYSIS_SYSTEM_INSTRUCTION = `You are a highly precise AI. Your ONLY output must be in the exact plain text format specified in the user's prompt. Do NOT include any conversational text, markdown, or any other characters.`;
+
+export const RAG_VERIFICATION_PROMPT = `You are an adversarial fact-checker. Your task is to find any claims in the "Proposed Answer" that are NOT supported by the "Context".
+                
+Original Query: "{originalQuery}"
+
+--- CONTEXT START ---
+{contextString}
+--- CONTEXT END ---
+
+--- PROPOSED ANSWER START ---
+{generatedAnswer}
+--- PROPOSED ANSWER END ---
+
+**Verification Steps:**
+1.  **Component Check:** First, list all primary classes, services, or functions mentioned in the "Proposed Answer". For each one, verify if it is explicitly defined or mentioned in the "Context".
+2.  **Logic Check:** Scrutinize every statement and description of logic in the "Proposed Answer". Verify that the described behavior is exactly what the code in the "Context" shows.
+
+**Your Response:**
+-   If all components and all logic in the answer are fully and directly supported by the context, respond ONLY with the word "VERIFIED".
+-   If you find ANY component (class, method, etc.) or ANY piece of logic that is not explicitly present in the context, respond with "HALLUCINATION_DETECTED" followed by a list of the specific unsupported claims or invented components.`;
+
+export const RAG_ANSWER_PROMPT = `Based on the following context, please provide a comprehensive answer to the original query: "{originalQuery}"
+{focusString}
+Context:
+{contextString}
+Original Query: "{originalQuery}"
+Please provide your answer:`;
+
+export const RAG_DIVERSE_QUERIES_PROMPT = `
+You are an expert query rewriter for a codebase search system.
+Your task is to generate {numQueries} semantically diverse search queries based on the original user query.
+These queries should explore different facets or interpretations of the original query to maximize relevant document retrieval.
+
+Original Query: "{originalQuery}"
+
+Generate {numQueries} diverse queries. Each query should be concise and focused.
+Provide the output as a JSON array of strings.
+For example: ["query 1", "query 2", "query 3"]
+`;
+
+
+// ============================================================================
+// Meta Prompts (High-level task-specific prompts)
+// ============================================================================
 
 export const META_PROMPT = `
 You are an expert AI prompt engineer and senior software architect. Your task is to take a raw user prompt, perform a deep and mandatory analysis of the provided codebase context, and transform the prompt into a highly structured, detailed, and actionable "Refined Prompt for AI". This refined prompt will be used by another AI agent to execute the user's request with precision.
@@ -173,24 +590,6 @@ Retrieved Codebase Context (MANDATORY ANALYSIS):
 
 Now, provide the JSON object only.
 `;
-
-export const SUMMARIZE_CONVERSATION_PROMPT = `
-Summarize the following conversation involving agent_id "{agent_id}".
-Focus on:
-- Key topics discussed
-- Main actions taken
-- Important decisions made
-- Next steps identified
-- Any unresolved issues
-        
-Conversation Messages:
-{conversationMessages}
-
-Provide a concise yet comprehensive summary structured as:
-1. Overview
-2. Key Points
-3. Action Items
-4. Open Questions`;
 
 export const CODE_REVIEW_META_PROMPT = `You are an expert AI code reviewer with COMPREHENSIVE analysis capabilities. Given the following codebase context and user question, provide a detailed code review with structured analysis and actionable recommendations.
 
@@ -548,14 +947,6 @@ You are a helpful and context-aware AI assistant specializing in MAINTAINING CON
 {query}
 ---
 `;
-
-
-export const GENERATE_CONVERSATION_TITLE_PROMPT = `
-You are an AI assistant specialized in summarizing conversation topics. Your task is to generate a concise, descriptive title for a new conversation session based on the initial user query. The title should be short (under 10 words) and accurately reflect the main topic or purpose of the conversation.
-
-Initial User Query: "{initial_query}"
-
-Concise Conversation Title:`;
 
 export const GENERAL_WEB_ASSISTANT_META_PROMPT = `
 You are an expert research assistant. Your primary goal is to synthesize the provided web search results to directly and precisely answer the user's original query.

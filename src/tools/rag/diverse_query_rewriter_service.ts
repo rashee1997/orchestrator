@@ -1,7 +1,7 @@
 import { GeminiIntegrationService } from '../../database/services/GeminiIntegrationService.js';
 import { MemoryManager } from '../../database/memory_manager.js';
 import { RetrievedCodeContext } from '../../database/services/CodebaseContextRetrieverService.js';
-import { RagPromptTemplates } from './rag_prompt_templates.js';
+import { RAG_DIVERSE_QUERIES_PROMPT } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
 
 export interface DiverseQueryRewriterOptions {
@@ -36,7 +36,9 @@ export class DiverseQueryRewriterService {
         const numQueries = options.queryCount || 3; // Default to 3 queries
 
         // 1. Generate the prompt for diverse queries
-        const prompt = RagPromptTemplates.generateDiverseQueriesPrompt(originalQuery, numQueries);
+        const prompt = RAG_DIVERSE_QUERIES_PROMPT
+            .replace('{originalQuery}', originalQuery)
+            .replace(/{numQueries}/g, String(numQueries));
 
         // 2. Use GeminiIntegrationService to get diverse queries from LLM
         let generatedQueries: string[] = [];

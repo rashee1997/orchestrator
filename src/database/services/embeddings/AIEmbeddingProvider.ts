@@ -1,5 +1,6 @@
 import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.js';
+import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
 
 export class AIEmbeddingProvider {
     public geminiService: GeminiIntegrationService;
@@ -104,14 +105,9 @@ export class AIEmbeddingProvider {
         if (chunks.length === 0) return [];
 
         const prompts = chunks.map(chunk =>
-            `You are an expert software engineer. Analyze the following code snippet and provide a very concise (2-5 words) and meaningful name that describes its primary purpose or functionality. 
-The name should be suitable for an entity identifier and should not include any punctuation or special characters, only alphanumeric and underscores.
-Focus on the core functionality rather than implementation details.
-Code snippet (language: ${chunk.language || 'unknown'}):
-\`\`\`${chunk.language || ''}
-${chunk.codeChunk}
-\`\`\`
-Concise Name:`
+            GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT
+                .replace(/{language}/g, chunk.language || 'unknown')
+                .replace('{codeChunk}', chunk.codeChunk)
         );
 
         try {
@@ -347,15 +343,10 @@ Concise Name:`
         if (chunks.length === 0) return [];
 
         const prompts = chunks.map(chunk =>
-            `You are an expert code analyst. Your task is to provide a concise, one-sentence summary in plain English explaining the purpose of the following code snippet.
-Do not describe the code line-by-line. Focus on the high-level goal and functionality.
-Language: ${chunk.language}
-Entity Type: ${chunk.entityType}
-Code Snippet:
-\`\`\`${chunk.language}
-${chunk.codeChunk}
-\`\`\`
-One-sentence summary:`
+            BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT
+                .replace(/{language}/g, chunk.language)
+                .replace('{entityType}', chunk.entityType)
+                .replace('{codeChunk}', chunk.codeChunk)
         );
 
         try {

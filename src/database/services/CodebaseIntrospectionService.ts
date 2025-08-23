@@ -1,5 +1,3 @@
-// src/database/services/CodebaseIntrospectionService.ts
-// src/services/CodebaseIntrospectionService.ts
 import fs from 'fs/promises';
 import { Stats } from 'fs';
 import path from 'path';
@@ -7,6 +5,7 @@ import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { ILanguageParser } from '../parsers/ILanguageParser.js';
 import { ParserFactory } from '../parsers/ParserFactory.js';
+import { DETECT_LANGUAGE_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
 
 export interface ScannedItem {
     path: string;
@@ -295,13 +294,7 @@ export class CodebaseIntrospectionService {
             return undefined;
         }
 
-        const prompt = `Analyze the following code snippet and identify its primary programming language.
-Respond with only the lowercase name of the language (e.g., "python", "javascript", "java", "csharp", "html", "css", "unknown" if not identifiable or not code).
-
-Snippet:
-${fileContentSnippet}
-
-Language:`;
+        const prompt = DETECT_LANGUAGE_PROMPT.replace('{fileContentSnippet}', fileContentSnippet);
 
         try {
             const response = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");

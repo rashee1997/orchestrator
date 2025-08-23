@@ -4,6 +4,7 @@ import { CodebaseIntrospectionService } from '../CodebaseIntrospectionService.js
 import { AIEmbeddingProvider } from './AIEmbeddingProvider.js';
 import { ChunkingStrategy } from '../../../types/codebase_embeddings.js';
 import crypto from 'crypto';
+import { CHUNK_FILE_SUMMARY_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
 
 export interface MultiVectorChunk {
     chunk_text: string;
@@ -194,14 +195,10 @@ export class CodeChunkingService {
 
         try {
             // Step 1: Create the Parent Summary Chunk
-            const summaryPrompt = `You are a senior software engineer. Create a concise, high-level summary of the following code file.
-Focus on the file's primary purpose, key responsibilities, and how it might interact with other parts of a larger application.
-File Path: \`${relativeFilePath}\`
-Language: ${language || 'unknown'}
-\`\`\`${language || ''}
-${fileContent.substring(0, 8000)}
-\`\`\`
-Concise Summary:`;
+            const summaryPrompt = CHUNK_FILE_SUMMARY_PROMPT
+                .replace('{relativeFilePath}', relativeFilePath)
+                .replace(/{language}/g, language || 'unknown')
+                .replace('{fileContent}', fileContent.substring(0, 8000));
 
             let fileSummary;
             try {

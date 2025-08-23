@@ -6,6 +6,12 @@ import { PlanTaskManager, ParsedTask } from '../database/managers/PlanTaskManage
 import { SubtaskManager } from '../database/managers/SubtaskManager.js';
 import { formatJsonToMarkdownCodeBlock, formatPlanToMarkdown, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
+import {
+    AI_SUGGEST_SUBTASKS_PROMPT,
+    AI_TASK_COMPLEXITY_ANALYSIS_PROMPT,
+    AI_SUGGEST_TASK_DETAILS_PROMPT,
+    AI_ANALYZE_PLAN_PROMPT
+} from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 
 // #region Type Definitions
 interface AiSuggestedSubtask {
@@ -152,19 +158,13 @@ Each subtask object in the array must have the following fields:
 
 Provide only the JSON array. Do not include any other text or markdown.`;
 
-    const prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.
-You have been given the context of all other tasks in the plan to identify logical dependencies.
-
-**Parent Task to Decompose:**
-- **ID:** "${parentTask.task_id}"
-- **Title:** "${parentTask.title}"
-- **Description:** "${parentTask.description || 'No detailed description provided.'}"
-
-**Other Tasks in the Plan (for dependency context):**
-${otherTasksInPlan.length > 0 ? JSON.stringify(otherTasksInPlan, null, 2) : "No other tasks in the plan."}
-
-Please generate up to ${max_suggestions} subtasks for the parent task. Format your response as a JSON array of objects.
-${jsonOutputSchemaInstructions}`;
+    const prompt = AI_SUGGEST_SUBTASKS_PROMPT
+        .replace('{taskId}', parentTask.task_id)
+        .replace('{taskTitle}', parentTask.title)
+        .replace('{taskDescription}', parentTask.description || 'No detailed description provided.')
+        .replace('{otherTasksContext}', otherTasksInPlan.length > 0 ? JSON.stringify(otherTasksInPlan, null, 2) : "No other tasks in the plan.")
+        .replace('{maxSuggestions}', String(max_suggestions))
+        .replace('{jsonOutputSchemaInstructions}', jsonOutputSchemaInstructions);
 
     let suggestedSubtasks: AiSuggestedSubtask[];
     try {
@@ -268,36 +268,8 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         }
 
         // === AGENT 1: Task Complexity Analyzer ===
-        const complexityAnalysisPrompt = `You are an expert Task Complexity Analyzer AI. Your role is to analyze each task and provide a detailed complexity assessment.
-
-For each task, provide:
-- Complexity Score (1-10, where 10 is extremely complex)
-- Specific Complexity Factors (list the reasons why this task is complex)
-- Detailed Reasoning (explain your analysis)
-- Recommended Action (HIGH_COMPLEXITY_SUBTASKS, MEDIUM_COMPLEXITY_SUBTASKS, LOW_COMPLEXITY_NO_SUBTASKS, or SKIP_COMPLETELY)
-
-**Complexity Guidelines:**
-- HIGH_COMPLEXITY_SUBTASKS (8-10): Multi-step, multi-system, requires detailed planning, parallel execution
-- MEDIUM_COMPLEXITY_SUBTASKS (5-7): Several steps, some technical complexity, moderate planning needed
-- LOW_COMPLEXITY_NO_SUBTASKS (1-4): Simple, straightforward, single-step tasks.
-- SKIP_COMPLETELY: Administrative, trivial, or already too detailed.
-
-**Special Instruction:** You MUST recommend \`HIGH_COMPLEXITY_SUBTASKS\` or \`MEDIUM_COMPLEXITY_SUBTASKS\` ONLY IF the task's title or description explicitly contains keywords indicating code-related work, such as "code changes", "implementation", "development", "bug fix", "refactoring", "unit tests", or "integration tests". For all other tasks, you MUST recommend \`LOW_COMPLEXITY_NO_SUBTASKS\` or \`SKIP_COMPLETELY\`.
-
-Tasks to analyze:
-${JSON.stringify(tasksWithoutSubtasks.map(({ has_subtasks, ...rest }) => rest), null, 2)}
-
-Respond with a JSON array of objects with this exact structure:
-[{
-  "task_id": "string",
-  "title": "string",
-  "complexity_score": number,
-  "complexity_factors": ["string"],
-  "reasoning": "string",
-  "recommended_action": "string"
-}]
-
-Provide ONLY the JSON array.`;
+        const complexityAnalysisPrompt = AI_TASK_COMPLEXITY_ANALYSIS_PROMPT
+            .replace('{tasksToAnalyzeJson}', JSON.stringify(tasksWithoutSubtasks.map(({ has_subtasks, ...rest }) => rest), null, 2));
 
         let complexityAnalyses: TaskComplexityAnalysis[];
         try {
@@ -317,10 +289,14 @@ Provide ONLY the JSON array.`;
                 `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
             ).join('\n');
 
-            return { content: [{ type: 'text', text: formatSimpleMessage(
-                `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
-                "AI Subtask Suggestions"
-            ) }] };
+            return {
+                content: [{
+                    type: 'text', text: formatSimpleMessage(
+                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                        "AI Subtask Suggestions"
+                    )
+                }]
+            };
         }
 
         // DEBUG: Log the complexity analysis results
@@ -351,10 +327,14 @@ Provide ONLY the JSON array.`;
                 `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
             ).join('\n');
 
-            return { content: [{ type: 'text', text: formatSimpleMessage(
-                `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
-                "AI Subtask Suggestions"
-            ) }] };
+            return {
+                content: [{
+                    type: 'text', text: formatSimpleMessage(
+                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                        "AI Subtask Suggestions"
+                    )
+                }]
+            };
         }
 
         let fullMarkdownReport = `## AI-Suggested Subtasks for Complex Tasks in Plan \`${plan_id}\`\n`;
@@ -410,33 +390,15 @@ async function aiSuggestTaskDetailsHandler(args: any, memoryManager: MemoryManag
     }
 
     // 2. Build prompt
-    const prompt = `You are an expert project planner AI. Your task is to flesh out the details for a given task.
-The goal is to provide comprehensive information that would be useful for someone picking up this task.
+    const codebaseContext = codebase_context_summary
+        ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n`
+        : '';
 
-Task Title: "${task_title}"
-Current Task Description: "${task_description || 'No detailed description currently provided.'}"
-${codebase_context_summary ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n` : ''}
-Please suggest the following details for this task. Format your response as a single JSON object.
-If a detail is not applicable or cannot be reasonably inferred, use null or an empty array.
-
-JSON Output Schema:
-{
-  "task_id": "${task_id}",
-  "suggested_description": "string (A more detailed explanation of what the task involves, expanding on the title and current description. 2-4 sentences.)",
-  "suggested_purpose": "string (The reason this task is necessary for the overall plan/goal. 1-2 sentences.)",
-  "suggested_action_description": "string (A high-level summary of the primary action(s) to be performed. 1-2 sentences.)",
-  "suggested_files_involved": ["string"],
-  "suggested_dependencies_task_ids": ["string"],
-  "suggested_tools_required_list": ["string"],
-  "suggested_inputs_summary": "string (What information or resources are needed to start this task?)",
-  "suggested_outputs_summary": "string (What are the expected deliverables or outcomes of this task?)",
-  "suggested_success_criteria_text": "string (How will we know this task is completed successfully? Be specific and measurable if possible.)",
-  "suggested_estimated_effort_hours": "number (integer, e.g., 1, 2, 4, 8)",
-  "suggested_verification_method": "string (How will the completion and correctness of this task be verified?)",
-  "rationale_for_suggestions": "string (Briefly explain your reasoning for these suggestions, especially if codebase context was used.)"
-}
-
-Provide only the JSON object.`;
+    const prompt = AI_SUGGEST_TASK_DETAILS_PROMPT
+        .replace('{taskTitle}', task_title)
+        .replace('{taskDescription}', task_description || 'No detailed description currently provided.')
+        .replace('{codebaseContext}', codebaseContext)
+        .replace('{taskId}', task_id);
 
     // 3. Get suggestions from AI
     let suggestedDetails: AiSuggestedTaskDetails;
@@ -467,7 +429,7 @@ Provide only the JSON object.`;
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
 
-async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
+async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: 'text', text: string }[] }> {
     const validationResult = validate('aiAnalyzePlan', args);
     if (!validationResult.valid) {
         throw new McpError(ErrorCode.InvalidParams, `Validation failed for ai_analyze_plan: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
@@ -497,37 +459,15 @@ async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Pr
         ? analysis_focus_areas.map((area: string) => `- ${area}`).join('\n')
         : `- Overall Coherence and Goal Alignment\n- Clarity and Actionability of Tasks\n- Completeness (Missing Steps/Tasks)\n- Potential Risks and Issues\n- Task Dependencies and Sequencing`;
 
-    const prompt = `You are an expert AI project analyst. Your task is to critically analyze the provided project plan.
-The plan includes an overall goal, a list of tasks, and potentially subtasks.
+    const codebaseContext = codebase_context_summary
+        ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n---`
+        : '';
 
-Focus on the following areas during your analysis:
-${focusAreas}
-
-Plan Details:
----
-${planStringRepresentation}
----
-${codebase_context_summary ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n---` : ''}
-Please provide your analysis as a single JSON object with the following fields. Be thorough and provide actionable insights.
-
-JSON Output Schema:
-{
-  "plan_id": "${plan_id}",
-  "overall_coherence_score": "number (1-10, 10 being best)",
-  "clarity_of_goal_score": "number (1-10)",
-  "actionability_of_tasks_score": "number (1-10)",
-  "completeness_score": "number (1-10, considering if crucial steps are missing)",
-  "identified_strengths": ["string"],
-  "potential_risks_or_issues": [{"risk": "string", "mitigation_suggestion": "string", "related_tasks": ["string"]}],
-  "missing_tasks_or_steps": ["string"],
-  "dependency_concerns": ["string"],
-  "resource_allocation_comments": "string",
-  "suggestions_for_improvement": ["string"],
-  "codebase_context_impact": "string (How codebase context influenced this analysis)",
-  "overall_summary": "string (A concise overall summary of your analysis)"
-}
-
-Provide only the JSON object.`;
+    const prompt = AI_ANALYZE_PLAN_PROMPT
+        .replace('{focusAreas}', focusAreas)
+        .replace('{planStringRepresentation}', planStringRepresentation)
+        .replace('{codebaseContext}', codebaseContext)
+        .replace('{planId}', plan_id);
 
     // 3. Get analysis from AI
     let analysisResult: AiPlanAnalysis;

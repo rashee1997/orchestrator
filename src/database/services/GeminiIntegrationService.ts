@@ -3,7 +3,14 @@ import { ContextInformationManager } from '../managers/ContextInformationManager
 import { MemoryManager } from "../memory_manager.js";
 import { CodebaseContextRetrieverService, RetrievedCodeContext, ContextRetrievalOptions } from "./CodebaseContextRetrieverService.js";
 import { GeminiApiClient, GeminiApiNotInitializedError } from './gemini-integration-modules/GeminiApiClient.js';
-import { SUMMARIZE_CODE_CHUNK_PROMPT, SUMMARIZE_CONTEXT_PROMPT, EXTRACT_ENTITIES_PROMPT, META_PROMPT, SUMMARIZE_CONVERSATION_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
+import {
+    SUMMARIZE_CODE_CHUNK_PROMPT,
+    SUMMARIZE_CONTEXT_PROMPT,
+    EXTRACT_ENTITIES_PROMPT,
+    META_PROMPT,
+    SUMMARIZE_CONVERSATION_PROMPT,
+    GENERATE_CONVERSATION_TITLE_PROMPT
+} from './gemini-integration-modules/GeminiPromptTemplates.js';
 import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
 import { formatRetrievedContextForPrompt } from './gemini-integration-modules/GeminiContextFormatter.js';
 import { cosineSimilarity } from './gemini-integration-modules/GeminiUtilityFunctions.js';
@@ -508,9 +515,6 @@ export class GeminiIntegrationService {
         }
 
         try {
-            // Import the new prompt template
-            const { GENERATE_CONVERSATION_TITLE_PROMPT } = await import('./gemini-integration-modules/GeminiPromptTemplates.js');
-
             const prompt = GENERATE_CONVERSATION_TITLE_PROMPT.replace('{initial_query}', initialQuery);
 
             const result = await this._executeWithRetry(

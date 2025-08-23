@@ -4,7 +4,13 @@ import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
 import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { GeminiPlannerResponseSchema } from './gemini-integration-modules/GeminiSchema.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js'; // Added this import
+import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import {
+    PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT,
+    PLANNER_USER_QUERY_REFINED_PROMPT,
+    PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
+    PLANNER_USER_QUERY_GOAL_PROMPT
+} from './gemini-integration-modules/GeminiPromptTemplates.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -182,14 +188,14 @@ export class GeminiPlannerService {
             }
 
             refinedPromptIdForPlan = identifier;
-            systemInstruction = this.getSystemInstructionForRefinedPrompt();
+            systemInstruction = PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT;
             const planGenerationRefinedPromptDetails = this.extractPlanGenerationPayload(refinedPromptDetails);
 
             userQuery = this.buildUserQueryForRefinedPrompt(planGenerationRefinedPromptDetails, refinedPromptDetails, liveFilesContent);
         } else {
             // ---- High-level Goal Path -------------------------------------------------
             const codebaseContext = await this.resolveCodebaseContext(agentId, codebaseContextSummary);
-            systemInstruction = this.getSystemInstructionForGoal();
+            systemInstruction = PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT;
             userQuery = this.buildUserQueryForGoal(identifier, codebaseContext, liveFilesContent);
         }
 
@@ -200,89 +206,6 @@ export class GeminiPlannerService {
             refinedPromptDetails,
             originalGoalText: isRefinedPromptId ? null : identifier, // Conditionally add originalGoalText
         };
-    }
-
-    private getSystemInstructionForRefinedPrompt(): string {
-        return `You are an expert project planning assistant and senior software engineer with expertise in risk mitigation and realistic project planning.
-
-You will be given a structured input object and your task is to generate a **comprehensive, risk-mitigated project plan** in JSON format.
-
-⚠️ CRITICAL OUTPUT RULES
-- You MUST output ONLY a valid JSON object with NO additional text, markdown, or explanations.
-- Start your response directly with \`{\` and end with \`}\`.
-- Do NOT include \`\`\`json\` markers or any other formatting.
-- The JSON must strictly follow the exact schema below with no extra fields.
-
-Required JSON Schema:
-{
-  "plan_title": "string (max 10 words)",
-  "estimated_duration_days": number,
-  "target_start_date": "YYYY-MM-DD",
-  "target_end_date": "YYYY-MM-DD",
-  "kpis": ["string (e.g., 'Reduce response time by 30%', 'Improve accuracy by 25%', 'Reduce error rate to <5%')"],
-  "dependency_analysis": "string (Comprehensive explanation of task interdependencies, critical paths, and potential blockers, explicitly noting whether tasks incrementally modify shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.)",
-  "plan_risks_and_mitigations": [
-    {
-      "risk_description": "string (specific technical, timeline, or resource risk)",
-      "mitigation_strategy": "string (concrete, actionable mitigation with responsible party and timeline, including clear rollback procedures and verification steps)"
-    }
-  ],
-  "tasks": [
-    {
-      "task_number": number,
-      "title": "string (≤ 10 words, non-empty)",
-      "description": "string (detailed explanation with technical considerations)",
-      "purpose": "string (why this task is necessary and its value proposition)",
-      "estimated_duration_days": "number (realistic, not optimistic)",
-      "estimated_effort_hours": "number (realistic estimate in hours)", // ADDED
-      "assigned_to": "string (e.g., 'Team A', 'Frontend Dev', 'AI Agent')", // ADDED
-      "suggested_files_involved": ["array", "of", "file", "paths"],
-      "code_content": "string (PRODUCTION-READY code with error handling, logging, and tests)",
-      "completion_criteria": "string (specific, measurable, testable criteria)",
-      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
-      "risks": ["array", "of", "specific", "task-level", "risks"],
-      "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
-    }
-  ]
-}
-
-Task Generation Rules:
-1. **Realistic Timeline**: Use conservative time estimates. Complex tasks should be 3-7 days minimum. Total project should be 2-4 weeks for typical implementations.
-2. **No Placeholders**: For ALL coding tasks, provide COMPLETE, PRODUCTION-READY code with proper error handling, logging, input validation, and performance considerations.
-3. **Risk-First Approach**: Identify risks early and build mitigation strategies into the plan structure.
-4. **Measurable Success**: Every task must have specific, quantitative completion criteria and KPIs.
-5. **Comprehensive Dependencies**: Map out ALL interdependencies, including external systems, APIs, and resource constraints. Explicitly clarify if tasks involve incremental modifications to shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.
-6. **Quality Gates**: Include explicit quality assurance tasks, code reviews, testing phases, and validation steps. Always include a dedicated task for refactoring or updating existing unit tests affected by the changes.
-7. **Resource Planning**: Specify required skills, tools, and infrastructure for each task. Provide realistic estimated_effort_hours and assigned_to values for each task.
-8. **Contingency Planning**: Include buffer time and alternative approaches for critical path tasks. Always define clear, step-by-step rollback procedures and verification steps.
-
-Code Content Rules:
-- **NEW Files**: Complete, documented source code with error handling, logging, and unit tests
-- **EXISTING Files**: Valid unified diffs that maintain system integrity and include proper error handling
-- **NEVER Use**: "// TODO", "placeholder", "implement later", or empty implementations
-- **ALWAYS Include**: Input validation, error handling, logging, performance considerations
-
-Quality Requirements:
-- Include unit tests and integration tests for all code
-- Add performance monitoring and alerting
-- Implement proper error handling and graceful degradation
-- Include comprehensive documentation and code comments
-- Plan for scalability and maintainability
-
-FINAL REMINDER: Output ONLY the JSON object. No explanations, no markdown, no additional text.`;
-    }
-
-    private getSystemInstructionForGoal(): string {
-        return `You are an expert project planning assistant. Your task is to take a user's high‑level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY‑MM‑DD if specific dates are not inferable), potential risks and mitigations, and a list of actionable high‑level tasks.
-
-Each task **must** contain a non‑empty \`title\` (≤ 10 words) and a non‑empty \`description\`. Do not emit placeholders such as “Untitled Task”.
-
-Enhancements:
-• Consolidate redundancy.  
-• Explicit dependencies.  
-• Add missing critical phases (code review, integration testing, performance profiling, documentation, deployment).  
-• Refined task descriptions with completion criteria and required roles/skills.  
-• Comprehensive details for each task (estimated effort, risks, micro‑steps, suggested files).`;
     }
 
     private extractPlanGenerationPayload(refined: any): Record<string, unknown> {
@@ -303,7 +226,7 @@ Enhancements:
             codebase_context_summary_by_ai: refined.codebase_context_summary_by_ai,
         };
     }
-    
+
     private buildUserQueryForRefinedPrompt(
         payload: Record<string, unknown>,
         refined: any,
@@ -317,45 +240,11 @@ Enhancements:
             }).join('\n\n');
         }
 
-        return `Analyze the following 'Refined Prompt Object' and generate a complete project plan. Today's date is ${today}. Use this for start and end dates.
-
-Refined Prompt Object:
-${JSON.stringify(payload, null, 2)}
-
-Consider the following codebase context and live file content when generating the plan and tasks:
-Refined Prompt Context Summary:
-${refined.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
-
-Live File Content:
-${liveFilesString}
-
-Generate a JSON object with this EXACT structure:
-{
-  "plan_title": "string (max 10 words)",
-  "estimated_duration_days": number,
-  "target_start_date": "YYYY-MM-DD",
-  "target_end_date": "YYYY-MM-DD",
-  "plan_risks_and_mitigations": [
-    {
-      "risk_description": "string",
-      "mitigation_strategy": "string"
-    }
-  ],
-  "tasks": [
-    {
-      "task_number": number,
-      "title": "string (≤ 10 words, non-empty)",
-      "description": "string (detailed explanation)",
-      "purpose": "string (why this task is necessary)",
-      "suggested_files_involved": ["array", "of", "file", "paths"],
-      "code_content": "string (full code for new files OR unified diff for existing files)",
-      "completion_criteria": "string (measurable criteria)",
-      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
-    }
-  ]
-}
-
-IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdown, or additional text. Start with { and end with }.`;
+        return PLANNER_USER_QUERY_REFINED_PROMPT
+            .replace('{today}', today)
+            .replace('{payloadJson}', JSON.stringify(payload, null, 2))
+            .replace('{contextSummary}', refined.codebase_context_summary_by_ai || 'No specific codebase context provided.')
+            .replace('{liveFilesString}', liveFilesString);
     }
 
     private async resolveCodebaseContext(agentId: string, fallback?: string): Promise<string | undefined> {
@@ -373,38 +262,11 @@ IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdow
             }).join('\n\n');
         }
 
-        return `Analyze the following user goal and generate a detailed project plan. Today's date is ${today}. Use this for start and end dates.
-
-User Goal:
-"${goal}"
-
-Codebase context:
-\`\`\`
-${codebaseContext || 'No specific codebase context provided.'}
-\`\`\`
-Live File Content for analysis:
-\`\`\`
-${liveFilesString}
-\`\`\`
-
-Provide a JSON object with:
-1. plan_title (max 10 words)
-2. overall_plan_goal (re-phrased)
-3. estimated_duration_days (integer)
-4. target_start_date ("YYYY-MM-DD", today = ${today})
-5. target_end_date (calculated)
-6. plan_risks_and_mitigations: an array of objects, each with "risk_description" and "mitigation_strategy" string properties.
-7. tasks: an array of task objects, each containing:
-   - task_number (integer)
-   - title (string)
-   - description (string)
-   - purpose (string)
-   - suggested_files_involved (array of strings)
-   - code_content (string, either full code for new files or a diff for existing files, mandatory for coding tasks)
-   - completion_criteria (string)
-   - dependencies_task_ids_json (array of strings, referencing other task titles)
-
-Return ONLY the JSON object.`;
+        return PLANNER_USER_QUERY_GOAL_PROMPT
+            .replace(/{today}/g, today)
+            .replace('{goal}', goal)
+            .replace('{codebaseContext}', codebaseContext || 'No specific codebase context provided.')
+            .replace('{liveFilesString}', liveFilesString);
     }
 
     // -----------------------------------------------------------------
