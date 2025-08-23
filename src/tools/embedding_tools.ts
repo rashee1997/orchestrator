@@ -7,6 +7,7 @@ import { MemoryManager } from '../database/memory_manager.js';
 import { EmbeddingIngestionResult, ChunkingStrategy } from '../types/codebase_embeddings.js';
 import { formatJsonToMarkdownCodeBlock, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
+import { DiverseQueryRewriterService } from './rag/diverse_query_rewriter_service.js';
 
 // Define the interface for the chunk result, including the new original_code_snippet
 interface CodeChunkResult {
@@ -35,6 +36,18 @@ const queryCodebaseEmbeddingsSchema = {
             items: { type: 'string' },
             nullable: true,
             description: "Optional: Array of chunk types to exclude from the results (e.g., 'full_file', 'function_summary')."
+        },
+        enable_dmqr: {
+            type: 'boolean',
+            description: 'Enable Diverse Multi-Query Rewriting (DMQR) for the embedding query.',
+            default: false
+        },
+        dmqr_query_count: {
+            type: 'number',
+            description: 'The number of diverse queries to generate for DMQR.',
+            default: 3,
+            minimum: 2,
+            maximum: 5
         }
     },
     required: ['agent_id', 'query_text'],
@@ -365,30 +378,83 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (!agent_id) {
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for query_codebase_embeddings.");
             }
-            const { query_text, top_k, target_file_paths, exclude_chunk_types } = args;
+            const { query_text, top_k, target_file_paths, exclude_chunk_types, enable_dmqr, dmqr_query_count } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
 
             try {
-                const results: CodeChunkResult[] = await embeddingService.retrieveSimilarCodeChunks(
-                    agent_id,
-                    query_text,
-                    top_k || 5,
-                    target_file_paths,
-                    exclude_chunk_types
-                );
+                let allResults: CodeChunkResult[] = [];
+                let generatedQueries: string[] = [query_text]; // Always include original query
 
-                if (results.length === 0) {
-                    const message = formatSimpleMessage(`No similar code chunks found for query: "${query_text}" (after filtering).`, "Embedding Query Results");
+                // Use DMQR if enabled
+                if (enable_dmqr) {
+                    console.log(`[query_codebase_embeddings] DMQR enabled. Generating ${dmqr_query_count} diverse queries for: "${query_text}"`);
+
+                    const geminiService = memoryManager.getGeminiIntegrationService();
+                    if (!geminiService) {
+                        throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available for DMQR.");
+                    }
+
+                    const diverseQueryRewriterService = new DiverseQueryRewriterService(geminiService, memoryManager);
+                    const dmqrResult = await diverseQueryRewriterService.rewriteAndRetrieve(query_text, {
+                        queryCount: dmqr_query_count || 3
+                    });
+
+                    generatedQueries = dmqrResult.generatedQueries;
+                    console.log(`[query_codebase_embeddings] Generated ${generatedQueries.length} queries:`, generatedQueries);
+                }
+
+                // Query embeddings for each generated query
+                for (const query of generatedQueries) {
+                    console.log(`[query_codebase_embeddings] Querying embeddings for: "${query}"`);
+
+                    const queryResults: CodeChunkResult[] = await embeddingService.retrieveSimilarCodeChunks(
+                        agent_id,
+                        query,
+                        top_k || 5,
+                        target_file_paths,
+                        exclude_chunk_types
+                    );
+
+                    // Add query source to metadata for tracking
+                    if (enable_dmqr && query !== query_text) {
+                        queryResults.forEach(result => {
+                            if (!result.metadata) result.metadata = {};
+                            result.metadata.dmqr_source_query = query;
+                        });
+                    }
+
+                    allResults.push(...queryResults);
+                }
+
+                // Remove duplicates and sort by score (highest first)
+                const uniqueResults = new Map<string, CodeChunkResult>();
+                allResults.forEach(result => {
+                    const key = `${result.file_path_relative}::${result.entity_name || 'unknown'}::${result.chunk_text}`;
+                    if (!uniqueResults.has(key) || result.score > uniqueResults.get(key)!.score) {
+                        uniqueResults.set(key, result);
+                    }
+                });
+
+                const finalResults = Array.from(uniqueResults.values())
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, top_k || 5);
+
+                if (finalResults.length === 0) {
+                    const message = formatSimpleMessage(
+                        `No similar code chunks found for query: "${query_text}"${enable_dmqr ? ` (searched with ${generatedQueries.length} diverse queries)` : ''} (after filtering).`,
+                        "Embedding Query Results"
+                    );
                     return { content: [{ type: 'text', text: message }] };
                 }
 
-                const resultMarkdown = results.map((res, index) => {
+                const resultMarkdown = finalResults.map((res, index) => {
                     const metadataLines = [
                         `- **File:** \`${res.file_path_relative}\``,
                         res.entity_name && `- **Entity:** \`${res.entity_name}\``,
                         res.metadata?.full_file_path && `- **Full Path:** \`${res.metadata.full_file_path}\``,
                         (res.metadata?.startLine && res.metadata?.endLine) && `- **Lines:** ${res.metadata.startLine}-${res.metadata.endLine}`,
-                        res.metadata?.type && `- **Chunk Type:** ${res.metadata.type}`
+                        res.metadata?.type && `- **Chunk Type:** ${res.metadata.type}`,
+                        enable_dmqr && res.metadata?.dmqr_source_query && res.metadata.dmqr_source_query !== query_text && `- **DMQR Source:** "${res.metadata.dmqr_source_query}"`
                     ].filter(Boolean).join('\n');
 
                     let contentBlock;
@@ -403,7 +469,11 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     return `### Result ${index + 1} (Score: ${res.score.toFixed(4)})\n${metadataLines}\n${contentBlock}`;
                 }).join('---\n');
 
-                const finalMarkdown = `## Similar Code Chunks for Query: "${query_text}" (Top ${results.length})\n\n${resultMarkdown}`;
+                const queryInfo = enable_dmqr
+                    ? ` (DMQR enabled: searched with ${generatedQueries.length} queries)`
+                    : '';
+
+                const finalMarkdown = `## Similar Code Chunks for Query: "${query_text}"${queryInfo} (Top ${finalResults.length})\n\n${resultMarkdown}`;
                 return { content: [{ type: 'text', text: finalMarkdown }] };
 
             } catch (error: any) {

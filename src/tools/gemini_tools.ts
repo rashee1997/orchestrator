@@ -6,7 +6,7 @@ import { GeminiIntegrationService } from '../database/services/GeminiIntegration
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatPlanGenerationResponseToMarkdown } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT, RAG_VERIFICATION_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
@@ -14,7 +14,6 @@ import { REFINEMENT_MODEL_NAME } from '../database/services/gemini-integration-m
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
-import { RagPromptTemplates } from './rag/rag_prompt_templates.js';
 import { randomUUID } from 'crypto';
 import { ConversationMessage, ConversationSession } from '../database/managers/ConversationHistoryManager.js';
 
@@ -403,7 +402,10 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             if (isContextProvided) {
                 const canonicalContextPart = (formatRetrievedContextForPrompt(finalContext)[0] as { text: string })?.text;
                 const answerToCheck = finalAnswerFromIteration || markdownOutput.split('### AI Answer:')[1];
-                const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({ originalQuery: query, contextString: canonicalContextPart, generatedAnswer: answerToCheck });
+                const verificationPrompt = RAG_VERIFICATION_PROMPT
+                    .replace('{originalQuery}', query)
+                    .replace('{contextString}', canonicalContextPart)
+                    .replace('{generatedAnswer}', answerToCheck);
                 const verificationResult = await geminiService.askGemini(verificationPrompt, model, "You are a precise fact-checker. Respond only with VERIFIED or HALLUCINATION_DETECTED followed by issues.");
                 const verificationText = verificationResult.content[0].text ?? "";
 

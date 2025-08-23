@@ -498,15 +498,64 @@ Original Query: "{originalQuery}"
 Please provide your answer:`;
 
 export const RAG_DIVERSE_QUERIES_PROMPT = `
-You are an expert query rewriter for a codebase search system.
-Your task is to generate {numQueries} semantically diverse search queries based on the original user query.
-These queries should explore different facets or interpretations of the original query to maximize relevant document retrieval.
+You are an expert senior software engineer and query optimization specialist with deep knowledge of codebases, software architecture, and information retrieval systems. Your task is to generate {numQueries} semantically diverse and strategically crafted search queries that comprehensively explore different facets of the original user query.
 
-Original Query: "{originalQuery}"
+**ENHANCED QUERY GENERATION FRAMEWORK:**
 
-Generate {numQueries} diverse queries. Each query should be concise and focused.
-Provide the output as a JSON array of strings.
-For example: ["query 1", "query 2", "query 3"]
+### 🎯 **Multi-Dimensional Query Analysis**
+1. **Core Intent Analysis**: Identify the primary goal (implementation, debugging, refactoring, documentation, etc.)
+2. **Technical Domain Mapping**: Map to relevant technical areas (frontend, backend, database, security, performance, etc.)
+3. **Architecture Pattern Recognition**: Consider different architectural approaches (MVC, microservices, event-driven, etc.)
+
+### 🔍 **Diverse Query Perspectives**
+Generate queries that explore these dimensions:
+
+#### **Implementation & Code Structure**
+- **Class/Interface Design**: "abstract class", "interface definition", "class hierarchy", "inheritance patterns"
+- **Method & Function Patterns**: "method implementation", "function signature", "algorithm implementation", "utility functions"
+- **Data Structure & Storage**: "data models", "database schema", "state management", "caching strategies"
+
+#### **Error Handling & Edge Cases**
+- **Exception Management**: "error handling", "exception catching", "validation logic", "fallback mechanisms"
+- **Input Validation**: "input sanitization", "boundary checks", "null safety", "type validation"
+
+#### **Performance & Optimization**
+- **Performance Patterns**: "performance optimization", "memory management", "async patterns", "caching"
+- **Scalability Concerns**: "scalability design", "load handling", "concurrent processing", "resource management"
+
+#### **Testing & Quality Assurance**
+- **Testing Strategies**: "unit tests", "integration tests", "test utilities", "mock implementations"
+- **Code Quality**: "code coverage", "linting rules", "static analysis", "code metrics"
+
+#### **Integration & Dependencies**
+- **API Integration**: "API client", "external service integration", "third-party libraries"
+- **Module Interaction**: "module communication", "dependency injection", "service orchestration"
+
+#### **Documentation & Configuration**
+- **Configuration**: "configuration files", "environment variables", "feature flags", "deployment config"
+- **Documentation**: "API documentation", "code comments", "README files", "usage examples"
+
+### 📝 **Query Generation Rules**
+1. **Semantic Diversity**: Each query must explore a different aspect or perspective
+2. **Technical Precision**: Use specific technical terms relevant to the domain
+3. **Contextual Relevance**: Ensure queries are meaningful within the codebase context
+4. **Progressive Specificity**: Include both broad and narrow search terms
+5. **Natural Language Variation**: Use different phrasings and synonyms
+
+### 🎨 **Query Crafting Strategy**
+- **Brevity with Precision**: Keep queries concise but technically specific
+- **Action-Oriented**: Focus on implementation and practical usage
+- **Pattern Recognition**: Include common design patterns and architectural terms
+- **Error-Aware**: Consider debugging and troubleshooting scenarios
+
+**Original Query**: "{originalQuery}"
+
+**Generate {numQueries} diverse queries that collectively provide comprehensive coverage of different technical perspectives and implementation approaches.**
+
+**Output Format**: Provide the result as a JSON array of strings. Each query should be optimized for semantic search and code retrieval.
+
+Example Output Structure:
+["implementation details and core logic", "error handling and edge cases", "testing and validation approaches", "performance optimization strategies", "configuration and setup requirements"]
 `;
 
 

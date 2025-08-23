@@ -2,7 +2,7 @@ import { MemoryManager } from '../../database/memory_manager.js';
 import { GeminiIntegrationService } from '../../database/services/GeminiIntegrationService.js';
 import { RetrievedCodeContext } from '../../database/services/CodebaseContextRetrieverService.js';
 import { ContextRetrievalOptions } from '../../database/services/CodebaseContextRetrieverService.js';
-import { RagPromptTemplates } from './rag_prompt_templates.js';
+import { RAG_ANALYSIS_PROMPT, RAG_ANALYSIS_SYSTEM_INSTRUCTION, RAG_ANSWER_PROMPT, RAG_VERIFICATION_PROMPT } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RagAnalysisResponse } from './rag_response_parser.js';
 import { RagResponseParser } from './rag_response_parser.js';
 import { DiverseQueryRewriterService } from './diverse_query_rewriter_service.js';
@@ -68,6 +68,56 @@ export class IterativeRagOrchestrator {
         this.diverseQueryRewriterService = diverseQueryRewriterService;
     }
 
+    /**
+     * Generates focus string based on focus area and analysis points.
+     * This logic was moved here from the deleted RagPromptTemplates.ts file.
+     * @param focusArea The focus area for the response
+     * @param analysisFocusPoints Specific aspects to focus on
+     * @returns The formatted focus string
+     */
+    private _generateFocusString(focusArea?: string, analysisFocusPoints?: string[]): string {
+        let focusString = "";
+        if (focusArea) {
+            if (analysisFocusPoints && analysisFocusPoints.length > 0) {
+                focusString = `Focus on the following aspects for your analysis and response:\n` + analysisFocusPoints.map((point: string, index: number) => `${index + 1}.  **${point}**`).join('\n');
+            } else {
+                switch (focusArea) {
+                    case "code_review":
+                        focusString = "Focus on all aspects including:\n1.  **Potential Bugs & Errors**\n2.  **Best Practices & Conventions**\n3.  **Performance**\n4.  **Security Vulnerabilities**\n5.  **Readability & Maintainability";
+                        break;
+                    case "code_explanation":
+                        focusString = "Focus on explaining the code clearly and concisely.";
+                        break;
+                    case "enhancement_suggestions":
+                        focusString = "Focus on suggesting improvements and enhancements.";
+                        break;
+                    case "bug_fixing":
+                        focusString = "Focus on identifying and suggesting fixes for bugs.";
+                        break;
+                    case "refactoring":
+                        focusString = "Focus on suggesting refactoring opportunities.";
+                        break;
+                    case "testing":
+                        focusString = "Focus on testing strategies and test case generation.";
+                        break;
+                    case "documentation":
+                        focusString = "Focus on generating or improving documentation.";
+                        break;
+                    case "code_modularization_orchestration":
+                        focusString = "Focus on modularity, architecture, and orchestration patterns.";
+                        break;
+                    default:
+                        focusString = "";
+                        break;
+                }
+            }
+            if (focusString) {
+                focusString = `--- Focus Area ---\n${focusString}\n\n`;
+            }
+        }
+        return focusString;
+    }
+
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
         const {
             agent_id,
@@ -114,7 +164,7 @@ export class IterativeRagOrchestrator {
             }
         };
 
-        const focusString = RagPromptTemplates.generateFocusString(focus_area, analysis_focus_points);
+        const focusString = this._generateFocusString(focus_area, analysis_focus_points);
         console.log(`[Iterative RAG] Starting iterative search for query: "${query}"`);
 
         let baseQueries: string[] = [query];
@@ -136,7 +186,6 @@ export class IterativeRagOrchestrator {
             }
         }
 
-        const totalMaxIterations = baseQueries.length * max_iterations;
         let totalIterationCount = 0;
 
         outerLoop: for (const baseQuery of baseQueries) {
@@ -146,7 +195,7 @@ export class IterativeRagOrchestrator {
             for (let i = 0; i < max_iterations; i++) {
                 totalIterationCount++;
                 searchMetrics.totalIterations = totalIterationCount;
-                console.log(`[Iterative RAG] Main Turn ${totalIterationCount}/${totalMaxIterations} (Query Cycle for: "${baseQuery.substring(0, 50)}...", Turn ${i + 1}/${max_iterations})`);
+                console.log(`[Iterative RAG] Main Turn ${totalIterationCount} (Query Cycle for: "${baseQuery.substring(0, 50)}...", Turn ${i + 1}/${max_iterations})`);
 
                 if (i > 0 && this.isQueryRepetitive(queryHistoryForThisCycle)) {
                     console.log(`[Iterative RAG] Detected repetitive query pattern in this cycle. Moving to next diverse query.`);
@@ -174,19 +223,18 @@ export class IterativeRagOrchestrator {
                 const formattedContextParts = formatContextForGemini(accumulatedContext);
                 const contextString = formattedContextParts[0].text || '';
 
-                const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
-                    originalQuery: query, // Always use the original query for the top-level goal
-                    currentTurn: totalIterationCount,
-                    maxIterations: totalMaxIterations.toString(),
-                    accumulatedContext: contextString,
-                    focusString,
-                    enableWebSearch: !!enable_web_search
-                });
+                const analysisPrompt = RAG_ANALYSIS_PROMPT
+                    .replace('{originalQuery}', query)
+                    .replace('{currentTurn}', String(totalIterationCount))
+                    .replace(/{maxIterations}/g, String(max_iterations))
+                    .replace('{accumulatedContext}', contextString)
+                    .replace('{focusString}', focusString)
+                    .replace('{enableWebSearch}', String(!!enable_web_search));
 
                 let analysisResult;
                 try {
                     analysisResult = await this.geminiService.askGemini(
-                        analysisPrompt, model, RagPromptTemplates.generateAnalysisSystemInstruction(), thinkingConfig
+                        analysisPrompt, model, RAG_ANALYSIS_SYSTEM_INSTRUCTION, thinkingConfig
                     );
                 } catch (error: any) {
                     console.error(`[Iterative RAG] Error during Gemini analysis:`, error);
@@ -206,7 +254,10 @@ export class IterativeRagOrchestrator {
 
                 if (parsedResponse.decision === "ANSWER") {
                     console.log(`[Iterative RAG] Decision is to ANSWER. Generating final response and concluding search.`);
-                    const answerPrompt = RagPromptTemplates.generateAnswerPrompt({ originalQuery: query, contextString, focusString });
+                    const answerPrompt = RAG_ANSWER_PROMPT
+                        .replace('{originalQuery}', query)
+                        .replace('{contextString}', contextString)
+                        .replace('{focusString}', focusString);
                     const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
                     finalAnswer = answerResult.content[0].text ?? "";
                     break outerLoop;
@@ -241,12 +292,15 @@ export class IterativeRagOrchestrator {
         if (!finalAnswer && accumulatedContext.length > 0) {
             console.log("[Iterative RAG] Search concluded without a direct ANSWER decision. Generating a final answer from all accumulated context.");
             const contextString = formatContextForGemini(accumulatedContext)[0].text || '';
-            const answerPrompt = RagPromptTemplates.generateAnswerPrompt({ originalQuery: query, contextString, focusString });
+            const answerPrompt = RAG_ANSWER_PROMPT
+                .replace('{originalQuery}', query)
+                .replace('{contextString}', contextString)
+                .replace('{focusString}', focusString);
             const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
             finalAnswer = answerResult.content[0].text ?? "Could not formulate a final answer based on the context.";
         }
 
-        if (!searchMetrics.earlyTerminationReason && totalIterationCount >= totalMaxIterations) {
+        if (!searchMetrics.earlyTerminationReason && totalIterationCount >= max_iterations) {
             searchMetrics.earlyTerminationReason = "Max iterations reached";
         }
 
@@ -263,21 +317,20 @@ export class IterativeRagOrchestrator {
         promptSent?: string
     ): Promise<RagAnalysisResponse | null> {
         console.log('[Iterative RAG] Re-analyzing context after web search.');
-        const analysisPrompt = RagPromptTemplates.generateAnalysisPrompt({
-            originalQuery: originalQuery,
-            currentTurn: -1,
-            maxIterations: '-1',
-            accumulatedContext: contextString,
-            focusString: focusString,
-            enableWebSearch: false
-        });
+        const analysisPrompt = RAG_ANALYSIS_PROMPT
+            .replace('{originalQuery}', originalQuery)
+            .replace('{currentTurn}', String(-1))
+            .replace('{maxIterations}', String(-1))
+            .replace('{accumulatedContext}', contextString)
+            .replace('{focusString}', focusString)
+            .replace('{enableWebSearch}', String(false));
 
         let analysisResult;
         try {
             analysisResult = await this.geminiService.askGemini(
                 analysisPrompt,
                 model,
-                RagPromptTemplates.generateAnalysisSystemInstruction(),
+                RAG_ANALYSIS_SYSTEM_INSTRUCTION,
                 thinkingConfig
             );
         } catch (error: any) {
@@ -299,11 +352,10 @@ export class IterativeRagOrchestrator {
     }): Promise<{ isHallucination: boolean; confidence: number; issues: string }> {
         const { originalQuery, contextString, generatedAnswer, model, threshold, thinkingConfig } = params;
 
-        const verificationPrompt = RagPromptTemplates.generateVerificationPrompt({
-            originalQuery,
-            contextString,
-            generatedAnswer
-        });
+        const verificationPrompt = RAG_VERIFICATION_PROMPT
+            .replace('{originalQuery}', originalQuery)
+            .replace('{contextString}', contextString)
+            .replace('{generatedAnswer}', generatedAnswer);
 
         let verificationResult;
         try {
