@@ -179,10 +179,12 @@ export class IterativeRagOrchestrator {
                 searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
                 console.log(`[Iterative RAG] DMQR generated ${baseQueries.length} queries: ${baseQueries.map(q => `"${q}"`).join(', ')}`);
+                console.log(`[Iterative RAG] DMQR Metadata - Query Count: ${dmqr_query_count}, Success: true, Generated Queries: ${baseQueries.length}`);
             } catch (error: any) {
                 console.error(`[Iterative RAG] DMQR failed, falling back to original query:`, error);
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = error.message || 'Unknown DMQR error';
+                console.log(`[Iterative RAG] DMQR Metadata - Query Count: ${dmqr_query_count}, Success: false, Error: ${searchMetrics.dmqr.error}`);
             }
         }
 
@@ -215,9 +217,16 @@ export class IterativeRagOrchestrator {
                 if (newContext.length > 0) {
                     accumulatedContext.push(...newContext);
                     searchMetrics.contextItemsAdded += newContext.length;
-                    console.log(`[Iterative RAG] Added ${newContext.length} new context items. Total unique context items: ${accumulatedContext.length}.`);
+                    console.log(`[Iterative RAG] Added ${newContext.length} new context items from query: "${currentSearchQuery}". Total unique context items: ${accumulatedContext.length}.`);
+                    console.log(`[Iterative RAG] Context Details - Query Type: ${baseQuery === currentSearchQuery ? 'Original/DMQR' : 'Refined'}, Items: ${newContext.map(ctx => `${ctx.type}:${ctx.entityName || 'Unknown'}`).join(', ')}`);
+
+                    // Track DMQR-specific context items
+                    if (enable_dmqr && baseQueries.includes(currentSearchQuery)) {
+                        searchMetrics.dmqr.contextItemsGenerated += newContext.length;
+                        console.log(`[Iterative RAG] DMQR Contribution - Query: "${currentSearchQuery}", Items Added: ${newContext.length}, Total DMQR Items: ${searchMetrics.dmqr.contextItemsGenerated}`);
+                    }
                 } else {
-                    console.log(`[Iterative RAG] No new unique context found for this query.`);
+                    console.log(`[Iterative RAG] No new unique context found for query: "${currentSearchQuery}".`);
                 }
 
                 const formattedContextParts = formatContextForGemini(accumulatedContext);
@@ -254,12 +263,14 @@ export class IterativeRagOrchestrator {
 
                 if (parsedResponse.decision === "ANSWER") {
                     console.log(`[Iterative RAG] Decision is to ANSWER. Generating final response and concluding search.`);
+                    console.log(`[Iterative RAG] Decision Details - Context Items Used: ${accumulatedContext.length}, Reasoning: ${parsedResponse.reasoning || 'N/A'}`);
                     const answerPrompt = RAG_ANSWER_PROMPT
                         .replace('{originalQuery}', query)
                         .replace('{contextString}', contextString)
                         .replace('{focusString}', focusString);
                     const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
                     finalAnswer = answerResult.content[0].text ?? "";
+                    console.log(`[Iterative RAG] Final Answer Generated - Length: ${finalAnswer.length} characters`);
                     break outerLoop;
                 }
 
@@ -291,6 +302,7 @@ export class IterativeRagOrchestrator {
 
         if (!finalAnswer && accumulatedContext.length > 0) {
             console.log("[Iterative RAG] Search concluded without a direct ANSWER decision. Generating a final answer from all accumulated context.");
+            console.log(`[Iterative RAG] Fallback Details - Total Context Items: ${accumulatedContext.length}, DMQR Items: ${searchMetrics.dmqr.contextItemsGenerated}`);
             const contextString = formatContextForGemini(accumulatedContext)[0].text || '';
             const answerPrompt = RAG_ANSWER_PROMPT
                 .replace('{originalQuery}', query)
@@ -298,6 +310,7 @@ export class IterativeRagOrchestrator {
                 .replace('{focusString}', focusString);
             const answerResult = await this.geminiService.askGemini(answerPrompt, model, "You are a helpful AI assistant providing accurate answers based on the given context.", thinkingConfig);
             finalAnswer = answerResult.content[0].text ?? "Could not formulate a final answer based on the context.";
+            console.log(`[Iterative RAG] Fallback Answer Generated - Length: ${finalAnswer.length} characters`);
         }
 
         if (!searchMetrics.earlyTerminationReason && totalIterationCount >= max_iterations) {
