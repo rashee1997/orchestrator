@@ -11,6 +11,8 @@ import { CodeChunkingService } from './embeddings/CodeChunkingService.js';
 import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRepository.js';
 import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
 import { DEFAULT_EMBEDDING_MODEL, VECTOR_FLOAT_SIZE } from '../../constants/embedding_constants.js';
+import { deduplicateContexts } from '../../utils/context_utils.js';
+import { RetrievedCodeContext } from './CodebaseContextRetrieverService.js';
 
 export class CodebaseEmbeddingService {
     public repository: CodebaseEmbeddingRepository;
@@ -57,9 +59,11 @@ export class CodebaseEmbeddingService {
             try {
                 await this.repository.bulkDeleteEmbeddings(embeddingIdsToDelete);
                 deletedCount = embeddingIdsToDelete.length;
+                console.log(`[CodebaseEmbeddingService] Cleaned up ${deletedCount} embeddings for ${filePaths.length} files.`);
             } catch (error) {
                 console.error(`Error bulk deleting embeddings:`, error);
-                // Return partial success
+                // Return partial success (0 deleted due to error)
+                deletedCount = 0;
             }
         }
 
@@ -208,7 +212,8 @@ export class CodebaseEmbeddingService {
                 // Perform deletions before new insertions
                 if (idsToDelete.length > 0) {
                     try {
-                        await this.repository.bulkDeleteEmbeddings(idsToDelete);
+                        const deletedCount = await this.repository.bulkDeleteEmbeddings(idsToDelete);
+                        console.log(`[CodebaseEmbeddingService] Deleted ${deletedCount} stale chunks from ${fileInfo.relativePath}`);
                     } catch (error) {
                         console.error(`Error deleting stale embeddings for ${fileInfo.relativePath}:`, error);
                     }
@@ -411,6 +416,7 @@ export class CodebaseEmbeddingService {
 
         let deletedEmbeddingsCount = result.deletedEmbeddings.length;
         if (staleFiles.length > 0) {
+            console.log(`[CodebaseEmbeddingService] Found ${staleFiles.length} stale files in DB to clean up...`);
             try {
                 const cleanupResult = await this.cleanUpEmbeddingsByFilePaths(
                     agentId,
@@ -460,20 +466,48 @@ export class CodebaseEmbeddingService {
         }
 
         try {
-            const chunkResults = await this.repository.findSimilarEmbeddingsWithMetadata(
+            // Step 1: Retrieve initial set of relevant chunks
+            const initialChunks = await this.repository.findSimilarEmbeddingsWithMetadata(
                 queryEmbedding.vector,
-                queryText,
-                topK,
+                queryText, // Pass query text for potential hybrid search in repo
+                topK * 2, // Retrieve more initial chunks to find unique parents
                 agentId,
                 targetFilePaths,
                 exclude_chunk_types
             );
 
-            if (chunkResults.length === 0) {
+            if (initialChunks.length === 0) {
                 return [];
             }
 
-            return chunkResults.map(chunk => ({
+            // Step 2: Implement Parent Document Retrieval logic
+            const parentIds = new Set<string>();
+            initialChunks.forEach(chunk => {
+                if (chunk.parent_embedding_id) {
+                    parentIds.add(chunk.parent_embedding_id);
+                }
+            });
+
+            let parentChunks: CodebaseEmbeddingRecord[] = [];
+            if (parentIds.size > 0) {
+                parentChunks = await this.repository.getEmbeddingsByIds(Array.from(parentIds));
+            }
+
+            // Step 3: Combine and deduplicate results
+            // Give parent chunks a slight score boost to prioritize them
+            const combinedResults = [
+                ...initialChunks,
+                ...parentChunks.map(p => ({ ...p, similarity: 0.9 })) // Assign high similarity
+            ];
+
+            const uniqueResults = Array.from(new Map(combinedResults.map(item => [item.embedding_id, item])).values());
+
+            // Re-rank based on similarity score
+            uniqueResults.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0));
+
+            const finalResults = uniqueResults.slice(0, topK);
+
+            return finalResults.map(chunk => ({
                 chunk_text: chunk.chunk_text,
                 ai_summary_text: chunk.ai_summary_text,
                 file_path_relative: chunk.file_path_relative,

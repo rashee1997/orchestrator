@@ -11,7 +11,7 @@ import {
 import { RagAnalysisResponse } from './rag_response_parser.js';
 import { RagResponseParser } from './rag_response_parser.js';
 import { DiverseQueryRewriterService } from './diverse_query_rewriter_service.js';
-import { callTavilyApi } from '../../integrations/tavily.js';
+import { callTavilyApi, WebSearchResult } from '../../integrations/tavily.js';
 import {
     formatRetrievedContextForPrompt as formatContextForGemini
 } from '../../database/services/gemini-integration-modules/GeminiContextFormatter.js';
@@ -37,7 +37,8 @@ export interface IterativeRagResult {
         contextItemsAdded: number;
         webSearchesPerformed: number;
         hallucinationChecksPerformed: number;
-        earlyTerminationReason?: string;
+        selfCorrectionLoops: number;
+        terminationReason: string;
         dmqr: {
             enabled: boolean;
             queryCount?: number;
@@ -53,9 +54,11 @@ export interface IterativeRagResult {
             newContextCount: number;
             decision: string;
             reasoning: string;
+            type: 'initial' | 'iterative' | 'self-correction';
         }[];
     };
 }
+
 
 /**
  * Arguments accepted by the orchestrator.
@@ -86,15 +89,6 @@ export interface IterativeRagArgs {
 
 /**
  * The orchestrator that drives the multi‑turn, intelligent RAG loop.
- *
- * Key improvements over the previous version:
- *   • Deduplication of context after every turn (using `deduplicateContexts`).
- *   • Rich per‑turn logging (query, decision, new‑context count, reasoning).
- *   • More tolerant DMQR handling – even if it fails we still continue gracefully.
- *   • Automatic query expansion when the LLM signals “SEARCH_AGAIN” but the new query
- *     is too similar to a previous one.
- *   • Robust early‑stop handling with clear metric.
- *   • Optional hallucination verification after the final answer.
  */
 export class IterativeRagOrchestrator {
     private memoryManagerInstance: MemoryManager;
@@ -112,7 +106,7 @@ export class IterativeRagOrchestrator {
     }
 
     /**
-     * Build the optional “focus” block that is injected into the RAG prompts.
+     * Build the optional "focus" block that is injected into the RAG prompts.
      */
     private _generateFocusString(focusArea?: string, analysisFocusPoints?: string[]): string {
         let focusString = '';
@@ -165,8 +159,110 @@ export class IterativeRagOrchestrator {
     }
 
     /**
-     * Main entry‑point – runs the iterative search and returns the result.
+     * Create an intelligent context flow that prioritizes recent and relevant information.
+     * This addresses the "context rot" problem by organizing context logically.
      */
+    private _createContextFlow(
+        accumulatedContext: RetrievedCodeContext[],
+        currentQuery: string,
+        recentItemsCount: number
+    ): RetrievedCodeContext[] {
+        if (accumulatedContext.length === 0) return [];
+
+        // Separate recent context from older context
+        const recentContext = accumulatedContext.slice(-recentItemsCount);
+        const olderContext = accumulatedContext.slice(0, -recentItemsCount);
+
+        // Sort contexts by relevance and type priority
+        const sortByPriority = (contexts: RetrievedCodeContext[]): RetrievedCodeContext[] => {
+            const typePriority = {
+                'function': 5,
+                'method': 4,
+                'class': 3,
+                'file': 2,
+                'documentation': 1
+            };
+
+            return contexts.sort((a, b) => {
+                // Higher relevance score gets priority
+                const aScore = a.relevanceScore || 0;
+                const bScore = b.relevanceScore || 0;
+
+                if (Math.abs(bScore - aScore) > 0.1) {
+                    return bScore - aScore;
+                }
+
+                // Then by type priority
+                const aPriority = typePriority[a.type as keyof typeof typePriority] || 0;
+                const bPriority = typePriority[b.type as keyof typeof typePriority] || 0;
+
+                return bPriority - aPriority;
+            });
+        };
+
+        // Process recent context (highest priority)
+        const prioritizedRecent = sortByPriority(recentContext);
+
+        // Process older context with lower priority and potential summarization
+        let processedOlder = olderContext;
+        if (olderContext.length > 10) {
+            // Keep only high-relevance older items
+            processedOlder = olderContext.filter(ctx => (ctx.relevanceScore || 0) >= 0.8);
+            if (processedOlder.length > 5) {
+                processedOlder = processedOlder.slice(0, 5); // Limit older context
+            }
+        }
+
+        // Combine with recent context first, then older context
+        const contextFlow = [
+            ...prioritizedRecent,
+            ...processedOlder
+        ];
+
+        // Final deduplication
+        const uniqueContexts = Array.from(
+            new Map(contextFlow.map(item => [`${item.sourcePath}#${item.entityName}`, item])).values()
+        );
+
+        return uniqueContexts;
+    }
+
+    private async _selfCorrectQuery(
+        originalGoal: string,
+        failedQuery: string,
+        accumulatedContext: RetrievedCodeContext[],
+        model?: string
+    ): Promise<string> {
+        console.log(`[Self-Correction] Reformulating failed query: "${failedQuery}"`);
+        const contextSummary = accumulatedContext
+            .slice(-5) // Use most recent context
+            .map(c => ` - [${c.type}] ${c.sourcePath} (Entity: ${c.entityName || 'N/A'})`)
+            .join('\n');
+
+        const correctionPrompt = `You are a search expert. A previous search query failed to find any new information. Your task is to reformulate the query to better achieve the original goal.
+Consider the context found so far and try a different angle. Be more specific, more general, or use different keywords as appropriate.
+
+Original Goal: "${originalGoal}"
+Failed Query: "${failedQuery}"
+Context Found So Far:
+${contextSummary || "No context found yet."}
+
+New, improved search query:`;
+
+        try {
+            const result = await this.geminiService.askGemini(correctionPrompt, model || 'gemini-2.5-flash');
+            const newQuery = result.content[0].text?.trim();
+            if (newQuery && newQuery !== failedQuery) {
+                console.log(`[Self-Correction] New query: "${newQuery}"`);
+                return newQuery;
+            }
+        } catch (error) {
+            console.error("[Self-Correction] Failed to get corrected query from AI:", error);
+        }
+        // Fallback if AI fails or returns the same query
+        return `${failedQuery} details`;
+    }
+
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
         const {
             agent_id,
@@ -181,10 +277,6 @@ export class IterativeRagOrchestrator {
             tavily_search_depth = 'basic',
             tavily_max_results = 5,
             tavily_include_raw_content = false,
-            tavily_include_images = false,
-            tavily_include_image_descriptions = false,
-            tavily_time_period,
-            tavily_topic,
             thinkingConfig,
             enable_dmqr,
             dmqr_query_count
@@ -192,21 +284,18 @@ export class IterativeRagOrchestrator {
 
         const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
 
-        // --------------------------------------------------------------------
-        // State that survives across all turns
-        // --------------------------------------------------------------------
         let accumulatedContext: RetrievedCodeContext[] = [];
-        const processedEntities = new Set<string>(); // deduplication key: `${sourcePath}::${entityName}`
         const webSearchSources: { title: string; url: string }[] = [];
         const decisionLog: RagAnalysisResponse[] = [];
+        const queryHistory = new Set<string>();
 
-        // Metrics & turn‑by‑turn log
         const searchMetrics = {
             totalIterations: 0,
             contextItemsAdded: 0,
             webSearchesPerformed: 0,
             hallucinationChecksPerformed: 0,
-            earlyTerminationReason: undefined as string | undefined,
+            selfCorrectionLoops: 0,
+            terminationReason: "In progress",
             dmqr: {
                 enabled: !!enable_dmqr,
                 queryCount: dmqr_query_count,
@@ -221,407 +310,143 @@ export class IterativeRagOrchestrator {
                 newContextCount: number;
                 decision: string;
                 reasoning: string;
+                type: 'initial' | 'iterative' | 'self-correction';
             }[]
         };
 
         const focusString = this._generateFocusString(focus_area, analysis_focus_points);
         console.log(`[Iterative RAG] Starting search for query: "${query}"`);
 
-        // --------------------------------------------------------------------
-        // 1️⃣  Prepare the list of base queries (original +  DMQR)
-        // --------------------------------------------------------------------
         let baseQueries: string[] = [query];
-
         if (enable_dmqr) {
             console.log('[Iterative RAG] DMQR enabled – generating diverse queries...');
             try {
-                const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
-                    queryCount: dmqr_query_count
-                });
+                const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, { queryCount: dmqr_query_count });
                 baseQueries = dmqrResult.generatedQueries;
                 searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
                 console.log(`[Iterative RAG] DMQR produced ${baseQueries.length} queries.`);
             } catch (e: any) {
-                console.error('[Iterative RAG] DMQR failed – falling back to original query.', e);
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = e.message ?? 'unknown';
                 baseQueries = [query];
             }
         }
 
-        // --------------------------------------------------------------------
-        // 2️⃣  Outer loop – iterate over each base query (original + DMQR)
-        // --------------------------------------------------------------------
-        let globalTurn = 0;
-        outer: for (const baseQuery of baseQueries) {
-            let currentQuery = baseQuery;
-            const queryHistory = [baseQuery === query ? 'original' : 'dmqr']; // track for repetition detection
+        let currentQueries = [...baseQueries];
+        let turn = 0;
+        let stabilityCounter = 0; // Counts consecutive turns with no new context
 
-            // ----------------------------------------------------------------
-            // 2️⃣️⃣  Inner loop – up to max_iterations per base query
-            // ----------------------------------------------------------------
-            for (let i = 0; i < max_iterations; i++) {
-                globalTurn++;
-                searchMetrics.totalIterations = globalTurn;
+        while (turn < max_iterations) {
+            turn++;
+            searchMetrics.totalIterations = turn;
 
-                console.log(`[Iterative RAG] Turn ${globalTurn} – Query: "${currentQuery}"`);
+            const turnQuery = currentQueries.shift();
+            if (!turnQuery) {
+                searchMetrics.terminationReason = "Exhausted all queries.";
+                break;
+            }
 
-                // ------------------------------------------------------------
-                // Retrieve context for the current query
-                // ------------------------------------------------------------
-                const rawContext = await contextRetriever.retrieveContextForPrompt(
-                    agent_id,
-                    currentQuery,
-                    context_options || {}
-                );
+            if (queryHistory.has(turnQuery)) {
+                console.log(`[Iterative RAG] Skipping duplicate query: "${turnQuery}"`);
+                continue;
+            }
+            queryHistory.add(turnQuery);
 
-                // Filter out already‑seen entities
-                const newContext = rawContext.filter(ctx => {
-                    const key = `${ctx.sourcePath}::${ctx.entityName ?? ''}`;
-                    if (!processedEntities.has(key)) {
-                        processedEntities.add(key);
-                        return true;
-                    }
-                    return false;
-                });
+            const isInitialTurn = baseQueries.includes(turnQuery);
+            console.log(`[Iterative RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
 
-                // Deduplicate across the whole accumulated set (covers edge‑cases)
-                const deduped = deduplicateContexts([...accumulatedContext, ...newContext]);
-                const addedNow = deduped.length - accumulatedContext.length;
-                accumulatedContext = rawContext; // update after deduplication
-                accumulatedContext = deduped;
+            const contextBefore = accumulatedContext.length;
+            const rawContext = await contextRetriever.retrieveContextForPrompt(agent_id, turnQuery, context_options || {});
+            accumulatedContext = deduplicateContexts([...accumulatedContext, ...rawContext]);
+            const addedNow = accumulatedContext.length - contextBefore;
+            searchMetrics.contextItemsAdded += addedNow;
 
-                // Update DMQR metric if applicable
-                if (searchMetrics.dmqr.enabled && baseQueries.includes(currentQuery)) {
-                    searchMetrics.dmqr.contextItemsGenerated += addedNow;
+            // Self-correction logic
+            if (addedNow === 0 && !isInitialTurn) {
+                stabilityCounter++;
+                if (stabilityCounter >= 2) {
+                    searchMetrics.terminationReason = "Context stable, no new information found.";
+                    console.log(`[Iterative RAG] Context has been stable for ${stabilityCounter} turns. Terminating search.`);
+                    break;
                 }
 
-                // Record per‑turn metrics
-                searchMetrics.turnLog.push({
-                    turn: globalTurn,
-                    query: currentQuery,
-                    newContextCount: addedNow,
-                    decision: '',
-                    reasoning: ''
-                });
+                searchMetrics.selfCorrectionLoops++;
+                const correctedQuery = await this._selfCorrectQuery(query, turnQuery, accumulatedContext, model);
+                // Add corrected query to the front of the queue
+                if (correctedQuery) currentQueries.unshift(correctedQuery);
 
-                console.log(`[Iterative RAG] Added ${addedNow} new context items (total unique: ${accumulatedContext.length}).`);
+                searchMetrics.turnLog.push({ turn, query: turnQuery, newContextCount: 0, decision: "SELF_CORRECT", reasoning: "No new context found, reformulating query.", type: 'self-correction' });
+                continue; // Skip analysis for this turn and proceed with corrected query
+            } else {
+                stabilityCounter = 0; // Reset stability counter if we find new context
+            }
 
-                // ------------------------------------------------------------
-                // Build the analysis prompt and ask Gemini
-                // ------------------------------------------------------------
-                const formattedContext = formatContextForGemini(accumulatedContext)[0].text || '';
-                const analysisPrompt = RAG_ANALYSIS_PROMPT
+            // Create context flow: recent/relevant first, then summarized older context
+            const contextFlow = this._createContextFlow(accumulatedContext, turnQuery, addedNow);
+            const formattedContext = formatContextForGemini(contextFlow)[0].text || '';
+            const analysisPrompt = RAG_ANALYSIS_PROMPT
+                .replace('{originalQuery}', query)
+                .replace('{currentTurn}', String(turn))
+                .replace('{maxIterations}', String(max_iterations))
+                .replace('{accumulatedContext}', formattedContext)
+                .replace('{focusString}', focusString);
+
+            let analysisResult;
+            try {
+                analysisResult = await this.geminiService.askGemini(analysisPrompt, model, RAG_ANALYSIS_SYSTEM_INSTRUCTION, thinkingConfig);
+            } catch (e: any) {
+                searchMetrics.terminationReason = `Gemini analysis error: ${e.message}`;
+                break;
+            }
+
+            const parsed = RagResponseParser.parseAnalysisResponse(analysisResult.content[0].text ?? '');
+            if (!parsed) {
+                searchMetrics.terminationReason = 'Parsing failure';
+                break;
+            }
+            decisionLog.push(parsed);
+            searchMetrics.turnLog.push({ turn, query: turnQuery, newContextCount: addedNow, decision: parsed.decision, reasoning: parsed.reasoning, type: isInitialTurn ? 'initial' : 'iterative' });
+
+            if (parsed.decision === 'ANSWER') {
+                searchMetrics.terminationReason = "ANSWER decision reached.";
+                console.log('[Iterative RAG] Decision: ANSWER – generating final answer.');
+                const answerPrompt = RAG_ANSWER_PROMPT
                     .replace('{originalQuery}', query)
-                    .replace('{currentTurn}', String(globalTurn))
-                    .replace('{maxIterations}', String(max_iterations))
-                    .replace('{accumulatedContext}', formattedContext)
-                    .replace('{focusString}', focusString)
-                    .replace('{enableWebSearch}', String(!!enable_web_search));
-
-                let analysisResult;
+                    .replace('{contextString}', formattedContext)
+                    .replace('{focusString}', focusString);
+                const answerResult = await this.geminiService.askGemini(answerPrompt, model, 'You are a helpful AI assistant providing accurate answers based on the given context.');
+                return { accumulatedContext, webSearchSources, finalAnswer: answerResult.content[0].text ?? '', decisionLog, searchMetrics };
+            } else if (parsed.decision === 'SEARCH_AGAIN' && parsed.nextCodebaseQuery) {
+                currentQueries.push(parsed.nextCodebaseQuery);
+            } else if (parsed.decision === 'SEARCH_WEB' && enable_web_search && parsed.nextWebQuery) {
+                searchMetrics.webSearchesPerformed++;
                 try {
-                    analysisResult = await this.geminiService.askGemini(
-                        analysisPrompt,
-                        model,
-                        RAG_ANALYSIS_SYSTEM_INSTRUCTION,
-                        thinkingConfig
-                    );
+                    const webResults = await callTavilyApi(parsed.nextWebQuery, { search_depth: tavily_search_depth, max_results: tavily_max_results, include_raw_content: tavily_include_raw_content });
+                    webResults.forEach((r: WebSearchResult) => {
+                        webSearchSources.push({ title: r.title, url: r.url });
+                        accumulatedContext.push({ type: 'documentation', sourcePath: r.url, entityName: r.title, content: r.content, relevanceScore: 0.95 });
+                    });
                 } catch (e: any) {
-                    console.error('[Iterative RAG] Gemini analysis failed – aborting.', e);
-                    searchMetrics.earlyTerminationReason = `Gemini analysis error: ${e.message}`;
-                    break outer;
+                    console.error('[Iterative RAG] Web search failed:', e);
                 }
+            }
+        }
 
-                const rawResponse = analysisResult.content[0].text ?? '';
-                const parsed = RagResponseParser.parseAnalysisResponse(rawResponse, formattedContext, analysisPrompt);
-                if (!parsed) {
-                    console.warn('[Iterative RAG] Unable to parse Gemini response – terminating.');
-                    searchMetrics.earlyTerminationReason = 'Parsing failure';
-                    break outer;
-                }
-                decisionLog.push(parsed);
-                // Update turn log with decision info
-                const turnLogEntry = searchMetrics.turnLog[searchMetrics.turnLog.length - 1];
-                turnLogEntry.decision = parsed.decision;
-                turnLogEntry.reasoning = parsed.reasoning;
+        if (searchMetrics.terminationReason === "In progress") {
+            searchMetrics.terminationReason = "Max iterations reached.";
+        }
 
-                // ------------------------------------------------------------
-                // React to the decision
-                // ------------------------------------------------------------
-                switch (parsed.decision) {
-                    case 'ANSWER':
-                        console.log('[Iterative RAG] // Decision: ANSWER – generating final answer.');
-                        const answerPrompt = RAG_ANSWER_PROMPT
-                            .replace('{originalQuery}', query)
-                            .replace('{contextString}', formattedContext)
-                            .replace('{focusString}', focusString);
-                        const answerResult = await this.geminiService.askGemini(
-                            answerPrompt,
-                            model,
-                            'You are a helpful AI assistant providing accurate answers based on the given context.',
-                            thinkingConfig
-                        );
-                        const finalAnswer = answerResult.content[0].text ?? '';
-                        // Optional hallucination verification
-                        if (hallucination_check_threshold > 0) {
-                            const hallucCheck = await this._performHallucinationCheck({
-                                originalQuery: query,
-                                contextString: formattedContext,
-                                generatedAnswer: finalAnswer,
-                                model,
-                                threshold: hallucination_check_threshold,
-                                thinkingConfig
-                            });
-                            if (hallucCheck.isHallucination) {
-                                console.warn('[Iterative RAG] Hallucination detected – appending warning.');
-                                const warning = `**Warning:** Possible hallucination detected. Issues: ${hallucCheck.issues}`;
-                                return {
-                                    accumulatedContext,
-                                    webSearchSources,
-                                    finalAnswer: `${finalAnswer}\n\n${'${warning}'}`,
-                                    decisionLog,
-                                    searchMetrics
-                                };
-                            }
-                        }
-                        return {
-                            accumulatedContext,
-                            webSearchSources,
-                            finalAnswer,
-                            decisionLog,
-                            searchMetrics
-                        };
-
-                    case 'SEARCH_AGAIN':
-                        if (!parsed.nextCodebaseQuery) {
-                            console.warn('[Iterative RAG] SEARCH_AGAIN without a next query – terminating.');
-                            searchMetrics.earlyTerminationReason = 'Missing nextCodebaseQuery';
-                            break outer;
-                        }
-                        // Detect repetitive queries and expand if needed
-                        if (this.isQueryRepetitive([...queryHistory, parsed.nextCodebaseQuery])) {
-                            console.log('[Iterative RAG] Repetitive query detected – attempting expansion.');
-                            const expanded = await this._expandQuery(
-                                parsed.nextCodebaseQuery,
-                                accumulatedContext,
-                                model,
-                                thinkingConfig
-                            );
-                            currentQuery = expanded;
-                        } else {
-                            currentQuery = parsed.nextCodebaseQuery;
-                        }
-                        queryHistory.push(currentQuery);
-                        break;
-
-                    case 'SEARCH_WEB':
-                        if (!enable_web_search) {
-                            console.warn('[Iterative RAG] Web search requested but disabled – ignoring.');
-                            break;
-                        }
-                        if (!parsed.nextWebQuery) {
-                            console.warn('[Iterative RAG] SEARCH_WEB without query – terminating.');
-                            searchMetrics.earlyTerminationReason = 'Missing nextWebQuery';
-                            break outer;
-                        }
-                        searchMetrics.webSearchesPerformed++;
-                        try {
-                            const webResults = await callTavilyApi(parsed.nextWebQuery, {
-                                search_depth: tavily_search_depth,
-                                max_results: tavily_max_results,
-                                include_raw_content: tavily_include_raw_content,
-                                include_images: tavily_include_images,
-                                include_image_descriptions: tavily_include_image_descriptions,
-                                time_period: tavily_time_period,
-                                topic: tavily_topic
-                            });
-                            for (const r of webResults) {
-                                webSearchSources.push({ title: r.title, url: r.url });
-                                accumulatedContext.push({
-                                    type: 'documentation',
-                                    sourcePath: r.url,
-                                    entityName: r.title,
-                                    content: r.content,
-                                    relevanceScore: 0.95
-                                });
-                            }
-                        } catch (e: any) {
-                            console.error('[Iterative RAG] Web search failed – continuing without web results.', e);
-                        }
-                        // After web search we stay on the same code query (no change)
-                        break;
-
-                    default:
-                        console.warn(`[Iterative RAG] Unknown decision "${parsed.decision}" – terminating.`);
-                        searchMetrics.earlyTerminationReason = `Unknown decision ${parsed.decision}`;
-                        break outer;
-                }
-            } // end inner loop
-        } // end outer loop
-
-        // --------------------------------------------------------------------
-        // Fallback – we never got an explicit ANSWER decision.
-        // --------------------------------------------------------------------
-        console.log('[Iterative RAG] No explicit ANSWER decision – generating fallback answer from accumulated context.');
-        const fallbackContext = formatContextForGemini(accumulatedContext)[0].text || '';
+        console.log('[Iterative RAG] Max iterations reached or terminated early. Generating final answer from accumulated context.');
+        // Use the same context flow logic for final answer generation
+        const finalContextFlow = this._createContextFlow(accumulatedContext, query, 0);
+        const fallbackContext = formatContextForGemini(finalContextFlow)[0].text || '';
         const fallbackPrompt = RAG_ANSWER_PROMPT
             .replace('{originalQuery}', query)
             .replace('{contextString}', fallbackContext)
             .replace('{focusString}', focusString);
-        const fallbackResult = await this.geminiService.askGemini(
-            fallbackPrompt,
-            model,
-            'You are a helpful AI assistant providing accurate answers based on the given context.',
-            thinkingConfig
-        );
-        const fallbackAnswer = fallbackResult.content[0].text ?? 'Unable to formulate an answer.';
+        const fallbackResult = await this.geminiService.askGemini(fallbackPrompt, model, 'You are a helpful AI assistant providing accurate answers based on the given context.');
 
-        // Optional hallucination verification on fallback answer
-        if (hallucination_check_threshold > 0) {
-            const hallucCheck = await this._performHallucinationCheck({
-                originalQuery: query,
-                contextString: fallbackContext,
-                generatedAnswer: fallbackAnswer,
-                model,
-                threshold: hallucination_check_threshold,
-                thinkingConfig
-            });
-            if (hallucCheck.isHallucination) {
-                console.warn('[Iterative RAG] Hallucination detected on fallback answer.');
-                return {
-                    accumulatedContext,
-                    webSearchSources,
-                    finalAnswer: `${fallbackAnswer}\n\n**Warning:** Possible hallucination detected. Issues: ${hallucCheck.issues}`,
-                    decisionLog,
-                    searchMetrics
-                };
-            }
-        }
-
-        // Record early‑termination reason if we fell out of the loop without ANSWER
-        if (!searchMetrics.earlyTerminationReason) {
-            searchMetrics.earlyTerminationReason = 'Max iterations reached without ANSWER decision';
-        }
-
-        return {
-            accumulatedContext,
-            webSearchSources,
-            finalAnswer: fallbackAnswer,
-            decisionLog,
-            searchMetrics
-        };
-    }
-
-    /**
-     * Helper – expands a query using Gemini when the next query is too similar
-     * to a previously seen one.
-     */
-    private async _expandQuery(
-        originalQuery: string,
-        accumulatedContext: RetrievedCodeContext[],
-        model?: string,
-        thinkingConfig?: any
-    ): Promise<string> {
-        if (accumulatedContext.length === 0) return originalQuery;
-
-        const contextSnippet = accumulatedContext
-            .slice(0, 5)
-            .map(c => `${c.type}: ${c.entityName || 'unknown'} – ${c.content?.substring(0, 80)}...`)
-            .join('\n');
-
-        const expansionPrompt = `Based on the following short context, rewrite or broaden the original query so that it can retrieve additional relevant information.
-
-Original query: "${originalQuery}"
-Context snippet:
-${contextSnippet}
-
-Return ONLY the new query string, no explanation.`;
-
-        try {
-            const result = await this.geminiService.askGemini(
-                expansionPrompt,
-                model,
-                'You are a query expansion specialist. Return only the expanded query.',
-                thinkingConfig
-            );
-            const newQuery = result.content[0].text?.trim();
-            return newQuery && newQuery !== originalQuery ? newQuery : originalQuery;
-        } catch (e: any) {
-            console.error('[Iterative RAG] Query expansion failed – using original query.', e);
-            return originalQuery;
-        }
-    }
-
-    /**
-     // Perform hallucination verification after an answer is generated.
-     */
-    private async _performHallucinationCheck(params: {
-        originalQuery: string;
-        contextString: string;
-        generatedAnswer: string;
-        model?: string;
-        threshold: number;
-        thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' };
-    }): Promise<{ isHallucination: boolean; confidence: number; issues: string }> {
-        const { originalQuery, contextString, generatedAnswer, model, threshold, thinkingConfig } = params;
-
-        const verificationPrompt = RAG_VERIFICATION_PROMPT
-            .replace('{originalQuery}', originalQuery)
-            .replace('{contextString}', contextString)
-            .replace('{generatedAnswer}', generatedAnswer);
-
-        let verificationResult;
-        try {
-            verificationResult = await this.geminiService.askGemini(
-                verificationPrompt,
-                model,
-                'You are a precise fact‑checker. Respond ONLY with VERIFIED or HALLUCINATION_DETECTED followed by issues.',
-                thinkingConfig
-            );
-        } catch (e: any) {
-            console.error('[Iterative RAG] Hallucination check failed.', e);
-            return {
-                isHallucination: false,
-                confidence: 0,
-                issues: `Verification failed: ${e.message}`
-            };
-        }
-
-        const text = verificationResult.content[0].text ?? '';
-        const isHallucination = text.includes('HALLUCINATION_DETECTED');
-        return {
-            isHallucination,
-            confidence: isHallucination ? 0.9 : 0.1,
-            issues: isHallucination ? text.replace('HALLUCINATION_DETECTED', '').trim() : 'No hallucination detected'
-        };
-    }
-
-    /**
-     * Detect whether the query history contains a highly similar repeat.
-     */
-    private isQueryRepetitive(queryHistory: string[]): boolean {
-        if (queryHistory.length < 2) return false;
-        const last = queryHistory[queryHistory.length - 1];
-        for (let i = 0; i < queryHistory.length - 1; i++) {
-            if (this.calculateSimilarity(last, queryHistory[i]) > 0.9) return true;
-        }
-        return false;
-    }
-
-    /**
-     * Simple Jaccard‑style similarity – sufficient for repetition detection.
-     */
-    private calculateSimilarity(a: string, b: string): number {
-        const setA = this.tokenSet(a);
-        const setB = this.tokenSet(b);
-        const intersection = new Set([...setA].filter(x => setB.has(x)));
-        const union = new Set([...setA, ...setB]);
-        return union.size === 0 ? 0 : intersection.size / union.size;
-    }
-
-    private tokenSet(text: string): Set<string> {
-        return new Set(text.toLowerCase().split(/\s+/).filter(Boolean));
+        return { accumulatedContext, webSearchSources, finalAnswer: fallbackResult.content[0].text ?? 'Unable to formulate an answer.', decisionLog, searchMetrics };
     }
 }

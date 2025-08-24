@@ -3,6 +3,7 @@ import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { PlanTaskManager } from '../managers/PlanTaskManager.js';
+import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
 
 export interface ContextRetrievalOptions {
     topKEmbeddings?: number;
@@ -62,12 +63,15 @@ export class CodebaseContextRetrieverService {
         this.contextCache = new Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>();
         this.cacheTTL = 5 * 60 * 1000; // 5 minutes
         this.maxCacheSize = 1000;
-        this.retrievalTimeout = 100000; // 30 seconds
+        this.retrievalTimeout = 100000; // 100 seconds
     }
 
     private _generateCacheKey(agentId: string, prompt: string, options: ContextRetrievalOptions): string {
+        // Enhanced cache key to include all relevant options
         const optionsStr = JSON.stringify({
             topKEmbeddings: options.topKEmbeddings,
+            kgQueryDepth: options.kgQueryDepth,
+            topKKgResults: options.topKKgResults,
             targetFilePaths: options.targetFilePaths?.sort(),
             embeddingScoreThreshold: options.embeddingScoreThreshold,
             useHybridSearch: options.useHybridSearch,
@@ -202,34 +206,34 @@ export class CodebaseContextRetrieverService {
         }
 
         // Step 3: Reciprocal Rank Fusion to combine results robustly
-        console.log(`[Context Retrieval] Fusing results: ${semanticResults.length} semantic, ${kgResults.length} KG, ${docResults.length} docs, ${taskLogResults.length} logs.`);
+        console.log(`[Context Retrieval] Fusing results: ${directEntityResults.length} direct, ${semanticResults.length} semantic, ${kgResults.length} KG, ${docResults.length} docs, ${taskLogResults.length} logs.`);
         const fusedResults = this.reciprocalRankFusion([directEntityResults, semanticResults, kgResults, docResults, taskLogResults]);
 
-        // Step 4: Cross-Referencing to enrich the context
-        let enrichedResults: RetrievedCodeContext[] = [];
-        try {
-            enrichedResults = await this.performCrossReferencing(agentId, fusedResults);
-        } catch (error) {
-            console.error('Error during cross-referencing:', error);
-            enrichedResults = fusedResults;
-        }
-
-        // Step 5: AI-powered Filtering for relevance
+        // Step 4: AI-powered Filtering for relevance
         let filteredResults: RetrievedCodeContext[] = [];
         try {
-            filteredResults = await this.filterWithAI(prompt, enrichedResults, options);
+            filteredResults = await this.filterWithAI(prompt, fusedResults, options);
         } catch (error) {
             console.error('Error during AI filtering:', error);
-            filteredResults = enrichedResults.slice(0, options.topKEmbeddings ?? 10);
+            filteredResults = fusedResults.slice(0, (options.topKEmbeddings ?? 10) + (options.topKKgResults ?? 5));
+        }
+
+        // Step 5: Self-Correction: Identify and fill context gaps
+        let gapFilledResults: RetrievedCodeContext[] = [];
+        try {
+            gapFilledResults = await this._identifyAndFillContextGaps(agentId, prompt, filteredResults, options);
+        } catch (error) {
+            console.error('Error during context gap filling:', error);
+            gapFilledResults = filteredResults;
         }
 
         // Step 6: Proactive Context Expansion to fill gaps
         let finalContext: RetrievedCodeContext[] = [];
         try {
-            finalContext = await this.proactiveExpansion(agentId, prompt, filteredResults, options);
+            finalContext = await this._proactiveExpansion(agentId, prompt, gapFilledResults, options);
         } catch (error) {
             console.error('Error during proactive expansion:', error);
-            finalContext = filteredResults;
+            finalContext = gapFilledResults;
         }
 
         // Step 7: Final Deduplication and Limit
@@ -403,85 +407,43 @@ Respond with only the category name.`;
         return [];
     }
 
-    private async performCrossReferencing(agentId: string, results: RetrievedCodeContext[]): Promise<RetrievedCodeContext[]> {
-        const newResults: RetrievedCodeContext[] = [];
-        const functionCallRegex = /(\w+)\s*\(/g;
-
-        for (const res of results) {
-            if (res.type === 'function_definition') {
-                let match;
-                const promises: Promise<RetrievedCodeContext | null>[] = [];
-
-                while ((match = functionCallRegex.exec(res.content)) !== null) {
-                    const calledFuncName = match[1];
-                    promises.push(this._findFunctionDefinition(agentId, calledFuncName));
-                }
-
-                try {
-                    const functionDefs = await Promise.all(promises);
-                    functionDefs.forEach(def => {
-                        if (def) newResults.push(def);
-                    });
-                } catch (error) {
-                    console.error('Error during cross-referencing:', error);
-                }
-            }
-        }
-
-        return [...results, ...newResults];
-    }
-
-    private async _findFunctionDefinition(agentId: string, functionName: string): Promise<RetrievedCodeContext | null> {
-        try {
-            const kgNodes = await this.kgManager.searchNodes(agentId, `entityType:function name:${functionName}`);
-
-            if (kgNodes.length > 0) {
-                const calledFuncNode = kgNodes[0];
-                return {
-                    type: 'function_definition',
-                    sourcePath: calledFuncNode.name,
-                    entityName: calledFuncNode.name.split('::').pop(),
-                    content: (calledFuncNode.observations || []).find((obs: string) => obs.startsWith('signature:')) || 'No signature found',
-                    relevanceScore: 0.7,
-                    metadata: { kgNodeType: 'function', crossReferenced: true }
-                };
-            }
-        } catch (error) {
-            console.error(`Error finding function definition for ${functionName}:`, error);
-        }
-
-        return null;
-    }
-
     private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (contexts.length === 0) return [];
 
         const targetPaths = options.targetFilePaths || [];
-        const targetedContexts = contexts.filter(ctx => targetPaths.includes(ctx.sourcePath));
-        const nonTargetedContexts = contexts.filter(ctx => !targetPaths.includes(ctx.sourcePath));
 
         let filterPrompt = `Given the user prompt "${prompt}", identify which of the following context items are most relevant.
-Return a JSON array of the indices of the relevant items. ONLY respond with the JSON array, and nothing else.`;
+Return a JSON object with a single key "relevant_indices" containing an array of the indices of the relevant items.
+Example: {"relevant_indices": [0, 2, 5]}
+ONLY respond with the JSON object, and nothing else.`;
 
         if (targetPaths.length > 0) {
             filterPrompt += `\n\n**Special Instruction:** Prioritize items from the following target file paths: ${targetPaths.join(', ')}. Ensure that relevant content from these paths is included if it directly addresses the prompt.`;
         }
 
-        filterPrompt += `\n\n${contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 100)}...`).join('\n')}`;
+        filterPrompt += `\n\nContext Items:\n${contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 150)}...`).join('\n')}`;
 
         try {
             const response = await this.geminiService.askGemini(filterPrompt, 'gemini-2.5-flash');
-            const textResponse = response.content[0].text;
-            const relevantIndices: number[] = JSON.parse(textResponse!.match(/\[(.*?)\]/s)![0]);
+            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
 
+            if (!parsedResponse || !Array.isArray(parsedResponse.relevant_indices)) {
+                console.warn("[CodebaseContextRetrieverService] AI filtering returned malformed response. Returning top results instead.");
+                return contexts.slice(0, (options.topKEmbeddings ?? 10));
+            }
+
+            const relevantIndices: number[] = parsedResponse.relevant_indices;
             let filtered = contexts.filter((_, idx) => relevantIndices.includes(idx));
 
-            if (targetPaths.length > 0 && targetedContexts.length > 0) {
+            // Resilience check: If user specified target files and AI filtered them all out, add them back in.
+            if (targetPaths.length > 0) {
+                const targetedContexts = contexts.filter(ctx => targetPaths.includes(ctx.sourcePath));
                 const filteredTargeted = filtered.filter(ctx => targetPaths.includes(ctx.sourcePath));
 
-                if (filteredTargeted.length === 0) {
+                if (targetedContexts.length > 0 && filteredTargeted.length === 0) {
                     console.warn(`[CodebaseContextRetrieverService] AI filtered out all targeted contexts. Re-including them.`);
                     filtered = [...filtered, ...targetedContexts];
+                    // Re-deduplicate
                     filtered = Array.from(new Map(filtered.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
                 }
             }
@@ -489,24 +451,79 @@ Return a JSON array of the indices of the relevant items. ONLY respond with the 
             return filtered;
         } catch (e) {
             console.error("Error filtering with AI:", e);
-            return contexts;
+            // Fallback to returning a slice of the original contexts
+            return contexts.slice(0, (options.topKEmbeddings ?? 10));
         }
     }
 
-    private async proactiveExpansion(agentId: string, prompt: string, currentContext: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+    private async _identifyAndFillContextGaps(agentId: string, prompt: string, currentContext: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        if (currentContext.length === 0) return currentContext;
+
+        const contextSummaryForPrompt = currentContext.map(c => `[${c.type}] ${c.sourcePath} (Entity: ${c.entityName || 'N/A'}) - Snippet: ${c.content.substring(0, 100)}...`).join('\n');
+
+        const gapAnalysisPrompt = `You are a code analysis expert. Based on the user's prompt and the provided context snippets, identify any critical missing information.
+Are there any function calls, class instantiations, or type imports mentioned in the snippets for which the definition is not present?
+List the exact names of these undefined entities.
+
+User Prompt: "${prompt}"
+
+Context Snippets:
+${contextSummaryForPrompt}
+
+Respond with a JSON object containing a single key "missing_entities" with an array of the identified names.
+Example: {"missing_entities": ["UserService", "calculateTaxAmount", "IOrderDetails"]}
+If no critical information is missing, respond with {"missing_entities": []}.
+ONLY respond with the JSON object.`;
+
+        try {
+            const response = await this.geminiService.askGemini(gapAnalysisPrompt, 'gemini-2.5-flash');
+            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
+
+            if (!parsedResponse || !Array.isArray(parsedResponse.missing_entities) || parsedResponse.missing_entities.length === 0) {
+                console.log("[Context Self-Correction] No context gaps identified.");
+                return currentContext;
+            }
+
+            const missingEntities: string[] = parsedResponse.missing_entities;
+            console.log("[Context Self-Correction] Identified context gaps, attempting to fill:", missingEntities);
+
+            const gapFillingResults = await this.retrieveContextByEntityNames(agentId, missingEntities, options);
+
+            if (gapFillingResults.length > 0) {
+                console.log(`[Context Self-Correction] Found ${gapFillingResults.length} items to fill gaps.`);
+                // Fuse the new results with the existing context
+                const combined = this.reciprocalRankFusion([currentContext, gapFillingResults]);
+                return combined;
+            }
+
+        } catch (e) {
+            console.error("Error during context self-correction:", e);
+        }
+
+        return currentContext;
+    }
+
+    private async _proactiveExpansion(agentId: string, prompt: string, currentContext: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (currentContext.length === 0) return currentContext;
 
         const contextSummary = currentContext.map(c => c.sourcePath).join(', ');
-        const expansionPrompt = `Based on the prompt "${prompt}" and the currently retrieved context (${contextSummary}), what other specific functions, classes, or files might be essential to understand? Answer with a short list of names.`;
+        const expansionPrompt = `Based on the prompt "${prompt}" and the currently retrieved context from files (${contextSummary}), what other specific functions, classes, or files might be essential to understand the complete picture?
+List the names of these related entities.
+Respond with a JSON object with a key "suggested_entities" containing an array of strings.
+Example: {"suggested_entities": ["DatabaseConnection", "OrderRepository"]}
+ONLY respond with the JSON object.`;
 
         try {
             const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-2.5-flash');
-            const suggestions = response.content[0].text?.split(',').map(s => s.trim()).filter(Boolean);
+            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
 
-            if (suggestions && suggestions.length > 0) {
+            if (parsedResponse && Array.isArray(parsedResponse.suggested_entities) && parsedResponse.suggested_entities.length > 0) {
+                const suggestions: string[] = parsedResponse.suggested_entities;
                 console.log("Proactive expansion suggestions:", suggestions);
                 const expansionResults = await this.retrieveContextByEntityNames(agentId, suggestions, options);
-                return [...currentContext, ...expansionResults];
+                // Combine and deduplicate
+                const combined = [...currentContext, ...expansionResults];
+                return Array.from(new Map(combined.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
             }
         } catch (e) {
             console.error("Error in proactive context expansion:", e);
@@ -518,16 +535,20 @@ Return a JSON array of the indices of the relevant items. ONLY respond with the 
     public async retrieveContextByEntityNames(agentId: string, entityNames: string[], options?: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (!entityNames || entityNames.length === 0) return [];
 
+        // Deduplicate entity names to avoid redundant queries
+        const uniqueEntityNames = [...new Set(entityNames)];
+
         try {
-            const kgNodes = await this.kgManager.openNodes(agentId, entityNames);
+            console.log(`[retrieveContextByEntityNames] Fetching KG nodes for: ${uniqueEntityNames.join(', ')}`);
+            const kgNodes = await this.kgManager.openNodes(agentId, uniqueEntityNames);
 
             return kgNodes.map((node: KGNode) => ({
                 type: 'kg_node_info',
                 sourcePath: node.name,
                 entityName: node.entityType !== 'file' ? node.name : undefined,
                 content: `Entity Type: ${node.entityType}\nObservations:\n${(node.observations || []).join('\n- ')}`,
-                relevanceScore: 0.9,
-                metadata: { kgNodeType: node.entityType }
+                relevanceScore: 0.95, // High score as it's a direct match
+                metadata: { kgNodeType: node.entityType, retrieved_by_name: true }
             }));
         } catch (error) {
             console.error("Error retrieving context by entity names:", error);
@@ -536,29 +557,26 @@ Return a JSON array of the indices of the relevant items. ONLY respond with the 
     }
 
     private async _extractKeywordsAndEntitiesWithGemini(prompt: string): Promise<string[]> {
-        const extractionPrompt = `Extract key technical keywords and specific code entity names (file paths, function names, class names) from the following prompt. Return a JSON array of strings. Prompt: "${prompt}"`;
+        const extractionPrompt = `Extract key technical keywords and specific code entity names (file paths, function names, class names) from the following prompt.
+Return a JSON object with a single key "entities" containing an array of strings.
+Example: {"entities": ["src/services/api.ts", "getUserProfile", "UserProfile"]}
+Prompt: "${prompt}"`;
 
         try {
             const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash");
-            const textResponse = result.content[0].text ?? '';
-            const jsonMatch = textResponse.match(/\[.*?\]/s);
+            const parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
 
-            if (jsonMatch) {
-                let jsonString = jsonMatch[0];
-                jsonString = jsonString.replace(/\/\/.*$/gm, '');
-                jsonString = jsonString.replace(/,(\s*[\]\}])/g, '$1');
-
-                try {
-                    return JSON.parse(jsonString);
-                } catch (parseError) {
-                    console.error("JSON parse error in _extractKeywordsAndEntitiesWithGemini:", parseError);
-                    return prompt.split(/\s+/).filter((w: string) => w.length > 3);
-                }
+            if (parsedResponse && Array.isArray(parsedResponse.entities)) {
+                return parsedResponse.entities;
             }
+            // Fallback if parsing fails or structure is wrong
+            console.warn("Failed to parse entities from Gemini, using fallback.");
+            return prompt.split(/\s+/).filter((w: string) => w.length > 3 && /\w/.test(w));
+
         } catch (error) {
             console.error("Error extracting keywords with Gemini:", error);
         }
 
-        return prompt.split(/\s+/).filter((w: string) => w.length > 3);
+        return prompt.split(/\s+/).filter((w: string) => w.length > 3 && /\w/.test(w));
     }
 }

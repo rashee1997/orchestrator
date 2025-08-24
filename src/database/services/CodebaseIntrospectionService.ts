@@ -89,7 +89,7 @@ export class CodebaseIntrospectionService {
     private languageParsers: Map<string, ILanguageParser>;
     private parserFactory: ParserFactory;
     private scanCache: Map<string, { timestamp: number; data: ScannedItem[]; }>;
-    private parserCache: Map<string, { timestamp: number; data: ExtractedCodeEntity[]; }>;
+    private parserCache: Map<string, { fileMtime: number; data: ExtractedCodeEntity[]; }>;
     private maxCacheSize: number;
     private cacheTTL: number;
 
@@ -100,7 +100,7 @@ export class CodebaseIntrospectionService {
         this.parserFactory = new ParserFactory(this.projectRootPath);
         this.languageParsers = new Map();
         this.scanCache = new Map<string, { timestamp: number; data: ScannedItem[]; }>();
-        this.parserCache = new Map<string, { timestamp: number; data: ExtractedCodeEntity[]; }>();
+        this.parserCache = new Map<string, { fileMtime: number; data: ExtractedCodeEntity[]; }>();
         this.maxCacheSize = 1000;
         this.cacheTTL = 30 * 60 * 1000; // 30 minutes
 
@@ -129,25 +129,26 @@ export class CodebaseIntrospectionService {
         return (Date.now() - timestamp) < this.cacheTTL;
     }
 
-    private _cleanupCache<T>(cache: Map<string, { timestamp: number; data: T[] }>): void {
+    private _cleanupCache<T>(cache: Map<string, T>): void {
         if (cache.size > this.maxCacheSize) {
-            const entries = Array.from(cache.entries());
-            entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
-
-            const toRemove = entries.slice(0, Math.floor(this.maxCacheSize * 0.3));
-            toRemove.forEach(([key]) => cache.delete(key));
-
-            console.log(`[CodebaseIntrospectionService] Cleaned up ${toRemove.length} expired cache entries`);
+            // A simple strategy: remove the first 30% of keys (oldest)
+            const keysToDelete = Array.from(cache.keys()).slice(0, Math.floor(this.maxCacheSize * 0.3));
+            keysToDelete.forEach(key => cache.delete(key));
+            console.log(`[CodebaseIntrospectionService] Cleaned up ${keysToDelete.length} expired cache entries`);
         }
     }
 
     private static shouldIgnore(itemPath: string, isDirectory: boolean): boolean {
         const basename = path.basename(itemPath);
-        const extension = path.extname(basename).toLowerCase();
+
+        if (basename.startsWith('.')) {
+            return true;
+        }
 
         if (isDirectory) {
-            return CodebaseIntrospectionService.IGNORED_DIRECTORY_NAMES.has(basename) || basename.startsWith('.');
+            return CodebaseIntrospectionService.IGNORED_DIRECTORY_NAMES.has(basename);
         } else {
+            const extension = path.extname(basename).toLowerCase();
             if (CodebaseIntrospectionService.IGNORED_FILE_BASENAMES.has(basename)) {
                 return true;
             }
@@ -184,7 +185,7 @@ export class CodebaseIntrospectionService {
                     const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
 
                     if (CodebaseIntrospectionService.shouldIgnore(fullPath, item.isDirectory())) {
-                        return null;
+                        return; // Skip ignored items
                     }
 
                     const stats = await fs.stat(fullPath);
@@ -221,9 +222,9 @@ export class CodebaseIntrospectionService {
                         });
                     }
                 } catch (itemError) {
+                    // Log error for a specific item but continue with others
                     console.error(`Error processing item ${item.name} in ${directoryPath}:`, itemError);
                 }
-                return null;
             });
 
             await Promise.all(scanPromises);
@@ -280,9 +281,9 @@ export class CodebaseIntrospectionService {
 
         let fileContentSnippet: string;
         try {
-            const buffer = Buffer.alloc(2048);
+            const buffer = Buffer.alloc(4096); // Increased snippet size for better accuracy
             const fd = await fs.open(filePath, 'r');
-            const { bytesRead } = await fd.read(buffer, 0, 2048, 0);
+            const { bytesRead } = await fd.read(buffer, 0, 4096, 0);
             await fd.close();
             fileContentSnippet = buffer.toString('utf-8', 0, bytesRead);
         } catch (readError) {
@@ -291,7 +292,7 @@ export class CodebaseIntrospectionService {
         }
 
         if (!fileContentSnippet.trim()) {
-            return undefined;
+            return undefined; // Empty file
         }
 
         const prompt = DETECT_LANGUAGE_PROMPT.replace('{fileContentSnippet}', fileContentSnippet);
@@ -300,7 +301,8 @@ export class CodebaseIntrospectionService {
             const response = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
             if (response.content && response.content.length > 0 && response.content[0].text) {
                 const detectedLang = response.content[0].text.trim().toLowerCase();
-                if (detectedLang && detectedLang !== "unknown" && detectedLang.length < 20 && /^[a-z0-9#+]+$/.test(detectedLang)) {
+                // More robust check for valid language identifier
+                if (detectedLang && detectedLang !== "unknown" && detectedLang.length < 25 && /^[a-z0-9#+.-]+$/.test(detectedLang)) {
                     return detectedLang;
                 }
             }
@@ -314,23 +316,25 @@ export class CodebaseIntrospectionService {
         agentId: string,
         filePath: string,
         fileLanguage?: string
-    ): Promise<{ parser: ILanguageParser, code: string } | null> {
-        const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
-        const ext = path.extname(filePath).toLowerCase();
-        const parser = this.languageParsers.get(ext) || (lang ? this.languageParsers.get(lang) : undefined);
-
-        if (!parser) {
-            if (lang) {
-                console.warn(`Parsing for language '${lang}' in ${filePath} is not supported by any registered parser. Skipping.`);
-            }
-            return null;
-        }
-
+    ): Promise<{ parser: ILanguageParser, code: string, stats: Stats } | null> {
         try {
+            const stats = await fs.stat(filePath);
+            const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
+            const ext = path.extname(filePath).toLowerCase();
+            const parser = this.languageParsers.get(ext) || (lang ? Array.from(this.languageParsers.values()).find(p => p.getLanguageName() === lang) : undefined);
+
+            if (!parser) {
+                if (lang) {
+                    // This is not an error, just an unsupported file type
+                    console.log(`Parsing for language '${lang}' in ${filePath} is not supported. Skipping.`);
+                }
+                return null;
+            }
+
             const code = await fs.readFile(filePath, 'utf-8');
-            return { parser, code };
+            return { parser, code, stats };
         } catch (readError) {
-            console.error(`Error reading file ${filePath} for parsing:`, readError);
+            console.error(`Error reading file or stats for ${filePath}:`, readError);
             return null;
         }
     }
@@ -346,10 +350,10 @@ export class CodebaseIntrospectionService {
         }
 
         try {
-            return parseInfo.parser.parseImports(filePath, parseInfo.code);
+            return await parseInfo.parser.parseImports(filePath, parseInfo.code);
         } catch (error) {
-            console.error(`Error parsing imports for ${filePath}:`, error);
-            return [];
+            console.error(`Resilient Parsing: Error parsing imports for ${filePath}, continuing. Error:`, error);
+            return []; // Return empty array on error to not block other operations
         }
     }
 
@@ -358,32 +362,34 @@ export class CodebaseIntrospectionService {
         filePath: string,
         fileLanguage?: string
     ): Promise<ExtractedCodeEntity[]> {
+        const parseInfo = await this.getParserAndCode(agentId, filePath, fileLanguage);
+        if (!parseInfo) {
+            return [];
+        }
+
         const cacheKey = this._generateCacheKey('parse', agentId, filePath);
         const cached = this.parserCache.get(cacheKey);
 
-        if (cached && this._isCacheValid(cached.timestamp)) {
+        // Invalidate cache if file modification time has changed
+        if (cached && cached.fileMtime === parseInfo.stats.mtimeMs) {
             console.log(`[Cache HIT] Returning cached parse results for ${filePath}`);
             return cached.data;
         }
 
         console.log(`[Cache MISS] Parsing code entities for ${filePath}`);
 
-        const parseInfo = await this.getParserAndCode(agentId, filePath, fileLanguage);
-        if (!parseInfo) {
-            return [];
-        }
-
         try {
             const entities = await parseInfo.parser.parseCodeEntities(filePath, parseInfo.code, this.projectRootPath);
 
-            // Cache the results
-            this.parserCache.set(cacheKey, { timestamp: Date.now(), data: entities });
+            // Cache the results with modification time
+            this.parserCache.set(cacheKey, { fileMtime: parseInfo.stats.mtimeMs, data: entities });
             this._cleanupCache(this.parserCache);
 
             return entities;
         } catch (error) {
-            console.error(`Error parsing code entities for ${filePath}:`, error);
-            return [];
+            // Resilience: If a file fails to parse (e.g., syntax error), log it and continue
+            console.error(`Resilient Parsing: Error parsing code entities for ${filePath}, continuing. Error:`, error);
+            return []; // Return empty on error
         }
     }
 }

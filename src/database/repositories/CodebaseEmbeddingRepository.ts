@@ -344,6 +344,19 @@ export class CodebaseEmbeddingRepository {
         }
     }
 
+    public async getEmbeddingsByIds(embeddingIds: string[]): Promise<CodebaseEmbeddingRecord[]> {
+        if (embeddingIds.length === 0) {
+            return [];
+        }
+
+        return this._executeWithRetry(() => {
+            const placeholders = embeddingIds.map(() => '?').join(',');
+            const sql = `SELECT * FROM ${this.metadataTable} WHERE embedding_id IN (${placeholders})`;
+            const stmt = this.db.prepare(sql);
+            return stmt.all(...embeddingIds) as CodebaseEmbeddingRecord[];
+        }, 'getEmbeddingsByIds');
+    }
+
     public async optimizeDatabase(): Promise<void> {
         try {
             await this._executeWithRetry(async () => {
