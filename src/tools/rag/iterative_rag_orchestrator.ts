@@ -6,7 +6,8 @@ import {
     RAG_ANALYSIS_PROMPT,
     RAG_ANALYSIS_SYSTEM_INSTRUCTION,
     RAG_ANSWER_PROMPT,
-    RAG_VERIFICATION_PROMPT
+    RAG_VERIFICATION_PROMPT,
+    RAG_SELF_CORRECTION_PROMPT
 } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RagAnalysisResponse } from './rag_response_parser.js';
 import { RagResponseParser } from './rag_response_parser.js';
@@ -239,15 +240,10 @@ export class IterativeRagOrchestrator {
             .map(c => ` - [${c.type}] ${c.sourcePath} (Entity: ${c.entityName || 'N/A'})`)
             .join('\n');
 
-        const correctionPrompt = `You are a search expert. A previous search query failed to find any new information. Your task is to reformulate the query to better achieve the original goal.
-Consider the context found so far and try a different angle. Be more specific, more general, or use different keywords as appropriate.
-
-Original Goal: "${originalGoal}"
-Failed Query: "${failedQuery}"
-Context Found So Far:
-${contextSummary || "No context found yet."}
-
-New, improved search query:`;
+        const correctionPrompt = RAG_SELF_CORRECTION_PROMPT
+            .replace('{originalGoal}', originalGoal)
+            .replace('{failedQuery}', failedQuery)
+            .replace('{contextSummary}', contextSummary || "No context found yet.");
 
         try {
             const result = await this.geminiService.askGemini(correctionPrompt, model || 'gemini-2.5-flash');

@@ -136,6 +136,66 @@ export const EXTRACT_ENTITIES_PROMPT = `Extract key entities and keywords from t
 
 
 // ============================================================================
+// Knowledge Graph Prompts
+// ============================================================================
+export const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into a structured query for a knowledge graph.
+The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables.
+Node observations often include 'absolute_path', 'language', 'signature', 'lines', 'defined_in_file'.
+Key relation types include: 'contains_item', 'imports_file', 'imports_module', 'defined_in_file', 'has_method', 'calls_function', 'uses_class'.
+
+Given a natural language query, translate it into a JSON array of operation objects. Each object must have an "operation" and "args" field.
+
+Supported operations and their 'args' structure:
+1. 'search_nodes': args = { "query": "key:value key2:value2 ..." }
+   - The "query" string uses key:value pairs. Supported keys: 'entityType', 'name', 'file', 'obs', 'id', 'limit', 'defined_in_file_path', 'parent_class_full_name'.
+   - This is for finding nodes based on their properties.
+   - Example NLQ: "Find all functions in 'src/utils.ts' that mention 'format'"
+   - Translation: [{ "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }]
+
+2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
+   - Use for fetching specific nodes by their exact names.
+
+3. 'graph_traversal': args = { "start_node": "node_name", "relation_types": ["relation1"], "depth": number }
+   - Use for FORWARD (OUTGOING) traversal from a starting node.
+   - Answers questions like "What does X call?", "What does Y import?".
+   - Example NLQ: "What functions does 'AuthService' call?"
+   - Translation: [{ "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }]
+
+4. 'find_inbound_relations': args = { "target_node_name": "node_name", "relation_type": "relation_name" }
+   - Use for INVERSE (INCOMING) traversal to find source nodes.
+   - Answers questions like "Who calls X?", "Which files import Y?", "Where is Z used?".
+   - Example NLQ: "Who calls the 'processAndRefinePrompt' function?"
+   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }]
+   - Example NLQ: "Which files import 'CodebaseContextRetrieverService'?"
+   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }]
+
+5. 'read_graph': args = {}
+   - Use only if the query is very general like "show me the graph".
+
+Knowledge Graph Structure (or summary):
+---
+\${graphRepresentation}
+---
+
+Natural Language Query: "\${naturalLanguageQuery}"
+
+---
+Instructions for translation:
+1. Analyze the NLQ and choose the most appropriate "operation(s)".
+2. If the query asks about what a node DOES (e.g., calls, contains, imports), use 'graph_traversal'.
+3. If the query asks about WHO acts upon a node (e.g., callers of, importers of, users of), use 'find_inbound_relations'.
+4. If a query asks for multiple distinct items (e.g., "Find class A and function B"), break it down into multiple separate operations in the array.
+   - Example NLQ: "Show me the GeminiApiClient class and the batchAskGemini method"
+   - Translation: [{ "operation": "open_nodes", "args": { "names": ["GeminiApiClient"] } }, { "operation": "open_nodes", "args": { "names": ["batchAskGemini"] } }]
+5. If the query asks for a process description, implementation details, or "how" something works (e.g., "how are API keys managed?"), it requires code analysis beyond simple graph lookups. In this case, return a single error operation.
+   - Example NLQ: "how are API keys managed in GeminiApiClient?"
+   - Translation: [{ "operation": "error", "args": { "message": "Could not translate query: This query requires code analysis of implementation details. Consider using a RAG tool like 'ask_gemini' with codebase context." } }]
+6. If the query cannot be reasonably translated for other reasons, return a single error operation:
+   [{ "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }]
+
+Translate the above Natural Language Query into the structured JSON array format. Provide ONLY the JSON array.
+`;
+// ============================================================================
 // Plan & Task Management Prompts
 // ============================================================================
 
@@ -998,3 +1058,13 @@ You are an expert research assistant with access to Google's search capabilities
 - Compare different approaches or technologies when relevant
 - Acknowledge any limitations in the available information
 `;
+
+export const RAG_SELF_CORRECTION_PROMPT = `You are a search expert. A previous search query failed to find any new information. Your task is to reformulate the query to better achieve the original goal.
+Consider the context found so far and try a different angle. Be more specific, more general, or use different keywords as appropriate.
+
+Original Goal: "{originalGoal}"
+Failed Query: "{failedQuery}"
+Context Found So Far:
+{contextSummary}
+
+New, improved search query:`;
