@@ -14,6 +14,7 @@ import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../types/query.js';
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
+import { parseGeminiJsonResponse as centralParseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
 
 /**
  * Prompt template for translating natural language queries into structured graph queries using an AI model.
@@ -592,41 +593,7 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
      * Ensures the final return value is always an array of operations.
      */
     private _parseGeminiJsonResponse(responseText: string): any[] {
-        let jsonToParse = responseText.trim();
-        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch && jsonMatch[1]) {
-            jsonToParse = jsonMatch[1].trim();
-        }
-
-        // Find the start of the JSON (either '[' or '{')
-        const firstBracket = jsonToParse.indexOf('[');
-        const firstBrace = jsonToParse.indexOf('{');
-        let startIndex = -1;
-
-        if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
-            startIndex = firstBracket;
-        } else if (firstBrace !== -1) {
-            startIndex = firstBrace;
-        }
-
-        if (startIndex === -1) {
-            throw new Error("Response does not contain a valid JSON object or array.");
-        }
-
-        // Find the corresponding end of the JSON
-        const endChar = jsonToParse.charAt(startIndex) === '[' ? ']' : '}';
-        const lastIndex = jsonToParse.lastIndexOf(endChar);
-
-        if (lastIndex <= startIndex) {
-            throw new Error("Mismatched JSON delimiters in the response.");
-        }
-
-        jsonToParse = jsonToParse.substring(startIndex, lastIndex + 1);
-
-        // Clean up trailing commas that can cause JSON parsing errors
-        jsonToParse = jsonToParse.replace(/,\s*([}\]])/g, '$1');
-        const parsed = JSON.parse(jsonToParse);
-
+        const parsed = centralParseGeminiJsonResponse(responseText);
         // Ensure the final return is always an array of operations
         return Array.isArray(parsed) ? parsed : [parsed];
     }

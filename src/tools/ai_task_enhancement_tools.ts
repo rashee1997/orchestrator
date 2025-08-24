@@ -12,6 +12,7 @@ import {
     AI_SUGGEST_TASK_DETAILS_PROMPT,
     AI_ANALYZE_PLAN_PROMPT
 } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 // #region Type Definitions
 interface AiSuggestedSubtask {
@@ -72,26 +73,11 @@ async function callGeminiAndParseJson<T>(
     model: string = "gemini-2.5-flash-preview-05-20"
 ): Promise<T> {
     const geminiResponse = await geminiService.askGemini(prompt, model);
-    const responseText = geminiResponse.content[0]?.text?.trim() || "";
-
-    const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-    let jsonToParse = jsonMatch ? jsonMatch[1].trim() : responseText;
-
-    if (!(jsonToParse.startsWith('{') && jsonToParse.endsWith('}')) && !(jsonToParse.startsWith('[') && jsonToParse.endsWith(']'))) {
-        const startIndex = jsonToParse.startsWith('[') ? jsonToParse.indexOf('[') : jsonToParse.indexOf('{');
-        const endIndex = jsonToParse.endsWith(']') ? jsonToParse.lastIndexOf(']') : jsonToParse.lastIndexOf('}');
-
-        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-            jsonToParse = jsonToParse.substring(startIndex, endIndex + 1);
-        } else {
-            throw new Error("AI response was not in the expected JSON format or wrapped in a markdown block.");
-        }
-    }
-
+    const responseText = geminiResponse.content[0]?.text ?? "";
     try {
-        return JSON.parse(jsonToParse) as T;
+        return parseGeminiJsonResponse(responseText) as T;
     } catch (e: any) {
-        console.error("Failed to parse JSON response from AI:", jsonToParse);
+        console.error("Failed to parse JSON response from AI:", responseText);
         throw new Error(`Failed to parse AI response as JSON: ${e.message}`);
     }
 }

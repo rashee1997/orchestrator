@@ -3,6 +3,7 @@ import { MemoryManager } from '../../database/memory_manager.js';
 import { RetrievedCodeContext } from '../../database/services/CodebaseContextRetrieverService.js';
 import { RAG_DIVERSE_QUERIES_PROMPT } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
+import { parseGeminiJsonResponse } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 export interface DiverseQueryRewriterOptions {
     queryCount?: number;
@@ -46,10 +47,7 @@ export class DiverseQueryRewriterService {
             const llmResponse = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
             const responseText = llmResponse.content[0].text ?? '';
 
-            // Extract JSON from markdown code block if present
-            const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-            const jsonString = jsonMatch ? jsonMatch[1] : responseText;
-            generatedQueries = JSON.parse(jsonString);
+            generatedQueries = parseGeminiJsonResponse(responseText);
 
             // Basic validation
             if (!Array.isArray(generatedQueries) || generatedQueries.some(q => typeof q !== 'string')) {
