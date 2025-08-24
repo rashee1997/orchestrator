@@ -8,6 +8,7 @@ import { EnhancedPHPParser } from './EnhancedPHPParser.js';
 import { JSONLParser } from './JSONLParser.js';
 import { MarkdownParser } from './MarkdownParser.js';
 import { TailwindCSSParser } from './TailwindCSSParser.js';
+import { SQLParser } from './SQLParser.js';
 
 // Use a type-only import for CodebaseIntrospectionService to prevent a direct circular runtime dependency
 // at the module level between ParserFactory and CodebaseIntrospectionService.
@@ -50,6 +51,8 @@ export class ParserFactory {
                 return new MarkdownParser(this.projectRootPath);
             case 'tailwindcss':
                 return new TailwindCSSParser(this.projectRootPath);
+            case 'sql':
+                return new SQLParser(this.projectRootPath);
             default:
                 return undefined;
         }
@@ -65,7 +68,7 @@ export class ParserFactory {
         // Explicitly list all parser types that the factory can create
         const parserTypes = [
             'EnhancedTypeScript', 'Python', 'HTML', 'CSS', 'EnhancedPHP',
-            'JSONL', 'Markdown', 'TailwindCSS'
+            'JSONL', 'Markdown', 'TailwindCSS', 'SQL'
         ];
 
         const parsers: ILanguageParser[] = [];

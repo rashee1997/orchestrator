@@ -390,7 +390,8 @@ export class CodebaseEmbeddingService {
             .filter(item => item.type === 'file' && (
                 (item.language && [
                     'typescript', 'javascript', 'python', 'markdown', 'json',
-                    'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php'
+                    'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php',
+                    'sql'
                 ].includes(item.language)) ||
                 (!item.language && item.stats.size > 0 && item.stats.size < 1024 * 1024)
             ))

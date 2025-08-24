@@ -1,6 +1,5 @@
 // src/tools/index.ts
 import { conversationToolDefinitions, getConversationToolHandlers } from './conversation_tools.js';
-import { referenceToolDefinitions, getReferenceToolHandlers } from './reference_tools.js';
 import { aiTaskEnhancementToolDefinitions, getAiTaskEnhancementToolHandlers } from './ai_task_enhancement_tools.js';
 import { tavilyToolDefinition, getTavilyToolHandlers } from './source_attribution_tools.js';
 import { databaseManagementToolDefinitions, getDatabaseManagementToolHandlers } from './database_management_tools.js';
@@ -72,7 +71,6 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
 
     const allDefs: Tool[] = [
         ...stripFuncFromDefs(conversationToolDefinitions),
-        ...stripFuncFromDefs(referenceToolDefinitions),
         ...stripFuncFromDefs(aiTaskEnhancementToolDefinitions),
         ...stripFuncFromDefs([tavilyToolDefinition]),
         ...stripFuncFromDefs(databaseManagementToolDefinitions),
@@ -100,7 +98,6 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
 
     return {
         ...getConversationToolHandlers(memoryManager),
-        ...getReferenceToolHandlers(memoryManager),
         ...getAiTaskEnhancementToolHandlers(memoryManager),
         'list_tools': listToolsHandler,
         ...getDatabaseManagementToolHandlers(memoryManager),

@@ -63,7 +63,7 @@ export class CodebaseIntrospectionService {
         '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
         '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
         '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
-        '.sql', '.csv', '.xml', '.bak', '.tmp', '.swp', '.swo', '.swn', '.exe', '.dll',
+        '.csv', '.xml', '.bak', '.tmp', '.swp', '.swo', '.swn', '.exe', '.dll',
         '.obj', '.lib', '.bin', '.out', '.diff', '.patch', '.rej', '.orig'
     ]);
 
