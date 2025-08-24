@@ -163,6 +163,14 @@ export class GeminiApiClient {
             const timeoutId = setTimeout(() => abortController.abort(), this.requestTimeout);
 
             try {
+                // Extract the actual query from the content parts
+                const queryText = (content.parts || [])
+                    .filter((part: Part) => typeof part === 'object' && 'text' in part && part.text)
+                    .map((part: Part) => (part as { text: string }).text)
+                    .join(' ')
+                    .split('\n')
+                    .pop() || 'Unknown query';
+
                 const request: any = {
                     model: modelName,
                     contents: [content],
@@ -181,6 +189,59 @@ export class GeminiApiClient {
                 });
 
                 const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? (typeof result.text === "string" ? result.text : "");
+
+                // Enhanced logging for search process
+                const candidate = result.candidates?.[0];
+                if (candidate) {
+                    // Log if Google search was performed
+                    if (toolConfig?.tools?.some((tool: any) => tool.googleSearch)) {
+                        console.log(`[GeminiApiClient] 🔍 Google Search performed for query: "${queryText.substring(0, 100)}${queryText.length > 100 ? '...' : ''}"`);
+
+                        // Log grounding metadata details
+                        const groundingMetadata = candidate.groundingMetadata;
+                        if (groundingMetadata) {
+                            const chunks = groundingMetadata.groundingChunks || [];
+                            console.log(`[GeminiApiClient] 📊 Search Results: ${chunks.length} grounding chunks found`);
+
+                            // Log search sources
+                            chunks.forEach((chunk: any, index: number) => {
+                                if (chunk.web?.uri && chunk.web?.title) {
+                                    console.log(`[GeminiApiClient]   ${index + 1}. ${chunk.web.title} (${chunk.web.uri})`);
+                                }
+                            });
+
+                            // Log search metadata
+                            if (groundingMetadata.searchEntryPoint) {
+                                console.log(`[GeminiApiClient] 🔗 Search Entry Point: ${JSON.stringify(groundingMetadata.searchEntryPoint)}`);
+                            }
+
+                            if (groundingMetadata.webSearchQueries) {
+                                console.log(`[GeminiApiClient] 🔍 Web Search Queries: ${JSON.stringify(groundingMetadata.webSearchQueries)}`);
+                            }
+                        } else {
+                            console.log(`[GeminiApiClient] ⚠️  No grounding metadata found in response`);
+                        }
+                    }
+
+                    // Log thinking process if available
+                    const thinkingParts = candidate.content?.parts?.filter((part: any) => part.thought);
+                    if (thinkingParts?.length) {
+                        console.log(`[GeminiApiClient] 🤔 Thinking process captured (${thinkingParts.length} thinking parts)`);
+                        thinkingParts.forEach((part: any, index: number) => {
+                            console.log(`[GeminiApiClient]   Thought ${index + 1}: ${part.thought.substring(0, 200)}${part.thought.length > 200 ? '...' : ''}`);
+                        });
+                    }
+
+                    // Log finish reason
+                    if (candidate.finishReason) {
+                        console.log(`[GeminiApiClient] 🏁 Response finished with reason: ${candidate.finishReason}`);
+                    }
+
+                    // Log usage metadata if available
+                    if (result.usageMetadata) {
+                        console.log(`[GeminiApiClient] 📈 Usage: ${result.usageMetadata.promptTokenCount || 0} prompt tokens, ${result.usageMetadata.candidatesTokenCount || 0} response tokens, ${result.usageMetadata.totalTokenCount || 0} total tokens`);
+                    }
+                }
 
                 batchResponses.push({
                     content: [{ text: responseText }],

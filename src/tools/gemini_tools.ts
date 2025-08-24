@@ -151,7 +151,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             target_ai_persona: { type: 'string', description: 'Optional: The AI persona to target for the response.', nullable: true },
             conversation_context_ids: { type: 'array', items: { type: 'string' }, description: 'Optional: IDs of previous conversations to include as context.', nullable: true },
             hallucination_check_threshold: { type: 'number', description: 'Optional: Threshold for hallucination detection (0-1).', nullable: true },
-            google_search: { type: 'boolean', description: 'Optional: If true, enables Google Search via Tavily for the query.', default: false, nullable: true },
+            google_search: { type: 'boolean', description: 'Optional: If true, enables Gemini\'s built-in Google Search grounding for the query.', default: false, nullable: true },
         },
         required: ['agent_id', 'query']
     },
@@ -399,6 +399,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         // Standard generative answer mode
         let finalAnswer = iterativeResult?.finalAnswer;
         let googleSearchSources: { title: string; url: string }[] = [];
+        let webChunksToStore: any[] = [];
 
         if (!finalAnswer) {
             const conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
@@ -440,6 +441,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         title: chunk.web.title,
                         url: chunk.web.uri
                     }));
+                webChunksToStore = chunks.map((chunk: any) => ({
+                    uri: chunk.web?.uri,
+                    title: chunk.web?.title,
+                    content: chunk.web?.content // Assuming content might be available here
+                }));
                 console.log(`[ask_gemini] Gemini Google Search found ${googleSearchSources.length} sources.`);
             }
 
@@ -453,6 +459,23 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         const hasIterativeSources = iterativeResult?.webSearchSources && iterativeResult.webSearchSources.length > 0;
         const hasGoogleSources = googleSearchSources && googleSearchSources.length > 0;
         const hasAnySources = hasIterativeSources || hasGoogleSources;
+
+        // Store the AI's response and web chunks in conversation history
+        await conversationHistoryManager.storeConversationMessage(
+            currentSessionId,
+            'ai',
+            finalAnswer,
+            'text',
+            null, // tool_info
+            null, // context_snapshot_id
+            null, // parent_message_id
+            {
+                context: finalContext,
+                web_chunks: webChunksToStore,
+                search_metrics: iterativeResult?.searchMetrics,
+                web_search_sources: iterativeResult?.webSearchSources
+            }
+        );
 
         if (iterativeResult || hasAnySources) {
             markdownOutput += "\n\n### Search & Reasoning Trajectory\n";
@@ -508,9 +531,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             }
         }
 
+
+
         await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', markdownOutput, 'text', {
             context: finalContext,
             sources: iterativeResult?.webSearchSources,
+            googleSearchSources: googleSearchSources,  // Add Google search sources to metadata
             metrics: iterativeResult?.searchMetrics,
             decisionLog: iterativeResult?.decisionLog,
             autonomousFocusDecision: autonomousFocusDecision,

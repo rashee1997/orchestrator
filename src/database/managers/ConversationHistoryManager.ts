@@ -2,6 +2,7 @@
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
+import { SUMMARIZE_CONVERSATION_PROMPT } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
 
 export interface SessionParticipant {
     participant_id: string; // Can be an agent_id or user_id
