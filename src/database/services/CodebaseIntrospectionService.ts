@@ -1,14 +1,12 @@
-// src/services/CodebaseIntrospectionService.ts
 import fs from 'fs/promises';
 import { Stats } from 'fs';
 import path from 'path';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-// Import all language parsers
-import type { ILanguageParser } from '../parsers/ILanguageParser.js';
+import { ILanguageParser } from '../parsers/ILanguageParser.js';
 import { ParserFactory } from '../parsers/ParserFactory.js';
+import { DETECT_LANGUAGE_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
 
-// ... (ScannedItem, ExtractedImport interfaces remain unchanged)
 export interface ScannedItem {
     path: string;
     name: string;
@@ -16,6 +14,7 @@ export interface ScannedItem {
     language?: string;
     stats: Stats;
 }
+
 export interface ExtractedImport {
     type: 'file' | 'module' | 'external_library';
     targetPath: string;
@@ -27,58 +26,49 @@ export interface ExtractedImport {
     endLine: number;
 }
 
-// MODIFICATION: Enhanced ExtractedCodeEntity to include richer metadata for embeddings.
 export interface ExtractedCodeEntity {
-    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown' | 'html_element' | 'html_id_selector' | 'html_class_selector' | 'html_attribute_selector' | 'html_text_content' | 'comment' | 'tailwind_utility_class';
-    name?: string; // Made optional
-    fullName?: string; // Made optional
-    signature?: string; // e.g., "function process(data: string): number"
+    type: 'class' | 'function' | 'interface' | 'method' | 'property' | 'variable' | 'enum' | 'type_alias' | 'module' | 'call_signature' | 'construct_signature' | 'index_signature' | 'parameter_property' | 'abstract_method' | 'declare_function' | 'namespace_export' | 'control_flow' | 'code_block' | 'unknown' | 'html_element' | 'html_id_selector' | 'html_class_selector' | 'html_attribute_selector' | 'html_text_content' | 'comment' | 'tailwind_utility_class' | 'table' | 'view' | 'index' | 'trigger';
+    name?: string;
+    fullName?: string;
+    signature?: string;
     startLine: number;
     endLine: number;
     docstring?: string | null;
-    parentClass?: string | null; // For methods, the name of the containing class
-    implementedInterfaces?: string[]; // For classes
+    parentClass?: string | null;
+    implementedInterfaces?: string[];
     parameters?: Array<{ name: string; type?: string; optional?: boolean; rest?: boolean; defaultValue?: string | null; }>;
     returnType?: string | null;
     isAsync?: boolean;
     isExported?: boolean;
-    filePath: string; // Absolute path to the file
-    containingDirectory: string; // NEW: Relative path of the containing directory
-    // The `className` property is redundant, as `parentClass` provides the same information with better context.
+    filePath: string;
+    containingDirectory: string;
     metadata?: any;
-    calls?: Array<{ name: string; type?: string; }>; // Updated to be more flexible
-    accessibility?: 'public' | 'private' | 'protected' | null; // New property for method/property accessibility
+    calls?: Array<{ name: string; type?: string; }>;
+    accessibility?: 'public' | 'private' | 'protected' | null;
 }
 
-
 export class CodebaseIntrospectionService {
-    // Directories that should always be ignored during recursive scans.
     private static readonly IGNORED_DIRECTORY_NAMES = new Set([
         'node_modules', '.git', '.vscode', 'dist', 'build', 'coverage', 'target', 'out',
-        '.svn', '.hg', '.bzr', '.idea', '.next', '.nuxt', '.parcel-cache', '.rollup.cache', '.webpack',
+        '.svn', '.hg', '.bzr', '.idea', '.next', '.nuxt', '.parcel-cache', '.webpack',
         '.cache', '.expo', '.direnv', '.terraform', '.serverless', '.aws-sam', '.nyc_output', '.cpcache',
         '.pnp', '.pnpm-store', '.npm', '.yarn', 'amplify', 'bin', 'obj', 'debug', 'release', '.vs',
         '.user', '.suo', '.venv', 'venv', 'env', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-        'log', 'logs', 'tmp', 'temp' // These can be directories or files, safer to ignore as directories too.
+        'log', 'logs', 'tmp', 'temp'
     ]);
 
-    // File extensions that typically do not contain source code or are build artifacts/temporary files.
     private static readonly IGNORED_FILE_EXTENSIONS = new Set([
         '.txt', '.log', '.gitignore', '.npmignore', '.editorconfig', '.gitattributes',
         '.gitmodules', '.prettierrc', '.eslintrc', '.env', '.sample', '.example',
         '.lock', '.map', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico',
         '.woff', '.woff2', '.ttf', '.eot', '.otf', '.zip', '.tar', '.gz', '.rar', '.7z',
         '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.sqlite', '.db',
-        '.sql', '.csv', '.xml',
-        // Add extensions from the old DENY_LIST_BASENAMES that were wildcards
-        '.bak', '.tmp', '.swp', '.swo', '.swn', '.exe', '.dll', '.obj', '.lib', '.bin', '.out',
-        '.diff', '.patch', '.rej', '.orig'
+        '.csv', '.xml', '.bak', '.tmp', '.swp', '.swo', '.swn', '.exe', '.dll',
+        '.obj', '.lib', '.bin', '.out', '.diff', '.patch', '.rej', '.orig'
     ]);
 
-    // Specific file basenames (e.g., package.json, .env files) that should be ignored.
     private static readonly IGNORED_FILE_BASENAMES = new Set([
-        '.DS_Store', // Moved from IGNORED_DIRECTORIES
-        'package-lock.json', 'yarn.lock', '.npmignore',
+        '.DS_Store', 'package-lock.json', 'yarn.lock', '.npmignore',
         '.env', '.env.local', '.env.development', '.env.production', '.env.test',
         '.gitignore', '.gitattributes', '.editorconfig', '.prettierrc', '.eslintrc',
         'Thumbs.db', 'ehthumbs.db', 'desktop.ini', 'npm-debug.log', 'yarn-debug.log', 'yarn-error.log',
@@ -87,12 +77,10 @@ export class CodebaseIntrospectionService {
         'serverless.yml', 'cloudformation.yaml', 'jest.config.js', 'babel.config.js',
         'webpack.config.js', 'rollup.config.js', 'tailwind.config.js', 'postcss.config.js',
         'tsconfig.json', 'jsconfig.json', 'tslint.json', 'nodemon.json',
-        '.prettierignore', '.eslintignore', '.dockerignore', 'docker-compose.yml', 'Dockerfile',
         'Vagrantfile', 'Makefile', 'CMakeLists.txt', 'Rakefile', 'Gemfile', 'Gemfile.lock',
         'composer.json', 'composer.lock', 'phpcs.xml', 'phpunit.xml', 'pyproject.toml',
         'Pipfile', 'Pipfile.lock', 'requirements.txt', '.python-version',
-        '.terraform.lock.hcl',
-        'package.json' // Keep this as it was in the original DENY_LIST_BASENAMES
+        '.terraform.lock.hcl', 'package.json'
     ]);
 
     private memoryManager: MemoryManager;
@@ -100,15 +88,22 @@ export class CodebaseIntrospectionService {
     private projectRootPath: string;
     private languageParsers: Map<string, ILanguageParser>;
     private parserFactory: ParserFactory;
+    private scanCache: Map<string, { timestamp: number; data: ScannedItem[]; }>;
+    private parserCache: Map<string, { fileMtime: number; data: ExtractedCodeEntity[]; }>;
+    private maxCacheSize: number;
+    private cacheTTL: number;
 
     constructor(memoryManager: MemoryManager, geminiService?: GeminiIntegrationService, projectRootPath?: string) {
         this.memoryManager = memoryManager;
         this.geminiService = geminiService || null;
         this.projectRootPath = projectRootPath || process.cwd();
-
         this.parserFactory = new ParserFactory(this.projectRootPath);
-
         this.languageParsers = new Map();
+        this.scanCache = new Map<string, { timestamp: number; data: ScannedItem[]; }>();
+        this.parserCache = new Map<string, { fileMtime: number; data: ExtractedCodeEntity[]; }>();
+        this.maxCacheSize = 1000;
+        this.cacheTTL = 30 * 60 * 1000; // 30 minutes
+
         this.parserFactory.getAllParsers(this)
             .forEach(parser => this.registerParser(parser));
     }
@@ -126,29 +121,40 @@ export class CodebaseIntrospectionService {
         this.geminiService = geminiService;
     }
 
-    /**
-     * Determines if a given path (file or directory) should be ignored based on predefined rules.
-     * @param itemPath The full path of the item.
-     * @param isDirectory True if the item is a directory, false if it's a file.
-     * @returns True if the item should be ignored, false otherwise.
-     */
+    private _generateCacheKey(prefix: string, ...args: string[]): string {
+        return `${prefix}:${args.join(':')}`;
+    }
+
+    private _isCacheValid(timestamp: number): boolean {
+        return (Date.now() - timestamp) < this.cacheTTL;
+    }
+
+    private _cleanupCache<T>(cache: Map<string, T>): void {
+        if (cache.size > this.maxCacheSize) {
+            // A simple strategy: remove the first 30% of keys (oldest)
+            const keysToDelete = Array.from(cache.keys()).slice(0, Math.floor(this.maxCacheSize * 0.3));
+            keysToDelete.forEach(key => cache.delete(key));
+            console.log(`[CodebaseIntrospectionService] Cleaned up ${keysToDelete.length} expired cache entries`);
+        }
+    }
+
     private static shouldIgnore(itemPath: string, isDirectory: boolean): boolean {
         const basename = path.basename(itemPath);
-        const extension = path.extname(basename).toLowerCase();
+
+        if (basename.startsWith('.')) {
+            return true;
+        }
 
         if (isDirectory) {
-            // Ignore explicitly listed directory names or any hidden directory (starts with '.')
-            return CodebaseIntrospectionService.IGNORED_DIRECTORY_NAMES.has(basename) || basename.startsWith('.');
-        } else { // It's a file
-            // Ignore explicitly listed file basenames
+            return CodebaseIntrospectionService.IGNORED_DIRECTORY_NAMES.has(basename);
+        } else {
+            const extension = path.extname(basename).toLowerCase();
             if (CodebaseIntrospectionService.IGNORED_FILE_BASENAMES.has(basename)) {
                 return true;
             }
-            // Ignore files with certain extensions
             if (CodebaseIntrospectionService.IGNORED_FILE_EXTENSIONS.has(extension)) {
                 return true;
             }
-            // No general ignore for dot-files here, as specific ones are in IGNORED_FILE_BASENAMES.
             return false;
         }
     }
@@ -158,45 +164,80 @@ export class CodebaseIntrospectionService {
         directoryPath: string,
         rootPathToMakeRelative?: string
     ): Promise<ScannedItem[]> {
+        const cacheKey = this._generateCacheKey('scan', agentId, directoryPath);
+        const cached = this.scanCache.get(cacheKey);
+
+        if (cached && this._isCacheValid(cached.timestamp)) {
+            console.log(`[Cache HIT] Returning cached scan results for ${directoryPath}`);
+            return cached.data;
+        }
+
+        console.log(`[Cache MISS] Scanning directory: ${directoryPath}`);
         const results: ScannedItem[] = [];
         const effectiveRootPath = rootPathToMakeRelative || directoryPath;
+
         try {
             const items = await fs.readdir(directoryPath, { withFileTypes: true });
-            for (const item of items) {
-                const fullPath = path.resolve(directoryPath, item.name);
-                const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
 
-                if (item.isDirectory()) {
-                    if (CodebaseIntrospectionService.shouldIgnore(fullPath, true)) {
-                        continue;
+            const scanPromises = items.map(async (item) => {
+                try {
+                    const fullPath = path.resolve(directoryPath, item.name);
+                    const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
+
+                    if (CodebaseIntrospectionService.shouldIgnore(fullPath, item.isDirectory())) {
+                        return; // Skip ignored items
                     }
+
                     const stats = await fs.stat(fullPath);
-                    results.push({
-                        path: fullPath,
-                        name: relativePath,
-                        type: 'directory',
-                        stats: stats,
-                    });
-                    results.push(...await this.scanDirectoryRecursive(agentId, fullPath, effectiveRootPath));
-                } else if (item.isFile()) {
-                    if (CodebaseIntrospectionService.shouldIgnore(fullPath, false)) {
-                        continue;
+
+                    if (item.isDirectory()) {
+                        results.push({
+                            path: fullPath,
+                            name: relativePath,
+                            type: 'directory',
+                            stats: stats,
+                        });
+
+                        // Recursively scan subdirectories
+                        try {
+                            const subResults = await this.scanDirectoryRecursive(agentId, fullPath, effectiveRootPath);
+                            results.push(...subResults);
+                        } catch (subError) {
+                            console.error(`Error scanning subdirectory ${fullPath}:`, subError);
+                        }
+                    } else if (item.isFile()) {
+                        let language: string | undefined;
+                        try {
+                            language = await this.detectLanguage(agentId, fullPath, item.name);
+                        } catch (langError) {
+                            console.warn(`Error detecting language for ${fullPath}:`, langError);
+                        }
+
+                        results.push({
+                            path: fullPath,
+                            name: relativePath,
+                            type: 'file',
+                            language: language,
+                            stats: stats,
+                        });
                     }
-                    const stats = await fs.stat(fullPath);
-                    const language = await this.detectLanguage(agentId, fullPath, item.name);
-                    results.push({
-                        path: fullPath,
-                        name: relativePath,
-                        type: 'file',
-                        language: language,
-                        stats: stats,
-                    });
+                } catch (itemError) {
+                    // Log error for a specific item but continue with others
+                    console.error(`Error processing item ${item.name} in ${directoryPath}:`, itemError);
                 }
-            }
+            });
+
+            await Promise.all(scanPromises);
+
+            // Cache the results
+            this.scanCache.set(cacheKey, { timestamp: Date.now(), data: results });
+            this._cleanupCache(this.scanCache);
+
         } catch (error) {
             console.error(`Error scanning directory ${directoryPath}:`, error);
             throw new Error(`Failed to scan directory ${directoryPath}: ${(error as Error).message}`);
         }
+
         return results;
     }
 
@@ -206,20 +247,19 @@ export class CodebaseIntrospectionService {
         fileName: string,
         useAIForUncertain: boolean = true
     ): Promise<string | undefined> {
-        // First, check if the file itself should be ignored based on its name or extension.
         if (CodebaseIntrospectionService.shouldIgnore(filePath, false)) {
-            return undefined; // Do not attempt to detect language for these
+            return undefined;
         }
 
         const extension = path.extname(fileName).toLowerCase();
 
-        // Then, check if a specific parser is registered for the extension
+        // First, check if a specific parser is registered for the extension
         if (this.languageParsers.has(extension)) {
             return this.languageParsers.get(extension)!.getLanguageName();
         }
 
         // If still uncertain, try AI detection
-        if (useAIForUncertain) {
+        if (useAIForUncertain && this.geminiService) {
             try {
                 const aiDetectedLang = await this.detectLanguageWithAI(agentId, filePath);
                 if (aiDetectedLang && aiDetectedLang !== 'unknown') {
@@ -229,6 +269,7 @@ export class CodebaseIntrospectionService {
                 console.warn(`AI language detection failed for ${filePath}:`, aiError);
             }
         }
+
         return undefined;
     }
 
@@ -237,31 +278,33 @@ export class CodebaseIntrospectionService {
             console.warn('GeminiIntegrationService not available for AI language detection');
             return undefined;
         }
+
         let fileContentSnippet: string;
         try {
-            const buffer = Buffer.alloc(2048);
+            const buffer = Buffer.alloc(4096); // Increased snippet size for better accuracy
             const fd = await fs.open(filePath, 'r');
-            const { bytesRead } = await fd.read(buffer, 0, 2048, 0);
+            const { bytesRead } = await fd.read(buffer, 0, 4096, 0);
             await fd.close();
             fileContentSnippet = buffer.toString('utf-8', 0, bytesRead);
         } catch (readError) {
             console.error(`Could not read snippet from ${filePath} for AI language detection:`, readError);
             return undefined;
         }
+
         if (!fileContentSnippet.trim()) {
-            return undefined;
+            return undefined; // Empty file
         }
-        const prompt = `Analyze the following code snippet and identify its primary programming language.\nRespond with only the lowercase name of the language (e.g., "python", "javascript", "java", "csharp", "html", "css", "unknown" if not identifiable or not code).\n\nSnippet:\n\
-${fileContentSnippet}\n\
-Language:`;
+
+        const prompt = DETECT_LANGUAGE_PROMPT.replace('{fileContentSnippet}', fileContentSnippet);
+
         try {
-            const response = await this.geminiService.askGemini(prompt, "gemini-2.5-flash-preview-05-20");
+            const response = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
             if (response.content && response.content.length > 0 && response.content[0].text) {
                 const detectedLang = response.content[0].text.trim().toLowerCase();
-                if (detectedLang && detectedLang !== "unknown" && detectedLang.length < 20 && /^[a-z0-9#+]+$/.test(detectedLang)) {
+                // More robust check for valid language identifier
+                if (detectedLang && detectedLang !== "unknown" && detectedLang.length < 25 && /^[a-z0-9#+.-]+$/.test(detectedLang)) {
                     return detectedLang;
                 }
-                return undefined;
             }
         } catch (error) {
             console.error(`Error using Gemini for language detection on ${filePath}:`, error);
@@ -273,24 +316,25 @@ Language:`;
         agentId: string,
         filePath: string,
         fileLanguage?: string
-    ): Promise<{ parser: ILanguageParser, code: string } | null> {
-        const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
-        const ext = path.extname(filePath).toLowerCase();
-        const parser = this.languageParsers.get(ext) || (lang ? this.languageParsers.get(lang) : undefined);
-
-        if (!parser) {
-            // Only warn if a language was detected but no parser was found.
-            if (lang) {
-                console.warn(`Parsing for language '${lang}' in ${filePath} is not supported by any registered parser. Skipping.`);
-            }
-            return null;
-        }
-
+    ): Promise<{ parser: ILanguageParser, code: string, stats: Stats } | null> {
         try {
+            const stats = await fs.stat(filePath);
+            const lang = fileLanguage || await this.detectLanguage(agentId, filePath, path.basename(filePath));
+            const ext = path.extname(filePath).toLowerCase();
+            const parser = this.languageParsers.get(ext) || (lang ? Array.from(this.languageParsers.values()).find(p => p.getLanguageName() === lang) : undefined);
+
+            if (!parser) {
+                if (lang) {
+                    // This is not an error, just an unsupported file type
+                    console.log(`Parsing for language '${lang}' in ${filePath} is not supported. Skipping.`);
+                }
+                return null;
+            }
+
             const code = await fs.readFile(filePath, 'utf-8');
-            return { parser, code };
+            return { parser, code, stats };
         } catch (readError) {
-            console.error(`Error reading file ${filePath} for parsing:`, readError);
+            console.error(`Error reading file or stats for ${filePath}:`, readError);
             return null;
         }
     }
@@ -304,8 +348,13 @@ Language:`;
         if (!parseInfo) {
             return [];
         }
-        const { parser, code } = parseInfo;
-        return parser.parseImports(filePath, code);
+
+        try {
+            return await parseInfo.parser.parseImports(filePath, parseInfo.code);
+        } catch (error) {
+            console.error(`Resilient Parsing: Error parsing imports for ${filePath}, continuing. Error:`, error);
+            return []; // Return empty array on error to not block other operations
+        }
     }
 
     public async parseFileForCodeEntities(
@@ -317,7 +366,30 @@ Language:`;
         if (!parseInfo) {
             return [];
         }
-        const { parser, code } = parseInfo;
-        return parser.parseCodeEntities(filePath, code, this.projectRootPath);
+
+        const cacheKey = this._generateCacheKey('parse', agentId, filePath);
+        const cached = this.parserCache.get(cacheKey);
+
+        // Invalidate cache if file modification time has changed
+        if (cached && cached.fileMtime === parseInfo.stats.mtimeMs) {
+            console.log(`[Cache HIT] Returning cached parse results for ${filePath}`);
+            return cached.data;
+        }
+
+        console.log(`[Cache MISS] Parsing code entities for ${filePath}`);
+
+        try {
+            const entities = await parseInfo.parser.parseCodeEntities(filePath, parseInfo.code, this.projectRootPath);
+
+            // Cache the results with modification time
+            this.parserCache.set(cacheKey, { fileMtime: parseInfo.stats.mtimeMs, data: entities });
+            this._cleanupCache(this.parserCache);
+
+            return entities;
+        } catch (error) {
+            // Resilience: If a file fails to parse (e.g., syntax error), log it and continue
+            console.error(`Resilient Parsing: Error parsing code entities for ${filePath}, continuing. Error:`, error);
+            return []; // Return empty on error
+        }
     }
 }

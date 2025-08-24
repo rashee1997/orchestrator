@@ -1,6 +1,9 @@
 import { BaseLanguageParser } from './ILanguageParser.js';
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
 import { HTMLParser } from './HTMLParser.js';
+import { CSSParser } from './CSSParser.js';
+import { TailwindCSSParser } from './TailwindCSSParser.js';
+import { EnhancedTypeScriptParser } from './EnhancedTypeScriptParser.js';
 import phpParser from 'php-parser';
 import path from 'path';
 
@@ -96,7 +99,6 @@ class AdvancedNamespaceResolver {
 
     addUse(fullPath: string, alias?: string, type: 'class' | 'function' | 'const' = 'class'): void {
         const key = alias || fullPath.split('\\').pop() || fullPath;
-
         switch (type) {
             case 'function':
                 this.functionUses.set(key, fullPath);
@@ -118,10 +120,8 @@ class AdvancedNamespaceResolver {
                 ['const', new Map()]
             ]));
         }
-
         const typeMaps = this.groupUses.get(prefix)!;
         const targetMap = typeMaps.get(type)!;
-
         items.forEach(item => {
             const key = item.alias || item.name;
             const fullPath = `${prefix}\\${item.name}`;
@@ -133,9 +133,7 @@ class AdvancedNamespaceResolver {
         if (name.startsWith('\\')) {
             return name.substring(1);
         }
-
         let resolved: string | undefined;
-
         switch (type) {
             case 'function':
                 resolved = this.functionUses.get(name);
@@ -174,15 +172,12 @@ class AdvancedNamespaceResolver {
                 }
                 break;
         }
-
         if (resolved) {
             return resolved;
         }
-
         if (this.namespace) {
             return `${this.namespace}\\${name}`;
         }
-
         return name;
     }
 
@@ -195,19 +190,25 @@ class AdvancedNamespaceResolver {
     }
 }
 
-// Enhanced PHP parser with PHP 8+ support
+// Enhanced PHP parser with PHP 8+ support and mixed content detection
 export class EnhancedPHPParser extends BaseLanguageParser {
     private parser: phpParser.Engine;
-private getIdentifierName(node: any): string {
+    private getIdentifierName(node: any): string {
         return node?.name?.name || node?.name || '';
     }
     private htmlParser: HTMLParser;
+    private cssParser: CSSParser;
+    private tailwindParser: TailwindCSSParser;
+    private jsParser: EnhancedTypeScriptParser;
     private typeCache: Map<string, EnhancedTypeInfo> = new Map();
     private namespaceResolver: AdvancedNamespaceResolver;
 
     constructor(projectRootPath: string = process.cwd()) {
         super(projectRootPath);
         this.htmlParser = new HTMLParser(projectRootPath);
+        this.cssParser = new CSSParser(projectRootPath);
+        this.tailwindParser = new TailwindCSSParser(projectRootPath);
+        this.jsParser = new EnhancedTypeScriptParser(projectRootPath);
         this.namespaceResolver = new AdvancedNamespaceResolver();
 
         // Enhanced parser configuration for PHP 8+
@@ -243,24 +244,20 @@ private getIdentifierName(node: any): string {
     // Enhanced DocBlock parsing with full tag support
     private parseDocBlock(docBlock: string): EnhancedCodeEntity['docBlock'] {
         if (!docBlock) return undefined;
-
         const cleanDocBlock = docBlock
             .replace(/^\/\*\*|\*\/$/g, '')
             .replace(/^\*\s?/gm, '')
             .trim();
-
         const lines = cleanDocBlock.split('\n').map(line => line.trim());
 
         // Extract summary and description
         let summary = '';
         let description = '';
         let inDescription = false;
-
         for (const line of lines) {
             if (line.startsWith('@')) {
                 break;
             }
-
             if (!summary && line) {
                 summary = line;
             } else if (summary && line) {
@@ -275,25 +272,20 @@ private getIdentifierName(node: any): string {
             value: string;
             description?: string;
         }> = [];
-
         const paramTags: Array<{
             name: string;
             type?: string;
             description?: string;
         }> = [];
-
         let returnTag: {
             type?: string;
             description?: string;
         } = {};
-
         const tagRegex = /@(\w+)\s+(.+?)(?=@|$)/gs;
         let match;
-
         while ((match = tagRegex.exec(cleanDocBlock)) !== null) {
             const tagName = match[1];
             const tagValue = match[2].trim();
-
             tags.push({
                 name: tagName,
                 value: tagValue,
@@ -342,7 +334,6 @@ private getIdentifierName(node: any): string {
                 isGeneric: false,
             };
         }
-
         const originalTypeStr = typeStr;
         let nullable = false;
         let isUnion = false;
@@ -360,11 +351,9 @@ private getIdentifierName(node: any): string {
             isUnion = true;
             const unionTypes = typeStr.split('|').map(t => t.trim());
             const filteredTypes = unionTypes.filter(t => t !== 'null');
-
             if (unionTypes.includes('null')) {
                 nullable = true;
             }
-
             return {
                 name: filteredTypes.join('|'),
                 nullable,
@@ -381,7 +370,6 @@ private getIdentifierName(node: any): string {
         if (typeStr.includes('&')) {
             isIntersection = true;
             const intersectionTypes = typeStr.split('&').map(t => t.trim());
-
             return {
                 name: intersectionTypes.join('&'),
                 nullable,
@@ -399,7 +387,6 @@ private getIdentifierName(node: any): string {
         if (genericMatch) {
             const baseType = genericMatch[1];
             genericTypes = genericMatch[2].split(',').map(t => t.trim());
-
             return {
                 name: baseType,
                 nullable,
@@ -466,13 +453,11 @@ private getIdentifierName(node: any): string {
     // Enhanced attribute extraction for PHP 8+
     private extractAttributes(node: any): string[] {
         const attributes: string[] = [];
-
         if (node.attrGroups) {
             node.attrGroups.forEach((group: any) => {
                 if (group.attrs) {
                     group.attrs.forEach((attr: any) => {
                         let attrName = '';
-
                         if (attr.name) {
                             if (typeof attr.name === 'string') {
                                 attrName = attr.name;
@@ -482,7 +467,6 @@ private getIdentifierName(node: any): string {
                                 attrName = String(attr.name.resolution);
                             }
                         }
-
                         if (attrName) {
                             // Include attribute arguments if present
                             if (attr.args && attr.args.length > 0) {
@@ -500,17 +484,14 @@ private getIdentifierName(node: any): string {
                 }
             });
         }
-
         return attributes;
     }
 
     // Enhanced import parsing with namespace support
     async parseImports(filePath: string, fileContent: string): Promise<ExtractedImport[]> {
         const imports: ExtractedImport[] = [];
-
         try {
             const ast = this.parser.parseCode(fileContent, filePath);
-
             const traverse = (node: any) => {
                 if (!node) return;
 
@@ -527,7 +508,6 @@ private getIdentifierName(node: any): string {
                         startLine: node.loc?.start?.line || 0,
                         endLine: node.loc?.end?.line || 0,
                     });
-
                     if (node.children) {
                         node.children.forEach(traverse);
                     }
@@ -536,12 +516,10 @@ private getIdentifierName(node: any): string {
                 // Use statements
                 if (node.kind === 'usegroup') {
                     const prefix = node.name?.name || '';
-
                     if (node.items) {
                         node.items.forEach((item: any) => {
                             const fullPath = prefix ? `${prefix}\\${this.getIdentifierName(item.name)}` : this.getIdentifierName(item.name);
                             const alias = this.getIdentifierName(item.alias) || this.getIdentifierName(item.name).split('\\').pop();
-
                             imports.push({
                                 type: 'module',
                                 targetPath: fullPath,
@@ -561,7 +539,6 @@ private getIdentifierName(node: any): string {
                     const useType = node.type || 'class';
                     const fullPath = node.name;
                     const alias = node.alias?.name || node.name.split('\\').pop();
-
                     imports.push({
                         type: 'module',
                         targetPath: fullPath,
@@ -579,7 +556,6 @@ private getIdentifierName(node: any): string {
                     if (node.target && node.target.kind === 'string') {
                         const targetValue = node.target.value as string;
                         const targetPath = path.resolve(path.dirname(filePath), targetValue);
-
                         imports.push({
                             type: 'file',
                             targetPath: targetPath,
@@ -605,14 +581,12 @@ private getIdentifierName(node: any): string {
         } catch (error) {
             console.error(`Error parsing PHP imports in ${filePath}:`, error);
         }
-
         return imports;
     }
 
     // Enhanced signature formatting
     private formatEnhancedSignature(node: any, fileContent: string): string {
         if (!node.loc) return node.name?.name || '';
-
         try {
             const start = node.loc.start.offset;
             let end = node.loc.end.offset;
@@ -708,15 +682,330 @@ private getIdentifierName(node: any): string {
 
     private extractName(node: any): string {
         if (!node) return '';
-
         if (typeof node === 'string') return node;
         if (node.name) return node.name;
         if (node.value) return String(node.value);
-
         return '';
     }
 
-    // Enhanced code entity parsing with PHP 8+ support
+    // Extract HTML content from PHP strings
+    private async extractHtmlFromPhpStrings(
+        filePath: string,
+        fileContent: string,
+        projectRootPath: string
+    ): Promise<ExtractedCodeEntity[]> {
+        const entities: ExtractedCodeEntity[] = [];
+        try {
+            const ast = this.parser.parseCode(fileContent, filePath);
+            const htmlStrings: Array<{ value: string; line: number }> = [];
+
+            const traverse = (node: any) => {
+                if (!node) return;
+
+                // Look for echo statements
+                if (node.kind === 'echo') {
+                    if (node.arguments) {
+                        node.arguments.forEach((arg: any) => {
+                            if (arg.kind === 'string') {
+                                htmlStrings.push({
+                                    value: arg.value,
+                                    line: arg.loc?.start?.line || 0
+                                });
+                            }
+                            // Handle concatenation of strings
+                            if (arg.kind === 'bin' && arg.type === '.') {
+                                // Try to resolve simple concatenations
+                                let concatenated = '';
+                                let left = arg.left;
+                                let right = arg.right;
+
+                                while (left && left.kind === 'bin' && left.type === '.') {
+                                    if (left.right && left.right.kind === 'string') {
+                                        concatenated = left.right.value + concatenated;
+                                    }
+                                    left = left.left;
+                                }
+                                if (left && left.kind === 'string') {
+                                    concatenated = left.value + concatenated;
+                                }
+                                if (right && right.kind === 'string') {
+                                    concatenated += right.value;
+                                }
+
+                                if (concatenated && concatenated.includes('<')) {
+                                    htmlStrings.push({
+                                        value: concatenated,
+                                        line: arg.loc?.start?.line || 0
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // Look for print statements
+                if (node.kind === 'call' && node.what &&
+                    node.what.kind === 'name' && node.what.name === 'print') {
+                    if (node.arguments && node.arguments.length > 0) {
+                        const firstArg = node.arguments[0];
+                        if (firstArg.kind === 'string') {
+                            htmlStrings.push({
+                                value: firstArg.value,
+                                line: firstArg.loc?.start?.line || 0
+                            });
+                        }
+                    }
+                }
+
+                // Look for any string literal that contains HTML tags
+                if (node.kind === 'string' && typeof node.value === 'string') {
+                    if (node.value.includes('<') && node.value.includes('>')) {
+                        // Check if it looks like HTML
+                        if (node.value.match(/<[a-zA-Z][^>]*>/)) {
+                            htmlStrings.push({
+                                value: node.value,
+                                line: node.loc?.start?.line || 0
+                            });
+                        }
+                    }
+                }
+
+                // Recurse
+                if (Array.isArray(node.children)) {
+                    node.children.forEach(traverse);
+                }
+                if (Array.isArray(node.body)) {
+                    node.body.forEach(traverse);
+                }
+            };
+
+            traverse(ast);
+
+            // Now parse each HTML string
+            for (const htmlString of htmlStrings) {
+                try {
+                    // Create a temporary file path for the HTML string
+                    const tempFilePath = filePath + '.html';
+                    // Parse the HTML string
+                    const htmlEntities = await this.htmlParser.parseCodeEntities(
+                        tempFilePath,
+                        htmlString.value,
+                        projectRootPath
+                    );
+
+                    // Adjust the entities to reference the original PHP file
+                    htmlEntities.forEach(entity => {
+                        entity.filePath = filePath;
+                        entity.startLine = htmlString.line;
+                        entity.endLine = htmlString.line;
+                        entity.metadata = entity.metadata || {};
+                        entity.metadata.source = 'php_string';
+                    });
+                    entities.push(...htmlEntities);
+                } catch (error) {
+                    console.error(`Error parsing HTML string in ${filePath}:`, error);
+                }
+            }
+        } catch (error) {
+            console.error(`Error extracting HTML from PHP strings in ${filePath}:`, error);
+        }
+        return entities;
+    }
+
+    // Extract inline CSS from PHP strings
+    private async extractCssFromPhpStrings(
+        filePath: string,
+        fileContent: string,
+        projectRootPath: string
+    ): Promise<ExtractedCodeEntity[]> {
+        const entities: ExtractedCodeEntity[] = [];
+        try {
+            const ast = this.parser.parseCode(fileContent, filePath);
+            const cssStrings: Array<{ value: string; line: number }> = [];
+
+            const traverse = (node: any) => {
+                if (!node) return;
+
+                // Look for CSS in string literals
+                if (node.kind === 'string' && typeof node.value === 'string') {
+                    // Simple heuristic to detect CSS: contains { and : and ;
+                    if (node.value.includes('{') && node.value.includes(':') && node.value.includes(';')) {
+                        cssStrings.push({
+                            value: node.value,
+                            line: node.loc?.start?.line || 0
+                        });
+                    }
+                }
+
+                // Recurse
+                if (Array.isArray(node.children)) {
+                    node.children.forEach(traverse);
+                }
+                if (Array.isArray(node.body)) {
+                    node.body.forEach(traverse);
+                }
+            };
+
+            traverse(ast);
+
+            // Parse each CSS string
+            for (const cssString of cssStrings) {
+                try {
+                    const tempFilePath = filePath + '.css';
+                    const cssEntities = await this.cssParser.parseCodeEntities(
+                        tempFilePath,
+                        cssString.value,
+                        projectRootPath
+                    );
+
+                    cssEntities.forEach(entity => {
+                        entity.filePath = filePath;
+                        entity.startLine = cssString.line;
+                        entity.endLine = cssString.line;
+                        entity.metadata = entity.metadata || {};
+                        entity.metadata.source = 'php_string';
+                    });
+                    entities.push(...cssEntities);
+                } catch (error) {
+                    console.error(`Error parsing CSS string in ${filePath}:`, error);
+                }
+            }
+        } catch (error) {
+            console.error(`Error extracting CSS from PHP strings in ${filePath}:`, error);
+        }
+        return entities;
+    }
+
+    // Extract inline JavaScript from PHP strings
+    private async extractJsFromPhpStrings(
+        filePath: string,
+        fileContent: string,
+        projectRootPath: string
+    ): Promise<ExtractedCodeEntity[]> {
+        const entities: ExtractedCodeEntity[] = [];
+        try {
+            const ast = this.parser.parseCode(fileContent, filePath);
+            const jsStrings: Array<{ value: string; line: number }> = [];
+
+            const traverse = (node: any) => {
+                if (!node) return;
+
+                // Look for JS in string literals
+                if (node.kind === 'string' && typeof node.value === 'string') {
+                    // Simple heuristic to detect JS: contains function or var or let or const
+                    if (node.value.includes('function') ||
+                        node.value.includes('var ') ||
+                        node.value.includes('let ') ||
+                        node.value.includes('const ') ||
+                        node.value.includes('=>')) {
+                        jsStrings.push({
+                            value: node.value,
+                            line: node.loc?.start?.line || 0
+                        });
+                    }
+                }
+
+                // Recurse
+                if (Array.isArray(node.children)) {
+                    node.children.forEach(traverse);
+                }
+                if (Array.isArray(node.body)) {
+                    node.body.forEach(traverse);
+                }
+            };
+
+            traverse(ast);
+
+            // Parse each JS string
+            for (const jsString of jsStrings) {
+                try {
+                    const tempFilePath = filePath + '.js';
+                    const jsEntities = await this.jsParser.parseCodeEntities(
+                        tempFilePath,
+                        jsString.value,
+                        projectRootPath
+                    );
+
+                    jsEntities.forEach(entity => {
+                        entity.filePath = filePath;
+                        entity.startLine = jsString.line;
+                        entity.endLine = jsString.line;
+                        entity.metadata = entity.metadata || {};
+                        entity.metadata.source = 'php_string';
+                    });
+                    entities.push(...jsEntities);
+                } catch (error) {
+                    console.error(`Error parsing JS string in ${filePath}:`, error);
+                }
+            }
+        } catch (error) {
+            console.error(`Error extracting JS from PHP strings in ${filePath}:`, error);
+        }
+        return entities;
+    }
+
+    // Extract Tailwind classes from PHP strings
+    private async extractTailwindFromPhpStrings(
+        filePath: string,
+        fileContent: string,
+        projectRootPath: string
+    ): Promise<ExtractedCodeEntity[]> {
+        const entities: ExtractedCodeEntity[] = [];
+        try {
+            const ast = this.parser.parseCode(fileContent, filePath);
+            const classStrings: Array<{ value: string; line: number }> = [];
+
+            const traverse = (node: any) => {
+                if (!node) return;
+
+                // Look for class attributes in string literals
+                if (node.kind === 'string' && typeof node.value === 'string') {
+                    // Look for class="..." patterns
+                    const classMatch = node.value.match(/class=["']([^"']+)["']/);
+                    if (classMatch && classMatch[1]) {
+                        classStrings.push({
+                            value: classMatch[1],
+                            line: node.loc?.start?.line || 0
+                        });
+                    }
+                }
+
+                // Recurse
+                if (Array.isArray(node.children)) {
+                    node.children.forEach(traverse);
+                }
+                if (Array.isArray(node.body)) {
+                    node.body.forEach(traverse);
+                }
+            };
+
+            traverse(ast);
+
+            // Parse each class string for Tailwind classes
+            for (const classString of classStrings) {
+                try {
+                    const tailwindEntities = await this.tailwindParser.parseClassString(
+                        classString.value,
+                        filePath,
+                        classString.line
+                    );
+
+                    tailwindEntities.forEach(entity => {
+                        entity.metadata = entity.metadata || {};
+                        entity.metadata.source = 'php_string';
+                    });
+                    entities.push(...tailwindEntities);
+                } catch (error) {
+                    console.error(`Error parsing Tailwind classes in ${filePath}:`, error);
+                }
+            }
+        } catch (error) {
+            console.error(`Error extracting Tailwind classes from PHP strings in ${filePath}:`, error);
+        }
+        return entities;
+    }
+
+    // Enhanced code entity parsing with PHP 8+ support and mixed content detection
     async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<EnhancedCodeEntity[]> {
         const entities: EnhancedCodeEntity[] = [];
         const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
@@ -730,7 +1019,6 @@ private getIdentifierName(node: any): string {
             // Pre-scan for namespace and use statements
             const preScan = (node: any) => {
                 if (!node) return;
-
                 if (node.kind === 'namespace') {
                     this.namespaceResolver.setNamespace(node.name?.name || '');
                     if (node.children) node.children.forEach(preScan);
@@ -747,7 +1035,6 @@ private getIdentifierName(node: any): string {
                     node.children.forEach(preScan);
                 }
             };
-
             preScan(ast);
 
             let currentNamespace = '';
@@ -761,20 +1048,20 @@ private getIdentifierName(node: any): string {
             const traverse = (node: any, parentContext: any = {}): void => {
                 if (!node || !node.kind) return;
 
-            const baseEntity: EnhancedCodeEntity = {
-                startLine: node.loc?.start?.line || 0,
-                endLine: node.loc?.end?.line || 0,
-                filePath: absoluteFilePath,
-                containingDirectory: containingDirectory,
-                signature: this.formatEnhancedSignature(node, fileContent),
-                docstring: this.extractDocstring(fileContent, node.loc?.start?.offset || 0) || undefined,
-                namespace: this.namespaceResolver.getCurrentNamespace(),
-                fullyQualifiedName: '',
-                type: 'function' as EnhancedCodeEntity['type'], // Will be overridden by specific entity types
-                name: '',
-                fullName: '',
-                isExported: false
-            };
+                const baseEntity: EnhancedCodeEntity = {
+                    startLine: node.loc?.start?.line || 0,
+                    endLine: node.loc?.end?.line || 0,
+                    filePath: absoluteFilePath,
+                    containingDirectory: containingDirectory,
+                    signature: this.formatEnhancedSignature(node, fileContent),
+                    docstring: this.extractDocstring(fileContent, node.loc?.start?.offset || 0) || undefined,
+                    namespace: this.namespaceResolver.getCurrentNamespace(),
+                    fullyQualifiedName: '',
+                    type: 'function' as EnhancedCodeEntity['type'], // Will be overridden by specific entity types
+                    name: '',
+                    fullName: '',
+                    isExported: false
+                };
 
                 // Enhanced docBlock parsing
                 if (node.leadingComments && node.leadingComments.length > 0) {
@@ -782,7 +1069,6 @@ private getIdentifierName(node: any): string {
                         .filter((c: any) => c.kind === 'commentblock')
                         .map((c: any) => c.value)
                         .join('\n');
-
                     if (docBlock) {
                         baseEntity.docBlock = this.parseDocBlock(docBlock);
                     }
@@ -801,7 +1087,6 @@ private getIdentifierName(node: any): string {
                     case 'trait':
                         currentClass = node.name?.name ?? '';
                         currentClassFullName = getFullyQualifiedName(currentClass ?? '');
-
                         const classEntity: EnhancedCodeEntity = {
                             ...baseEntity,
                             type: (node.kind as EnhancedCodeEntity['type']),
@@ -815,19 +1100,21 @@ private getIdentifierName(node: any): string {
                             isAbstract: node.isAbstract || false,
                             isReadonly: node.isReadonly || false,
                         };
-
                         entities.push(classEntity);
 
                         // Process class body
                         if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, { ...parentContext, className: currentClass, classFullName: currentClassFullName }));
+                            node.body.forEach((child: any) => traverse(child, {
+                                ...parentContext,
+                                className: currentClass,
+                                classFullName: currentClassFullName
+                            }));
                         }
                         break;
 
                     case 'enum':
                         const enumName = node.name?.name || '';
                         const enumFullName = getFullyQualifiedName(enumName);
-
                         const enumEntity: EnhancedCodeEntity = {
                             ...baseEntity,
                             type: 'class', // Map enum to class for compatibility
@@ -844,7 +1131,6 @@ private getIdentifierName(node: any): string {
                                     value: caseNode.value ? this.extractValue(caseNode.value) : undefined,
                                 })),
                         };
-
                         entities.push(enumEntity);
                         break;
 
@@ -852,7 +1138,6 @@ private getIdentifierName(node: any): string {
                     case 'closure':
                         const functionName = node.name?.name || `closure_${node.loc?.start?.line || 0}`;
                         const functionFullName = getFullyQualifiedName(functionName, 'function');
-
                         const functionParams = (node.arguments || []).map((p: any) => {
                             const param: EnhancedParameterInfo = {
                                 name: p.name?.name || '',
@@ -870,7 +1155,6 @@ private getIdentifierName(node: any): string {
                                     isReadonly: p.readonly || false,
                                 };
                             }
-
                             return param;
                         });
 
@@ -898,14 +1182,12 @@ private getIdentifierName(node: any): string {
                                 isMixed: this.parseReturnType(node) === 'mixed',
                             },
                         };
-
                         entities.push(functionEntity);
                         break;
 
                     case 'method':
                         const methodName = node.name?.name || '';
-                            const methodFullName = `${currentClassFullName || ''}::${methodName || ''}`;
-
+                        const methodFullName = `${currentClassFullName || ''}::${methodName || ''}`;
                         const methodParams = (node.arguments || []).map((p: any) => {
                             const param: EnhancedParameterInfo = {
                                 name: p.name?.name || '',
@@ -922,7 +1204,6 @@ private getIdentifierName(node: any): string {
                                     isReadonly: p.readonly || false,
                                 };
                             }
-
                             return param;
                         });
 
@@ -959,14 +1240,12 @@ private getIdentifierName(node: any): string {
                                 isMixed: this.parseReturnType(node) === 'mixed',
                             },
                         };
-
                         entities.push(methodEntity);
                         break;
 
                     case 'property':
                         const propertyName = node.name?.name || '';
                         const propertyFullName = `${currentClassFullName || ''}::${propertyName || ''}`;
-
                         let propertyAccessibility: 'public' | 'private' | 'protected' = 'public';
                         if (node.isPrivate) propertyAccessibility = 'private';
                         else if (node.isProtected) propertyAccessibility = 'protected';
@@ -982,14 +1261,12 @@ private getIdentifierName(node: any): string {
                             isStatic: node.isStatic || false,
                             isReadonly: node.readonly || false,
                         };
-
                         entities.push(propertyEntity);
                         break;
 
                     case 'constant':
                         const constantName = node.name?.name || '';
                         const constantFullName = getFullyQualifiedName(constantName || '', 'const');
-
                         const constantEntity: EnhancedCodeEntity = {
                             ...baseEntity,
                             type: 'variable',
@@ -998,7 +1275,6 @@ private getIdentifierName(node: any): string {
                             parentClass: parentContext.className || '',
                             isExported: true,
                         };
-
                         entities.push(constantEntity);
                         break;
                 }
@@ -1025,6 +1301,27 @@ private getIdentifierName(node: any): string {
             console.error(`Error parsing inline HTML in ${filePath}:`, error);
         }
 
+        // Extract and parse mixed content from PHP strings
+        try {
+            // Extract HTML from PHP strings
+            const htmlFromStrings = await this.extractHtmlFromPhpStrings(filePath, fileContent, projectRootPath);
+            entities.push(...htmlFromStrings);
+
+            // Extract CSS from PHP strings
+            const cssFromStrings = await this.extractCssFromPhpStrings(filePath, fileContent, projectRootPath);
+            entities.push(...cssFromStrings);
+
+            // Extract JavaScript from PHP strings
+            const jsFromStrings = await this.extractJsFromPhpStrings(filePath, fileContent, projectRootPath);
+            entities.push(...jsFromStrings);
+
+            // Extract Tailwind classes from PHP strings
+            const tailwindFromStrings = await this.extractTailwindFromPhpStrings(filePath, fileContent, projectRootPath);
+            entities.push(...tailwindFromStrings);
+        } catch (error) {
+            console.error(`Error extracting mixed content from PHP strings in ${filePath}:`, error);
+        }
+
         return entities;
     }
 
@@ -1047,7 +1344,6 @@ private getIdentifierName(node: any): string {
 
     private extractValue(node: any): string {
         if (!node) return '';
-
         switch (node.kind) {
             case 'string':
                 return `"${node.value}"`;
@@ -1068,11 +1364,9 @@ private getIdentifierName(node: any): string {
         if (node.type) {
             return this.extractName(node.type);
         }
-
         if (node.returnType) {
             return this.extractName(node.returnType);
         }
-
         return 'mixed';
     }
 }

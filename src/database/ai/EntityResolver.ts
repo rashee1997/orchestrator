@@ -1,4 +1,5 @@
 import { levenshteinDistance } from '../utils/string-similarity.js';
+import { cosineSimilarity } from '../services/gemini-integration-modules/GeminiUtilityFunctions.js';
 
 export interface Entity {
     id: string;
@@ -107,7 +108,7 @@ export class EntityResolver {
 
         // Vector similarity
         if (entity.embedding && ctx.queryEmbedding) {
-            const sim = this.cosineSimilarity(entity.embedding, ctx.queryEmbedding);
+            const sim = cosineSimilarity(entity.embedding, ctx.queryEmbedding);
             score += sim * 50;
         }
 
@@ -153,7 +154,7 @@ export class EntityResolver {
         for (const candidate of allEntities) {
             if (candidate.id === entity.id) continue;
             const sim = opts.useVectorOnly
-                ? this.cosineSimilarity(entity.embedding || [], candidate.embedding || [])
+                ? cosineSimilarity(entity.embedding || [], candidate.embedding || [])
                 : this.hybridSimilarity(entity, candidate);
             if (sim >= threshold) results.push({ entity: candidate, similarity: sim });
         }
@@ -167,7 +168,7 @@ export class EntityResolver {
 
         // Vector
         if (a.embedding && b.embedding) {
-            score += this.cosineSimilarity(a.embedding, b.embedding) * 0.4;
+            score += cosineSimilarity(a.embedding, b.embedding) * 0.4;
             weight += 0.4;
         }
 
@@ -252,20 +253,5 @@ export class EntityResolver {
         const freq: Record<string, number> = {};
         for (const item of arr) freq[item] = (freq[item] || 0) + 1;
         return Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0] || arr[0];
-    }
-
-    // ------------------------------------------------------------
-    // 5. Utilities
-    // ------------------------------------------------------------
-    private cosineSimilarity(a: number[], b: number[]): number {
-        if (a.length !== b.length) return 0;
-        let dot = 0, na = 0, nb = 0;
-        for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            na += a[i] * a[i];
-            nb += b[i] * b[i];
-        }
-        const denom = Math.sqrt(na) * Math.sqrt(nb);
-        return denom ? dot / denom : 0;
     }
 }

@@ -5,6 +5,7 @@ import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatObjectToMarkd
 import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCodeEntity } from '../database/services/CodebaseIntrospectionService.js';
 import path from 'path';
 import fs from 'fs/promises';
+import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 // ============================================================================
 // Helper Functions
@@ -819,7 +820,7 @@ ${formatJsonToMarkdownCodeBlock(resultData)}
 
             try {
                 const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
-                const result = JSON.parse(resultJsonString);
+                const result = parseGeminiJsonResponse(resultJsonString);
 
                 let md = `## Natural Language Query Result for Agent: \`${agent_id}\`
 `;

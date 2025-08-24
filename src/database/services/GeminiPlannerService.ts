@@ -4,6 +4,13 @@ import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
 import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { GeminiPlannerResponseSchema } from './gemini-integration-modules/GeminiSchema.js';
+import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import {
+    PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT,
+    PLANNER_USER_QUERY_REFINED_PROMPT,
+    PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
+    PLANNER_USER_QUERY_GOAL_PROMPT
+} from './gemini-integration-modules/GeminiPromptTemplates.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -11,23 +18,29 @@ interface GeminiDetailedPlanGenerationResponse {
     estimated_duration_days: number;
     target_start_date: string;
     target_end_date: string;
+    kpis?: string[];
+    dependency_analysis?: string;
     plan_risks_and_mitigations: Array<{
         risk_description: string;
         mitigation_strategy: string;
     }>;
-    tasks?: Array<{ // Added tasks to the response interface
+    tasks: Array<{ // Made tasks required
         task_number: number;
         title: string;
         description: string;
         purpose: string;
+        estimated_duration_days?: number;
         estimated_effort_hours?: number;
         task_risks?: string[];
         micro_steps?: string[];
-        suggested_files_involved?: string[]; // Added suggested_files_involved here
-        task_dependencies?: string[]; // Added for explicit dependencies
-        roles_required?: string[]; // Added for roles/skills
-        completion_criteria?: string; // Added for clear completion criteria
-        code_content?: string; // NEW: For code diffs or full code
+        suggested_files_involved?: string[];
+        task_dependencies?: string[];
+        roles_required?: string[];
+        completion_criteria?: string;
+        code_content?: string;
+        risks?: string[];
+        required_skills?: string[];
+        assigned_to?: string; // ADDED: Assigned to field
     }>;
 }
 
@@ -51,6 +64,8 @@ export interface InitialDetailedPlanAndTasks {
             target_start_date?: string;
             target_end_date?: string;
             plan_risks_and_mitigations?: Array<{ risk_description: string; mitigation_strategy: string; }>;
+            kpis?: string[];
+            dependency_analysis?: string;
             [key: string]: any; // Allow other metadata
         };
     };
@@ -60,6 +75,7 @@ export interface InitialDetailedPlanAndTasks {
         description: string;
         purpose: string;
         status: string; // e.g., 'PLANNED'
+        estimated_duration_days?: number;
         estimated_effort_hours?: number; // This field exists in plan_tasks schema
         task_risks?: string[]; // Add this
         micro_steps?: string[]; // Add this
@@ -128,7 +144,7 @@ export class GeminiPlannerService {
         // -----------------------------------------------------------------
         // 3️⃣ Parse Gemini JSON response
         // -----------------------------------------------------------------
-        const parsedResponse = this.parseGeminiResponse(geminiResponseText);
+        const parsedResponse = parseGeminiJsonResponse(geminiResponseText);
 
         // -----------------------------------------------------------------
         // 4️⃣ Transform to domain objects
@@ -172,14 +188,14 @@ export class GeminiPlannerService {
             }
 
             refinedPromptIdForPlan = identifier;
-            systemInstruction = this.getSystemInstructionForRefinedPrompt();
+            systemInstruction = PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT;
             const planGenerationRefinedPromptDetails = this.extractPlanGenerationPayload(refinedPromptDetails);
 
             userQuery = this.buildUserQueryForRefinedPrompt(planGenerationRefinedPromptDetails, refinedPromptDetails, liveFilesContent);
         } else {
             // ---- High-level Goal Path -------------------------------------------------
             const codebaseContext = await this.resolveCodebaseContext(agentId, codebaseContextSummary);
-            systemInstruction = this.getSystemInstructionForGoal();
+            systemInstruction = PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT;
             userQuery = this.buildUserQueryForGoal(identifier, codebaseContext, liveFilesContent);
         }
 
@@ -190,66 +206,6 @@ export class GeminiPlannerService {
             refinedPromptDetails,
             originalGoalText: isRefinedPromptId ? null : identifier, // Conditionally add originalGoalText
         };
-    }
-
-    private getSystemInstructionForRefinedPrompt(): string {
-        return `You are an expert project planning assistant and senior software engineer.  
-You will be given a structured input object (\`Goal Object\` or \`Refined Prompt Object\`).  
-Your task is to generate a **complete, structured project plan** in JSON format.
-
-⚠️ Output Rules
-- You MUST output only a valid JSON object.
-- Do NOT include any explanations, markdown, comments, or text outside the JSON.
-- The JSON must strictly follow the schema below.
-
-Schema for Each Task
-- task_number → sequential number of the task
-- title → short (≤ 10 words), non-empty string
-- description → detailed explanation of the task
-- purpose → why this task is necessary
-- suggested_files_involved → list of file names involved
-- code_content → required for all coding tasks (rules below)
-- completion_criteria → measurable criteria to confirm the task is done
-- dependencies_task_ids_json → array of strings, each exactly matching the title of another task in the plan
-
-Task Generation Rules
-1. Break down the input into clear, ordered tasks.
-2. Merge or consolidate redundant steps.
-3. Dependencies must reference task titles exactly.
-4. Always include these phases explicitly:
-   - Requirement clarification
-   - Architecture/Design definition
-   - Development tasks
-   - Integration testing
-   - Performance benchmarking
-   - Code reviews
-   - Documentation updates
-   - Deployment plan
-5. If file references are available (either inferred from the goal or given explicitly), include them in both \`suggested_files_involved\` and \`code_content\`.
-
-Code Content Rules
-- \`code_content\` is mandatory and non-empty for all coding tasks.
-- If creating a new file → include the full, complete source code, with a comment at the top specifying the file path (e.g., \`// src/app/main.ts\`).
-- If modifying an existing file → include a valid unified diff patch, beginning with \`--- a/...\` and \`+++ b/...\`.
-- Placeholders (e.g., empty strings, \`// TODO\`) are strictly forbidden.
-
-What Not to Do
-- Do NOT return prose, explanations, or reasoning outside JSON.
-- Do NOT use placeholders in \`code_content\`.
-- Do NOT break schema field names.`;
-    }
-
-    private getSystemInstructionForGoal(): string {
-        return `You are an expert project planning assistant. Your task is to take a user's high‑level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY‑MM‑DD if specific dates are not inferable), potential risks and mitigations, and a list of actionable high‑level tasks.
-
-Each task **must** contain a non‑empty \`title\` (≤ 10 words) and a non‑empty \`description\`. Do not emit placeholders such as “Untitled Task”.
-
-Enhancements:
-• Consolidate redundancy.  
-• Explicit dependencies.  
-• Add missing critical phases (code review, integration testing, performance profiling, documentation, deployment).  
-• Refined task descriptions with completion criteria and required roles/skills.  
-• Comprehensive details for each task (estimated effort, risks, micro‑steps, suggested files).`;
     }
 
     private extractPlanGenerationPayload(refined: any): Record<string, unknown> {
@@ -270,7 +226,7 @@ Enhancements:
             codebase_context_summary_by_ai: refined.codebase_context_summary_by_ai,
         };
     }
-    
+
     private buildUserQueryForRefinedPrompt(
         payload: Record<string, unknown>,
         refined: any,
@@ -284,40 +240,11 @@ Enhancements:
             }).join('\n\n');
         }
 
-        return `Analyze the following 'Refined Prompt Object' and generate a complete project plan.
-
-Refined Prompt Object:
-\`\`\`json
-${JSON.stringify(payload, null, 2)}
-\`\`\`
-
-Consider the following codebase context and live file content when generating the plan and tasks:
-Refined Prompt Context Summary:
-\`\`\`
-${refined.codebase_context_summary_by_ai || 'No specific codebase context provided.'}
-\`\`\`
-Live File Content:
-\`\`\`
-${liveFilesString}
-\`\`\`
-
-Provide a JSON object with:
-1. plan_title (max 10 words)
-2. estimated_duration_days (integer)
-3. target_start_date ("YYYY-MM-DD", today = ${today})
-4. target_end_date (calculated)
-5. plan_risks_and_mitigations: an array of objects, each with "risk_description" and "mitigation_strategy" string properties.
-6. tasks: an array of task objects, each containing:
-   - task_number (integer)
-   - title (string)
-   - description (string)
-   - purpose (string)
-   - suggested_files_involved (array of strings)
-   - code_content (string, either full code for new files or a diff for existing files, mandatory for coding tasks)
-   - completion_criteria (string)
-   - dependencies_task_ids_json (array of strings, referencing other task titles)
-
-Return ONLY the JSON object.`;
+        return PLANNER_USER_QUERY_REFINED_PROMPT
+            .replace('{today}', today)
+            .replace('{payloadJson}', JSON.stringify(payload, null, 2))
+            .replace('{contextSummary}', refined.codebase_context_summary_by_ai || 'No specific codebase context provided.')
+            .replace('{liveFilesString}', liveFilesString);
     }
 
     private async resolveCodebaseContext(agentId: string, fallback?: string): Promise<string | undefined> {
@@ -335,38 +262,11 @@ Return ONLY the JSON object.`;
             }).join('\n\n');
         }
 
-        return `Analyze the following user goal and generate a detailed project plan.
-
-User Goal:
-"${goal}"
-
-Codebase context:
-\`\`\`
-${codebaseContext || 'No specific codebase context provided.'}
-\`\`\`
-Live File Content for analysis:
-\`\`\`
-${liveFilesString}
-\`\`\`
-
-Provide a JSON object with:
-1. plan_title (max 10 words)
-2. overall_plan_goal (re-phrased)
-3. estimated_duration_days (integer)
-4. target_start_date ("YYYY-MM-DD", today = ${today})
-5. target_end_date (calculated)
-6. plan_risks_and_mitigations: an array of objects, each with "risk_description" and "mitigation_strategy" string properties.
-7. tasks: an array of task objects, each containing:
-   - task_number (integer)
-   - title (string)
-   - description (string)
-   - purpose (string)
-   - suggested_files_involved (array of strings)
-   - code_content (string, either full code for new files or a diff for existing files, mandatory for coding tasks)
-   - completion_criteria (string)
-   - dependencies_task_ids_json (array of strings, referencing other task titles)
-
-Return ONLY the JSON object.`;
+        return PLANNER_USER_QUERY_GOAL_PROMPT
+            .replace(/{today}/g, today)
+            .replace('{goal}', goal)
+            .replace('{codebaseContext}', codebaseContext || 'No specific codebase context provided.')
+            .replace('{liveFilesString}', liveFilesString);
     }
 
     // -----------------------------------------------------------------
@@ -390,40 +290,6 @@ Return ONLY the JSON object.`;
     // -----------------------------------------------------------------
     // Helper: Robust JSON extraction & parsing
     // -----------------------------------------------------------------
-    private parseGeminiResponse(raw: string): GeminiDetailedPlanGenerationResponse {
-        // Helper to find and extract a JSON object from a string that might be wrapped in markdown
-        const extractJson = (text: string): string | null => {
-            const match = text.match(/```json\s*([\s\S]*?)\s*```|({[\s\S]*})/);
-            if (match) {
-                // If ```json block is found, use that. Otherwise, use the second group which should be the JSON object itself.
-                return match[1] || match[2];
-            }
-            return null;
-        };
-
-        const jsonString = extractJson(raw);
-        if (!jsonString) {
-            console.error("Fatal error: No JSON object found in the raw response.", raw);
-            throw new Error("AI plan generation failed: No JSON object found in the response.");
-        }
-
-        try {
-            const parsedJson = JSON.parse(jsonString);
-            const validationResult = GeminiPlannerResponseSchema.safeParse(parsedJson);
-
-            if (!validationResult.success) {
-                console.error("Fatal error during Zod schema validation. Raw response:", raw);
-                console.error("Validation errors:", validationResult.error.flatten());
-                throw new Error(`AI plan generation failed: Schema validation error. ${validationResult.error.message}`);
-            }
-
-            return validationResult.data as GeminiDetailedPlanGenerationResponse;
-        } catch (error) {
-            console.error("Fatal error during JSON.parse. Raw response:", raw);
-            console.error("JSON String that failed parsing:", jsonString);
-            throw new Error(`AI plan generation failed: Invalid JSON format. ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
 
 
     // -----------------------------------------------------------------
@@ -447,6 +313,8 @@ Return ONLY the JSON object.`;
                 target_start_date: resp.target_start_date,
                 target_end_date: resp.target_end_date,
                 plan_risks_and_mitigations: resp.plan_risks_and_mitigations,
+                kpis: resp.kpis,
+                dependency_analysis: resp.dependency_analysis,
             },
         };
     }
@@ -486,17 +354,31 @@ Return ONLY the JSON object.`;
                 notes.micro_steps = t.micro_steps;
             }
 
+            // Handle new risk and skill fields
+            const allRisks = t.task_risks || t.risks || [];
+            const allSkills = t.roles_required || t.required_skills || [];
+
+            // Add new fields to notes if they exist
+            if (t.risks !== undefined && t.risks.length > 0) {
+                notes.task_risks = [...(notes.task_risks || []), ...t.risks];
+            }
+            if (t.required_skills !== undefined && t.required_skills.length > 0) {
+                notes.required_skills = t.required_skills;
+            }
+
             return {
                 task_number: taskNumber,
                 title: safeTitle,
                 description: safeDescription,
                 purpose: safePurpose,
                 status: TASK_STATUS_PLANNED,
+                estimated_duration_days: t.estimated_duration_days,
                 estimated_effort_hours: t.estimated_effort_hours,
-                task_risks: t.task_risks,
+                task_risks: allRisks.length > 0 ? allRisks : t.task_risks,
                 micro_steps: t.micro_steps,
                 suggested_files_involved: t.suggested_files_involved ?? [],
                 dependencies_task_ids_json: t.task_dependencies ? JSON.stringify(t.task_dependencies) : null,
+                tools_required_list_json: allSkills.length > 0 ? JSON.stringify(allSkills) : (t.roles_required ? JSON.stringify(t.roles_required) : null),
                 assigned_to: t.roles_required ? JSON.stringify(t.roles_required) : null,
                 success_criteria_text: t.completion_criteria ?? null,
                 code_content: t.code_content ?? null,

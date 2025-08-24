@@ -14,67 +14,8 @@ import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../types/query.js';
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
-
-/**
- * Prompt template for translating natural language queries into structured graph queries using an AI model.
- */
-const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into a structured query for a knowledge graph.
-The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables.
-Node observations often include 'absolute_path', 'language', 'signature', 'lines', 'defined_in_file'.
-Key relation types include: 'contains_item', 'imports_file', 'imports_module', 'defined_in_file', 'has_method', 'calls_function', 'uses_class'.
-
-Given a natural language query, translate it into a JSON array of operation objects. Each object must have an "operation" and "args" field.
-
-Supported operations and their 'args' structure:
-1. 'search_nodes': args = { "query": "key:value key2:value2 ..." }
-   - The "query" string uses key:value pairs. Supported keys: 'entityType', 'name', 'file', 'obs', 'id', 'limit', 'defined_in_file_path', 'parent_class_full_name'.
-   - This is for finding nodes based on their properties.
-   - Example NLQ: "Find all functions in 'src/utils.ts' that mention 'format'"
-   - Translation: [{ "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }]
-
-2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
-   - Use for fetching specific nodes by their exact names.
-
-3. 'graph_traversal': args = { "start_node": "node_name", "relation_types": ["relation1"], "depth": number }
-   - Use for FORWARD (OUTGOING) traversal from a starting node.
-   - Answers questions like "What does X call?", "What does Y import?".
-   - Example NLQ: "What functions does 'AuthService' call?"
-   - Translation: [{ "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }]
-
-4. 'find_inbound_relations': args = { "target_node_name": "node_name", "relation_type": "relation_name" }
-   - Use for INVERSE (INCOMING) traversal to find source nodes.
-   - Answers questions like "Who calls X?", "Which files import Y?", "Where is Z used?".
-   - Example NLQ: "Who calls the 'processAndRefinePrompt' function?"
-   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }]
-   - Example NLQ: "Which files import 'CodebaseContextRetrieverService'?"
-   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }]
-
-5. 'read_graph': args = {}
-   - Use only if the query is very general like "show me the graph".
-
-Knowledge Graph Structure (or summary):
----
-\${graphRepresentation}
----
-
-Natural Language Query: "\${naturalLanguageQuery}"
-
----
-Instructions for translation:
-1. Analyze the NLQ and choose the most appropriate "operation(s)".
-2. If the query asks about what a node DOES (e.g., calls, contains, imports), use 'graph_traversal'.
-3. If the query asks about WHO acts upon a node (e.g., callers of, importers of, users of), use 'find_inbound_relations'.
-4. If a query asks for multiple distinct items (e.g., "Find class A and function B"), break it down into multiple separate operations in the array.
-   - Example NLQ: "Show me the GeminiApiClient class and the batchAskGemini method"
-   - Translation: [{ "operation": "open_nodes", "args": { "names": ["GeminiApiClient"] } }, { "operation": "open_nodes", "args": { "names": ["batchAskGemini"] } }]
-5. If the query asks for a process description, implementation details, or "how" something works (e.g., "how are API keys managed?"), it requires code analysis beyond simple graph lookups. In this case, return a single error operation.
-   - Example NLQ: "how are API keys managed in GeminiApiClient?"
-   - Translation: [{ "operation": "error", "args": { "message": "Could not translate query: This query requires code analysis of implementation details. Consider using a RAG tool like 'ask_gemini' with codebase context." } }]
-6. If the query cannot be reasonably translated for other reasons, return a single error operation:
-   [{ "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }]
-
-Translate the above Natural Language Query into the structured JSON array format. Provide ONLY the JSON array.
-`;
+import { parseGeminiJsonResponse as centralParseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
+import { NLP_QUERY_PROMPT_TEMPLATE } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
 
 export class KnowledgeGraphManagerV2 {
     private jsonlStorage: JsonlStorageManager;
@@ -592,41 +533,7 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
      * Ensures the final return value is always an array of operations.
      */
     private _parseGeminiJsonResponse(responseText: string): any[] {
-        let jsonToParse = responseText.trim();
-        const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch && jsonMatch[1]) {
-            jsonToParse = jsonMatch[1].trim();
-        }
-
-        // Find the start of the JSON (either '[' or '{')
-        const firstBracket = jsonToParse.indexOf('[');
-        const firstBrace = jsonToParse.indexOf('{');
-        let startIndex = -1;
-
-        if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
-            startIndex = firstBracket;
-        } else if (firstBrace !== -1) {
-            startIndex = firstBrace;
-        }
-
-        if (startIndex === -1) {
-            throw new Error("Response does not contain a valid JSON object or array.");
-        }
-
-        // Find the corresponding end of the JSON
-        const endChar = jsonToParse.charAt(startIndex) === '[' ? ']' : '}';
-        const lastIndex = jsonToParse.lastIndexOf(endChar);
-
-        if (lastIndex <= startIndex) {
-            throw new Error("Mismatched JSON delimiters in the response.");
-        }
-
-        jsonToParse = jsonToParse.substring(startIndex, lastIndex + 1);
-
-        // Clean up trailing commas that can cause JSON parsing errors
-        jsonToParse = jsonToParse.replace(/,\s*([}\]])/g, '$1');
-        const parsed = JSON.parse(jsonToParse);
-
+        const parsed = centralParseGeminiJsonResponse(responseText);
         // Ensure the final return is always an array of operations
         return Array.isArray(parsed) ? parsed : [parsed];
     }

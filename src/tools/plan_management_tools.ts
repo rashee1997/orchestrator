@@ -158,16 +158,30 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 let liveFilesContent: Map<string, string> | undefined;
                 if (args.live_review_file_paths && Array.isArray(args.live_review_file_paths)) {
                     liveFilesContent = new Map();
-                    for (const filePath of args.live_review_file_paths) {
-                        try {
-                             if (path.isAbsolute(filePath) && !filePath.startsWith(memoryManager.projectRootPath)) {
-                                 console.warn(`Skipping file outside of project root: ${filePath}`);
-                                 continue;
+                    for (const providedPath of args.live_review_file_paths) {
+                        if (!providedPath) continue; // Skip empty/null paths
+
+                        let fullPath: string;
+                        let keyPath: string = providedPath; // The key we use in the map
+
+                        // Check if the user has provided an absolute path.
+                        if (path.isAbsolute(providedPath)) {
+                            fullPath = providedPath;
+                            console.log(`Received absolute path for live review: ${fullPath}`);
+                            // Optional: Add a security warning if it's outside the main project root, but still allow it.
+                            if (!fullPath.startsWith(memoryManager.projectRootPath)) {
+                                console.warn(`Warning: Reading file from outside the configured project root: ${fullPath}`);
                             }
-                            const content = await fs.readFile(filePath, 'utf-8');
-                            liveFilesContent.set(filePath, content);
+                        } else {
+                            // If it's a relative path, resolve it against the project root.
+                            fullPath = path.resolve(memoryManager.projectRootPath, providedPath);
+                        }
+
+                        try {
+                            const content = await fs.readFile(fullPath, 'utf-8');
+                            liveFilesContent.set(keyPath, content);
                         } catch (error: any) {
-                            console.warn(`Could not read live file for planning context: ${filePath}. Error: ${error.message}`);
+                            console.warn(`Could not read live file for planning context: ${providedPath}. Resolved to: ${fullPath}. Error: ${error.message}`);
                         }
                     }
                 }

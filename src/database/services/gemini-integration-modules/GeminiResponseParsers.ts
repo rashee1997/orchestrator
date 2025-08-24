@@ -1,42 +1,89 @@
+// src/database/services/gemini-integration-modules/GeminiResponseParsers.ts
+/**
+ * Robustly extracts a JSON object/array from Gemini's raw text.
+ * Handles:
+ *   • Markdown fences (` ```json ` or plain ``` )
+ *   • Unescaped back‑slashes (Windows paths, stray `\` characters)
+ *   • New‑lines inside string values
+ *   • Trailing commas
+ *   • Control characters
+ *
+ * Returns the parsed object or throws a descriptive error.
+ */
 export function parseGeminiJsonResponse(textResponse: string): any {
     try {
-        let jsonString = textResponse;
-        const jsonMatch = textResponse.match(/```json\n([\s\S]*?)\n```/);
-        if (jsonMatch && jsonMatch[1]) {
-            jsonString = jsonMatch[1];
-        } else if (!(jsonString.startsWith("{") && jsonString.endsWith("}"))) {
-            const firstBrace = jsonString.indexOf('{');
-            const lastBrace = jsonString.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                jsonString = jsonString.substring(firstBrace, lastBrace + 1);
-            } else {
-                throw new Error("Response from Gemini was not in a recognizable JSON format.");
-            }
+        // -----------------------------------------------------------------
+        // 1️⃣  Trim & strip any markdown code fences
+        // -----------------------------------------------------------------
+        let jsonString = textResponse.trim();
+
+        // Detect a markdown block (```json … ``` or just ``` … ```)
+        const markdownMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (markdownMatch && markdownMatch[1]) {
+            jsonString = markdownMatch[1].trim();
         }
-        // Remove single-line comments (// ...) that might be present in the JSON string
-        jsonString = jsonString.replace(/\/\/.*$/gm, '');
 
-        // Attempt to fix common JSON parsing issues: unescaped newlines, tabs, etc. within string literals
-        // This is a heuristic and might not cover all cases, but targets common LLM output issues.
-        // It looks for unescaped newlines or tabs within double-quoted strings and escapes them.
-        jsonString = jsonString.replace(/\"([^\"\\]*(?:\\.[^\"\\]*)*)\"/g, (match, p1) => {
-            // p1 is the content inside the quotes
-            // Escape backslashes first, then double quotes, then newlines/tabs/returns
-            let escapedP1 = p1.replace(/\\/g, '\\\\') // Escape existing backslashes
-                              .replace(/"/g, '\\"')   // Escape existing double quotes
-                              .replace(/\n/g, '\\n')
-                              .replace(/\t/g, '\\t')
-                              .replace(/\r/g, '\\r');
-            return '"' + escapedP1 + '"';
-        });
+        // -----------------------------------------------------------------
+        // 2️⃣  Locate the outermost { … } or [ … ] (ignore any leading text)
+        // -----------------------------------------------------------------
+        const firstBrace = jsonString.indexOf('{');
+        const firstBracket = jsonString.indexOf('[');
+        let startIdx = -1;
+        let endChar = '}';
 
-        // Remove any remaining invalid control characters that JSON.parse would reject
-        // (ASCII 0-31, excluding tab \t, newline \n, carriage return \r which are handled by JSON.parse when escaped)
-        jsonString = jsonString.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+        if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+            startIdx = firstBrace;
+        } else if (firstBracket !== -1) {
+            startIdx = firstBracket;
+            endChar = ']';
+        }
 
-        return JSON.parse(jsonString);
+        if (startIdx === -1) {
+            throw new Error('No opening brace or bracket found in Gemini response.');
+        }
+
+        const lastIdx = jsonString.lastIndexOf(endChar);
+        if (lastIdx <= startIdx) {
+            throw new Error('Mismatched JSON delimiters in Gemini response.');
+        }
+
+        let extracted = jsonString.substring(startIdx, lastIdx + 1);
+
+        // -----------------------------------------------------------------
+        // 3️⃣  Clean up problematic characters
+        // -----------------------------------------------------------------
+        // a) Remove invisible control characters (U+0000‑U+001F, U+007F‑U+009F)
+        extracted = extracted.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+
+        // b) Escape stray back‑slashes that are NOT part of a valid JSON escape
+        //    Valid escapes: \", \\, \/ , \b , \f , \n , \r , \t , \uXXXX
+        extracted = extracted.replace(
+            /(?<!\\)\\(?!["\\/bfnrtu])/g,
+            '\\\\'
+        );
+
+        // c) Ensure all internal new‑lines are escaped (JSON strings cannot contain raw \n)
+        //    This is safe because we already escaped stray back‑slashes above.
+        extracted = extracted.replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+
+        // d) Remove trailing commas (e.g. {"a":1,} or [1,2,])
+        let prev: string;
+        do {
+            prev = extracted;
+            extracted = extracted.replace(/,\s*([}\]])/g, '$1');
+        } while (extracted !== prev);
+
+        // -----------------------------------------------------------------
+        // 4️⃣  Parse
+        // -----------------------------------------------------------------
+        return JSON.parse(extracted);
     } catch (parseError: any) {
-        console.error(`Error parsing Gemini API JSON response. Raw response: "${textResponse}". Parse error:`, parseError);
-        throw new Error(`Failed to parse Gemini API response. Raw response: "${textResponse.substring(0,200)}...". Error: ${parseError.message}`);
+        console.error(
+            `⚠️  Gemini JSON parsing failed. Raw response (first 500 chars):\n`,
+            textResponse.slice(0, 500)
+        );
+        throw new Error(
+            `Failed to parse Gemini API response. ${parseError.message}`
+        );
     }
 }

@@ -18,19 +18,12 @@ import { DatabaseService } from './services/DatabaseService.js';
 import { ConversationHistoryManager } from './managers/ConversationHistoryManager.js';
 import { ContextInformationManager } from './managers/ContextInformationManager.js';
 import { ReferenceKeyManager } from './managers/ReferenceKeyManager.js';
-import { SourceAttributionManager } from './managers/SourceAttributionManager.js';
-import { CorrectionLogManager } from './managers/CorrectionLogManager.js';
-import { SuccessMetricsManager } from './managers/SuccessMetricsManager.js';
 import { PlanTaskManager } from './managers/PlanTaskManager.js';
 import { SubtaskManager } from './managers/SubtaskManager.js';
 import { KnowledgeGraphFactory, IKnowledgeGraphManager } from './factories/KnowledgeGraphFactory.js';
-import { ToolExecutionLogManager } from './managers/ToolExecutionLogManager.js';
-import { TaskProgressLogManager } from './managers/TaskProgressLogManager.js';
-import { ErrorLogManager } from './managers/ErrorLogManager.js';
 import { GeminiIntegrationService } from './services/GeminiIntegrationService.js';
 import { GeminiPlannerService } from './services/GeminiPlannerService.js';
 import { DatabaseUtilityService } from './services/DatabaseUtilityService.js';
-import { TaskReviewLogManager, FinalPlanReviewLogManager } from './managers/TaskReviewLogManager.js';
 import { CodebaseEmbeddingService } from './services/CodebaseEmbeddingService.js';
 import { CodebaseContextRetrieverService } from './services/CodebaseContextRetrieverService.js'; // Import new service
 import { initializeVectorStoreDatabase, getVectorStoreDb, closeVectorStoreDatabase } from './vector_db.js';
@@ -42,22 +35,14 @@ export class MemoryManager {
     public conversationHistoryManager!: ConversationHistoryManager;
     public contextInformationManager!: ContextInformationManager;
     public referenceKeyManager!: ReferenceKeyManager;
-    public sourceAttributionManager!: SourceAttributionManager;
-    public correctionLogManager!: CorrectionLogManager;
-    public successMetricsManager!: SuccessMetricsManager;
     public planTaskManager!: PlanTaskManager;
     public subtaskManager!: SubtaskManager;
     public knowledgeGraphManager!: IKnowledgeGraphManager;
-    public toolExecutionLogManager!: ToolExecutionLogManager;
-    public taskProgressLogManager!: TaskProgressLogManager;
-    public errorLogManager!: ErrorLogManager;
     public geminiIntegrationService!: GeminiIntegrationService;
     public geminiPlannerService!: GeminiPlannerService;
     public codebaseEmbeddingService!: CodebaseEmbeddingService;
     public codebaseContextRetrieverService!: CodebaseContextRetrieverService;
     private databaseUtilityService!: DatabaseUtilityService;
-    public taskReviewLogManager!: TaskReviewLogManager;
-    public finalPlanReviewLogManager!: FinalPlanReviewLogManager;
 
     public projectRootPath: string = process.cwd();
 
@@ -118,17 +103,9 @@ export class MemoryManager {
         this.conversationHistoryManager = new ConversationHistoryManager(this.dbService, null as any); // Temporarily null
         await this.conversationHistoryManager.initializeTables(); // Initialize conversation history manager with new functionality
         this.referenceKeyManager = new ReferenceKeyManager(this.dbService);
-        this.sourceAttributionManager = new SourceAttributionManager(this.dbService);
-        this.correctionLogManager = new CorrectionLogManager(this.dbService);
-        this.successMetricsManager = new SuccessMetricsManager(this.dbService);
         this.planTaskManager = new PlanTaskManager(this.dbService);
         this.subtaskManager = new SubtaskManager(this.dbService);
         // Knowledge graph manager will be created later after GeminiIntegrationService is ready
-        this.toolExecutionLogManager = new ToolExecutionLogManager(this.dbService);
-        this.taskProgressLogManager = new TaskProgressLogManager(this.dbService);
-        this.errorLogManager = new ErrorLogManager(this.dbService);
-        this.taskReviewLogManager = new TaskReviewLogManager(this.dbService);
-        this.finalPlanReviewLogManager = new FinalPlanReviewLogManager(this.dbService);
         this.databaseUtilityService = new DatabaseUtilityService(this.dbService);
 
         // Now create GeminiIntegrationService
@@ -166,57 +143,6 @@ export class MemoryManager {
             }
         }
         await closeVectorStoreDatabase();
-    }
-
-    // --- Tool Execution Logs ---
-    async createToolExecutionLog(...args: Parameters<ToolExecutionLogManager['createToolExecutionLog']>) {
-        return this.toolExecutionLogManager.createToolExecutionLog(...args);
-    }
-    async getToolExecutionLogById(...args: Parameters<ToolExecutionLogManager['getToolExecutionLogById']>) {
-        return this.toolExecutionLogManager.getToolExecutionLogById(...args);
-    }
-    async getToolExecutionLogsByAgentId(...args: Parameters<ToolExecutionLogManager['getToolExecutionLogsByAgentId']>) {
-        return this.toolExecutionLogManager.getToolExecutionLogsByAgentId(...args);
-    }
-    async updateToolExecutionLogStatus(...args: Parameters<ToolExecutionLogManager['updateToolExecutionLogStatus']>) {
-        return this.toolExecutionLogManager.updateToolExecutionLogStatus(...args);
-    }
-    async deleteToolExecutionLog(...args: Parameters<ToolExecutionLogManager['deleteToolExecutionLog']>) {
-        return this.toolExecutionLogManager.deleteToolExecutionLog(...args);
-    }
-
-    // --- Task Progress Logs ---
-    async createTaskProgressLog(...args: Parameters<TaskProgressLogManager['createTaskProgressLog']>) {
-        return this.taskProgressLogManager.createTaskProgressLog(...args);
-    }
-    async getTaskProgressLogById(...args: Parameters<TaskProgressLogManager['getTaskProgressLogById']>) {
-        return this.taskProgressLogManager.getTaskProgressLogById(...args);
-    }
-    async getTaskProgressLogsByAgentId(...args: Parameters<TaskProgressLogManager['getTaskProgressLogsByAgentId']>) {
-        return this.taskProgressLogManager.getTaskProgressLogsByAgentId(...args);
-    }
-    async updateTaskProgressLogStatus(...args: Parameters<TaskProgressLogManager['updateTaskProgressLogStatus']>) {
-        return this.taskProgressLogManager.updateTaskProgressLogStatus(...args);
-    }
-    async deleteTaskProgressLog(...args: Parameters<TaskProgressLogManager['deleteTaskProgressLog']>) {
-        return this.taskProgressLogManager.deleteTaskProgressLog(...args);
-    }
-
-    // --- Error Logs ---
-    async createErrorLog(...args: Parameters<ErrorLogManager['createErrorLog']>) {
-        return this.errorLogManager.createErrorLog(...args);
-    }
-    async getErrorLogById(...args: Parameters<ErrorLogManager['getErrorLogById']>) {
-        return this.errorLogManager.getErrorLogById(...args);
-    }
-    async getErrorLogsByAgentId(...args: Parameters<ErrorLogManager['getErrorLogsByAgentId']>) {
-        return this.errorLogManager.getErrorLogsByAgentId(...args);
-    }
-    async updateErrorLogStatus(...args: Parameters<ErrorLogManager['updateErrorLogStatus']>) {
-        return this.errorLogManager.updateErrorLogStatus(...args);
-    }
-    async deleteErrorLog(...args: Parameters<ErrorLogManager['deleteErrorLog']>) {
-        return this.errorLogManager.deleteErrorLog(...args);
     }
 
     // --- Conversation Sessions ---
@@ -302,33 +228,6 @@ export class MemoryManager {
     }
     async getReferenceKeys(...args: Parameters<ReferenceKeyManager['getReferenceKeys']>) {
         return this.referenceKeyManager.getReferenceKeys(...args);
-    }
-
-    // --- Source Attribution ---
-    async logSourceAttribution(...args: Parameters<SourceAttributionManager['logSourceAttribution']>) {
-        return this.sourceAttributionManager.logSourceAttribution(...args);
-    }
-    async getSourceAttributions(...args: Parameters<SourceAttributionManager['getSourceAttributions']>) {
-        return this.sourceAttributionManager.getSourceAttributions(...args);
-    }
-
-    // --- Correction Logs ---
-    async logCorrection(...args: Parameters<CorrectionLogManager['logCorrection']>) {
-        return this.correctionLogManager.logCorrection(...args);
-    }
-    async getCorrectionLogs(...args: Parameters<CorrectionLogManager['getCorrectionLogs']>) {
-        return this.correctionLogManager.getCorrectionLogs(...args);
-    }
-    async updateCorrectionLogStatus(...args: Parameters<CorrectionLogManager['updateCorrectionLogStatus']>) {
-        return this.correctionLogManager.updateCorrectionLogStatus(...args);
-    }
-
-    // --- Success Metrics ---
-    async logSuccessMetric(...args: Parameters<SuccessMetricsManager['logSuccessMetric']>) {
-        return this.successMetricsManager.logSuccessMetric(...args);
-    }
-    async getSuccessMetrics(...args: Parameters<SuccessMetricsManager['getSuccessMetrics']>) {
-        return this.successMetricsManager.getSuccessMetrics(...args);
     }
 
     // --- Plan and Task Management ---
@@ -451,16 +350,4 @@ export class MemoryManager {
     async restoreDatabase(...args: Parameters<DatabaseUtilityService['restoreDatabase']>) {
         return this.databaseUtilityService.restoreDatabase(...args);
     }
-
-    // --- Task Review Logs ---
-    async createTaskReviewLog(data: any) { return this.taskReviewLogManager.createTaskReviewLog(data); }
-    async getTaskReviewLogs(query: any) { return this.taskReviewLogManager.getTaskReviewLogs(query); }
-    async updateTaskReviewLog(review_log_id: string, updates: any) { return this.taskReviewLogManager.updateTaskReviewLog(review_log_id, updates); }
-    async deleteTaskReviewLog(review_log_id: string) { return this.taskReviewLogManager.deleteTaskReviewLog(review_log_id); }
-
-    // --- Final Plan Review Logs ---
-    async createFinalPlanReviewLog(data: any) { return this.finalPlanReviewLogManager.createFinalPlanReviewLog(data); }
-    async getFinalPlanReviewLogs(query: any) { return this.finalPlanReviewLogManager.getFinalPlanReviewLogs(query); }
-    async updateFinalPlanReviewLog(final_review_log_id: string, updates: any) { return this.finalPlanReviewLogManager.updateFinalPlanReviewLog(final_review_log_id, updates); }
-    async deleteFinalPlanReviewLog(final_review_log_id: string) { return this.finalPlanReviewLogManager.deleteFinalPlanReviewLog(final_review_log_id); }
 }

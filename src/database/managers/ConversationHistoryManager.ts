@@ -1,3 +1,4 @@
+// src/database/managers/ConversationHistoryManager.ts
 import { randomUUID } from 'crypto';
 import { DatabaseService } from '../services/DatabaseService.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
@@ -14,6 +15,7 @@ export interface ConversationSession {
     agent_id: string; // The creating agent
     participants: SessionParticipant[];
     title: string | null;
+    sequence_number: number | null;
     start_timestamp: number;
     end_timestamp: number | null;
     metadata: any;
@@ -29,7 +31,6 @@ export interface ConversationMessage {
     message_type: string;
     tool_info: any | null;
     context_snapshot_id: string | null;
-    source_attribution_id: string | null;
     metadata: any;
     embedding: number[] | null;
 }
@@ -40,7 +41,6 @@ export interface NewMessage {
     message_type?: string;
     tool_info?: any;
     context_snapshot_id?: string | null;
-    source_attribution_id?: string | null;
     parent_message_id?: string | null;
     metadata?: any;
     generateEmbedding?: boolean;
@@ -64,6 +64,7 @@ export class ConversationHistoryManager {
                 session_id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 title TEXT,
+                sequence_number INTEGER,
                 start_timestamp INTEGER NOT NULL,
                 end_timestamp INTEGER,
                 metadata TEXT,
@@ -95,7 +96,6 @@ export class ConversationHistoryManager {
                 message_type TEXT NOT NULL,
                 tool_info TEXT,
                 context_snapshot_id TEXT,
-                source_attribution_id TEXT,
                 metadata TEXT,
                 embedding BLOB,
                 FOREIGN KEY (session_id) REFERENCES conversation_sessions (session_id) ON DELETE CASCADE,
@@ -123,11 +123,13 @@ export class ConversationHistoryManager {
         const session_id = randomUUID();
         const start_timestamp = Date.now();
 
+        const nextSequenceNumber = await this.getNextSequenceNumberForAgent(agent_id);
+
         await db.run(
             `INSERT INTO conversation_sessions (
-                session_id, agent_id, title, start_timestamp, metadata
-            ) VALUES (?, ?, ?, ?, ?)`,
-            session_id, agent_id, title, start_timestamp, JSON.stringify(metadata)
+                session_id, agent_id, title, sequence_number, start_timestamp, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)`,
+            session_id, agent_id, title, nextSequenceNumber, start_timestamp, JSON.stringify(metadata)
         );
 
         // Add the creating agent as the owner
@@ -161,14 +163,13 @@ export class ConversationHistoryManager {
         message_type: string = 'text',
         tool_info: any = null,
         context_snapshot_id: string | null = null,
-        source_attribution_id: string | null = null,
         parent_message_id: string | null = null,
         metadata: any = null,
         generateEmbedding: boolean = false
     ): Promise<string> {
         const result = await this.storeConversationMessagesBulk(session_id, [{
             sender, message_content, message_type, tool_info, context_snapshot_id,
-            source_attribution_id, parent_message_id, metadata, generateEmbedding
+            parent_message_id, metadata, generateEmbedding
         }]);
         return result[0];
     }
@@ -183,8 +184,8 @@ export class ConversationHistoryManager {
         const insertStatement = await db.prepare(
             `INSERT INTO conversation_messages (
                 message_id, session_id, parent_message_id, timestamp, sender, message_content,
-                message_type, tool_info, context_snapshot_id, source_attribution_id, metadata, embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                message_type, tool_info, context_snapshot_id, metadata, embedding
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
 
         try {
@@ -206,7 +207,7 @@ export class ConversationHistoryManager {
                 await insertStatement.run(
                     message_id, session_id, message.parent_message_id, timestamp, message.sender, message.message_content,
                     message.message_type ?? 'text', JSON.stringify(message.tool_info), message.context_snapshot_id,
-                    message.source_attribution_id, JSON.stringify(message.metadata), embeddingBlob
+                    JSON.stringify(message.metadata), embeddingBlob
                 );
             }
             await db.exec('COMMIT');
@@ -241,6 +242,7 @@ export class ConversationHistoryManager {
             agent_id: result.agent_id,
             participants,
             title: result.title,
+            sequence_number: result.sequence_number,
             start_timestamp: result.start_timestamp,
             end_timestamp: result.end_timestamp,
             metadata: result.metadata ? JSON.parse(result.metadata) : null
@@ -276,7 +278,6 @@ export class ConversationHistoryManager {
             message_type: row.message_type,
             tool_info: row.tool_info ? JSON.parse(row.tool_info) : null,
             context_snapshot_id: row.context_snapshot_id,
-            source_attribution_id: row.source_attribution_id,
             metadata: row.metadata ? JSON.parse(row.metadata) : null,
             embedding: includeEmbeddings && row.embedding ?
                 Array.from(new Float32Array(row.embedding.buffer)) : null
@@ -315,6 +316,7 @@ export class ConversationHistoryManager {
                 agent_id: row.agent_id,
                 participants,
                 title: row.title,
+                sequence_number: row.sequence_number,
                 start_timestamp: row.start_timestamp,
                 end_timestamp: row.end_timestamp,
                 metadata: row.metadata ? JSON.parse(row.metadata) : null
@@ -322,6 +324,66 @@ export class ConversationHistoryManager {
         }
         return sessions;
     }
+
+    async getConversationSessionsBySequence(agent_id: string, sequenceNumber: number): Promise<ConversationSession[]> {
+        const db = this.dbService.getDb();
+        const results = await db.all(
+            `SELECT cs.* FROM conversation_sessions cs
+             WHERE cs.agent_id = ? AND cs.sequence_number = ?
+             ORDER BY cs.start_timestamp DESC`,
+            agent_id, sequenceNumber
+        );
+        const sessions: ConversationSession[] = [];
+        for (const row of results) {
+            const participants = await this.getSessionParticipants(row.session_id);
+            sessions.push({
+                session_id: row.session_id,
+                agent_id: row.agent_id,
+                participants,
+                title: row.title,
+                sequence_number: row.sequence_number,
+                start_timestamp: row.start_timestamp,
+                end_timestamp: row.end_timestamp,
+                metadata: row.metadata ? JSON.parse(row.metadata) : null
+            });
+        }
+        return sessions;
+    }
+
+    private async getNextSequenceNumberForAgent(agent_id: string): Promise<number> {
+        const db = this.dbService.getDb();
+        const result = await db.get(
+            `SELECT MAX(sequence_number) as max_sequence FROM conversation_sessions WHERE agent_id = ?`,
+            agent_id
+        );
+        return (result?.max_sequence || 0) + 1;
+    }
+
+    async getConversationSessionsByTitle(agent_id: string, title: string): Promise<ConversationSession[]> {
+        const db = this.dbService.getDb();
+        const results = await db.all(
+            `SELECT cs.* FROM conversation_sessions cs
+             WHERE cs.agent_id = ? AND cs.title = ?
+             ORDER BY cs.start_timestamp DESC`,
+            agent_id, title
+        );
+        const sessions: ConversationSession[] = [];
+        for (const row of results) {
+            const participants = await this.getSessionParticipants(row.session_id);
+            sessions.push({
+                session_id: row.session_id,
+                agent_id: row.agent_id,
+                participants,
+                title: row.title,
+                sequence_number: row.sequence_number,
+                start_timestamp: row.start_timestamp,
+                end_timestamp: row.end_timestamp,
+                metadata: row.metadata ? JSON.parse(row.metadata) : null
+            });
+        }
+        return sessions;
+    }
+
 
     async searchConversations(
         agent_id: string,
@@ -351,16 +413,17 @@ export class ConversationHistoryManager {
         }
 
         let query = `
-            SELECT cm.*, 
-                   cs.session_id AS cs_session_id, 
+            SELECT cm.*,
+                   cs.session_id AS cs_session_id,
                    cs.agent_id AS cs_agent_id,
-                   cs.title AS cs_title, 
-                   cs.start_timestamp AS cs_start_timestamp, 
-                   cs.end_timestamp AS cs_end_timestamp, 
+                   cs.title AS cs_title,
+                   cs.sequence_number AS cs_sequence_number,
+                   cs.start_timestamp AS cs_start_timestamp,
+                   cs.end_timestamp AS cs_end_timestamp,
                    cs.metadata AS cs_metadata
-            FROM conversation_messages cm
-            JOIN conversation_sessions cs ON cm.session_id = cs.session_id
-            WHERE cs.agent_id = ?
+             FROM conversation_messages cm
+             JOIN conversation_sessions cs ON cm.session_id = cs.session_id
+             WHERE cs.agent_id = ?
         `;
         const params: any[] = [agent_id];
 
@@ -385,6 +448,7 @@ export class ConversationHistoryManager {
                     agent_id: row.cs_agent_id,
                     participants,
                     title: row.cs_title,
+                    sequence_number: row.cs_sequence_number,
                     start_timestamp: row.cs_start_timestamp,
                     end_timestamp: row.cs_end_timestamp,
                     metadata: row.cs_metadata ? JSON.parse(row.cs_metadata) : null

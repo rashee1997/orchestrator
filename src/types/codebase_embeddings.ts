@@ -6,6 +6,8 @@ export interface CodebaseEmbeddingRecord {
     agent_id: string;
     chunk_text: string;
     entity_name: string | null;
+    entity_name_vector_blob?: Buffer | null;
+    entity_name_vector_dimensions?: number | null;
     vector_blob: Buffer;
     vector_dimensions: number;
     model_name: string;
@@ -29,6 +31,7 @@ export interface EmbeddingIngestionResult {
     newEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
     reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
     deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
+    scannedFiles: Array<{ file_path_relative: string; status: 'processed' | 'skipped' | 'error'; }>; // New field
     aiSummary?: string;
     embeddingRequestCount: number;
     embeddingRetryCount: number;

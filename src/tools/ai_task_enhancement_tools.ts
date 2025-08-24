@@ -2,12 +2,17 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { MemoryManager } from '../database/memory_manager.js';
 import { CodebaseContextRetrieverService } from '../database/services/CodebaseContextRetrieverService.js';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
-import { PlanTaskManager } from '../database/managers/PlanTaskManager.js';
+import { PlanTaskManager, ParsedTask } from '../database/managers/PlanTaskManager.js';
 import { SubtaskManager } from '../database/managers/SubtaskManager.js';
-import { TaskProgressLogManager } from '../database/managers/TaskProgressLogManager.js';
-import { TaskProgressLog } from '../types/index.js';
 import { formatJsonToMarkdownCodeBlock, formatPlanToMarkdown, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
+import {
+    AI_SUGGEST_SUBTASKS_PROMPT,
+    AI_TASK_COMPLEXITY_ANALYSIS_PROMPT,
+    AI_SUGGEST_TASK_DETAILS_PROMPT,
+    AI_ANALYZE_PLAN_PROMPT
+} from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 // #region Type Definitions
 interface AiSuggestedSubtask {
@@ -16,7 +21,7 @@ interface AiSuggestedSubtask {
     rationale?: string;
     estimated_effort_hours?: number;
     potential_tools?: string[];
-    suggested_dependencies_subtask_titles?: string[];
+    dependencies_parent_task_ids?: string[];
 }
 
 interface AiSuggestedTaskDetails {
@@ -51,57 +56,28 @@ interface AiPlanAnalysis {
     overall_summary: string;
 }
 
-interface AiTaskProgressSummary {
-    plan_id: string;
-    task_id?: string;
-    overall_status_assessment: string;
-    key_accomplishments: string[];
-    identified_blockers_or_issues: string[];
-    next_steps_or_outlook: string;
-    estimated_completion_percentage?: number;
-    confidence_in_current_timeline?: string;
-    detailed_summary_text: string;
+interface TaskComplexityAnalysis {
+    task_id: string;
+    title: string;
+    complexity_score: number; // 1-10 scale
+    complexity_factors: string[];
+    reasoning: string;
+    recommended_action: 'HIGH_COMPLEXITY_SUBTASKS' | 'MEDIUM_COMPLEXITY_SUBTASKS' | 'LOW_COMPLEXITY_NO_SUBTASKS' | 'SKIP_COMPLETELY';
 }
 // #endregion
 
 // #region Helper Functions
-/**
- * A helper function to call the Gemini API and parse the expected JSON response.
- * It handles responses that are either raw JSON or a JSON object wrapped in a markdown code block.
- * @param geminiService The Gemini integration service instance.
- * @param prompt The prompt to send to the AI.
- * @param model The model to use for the request.
- * @returns A promise that resolves to the parsed JSON object.
- * @throws {Error} if the AI response is not valid JSON.
- */
 async function callGeminiAndParseJson<T>(
     geminiService: GeminiIntegrationService,
     prompt: string,
     model: string = "gemini-2.5-flash-preview-05-20"
 ): Promise<T> {
     const geminiResponse = await geminiService.askGemini(prompt, model);
-    const responseText = geminiResponse.content[0]?.text?.trim() || "";
-
-    // Attempt to extract JSON from a markdown code block first
-    const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-    let jsonToParse = jsonMatch ? jsonMatch[1].trim() : responseText;
-
-    // If it's not a valid JSON string, try to find the start and end of a JSON object/array
-    if (!(jsonToParse.startsWith('{') && jsonToParse.endsWith('}')) && !(jsonToParse.startsWith('[') && jsonToParse.endsWith(']'))) {
-        const startIndex = jsonToParse.startsWith('[') ? jsonToParse.indexOf('[') : jsonToParse.indexOf('{');
-        const endIndex = jsonToParse.endsWith(']') ? jsonToParse.lastIndexOf(']') : jsonToParse.lastIndexOf('}');
-
-        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-            jsonToParse = jsonToParse.substring(startIndex, endIndex + 1);
-        } else {
-            throw new Error("AI response was not in the expected JSON format or wrapped in a markdown block.");
-        }
-    }
-
+    const responseText = geminiResponse.content[0]?.text ?? "";
     try {
-        return JSON.parse(jsonToParse) as T;
+        return parseGeminiJsonResponse(responseText) as T;
     } catch (e: any) {
-        console.error("Failed to parse JSON response from AI:", jsonToParse);
+        console.error("Failed to parse JSON response from AI:", responseText);
         throw new Error(`Failed to parse AI response as JSON: ${e.message}`);
     }
 }
@@ -110,7 +86,7 @@ async function callGeminiAndParseJson<T>(
 // #region Tool Definitions
 const aiSuggestSubtasksToolDefinition = {
     name: 'ai_suggest_subtasks',
-    description: 'Given a parent task\'s ID and details, uses an AI model (Gemini) to suggest a list of actionable subtasks. Considers existing codebase context if available and relevant. Output is a list of suggested subtask titles and descriptions in Markdown format. Note: The recommended limit for max_suggestions is 2-3 to reduce redundancy.',
+    description: 'Given a parent task\'s ID, uses an AI model to suggest a list of actionable subtasks. It analyzes all other tasks in the plan to suggest logical dependencies. Output is a list of suggested subtasks in Markdown format.',
     inputSchema: schemas.aiSuggestSubtasks,
 };
 
@@ -123,7 +99,7 @@ const aiSuggestTaskDetailsToolDefinition = {
 const aiAnalyzePlanToolDefinition = {
     name: 'ai_analyze_plan',
     description: 'Analyzes a given task plan (specified by plan_id) for coherence, completeness, potential risks, and areas for improvement using an AI model (Gemini). Can incorporate codebase context. Output is a structured analysis in Markdown format.',
-    inputSchema: { // This schema will be added to validation.ts as 'aiAnalyzePlan'
+    inputSchema: {
         type: 'object',
         properties: {
             agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
@@ -140,25 +116,85 @@ const aiAnalyzePlanToolDefinition = {
         additionalProperties: false,
     },
 };
-
-const aiSummarizeTaskProgressToolDefinition = {
-    name: 'ai_summarize_task_progress',
-    description: 'Retrieves task progress logs for a given plan (and optionally a specific task) and uses an AI model (Gemini) to generate a concise summary of progress, blockers, and overall status. Output is a structured summary in Markdown format.',
-    inputSchema: { // This schema will be added to validation.ts as 'aiSummarizeTaskProgress'
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
-            plan_id: { type: 'string', description: 'The ID of the plan for which progress is being summarized.' },
-            task_id: { type: 'string', description: 'Optional: The ID of a specific task within the plan to focus the summary on. If omitted, summarizes progress for all tasks in the plan.', nullable: true },
-            max_logs_to_consider: { type: 'number', default: 50, minimum: 1, maximum: 200, description: 'Maximum number of recent progress logs to consider for the summary.' },
-        },
-        required: ['agent_id', 'plan_id'],
-        additionalProperties: false,
-    },
-};
 // #endregion
 
-// #region Tool Handlers
+// #region Tool Handler Core Logic
+
+/**
+ * Generates subtask suggestions for a single, specified parent task.
+ * @returns An object containing the markdown report and the list of subtasks to create.
+ */
+async function _generateSubtasksForParent(
+    agent_id: string,
+    plan_id: string,
+    parentTask: ParsedTask,
+    allTasksInPlan: ParsedTask[],
+    max_suggestions: number,
+    geminiService: GeminiIntegrationService
+): Promise<{ markdown: string; subtasksToCreate: any[] }> {
+    const otherTasksInPlan = allTasksInPlan
+        .filter(t => t.task_id !== parentTask.task_id)
+        .map(t => ({ task_id: t.task_id, title: t.title }));
+
+    const jsonOutputSchemaInstructions = `
+Each subtask object in the array must have the following fields:
+- "suggested_title": string (concise and actionable)
+- "suggested_description": string (optional, 1-2 sentences explaining the subtask's goal)
+- "dependencies_parent_task_ids": array of strings (optional, list the \`task_id\` of any tasks from the **Other Tasks** list that this subtask depends on)
+
+Provide only the JSON array. Do not include any other text or markdown.`;
+
+    const prompt = AI_SUGGEST_SUBTASKS_PROMPT
+        .replace('{taskId}', parentTask.task_id)
+        .replace('{taskTitle}', parentTask.title)
+        .replace('{taskDescription}', parentTask.description || 'No detailed description provided.')
+        .replace('{otherTasksContext}', otherTasksInPlan.length > 0 ? JSON.stringify(otherTasksInPlan, null, 2) : "No other tasks in the plan.")
+        .replace('{maxSuggestions}', String(max_suggestions))
+        .replace('{jsonOutputSchemaInstructions}', jsonOutputSchemaInstructions);
+
+    let suggestedSubtasks: AiSuggestedSubtask[];
+    try {
+        suggestedSubtasks = await callGeminiAndParseJson<AiSuggestedSubtask[]>(geminiService, prompt);
+    } catch (error: any) {
+        throw new Error(`Failed to get subtask suggestions from AI: ${error.message}`);
+    }
+
+    if (!Array.isArray(suggestedSubtasks) || suggestedSubtasks.length === 0) {
+        return { markdown: `\n### For Task: "${parentTask.title}" (ID: \`${parentTask.task_id}\`)\nNo subtasks were suggested by the AI.\n`, subtasksToCreate: [] };
+    }
+
+    const itemsForDisplay = suggestedSubtasks.map(s => {
+        let title = s.suggested_title;
+        if (!title || title.trim() === '') {
+            title = s.suggested_description ? s.suggested_description.substring(0, 70) : `Subtask for ${parentTask.title}`;
+        }
+        return { ...s, resolved_title: title };
+    });
+
+    let markdown = `\n### For Task: "${parentTask.title}" (ID: \`${parentTask.task_id}\`)\n`;
+    itemsForDisplay.forEach((subtask, index) => {
+        markdown += `#### Suggestion ${index + 1}: ${subtask.resolved_title}\n`;
+        if (subtask.suggested_description) markdown += `- **Description:** ${subtask.suggested_description}\n`;
+        if (subtask.dependencies_parent_task_ids?.length) {
+            const deps = subtask.dependencies_parent_task_ids.map(id => {
+                const parent = otherTasksInPlan.find(t => t.task_id === id);
+                return parent ? `\`${id}\` ("${parent.title}")` : `\`${id}\``;
+            }).join(', ');
+            markdown += `- **Dependencies on Other Tasks:** ${deps}\n`;
+        }
+    });
+
+    const subtasksToCreate = itemsForDisplay.map(s => ({
+        title: s.resolved_title,
+        description: s.suggested_description,
+        parent_task_id: parentTask.task_id,
+        notes: {
+            dependencies_on_other_tasks: s.dependencies_parent_task_ids
+        }
+    }));
+
+    return { markdown, subtasksToCreate };
+}
 
 async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
     const validationResult = validate('aiSuggestSubtasks', args);
@@ -166,117 +202,154 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         throw new McpError(ErrorCode.InvalidParams, `Validation failed for ai_suggest_subtasks: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
     }
 
-    const { agent_id, plan_id, parent_task_id, max_suggestions = 5, codebase_context_summary } = args;
-    let { parent_task_title, parent_task_description } = args;
+    const { agent_id, plan_id, parent_task_id, max_suggestions = 3 } = args;
 
-    // 1. Get services
     const subtaskManager = memoryManager.subtaskManager;
     const planTaskManager = memoryManager.planTaskManager;
     const geminiService = memoryManager.getGeminiIntegrationService();
-    const codebaseContextRetriever = memoryManager.getCodebaseContextRetrieverService();
 
-    // 2. Check for existing subtasks
-    const existingSubtasks = await subtaskManager.getSubtasksByParentTask(agent_id, parent_task_id);
-    if (existingSubtasks && existingSubtasks.length > 0) {
-        return { content: [{ type: 'text', text: formatSimpleMessage(`Subtasks have already been created for this parent task (Task ID: \`${parent_task_id}\`).`, "AI Subtask Suggestions") }] };
-    }
+    const allTasksInPlan = await planTaskManager.getPlanTasks(agent_id, plan_id);
 
-    // 3. Fetch parent task details if not provided
-    const parentTask = await planTaskManager.getTask(agent_id, parent_task_id);
-    if (!parentTask) {
-        throw new McpError(ErrorCode.InternalError, `Parent task with ID '${parent_task_id}' not found for agent '${agent_id}'.`);
-    }
-    parent_task_title = parent_task_title || (parentTask as any).title;
-    parent_task_description = parent_task_description || (parentTask as any).description;
-    if (!parent_task_title) {
-        throw new McpError(ErrorCode.InvalidParams, `Parent task title for task ID '${parent_task_id}' could not be determined.`);
-    }
-
-    // 4. Gather codebase context
-    let codebaseContext = "";
-    if (codebase_context_summary) {
-        codebaseContext += `General Codebase Context:\n${codebase_context_summary}\n\n`;
-    }
-    try {
-        const semanticSearchQuery = `${parent_task_title} ${parent_task_description || ''}`;
-        const searchResults = await codebaseContextRetriever.retrieveContextForPrompt(agent_id, semanticSearchQuery, { topKEmbeddings: 5, embeddingScoreThreshold: 0.6 });
-        if (searchResults && searchResults.length > 0) {
-            codebaseContext += "Relevant Codebase Context (Semantic Search):\n";
-            searchResults.forEach(result => {
-                codebaseContext += `File: \`${result.sourcePath}\` (Score: ${result.relevanceScore?.toFixed(4)})\n`;
-                if (result.entityName) codebaseContext += `Entity: ${result.entityName} (${result.type})\n`;
-                if (result.metadata?.startLine && result.metadata?.endLine) codebaseContext += `Lines: ${result.metadata.startLine}-${result.metadata.endLine}\n`;
-                codebaseContext += `Content:\n\`\`\`${result.metadata?.language || 'text'}\n${result.content}\n\`\`\`\n---\n`;
-            });
+    if (parent_task_id) {
+        // --- Single Parent Task Mode ---
+        const parentTask = allTasksInPlan.find(t => t.task_id === parent_task_id);
+        if (!parentTask) {
+            throw new McpError(ErrorCode.InternalError, `Parent task with ID '${parent_task_id}' not found in plan '${plan_id}'.`);
         }
-    } catch (e) {
-        console.warn(`Could not perform semantic search for subtask suggestion: ${e}`);
+
+        const existingSubtasks = await subtaskManager.getSubtasksByParentTask(agent_id, parent_task_id);
+        if (existingSubtasks && existingSubtasks.length > 0) {
+            return { content: [{ type: 'text', text: formatSimpleMessage(`Subtasks already exist for parent task (ID: \`${parent_task_id}\`). No new suggestions suggested.`, "AI Subtask Suggestions") }] };
+        }
+
+        const { markdown, subtasksToCreate } = await _generateSubtasksForParent(agent_id, plan_id, parentTask, allTasksInPlan, max_suggestions, geminiService);
+
+        let finalMarkdown = `## AI Suggested Subtasks\n${markdown}`;
+
+        try {
+            const createdIds = await subtaskManager.createSubtasks(agent_id, plan_id, subtasksToCreate);
+            finalMarkdown += `\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks in the database.`;
+        } catch (dbError: any) {
+            finalMarkdown += `\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
+        }
+
+        return { content: [{ type: 'text', text: finalMarkdown }] };
+
+    } else {
+        // --- Intelligent Plan-Level Mode ---
+        const tasksForAnalysis = await Promise.all(allTasksInPlan.map(async (task) => {
+            const subtasks = await subtaskManager.getSubtasksByParentTask(agent_id, task.task_id);
+            return {
+                task_id: task.task_id,
+                title: task.title,
+                description: task.description,
+                has_subtasks: subtasks.length > 0
+            };
+        }));
+
+        const tasksWithoutSubtasks = tasksForAnalysis.filter(t => !t.has_subtasks);
+
+        if (tasksWithoutSubtasks.length === 0) {
+            return { content: [{ type: 'text', text: formatSimpleMessage(`All tasks in plan \`${plan_id}\` already have subtasks. No new suggestions generated.`, "AI Subtask Suggestions") }] };
+        }
+
+        // === AGENT 1: Task Complexity Analyzer ===
+        const complexityAnalysisPrompt = AI_TASK_COMPLEXITY_ANALYSIS_PROMPT
+            .replace('{tasksToAnalyzeJson}', JSON.stringify(tasksWithoutSubtasks.map(({ has_subtasks, ...rest }) => rest), null, 2));
+
+        let complexityAnalyses: TaskComplexityAnalysis[];
+        try {
+            complexityAnalyses = await callGeminiAndParseJson<TaskComplexityAnalysis[]>(geminiService, complexityAnalysisPrompt);
+        } catch (e) {
+            throw new McpError(ErrorCode.InternalError, "Task Complexity Analyzer AI failed to analyze tasks.");
+        }
+
+        // Filter for tasks that should get subtasks
+        const tasksForSubtaskGeneration = complexityAnalyses.filter(analysis =>
+            analysis.recommended_action === 'HIGH_COMPLEXITY_SUBTASKS' ||
+            analysis.recommended_action === 'MEDIUM_COMPLEXITY_SUBTASKS'
+        );
+
+        if (tasksForSubtaskGeneration.length === 0) {
+            const analysisSummary = complexityAnalyses.map(a =>
+                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+            ).join('\n');
+
+            return {
+                content: [{
+                    type: 'text', text: formatSimpleMessage(
+                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                        "AI Subtask Suggestions"
+                    )
+                }]
+            };
+        }
+
+        // DEBUG: Log the complexity analysis results
+        console.log('=== COMPLEXITY ANALYSIS DEBUG ===');
+        complexityAnalyses.forEach(analysis => {
+            console.log(`Task: ${analysis.title}`);
+            console.log(`Score: ${analysis.complexity_score}/10`);
+            console.log(`Action: ${analysis.recommended_action}`);
+            console.log(`Factors: ${analysis.complexity_factors.join(', ')}`);
+            console.log('---');
+        });
+        console.log(`Tasks for subtask generation: ${tasksForSubtaskGeneration.length}`);
+        console.log('=== END DEBUG ===');
+
+        // === AGENT 2: Subtask Generator (only gets high/medium complexity tasks) ===
+        const complexTaskIds = tasksForSubtaskGeneration.map(t => t.task_id);
+
+        // Generate analysis summary for context
+        const analysisSummary = tasksForSubtaskGeneration.map(a =>
+            `- **${a.title}** (Score: ${a.complexity_score}/10): ${a.complexity_factors.slice(0, 2).join(', ')}`
+        ).join('\n');
+
+        // Use Agent 1's analysis directly - no need for second AI call since we already have the complex task IDs
+        // The complexTaskIds are already determined by Agent 1's analysis
+
+        if (complexTaskIds.length === 0) {
+            const analysisSummary = complexityAnalyses.map(a =>
+                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+            ).join('\n');
+
+            return {
+                content: [{
+                    type: 'text', text: formatSimpleMessage(
+                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
+                        "AI Subtask Suggestions"
+                    )
+                }]
+            };
+        }
+
+        let fullMarkdownReport = `## AI-Suggested Subtasks for Complex Tasks in Plan \`${plan_id}\`\n`;
+        const allSubtasksToCreate: any[] = [];
+
+        for (const taskId of complexTaskIds) {
+            const parentTask = allTasksInPlan.find(t => t.task_id === taskId);
+            if (parentTask) {
+                const { markdown, subtasksToCreate } = await _generateSubtasksForParent(agent_id, plan_id, parentTask, allTasksInPlan, max_suggestions, geminiService);
+                fullMarkdownReport += markdown;
+                allSubtasksToCreate.push(...subtasksToCreate);
+            }
+        }
+
+        if (allSubtasksToCreate.length > 0) {
+            try {
+                const createdIds = await subtaskManager.createSubtasks(agent_id, plan_id, allSubtasksToCreate);
+                fullMarkdownReport += `\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks across ${complexTaskIds.length} parent tasks.`;
+            } catch (dbError: any) {
+                fullMarkdownReport += `\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
+            }
+        } else {
+            fullMarkdownReport += `\n*No new subtasks were generated by the AI for the selected complex tasks.*`;
+        }
+
+        return { content: [{ type: 'text', text: fullMarkdownReport }] };
     }
-
-    // 5. Build prompt
-    const prompt = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable, and modular subtasks.
-Focus on creating subtasks that represent distinct, logical steps. Consider potential dependencies between the subtasks you suggest.
-For each subtask, provide a concise title, a brief description, an estimated effort in hours, and optionally, a rationale, potential tools, and dependency titles.
-
-Parent Task Title: "${parent_task_title}"
-Parent Task Description: "${parent_task_description || 'No detailed description provided.'}"
-Number of subtasks to suggest: ${max_suggestions}
-${codebaseContext ? `\nConsider the following codebase context:\n${codebaseContext}` : ''}
-Please format your response as a JSON array of objects. Each object must have the following fields:
-- "suggested_title": string (concise and actionable)
-- "suggested_description": string (optional, 1-2 sentences explaining the subtask)
-- "rationale": string (optional, brief reason for this subtask)
-- "estimated_effort_hours": number (integer, e.g., 1, 2, 4)
-- "potential_tools": array of strings (optional, e.g., ["file_editor", "git_commit"])
-- "suggested_dependencies_subtask_titles": array of strings (optional, titles of other suggested subtasks that this one depends on)
-
-Example JSON output:
-[
-  {
-    "suggested_title": "Define data structures for X",
-    "suggested_description": "Create TypeScript interfaces for the primary data entities.",
-    "rationale": "Ensures type safety and clear data contracts before implementation.",
-    "estimated_effort_hours": 2,
-    "potential_tools": ["file_editor"]
-  },
-  {
-    "suggested_title": "Implement core logic for Y",
-    "suggested_description": "Write the main function that performs the Y operation.",
-    "estimated_effort_hours": 4,
-    "suggested_dependencies_subtask_titles": ["Define data structures for X"]
-  }
-]
-
-Provide only the JSON array.`;
-
-    // 6. Get suggestions from AI
-    let suggestedSubtasks: AiSuggestedSubtask[];
-    try {
-        suggestedSubtasks = await callGeminiAndParseJson<AiSuggestedSubtask[]>(geminiService, prompt);
-    } catch (error: any) {
-        console.error(`Error suggesting subtasks for task ${parent_task_id} (agent: ${agent_id}):`, error);
-        throw new McpError(ErrorCode.InternalError, `Failed to get subtask suggestions from AI: ${error.message}`);
-    }
-
-    if (!Array.isArray(suggestedSubtasks) || suggestedSubtasks.length === 0) {
-        return { content: [{ type: 'text', text: formatSimpleMessage(`No subtasks were suggested by the AI for task: "${parent_task_title}".`, "AI Subtask Suggestions") }] };
-    }
-
-    // 7. Format output
-    let markdownOutput = `## AI Suggested Subtasks for: "${parent_task_title}" (Task ID: \`${parent_task_id}\`)\n\n`;
-    suggestedSubtasks.forEach((subtask, index) => {
-        markdownOutput += `### Suggestion ${index + 1}: ${subtask.suggested_title}\n`;
-        if (subtask.suggested_description) markdownOutput += `- **Description:** ${subtask.suggested_description}\n`;
-        if (subtask.rationale) markdownOutput += `- **Rationale:** ${subtask.rationale}\n`;
-        if (subtask.estimated_effort_hours !== undefined) markdownOutput += `- **Est. Effort:** ${subtask.estimated_effort_hours} hours\n`;
-        if (subtask.potential_tools?.length) markdownOutput += `- **Potential Tools:** ${subtask.potential_tools.map(t => `\`${t}\``).join(', ')}\n`;
-        if (subtask.suggested_dependencies_subtask_titles?.length) markdownOutput += `- **Suggested Dependencies:** ${subtask.suggested_dependencies_subtask_titles.map(t => `"${t}"`).join(', ')}\n`;
-        markdownOutput += "\n";
-    });
-    markdownOutput += `*Note: These are AI suggestions. Review and use the \`add_subtask_to_plan\` tool to create them if appropriate.*`;
-
-    return { content: [{ type: 'text', text: markdownOutput }] };
 }
+
 
 async function aiSuggestTaskDetailsHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
     const validationResult = validate('aiSuggestTaskDetails', args);
@@ -303,33 +376,15 @@ async function aiSuggestTaskDetailsHandler(args: any, memoryManager: MemoryManag
     }
 
     // 2. Build prompt
-    const prompt = `You are an expert project planner AI. Your task is to flesh out the details for a given task.
-The goal is to provide comprehensive information that would be useful for someone picking up this task.
+    const codebaseContext = codebase_context_summary
+        ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n`
+        : '';
 
-Task Title: "${task_title}"
-Current Task Description: "${task_description || 'No detailed description currently provided.'}"
-${codebase_context_summary ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n` : ''}
-Please suggest the following details for this task. Format your response as a single JSON object.
-If a detail is not applicable or cannot be reasonably inferred, use null or an empty array.
-
-JSON Output Schema:
-{
-  "task_id": "${task_id}",
-  "suggested_description": "string (A more detailed explanation of what the task involves, expanding on the title and current description. 2-4 sentences.)",
-  "suggested_purpose": "string (The reason this task is necessary for the overall plan/goal. 1-2 sentences.)",
-  "suggested_action_description": "string (A high-level summary of the primary action(s) to be performed. 1-2 sentences.)",
-  "suggested_files_involved": ["string"],
-  "suggested_dependencies_task_ids": ["string"],
-  "suggested_tools_required_list": ["string"],
-  "suggested_inputs_summary": "string (What information or resources are needed to start this task?)",
-  "suggested_outputs_summary": "string (What are the expected deliverables or outcomes of this task?)",
-  "suggested_success_criteria_text": "string (How will we know this task is completed successfully? Be specific and measurable if possible.)",
-  "suggested_estimated_effort_hours": "number (integer, e.g., 1, 2, 4, 8)",
-  "suggested_verification_method": "string (How will the completion and correctness of this task be verified?)",
-  "rationale_for_suggestions": "string (Briefly explain your reasoning for these suggestions, especially if codebase context was used.)"
-}
-
-Provide only the JSON object.`;
+    const prompt = AI_SUGGEST_TASK_DETAILS_PROMPT
+        .replace('{taskTitle}', task_title)
+        .replace('{taskDescription}', task_description || 'No detailed description currently provided.')
+        .replace('{codebaseContext}', codebaseContext)
+        .replace('{taskId}', task_id);
 
     // 3. Get suggestions from AI
     let suggestedDetails: AiSuggestedTaskDetails;
@@ -360,7 +415,7 @@ Provide only the JSON object.`;
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
 
-async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
+async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: 'text', text: string }[] }> {
     const validationResult = validate('aiAnalyzePlan', args);
     if (!validationResult.valid) {
         throw new McpError(ErrorCode.InvalidParams, `Validation failed for ai_analyze_plan: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
@@ -390,37 +445,15 @@ async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Pr
         ? analysis_focus_areas.map((area: string) => `- ${area}`).join('\n')
         : `- Overall Coherence and Goal Alignment\n- Clarity and Actionability of Tasks\n- Completeness (Missing Steps/Tasks)\n- Potential Risks and Issues\n- Task Dependencies and Sequencing`;
 
-    const prompt = `You are an expert AI project analyst. Your task is to critically analyze the provided project plan.
-The plan includes an overall goal, a list of tasks, and potentially subtasks.
+    const codebaseContext = codebase_context_summary
+        ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n---`
+        : '';
 
-Focus on the following areas during your analysis:
-${focusAreas}
-
-Plan Details:
----
-${planStringRepresentation}
----
-${codebase_context_summary ? `\nConsider the following relevant codebase context:\n${codebase_context_summary}\n---` : ''}
-Please provide your analysis as a single JSON object with the following fields. Be thorough and provide actionable insights.
-
-JSON Output Schema:
-{
-  "plan_id": "${plan_id}",
-  "overall_coherence_score": "number (1-10, 10 being best)",
-  "clarity_of_goal_score": "number (1-10)",
-  "actionability_of_tasks_score": "number (1-10)",
-  "completeness_score": "number (1-10, considering if crucial steps are missing)",
-  "identified_strengths": ["string"],
-  "potential_risks_or_issues": [{"risk": "string", "mitigation_suggestion": "string", "related_tasks": ["string"]}],
-  "missing_tasks_or_steps": ["string"],
-  "dependency_concerns": ["string"],
-  "resource_allocation_comments": "string",
-  "suggestions_for_improvement": ["string"],
-  "codebase_context_impact": "string (How codebase context influenced this analysis)",
-  "overall_summary": "string (A concise overall summary of your analysis)"
-}
-
-Provide only the JSON object.`;
+    const prompt = AI_ANALYZE_PLAN_PROMPT
+        .replace('{focusAreas}', focusAreas)
+        .replace('{planStringRepresentation}', planStringRepresentation)
+        .replace('{codebaseContext}', codebaseContext)
+        .replace('{planId}', plan_id);
 
     // 3. Get analysis from AI
     let analysisResult: AiPlanAnalysis;
@@ -466,101 +499,6 @@ Provide only the JSON object.`;
 
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
-
-async function aiSummarizeTaskProgressHandler(args: any, memoryManager: MemoryManager): Promise<{ content: { type: string; text: string }[] }> {
-    const validationResult = validate('aiSummarizeTaskProgress', args);
-    if (!validationResult.valid) {
-        throw new McpError(ErrorCode.InvalidParams, `Validation failed for ai_summarize_task_progress: ${formatJsonToMarkdownCodeBlock(validationResult.errors)}`);
-    }
-
-    const { agent_id, plan_id, task_id, max_logs_to_consider = 50 } = args;
-
-    // 1. Get services and fetch progress logs
-    const taskProgressLogManager = memoryManager.taskProgressLogManager;
-    const planTaskManager = memoryManager.planTaskManager;
-    const geminiService = memoryManager.getGeminiIntegrationService();
-
-    const allAgentLogs = await taskProgressLogManager.getTaskProgressLogsByAgentId(agent_id, max_logs_to_consider * 5);
-    const progressLogs = allAgentLogs
-        .filter(log => log.associated_plan_id === plan_id && (!task_id || log.associated_task_id === task_id))
-        .sort((a, b) => a.execution_timestamp_unix - b.execution_timestamp_unix)
-        .slice(-max_logs_to_consider);
-
-    if (progressLogs.length === 0) {
-        return { content: [{ type: 'text', text: formatSimpleMessage(`No task progress logs found for Plan ID: \`${plan_id}\`${task_id ? ` (Task ID: \`${task_id}\`)` : ''}.`, "Task Progress Summary") }] };
-    }
-
-    let taskTitle = "Overall Plan";
-    if (task_id) {
-        const task = await planTaskManager.getTask(agent_id, task_id);
-        taskTitle = task ? (task as any).title : `Task ID ${task_id}`;
-    }
-
-    const formattedLogs = progressLogs.map(log =>
-        `Log ID: ${log.progress_log_id}\n` +
-        `Task ID: ${log.associated_task_id}\n` +
-        `Status: ${log.status_of_step_execution}\n` +
-        `Summary/Error: ${log.output_summary_or_error || 'N/A'}\n` +
-        `Timestamp: ${new Date(log.execution_timestamp_iso).toLocaleString()}`
-    ).join('\n---\n');
-
-    // 2. Build prompt
-    const prompt = `You are an expert AI project reporter. Analyze the provided task progress logs and generate a concise summary.
-Focus on overall status, key accomplishments, blockers, next steps, and estimated completion.
-
-Target: Summarize progress for ${task_id ? `Task "${taskTitle}" (ID: ${task_id})` : `Plan ID: ${plan_id}`}.
-
-Progress Logs:
----
-${formattedLogs}
----
-
-Please provide your summary as a single JSON object.
-
-JSON Output Schema:
-{
-  "plan_id": "${plan_id}",
-  "task_id": ${task_id ? `"${task_id}"` : null},
-  "overall_status_assessment": "string",
-  "key_accomplishments": ["string"],
-  "identified_blockers_or_issues": ["string"],
-  "next_steps_or_outlook": "string",
-  "estimated_completion_percentage": "number (0-100, optional)",
-  "confidence_in_current_timeline": "string ('High', 'Medium', 'Low', optional)",
-  "detailed_summary_text": "string (A narrative summary of the progress.)"
-}
-
-Provide only the JSON object.`;
-
-    // 3. Get summary from AI
-    let progressSummary: AiTaskProgressSummary;
-    try {
-        progressSummary = await callGeminiAndParseJson<AiTaskProgressSummary>(geminiService, prompt);
-    } catch (error: any) {
-        console.error(`Error summarizing task progress for plan ${plan_id} (agent: ${agent_id}):`, error);
-        throw new McpError(ErrorCode.InternalError, `Failed to get task progress summary from AI: ${error.message}`);
-    }
-
-    // 4. Format output
-    let markdownOutput = `## AI Task Progress Summary\n\n`;
-    markdownOutput += `**Plan ID:** \`${progressSummary.plan_id}\`\n`;
-    if (progressSummary.task_id) markdownOutput += `**Task ID:** \`${progressSummary.task_id}\` (Task: "${taskTitle}")\n`;
-    markdownOutput += `**Overall Status Assessment:** ${progressSummary.overall_status_assessment || 'Not Assessed'}\n`;
-    if (progressSummary.estimated_completion_percentage !== undefined) markdownOutput += `**Estimated Completion:** ${progressSummary.estimated_completion_percentage}%\n`;
-    if (progressSummary.confidence_in_current_timeline) markdownOutput += `**Timeline Confidence:** ${progressSummary.confidence_in_current_timeline}\n\n`;
-
-    if (progressSummary.key_accomplishments?.length) {
-        markdownOutput += "### Key Accomplishments:\n" + progressSummary.key_accomplishments.map(s => `- ${s}`).join('\n') + "\n\n";
-    }
-    if (progressSummary.identified_blockers_or_issues?.length) {
-        markdownOutput += "### Identified Blockers/Issues:\n" + progressSummary.identified_blockers_or_issues.map(s => `- ${s}`).join('\n') + "\n\n";
-    }
-    if (progressSummary.next_steps_or_outlook) markdownOutput += `### Next Steps/Outlook:\n${progressSummary.next_steps_or_outlook}\n\n`;
-    if (progressSummary.detailed_summary_text) markdownOutput += `### Detailed Summary:\n${progressSummary.detailed_summary_text}\n\n`;
-
-
-    return { content: [{ type: 'text', text: markdownOutput }] };
-}
 // #endregion
 
 // #region Exports
@@ -568,7 +506,6 @@ export const aiTaskEnhancementToolDefinitions = [
     aiSuggestSubtasksToolDefinition,
     aiSuggestTaskDetailsToolDefinition,
     aiAnalyzePlanToolDefinition,
-    aiSummarizeTaskProgressToolDefinition,
 ];
 
 export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
@@ -576,7 +513,6 @@ export function getAiTaskEnhancementToolHandlers(memoryManager: MemoryManager) {
         'ai_suggest_subtasks': (args: any) => aiSuggestSubtasksHandler(args, memoryManager),
         'ai_suggest_task_details': (args: any) => aiSuggestTaskDetailsHandler(args, memoryManager),
         'ai_analyze_plan': (args: any) => aiAnalyzePlanHandler(args, memoryManager),
-        'ai_summarize_task_progress': (args: any) => aiSummarizeTaskProgressHandler(args, memoryManager),
     };
 }
 // #endregion

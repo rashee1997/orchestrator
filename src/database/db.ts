@@ -103,6 +103,30 @@ export async function initializeDatabase() {
 
     // --- End: Robust Schema Migration Checks ---
 
+    // Check and add 'sequence_number' column to 'conversation_sessions' table if it doesn't exist
+    const conversationSessionsTableInfo = await db.all("PRAGMA table_info(conversation_sessions);");
+    if (!conversationSessionsTableInfo.some((column: any) => column.name === 'sequence_number')) {
+        try {
+            await db.exec("ALTER TABLE conversation_sessions ADD COLUMN sequence_number INTEGER");
+            console.log('Successfully added "sequence_number" column to "conversation_sessions" table.');
+        } catch (error: any) {
+            console.error('Error adding "sequence_number" column to "conversation_sessions" table:', error);
+            throw error;
+        }
+    }
+
+    // Check and add 'idx_sessions_agent_sequence' unique index if it doesn't exist
+    const indexes = await db.all("PRAGMA index_list(conversation_sessions);");
+    if (!indexes.some((index: any) => index.name === 'idx_sessions_agent_sequence')) {
+        try {
+            await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_agent_sequence ON conversation_sessions (agent_id, sequence_number)");
+            console.log('Successfully added "idx_sessions_agent_sequence" unique index.');
+        } catch (error: any) {
+            console.error('Error adding "idx_sessions_agent_sequence" unique index:', error);
+            throw error;
+        }
+    }
+
     // Insert default agents if they don't exist to satisfy foreign key constraints
     await db.run(
         `INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso, status) VALUES (?, ?, ?, ?, ?, ?)`,

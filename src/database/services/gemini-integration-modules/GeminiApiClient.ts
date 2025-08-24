@@ -1,4 +1,5 @@
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content, Part } from "@google/genai";
+
 // Custom error for when Gemini API is not initialized
 export class GeminiApiNotInitializedError extends Error {
     constructor(message: string) {
@@ -6,10 +7,21 @@ export class GeminiApiNotInitializedError extends Error {
         this.name = "GeminiApiNotInitializedError";
     }
 }
+
+// Custom error for non-retryable API errors
+export class GeminiApiError extends Error {
+    constructor(message: string, public status?: number) {
+        super(message);
+        this.name = "GeminiApiError";
+    }
+}
+
 export class GeminiApiClient {
     private genAI?: GoogleGenAI;
     private _apiKeys: string[] | null = null;
     private currentApiKeyIndex: number = 0;
+    private readonly requestTimeout = 90000; // 90 seconds timeout for API calls
+
     private safetySettings = [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
         { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -20,7 +32,7 @@ export class GeminiApiClient {
         temperature: 0.7,
         topK: 1,
         topP: 1,
-        maxOutputTokens: 8192,
+        maxOutputTokens: 32768,
     };
     constructor(genAIInstance?: GoogleGenAI) {
         if (genAIInstance) {
@@ -34,160 +46,186 @@ export class GeminiApiClient {
             this._apiKeys = [];
             let i = 1;
             while (true) {
-                const geminiKeyName = `GEMINI_API_KEY${i > 1 ? i : ''}`;
-                const googleKeyName = `GOOGLE_API_KEY${i > 1 ? i : ''}`;
+                const geminiKeyName = `GEMINI_API_KEY${i > 1 ? `_${i}` : ''}`;
+                const googleKeyName = `GOOGLE_API_KEY${i > 1 ? `_${i}` : ''}`;
                 const geminiKey = process.env[geminiKeyName];
                 const googleKey = process.env[googleKeyName];
                 if (geminiKey) {
                     this._apiKeys.push(geminiKey as string);
                 }
-                if (googleKey) {
+                if (googleKey && geminiKey !== googleKey) { // Avoid duplicates if both are set to the same key
                     this._apiKeys.push(googleKey as string);
                 }
-                if (!geminiKey && !googleKey) {
+                if (!geminiKey && !googleKey && i > 1) { // Stop if we checked for _2 and found nothing
                     break;
                 }
+                if (i > 20) break; // Safety break
                 i++;
             }
             if (this._apiKeys.length === 0) {
                 console.warn('Gemini API key(s) not found. GeminiApiClient will not be functional for direct API calls.');
+            } else {
+                console.log(`[GeminiApiClient] Loaded ${this._apiKeys.length} API key(s).`);
             }
         }
         return this._apiKeys;
     }
 
-    private checkApiInitialized() {
-        if (!this.genAI) {
-            throw new GeminiApiNotInitializedError("Gemini API not initialized. Ensure GEMINI_API_KEY is set.");
-        }
-    }
-
     public getGenAIInstance(): GoogleGenAI | undefined {
         return this.genAI;
     }
-    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<{ content: Part[], confidenceScore?: number }> {
-        const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig);
+
+    async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> {
+        const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
         }
         throw new Error("Failed to get response from Gemini.");
     }
-    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }): Promise<Array<{ content: Part[], confidenceScore?: number }>> {
+
+    public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
         if (queries.length === 0) return [];
+
         const availableApiKeys = this.apiKeys;
         if (availableApiKeys.length === 0) {
-            throw new GeminiApiNotInitializedError("Gemini API key(s) not configured. Please set GEMINI_API_KEY environment variable(s).");
+            throw new GeminiApiNotInitializedError("Gemini API key(s) not configured. Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable(s).");
         }
+
         const batchSize = 10;
-        const delayBetweenBatches = 10000; // Increased delay to 10 seconds
-        const allResults: Array<{ content: Part[], confidenceScore?: number }> = [];
-
-        // Create a modified generation config
-        const modifiedGenerationConfig = { ...this.generationConfig };
-        const config: any = {};
-
-        // Add thinking config if provided
-        if (thinkingConfig) {
-            config.thinkingConfig = {};
-
-            // Only add thinkingBudget if it's defined and non-negative
-            if (thinkingConfig.thinkingBudget !== undefined && thinkingConfig.thinkingBudget >= 0) {
-                config.thinkingConfig.thinkingBudget = thinkingConfig.thinkingBudget;
-            }
-
-            // Add thinkingMode if provided
-            if (thinkingConfig.thinkingMode) {
-                config.thinkingConfig.thinkingMode = thinkingConfig.thinkingMode;
-            }
-
-            // If thinkingConfig is empty after filtering, don't include it
-            if (Object.keys(config.thinkingConfig).length === 0) {
-                delete config.thinkingConfig;
-            }
-        }
+        const allResults: Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> = [];
 
         for (let i = 0; i < queries.length; i += batchSize) {
             const batchQueries = queries.slice(i, i + batchSize);
-            let attempt = 0;
-            const maxRetries = availableApiKeys.length;
-            let success = false;
-            let lastError: any = null;
-            while (attempt < maxRetries && !success) {
-                try {
-                    this.genAI = new GoogleGenAI({ apiKey: availableApiKeys[this.currentApiKeyIndex] });
-                    const genAIInstance = this.genAI;
-                    const batchContents: Content[] = batchQueries.map(query => {
-                        const parts: Part[] = [];
-                        if (systemInstruction) {
-                            parts.push({ text: systemInstruction });
-                        }
-                        if (contextContent && contextContent.length > 0) {
-                            parts.push(...contextContent);
-                        }
-                        parts.push({ text: query });
-                        return { role: "user", parts };
-                    });
-                    const batchResponses: Array<{ content: Part[], confidenceScore?: number }> = [];
-                    for (const content of batchContents) {
-                        const request: any = {
-                            model: modelName,
-                            contents: [content],
-                            safetySettings: this.safetySettings,
-                            generationConfig: modifiedGenerationConfig,
-                        };
+            const batchResult = await this.executeBatchWithRetries(batchQueries, modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
+            allResults.push(...batchResult);
 
-                        // Add config if it has any properties
-                        if (Object.keys(config).length > 0) {
-                            request.config = config;
-                        }
-
-                        const result = await genAIInstance.models.generateContent(request);
-                        let responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-                        if (!responseText && typeof result.text === "string") {
-                            responseText = result.text;
-                        }
-                        batchResponses.push({ content: [{ text: responseText }] });
-                    }
-                    allResults.push(...batchResponses);
-                    success = true;
-                } catch (error: any) {
-                    lastError = error;
-                    console.error(`Error calling Gemini API (${modelName}) for batch (API Key Index: ${this.currentApiKeyIndex}, batch start: ${i}):`, error);
-                    if (error.response && error.response.status === 429 || (typeof error.message === 'string' && (error.message.includes('quota') || error.message.includes('rate limit')))) {
-                        attempt++;
-                        if (attempt < maxRetries) {
-                            this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length;
-                            const backoffTime = 2000 * Math.pow(2, attempt - 1); // Exponential backoff for API key rotation
-                            console.warn(`Received 429 Too Many Requests. Switching to next Gemini API key (index: ${this.currentApiKeyIndex}). Retrying batch after ${backoffTime}ms...`);
-                            await new Promise(resolve => setTimeout(resolve, backoffTime));
-                        } else {
-                            console.error(`Max retries (${maxRetries}) reached for batch starting at index ${i}. Skipping batch.`);
-                            for (let j = 0; j < batchQueries.length; j++) {
-                                allResults.push({ content: [{ text: "Error: Max retries reached for this query." }] });
-                            }
-                            success = true;
-                        }
-                    } else {
-                        console.error(`Non-retryable error for batch starting at index ${i}:`, error);
-                        // For non-retryable errors, we still want to log and move on,
-                        // but not mark as success if it was a critical failure.
-                        for (let j = 0; j < batchQueries.length; j++) {
-                            allResults.push({ content: [{ text: `Error: ${error.message}` }] });
-                        }
-                        success = true; // Mark as success to break the while loop for this batch
-                    }
-                }
-            }
-            if (!success) {
-                // This block will only be reached if an unhandled error occurred and success was never true
-                for (let j = 0; j < batchQueries.length; j++) {
-                    allResults.push({ content: [{ text: `Error: Failed after all retries. Last error: ${lastError ? lastError.message : 'Unknown'}` }] });
-                }
-            }
             if (i + batchSize < queries.length) {
-                await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+                await new Promise(resolve => setTimeout(resolve, 1000)); // 1s delay between batches
             }
         }
         return allResults;
+    }
+
+    private async executeBatchWithRetries(
+        batchQueries: string[],
+        modelName: string,
+        systemInstruction?: string,
+        contextContent?: Part[],
+        thinkingConfig?: any,
+        toolConfig?: any
+    ): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
+        const availableApiKeys = this.apiKeys;
+        const maxRetries = availableApiKeys.length * 2; // Allow retrying on each key once
+        let lastError: any = null;
+
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            const apiKey = availableApiKeys[this.currentApiKeyIndex];
+            try {
+                this.genAI = new GoogleGenAI({ apiKey });
+                const batchContents: Content[] = this.buildBatchContents(batchQueries, systemInstruction, contextContent);
+
+                const response = await this.performApiCall(batchContents, modelName, thinkingConfig, toolConfig);
+                return response;
+            } catch (error: any) {
+                lastError = error;
+                const { shouldRetry, isRateLimit } = this.analyzeError(error);
+
+                if (!shouldRetry) {
+                    console.error(`[GeminiApiClient] Non-retryable error encountered on key index ${this.currentApiKeyIndex}. Error: ${error.message}`);
+                    throw new GeminiApiError(error.message, error.status);
+                }
+
+                // On error, switch key and wait
+                this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length;
+                const backoffTime = isRateLimit ? 5000 : 1000 * Math.pow(2, Math.floor(attempt / availableApiKeys.length));
+
+                console.warn(`[GeminiApiClient] API call failed (Attempt ${attempt + 1}/${maxRetries}). Error: ${error.message}. Switching to key index ${this.currentApiKeyIndex}. Retrying in ${backoffTime}ms...`);
+                await new Promise(resolve => setTimeout(resolve, backoffTime));
+            }
+        }
+
+        throw lastError || new Error("Unknown error occurred during batch processing after all retries.");
+    }
+
+    private async performApiCall(
+        batchContents: Content[],
+        modelName: string,
+        thinkingConfig: any,
+        toolConfig: any
+    ): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
+        const genAIInstance = this.genAI;
+        if (!genAIInstance) throw new GeminiApiNotInitializedError("genAI instance is not available.");
+
+        const batchResponses: Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> = [];
+
+        for (const content of batchContents) {
+            const abortController = new AbortController();
+            const timeoutId = setTimeout(() => abortController.abort(), this.requestTimeout);
+
+            try {
+                const request: any = {
+                    model: modelName,
+                    contents: [content],
+                    safetySettings: this.safetySettings,
+                    generationConfig: this.generationConfig,
+                    config: {},
+                };
+
+                if (thinkingConfig) request.config.thinkingConfig = thinkingConfig;
+                if (toolConfig) request.config.tools = toolConfig.tools;
+                if (Object.keys(request.config).length === 0) delete request.config;
+
+                const result = await genAIInstance.models.generateContent({
+                  ...request,
+                  signal: abortController.signal
+                });
+
+                const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text ?? (typeof result.text === "string" ? result.text : "");
+
+                batchResponses.push({
+                    content: [{ text: responseText }],
+                    groundingMetadata: result.candidates?.[0]?.groundingMetadata
+                });
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+        return batchResponses;
+    }
+
+    private buildBatchContents(queries: string[], systemInstruction?: string, contextContent?: Part[]): Content[] {
+        return queries.map(query => {
+            const parts: Part[] = [];
+            if (systemInstruction) parts.push({ text: systemInstruction });
+            if (contextContent?.length) parts.push(...contextContent);
+            parts.push({ text: query });
+            return { role: "user", parts };
+        });
+    }
+
+    private analyzeError(error: any): { shouldRetry: boolean, isRateLimit: boolean } {
+        const message = (error.message || '').toLowerCase();
+        const status = error.status || (error.cause as any)?.status;
+
+        // Non-retryable client errors (4xx except 429)
+        if (status && status >= 400 && status < 500 && status !== 429) {
+            return { shouldRetry: false, isRateLimit: false };
+        }
+
+        const isRateLimit = status === 429 || message.includes('quota') || message.includes('rate limit');
+        if (isRateLimit) {
+            return { shouldRetry: true, isRateLimit: true };
+        }
+
+        // Retryable server errors (5xx) or network errors
+        if (status && status >= 500) {
+            return { shouldRetry: true, isRateLimit: false };
+        }
+        if (message.includes('fetch failed') || message.includes('timeout') || error.name === 'AbortError') {
+            return { shouldRetry: true, isRateLimit: false };
+        }
+
+        // Default to not retrying for unknown errors
+        return { shouldRetry: false, isRateLimit: false };
     }
 }

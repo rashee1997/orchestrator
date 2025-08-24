@@ -18,3 +18,4 @@ vector_store.db-wal
 .blackboxrules
 .vincent/
 .vscode/
+history/

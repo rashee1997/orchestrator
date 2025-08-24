@@ -1,4 +1,3 @@
-// src/utils/formatters.ts
 // Minimal escape: only for characters that most commonly break lists or emphasis if not intended.
 function escapeMinimalMarkdown(text: string | number | boolean | null | undefined): string {
     if (text === null || typeof text === 'undefined') {
@@ -40,7 +39,7 @@ function getParsedArrayField<T = string>(input: any): T[] {
 // - isCodeOrId: if true, wraps in single backticks (for IDs, paths, etc.)
 // - isBlockContent: if true, wraps in triple backticks (for messages, stack traces)
 // - otherwise, applies minimal escaping for general text.
-function formatValue(value: any, options: { isCodeOrId?: boolean, isBlockContent?: boolean, lang?: string } = {}): string {
+export function formatValue(value: any, options: { isCodeOrId?: boolean, isBlockContent?: boolean, lang?: string } = {}): string {
     if (value === null || typeof value === 'undefined') {
         return '*N/A*';
     }
@@ -175,8 +174,8 @@ export function formatJsonToMarkdownCodeBlock(data: any, lang: string = 'json', 
 export function formatTaskToMarkdown(task: any): string {
     if (!task) return "*No task details provided.*\n";
     // Each task detail as a sub-list item for clarity
-    let md = `- **Task:** ${formatValue(task.title || 'N/A')} (ID: ${formatValue(task.task_id, {isCodeOrId: true})})\n`;
-    md += `  - **Plan ID:** ${formatValue(task.plan_id, {isCodeOrId: true})}\n`;
+    let md = `- **Task:** ${formatValue(task.title || 'N/A')} (ID: ${formatValue(task.task_id, { isCodeOrId: true })})\n`;
+    md += `  - **Plan ID:** ${formatValue(task.plan_id, { isCodeOrId: true })}\n`;
     md += `  - **Task Number:** ${formatValue(task.task_number)}\n`;
     md += `  - **Status:** ${formatValue(task.status || 'N/A')}\n`;
     if (task.description) md += `  - **Description:** ${formatValue(task.description)}\n`;
@@ -184,11 +183,11 @@ export function formatTaskToMarkdown(task: any): string {
     if (task.action_description) md += `  - **Action:** ${formatValue(task.action_description)}\n`;
 
     const filesInvolved = getParsedArrayField(task.files_involved_parsed || task.files_involved_json || task.files_involved);
-    if (filesInvolved.length > 0) md += `  - **Files Involved:** ${filesInvolved.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
+    if (filesInvolved.length > 0) md += `  - **Files Involved:** ${filesInvolved.map(i => formatValue(i, { isCodeOrId: true })).join(', ')}\n`;
     const dependencies = getParsedArrayField(task.dependencies_task_ids_parsed || task.dependencies_task_ids_json || task.dependencies_task_ids);
-    if (dependencies.length > 0) md += `  - **Dependencies:** ${dependencies.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
+    if (dependencies.length > 0) md += `  - **Dependencies:** ${dependencies.map(i => formatValue(i, { isCodeOrId: true })).join(', ')}\n`;
     const toolsRequired = getParsedArrayField(task.tools_required_list_parsed || task.tools_required_list_json || task.tools_required_list);
-    if (toolsRequired.length > 0) md += `  - **Tools Required:** ${toolsRequired.map(i => formatValue(i, {isCodeOrId: true})).join(', ')}\n`;
+    if (toolsRequired.length > 0) md += `  - **Tools Required:** ${toolsRequired.map(i => formatValue(i, { isCodeOrId: true })).join(', ')}\n`;
 
     if (task.inputs_summary) md += `  - **Inputs:** ${formatValue(task.inputs_summary)}\n`;
     if (task.outputs_summary) md += `  - **Outputs:** ${formatValue(task.outputs_summary)}\n`;
@@ -199,12 +198,12 @@ export function formatTaskToMarkdown(task: any): string {
     if (task.creation_timestamp_iso) md += `  - **Created:** ${formatValue(task.creation_timestamp_iso ? new Date(task.creation_timestamp_iso) : null)}\n`;
     if (task.last_updated_timestamp_iso) md += `  - **Last Updated:** ${formatValue(task.last_updated_timestamp_iso ? new Date(task.last_updated_timestamp_iso) : null)}\n`;
     if (task.completion_timestamp_iso) md += `  - **Completed:** ${formatValue(task.completion_timestamp_iso ? new Date(task.completion_timestamp_iso) : null)}\n`;
-    
+
     if (task.code_content) {
         const files = getParsedArrayField(task.files_involved_parsed || task.files_involved_json || task.files_involved);
         const language = files.length > 0 ? (files[0].split('.').pop() || 'text') : 'text';
         const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
-        
+
         md += `  - **Proposed Code Changes:**\n`;
         md += `${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 4)}\n`;
     }
@@ -224,10 +223,10 @@ export function formatSubtasksListToMarkdownTable(subtasks: any[]): string {
     let md = "| Subtask ID | Title | Status | Parent Task ID |\n";
     md += "|------------|-------|--------|----------------|\n";
     subtasks.forEach(subtask => {
-        md += `| ${formatValue(subtask.subtask_id || 'N/A', {isCodeOrId: true})} `
+        md += `| ${formatValue(subtask.subtask_id || 'N/A', { isCodeOrId: true })} `
             + `| ${formatValue(subtask.title || 'N/A')} `
             + `| ${formatValue(subtask.status || 'N/A')} `
-            + `| ${subtask.parent_task_id ? formatValue(subtask.parent_task_id, {isCodeOrId: true}) : '*N/A*'} |\n`;
+            + `| ${subtask.parent_task_id ? formatValue(subtask.parent_task_id, { isCodeOrId: true }) : '*N/A*'} |\n`;
     });
     return md;
 }
@@ -244,18 +243,18 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
         md += `| ${formatValue(task.task_number || 'N/A')} `
             + `| ${formatValue(task.title || 'N/A')} `
             + `| ${formatValue(task.status || 'N/A')} `
-            + `| ${(dependencies.length > 0) ? dependencies.map((d:string) => formatValue(d, {isCodeOrId: true})).join(', ') : '*None*'} `
+            + `| ${(dependencies.length > 0) ? dependencies.map((d: string) => formatValue(d, { isCodeOrId: true })).join(', ') : '*None*'} `
             + `| ${formatValue(task.assigned_to || 'N/A')} `
-            + `| ${formatValue(task.task_id || 'N/A', {isCodeOrId: true})} |\n`;
+            + `| ${formatValue(task.task_id || 'N/A', { isCodeOrId: true })} |\n`;
 
         if (includeSubtasks && task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
-            md += `\n**Subtasks for Task ${formatValue(task.task_number, {isCodeOrId: true})} - ${formatValue(task.title)}:**\n`;
+            md += `\n**Subtasks for Task ${formatValue(task.task_number, { isCodeOrId: true })} - ${formatValue(task.title)}:**\n`;
             task.subtasks.forEach((subtask: any) => {
-                md += `- Subtask ID: ${formatValue(subtask.subtask_id || 'N/A', {isCodeOrId: true})}\n`;
+                md += `- Subtask ID: ${formatValue(subtask.subtask_id || 'N/A', { isCodeOrId: true })}\n`;
                 md += `  - Title: ${formatValue(subtask.title || 'N/A')}\n`;
                 md += `  - Status: ${formatValue(subtask.status || 'N/A')}\n`;
                 if (subtask.parent_task_id) {
-                    md += `  - Parent Task ID: ${formatValue(subtask.parent_task_id, {isCodeOrId: true})}\n`;
+                    md += `  - Parent Task ID: ${formatValue(subtask.parent_task_id, { isCodeOrId: true })}\n`;
                 }
             });
         }
@@ -263,19 +262,19 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
     return md;
 }
 
-// *** MODIFIED FUNCTION TO DISPLAY FULL TASK DETAILS ***
+// *** MODIFIED FUNCTION TO DISPLAY FULL TASK DETAILS WITH SUBTASKS ***
 export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = [], taskMap: Map<string, any> = new Map()): string {
     if (!plan) return "*No plan details provided.*\n";
-    
-    let md = `## Plan: ${formatValue(plan.title || 'N/A')} (ID: ${formatValue(plan.plan_id, {isCodeOrId: true})})\n\n`;
-    md += `- __Agent ID:__ ${formatValue(plan.agent_id, {isCodeOrId: true})}\n`;
+
+    let md = `## Plan: ${formatValue(plan.title || 'N/A')} (ID: ${formatValue(plan.plan_id, { isCodeOrId: true })})\n\n`;
+    md += `- __Agent ID:__ ${formatValue(plan.agent_id, { isCodeOrId: true })}\n`;
     md += `- __Status:__ ${formatValue(plan.status || 'N/A')}\n`;
     if (plan.overall_goal) md += `- __Overall Goal:__ ${formatValue(plan.overall_goal)}\n`;
     md += `- __Version:__ ${formatValue(plan.version || 1)}\n`;
     if (plan.creation_timestamp_iso) md += `- __Created:__ ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
     if (plan.last_updated_timestamp_iso) md += `- __Last Updated:__ ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
-    if (plan.refined_prompt_id_associated) md += `- __Refined Prompt ID:__ ${formatValue(plan.refined_prompt_id_associated, {isCodeOrId: true})}\n`;
-    
+    if (plan.refined_prompt_id_associated) md += `- __Refined Prompt ID:__ ${formatValue(plan.refined_prompt_id_associated, { isCodeOrId: true })}\n`;
+
     const metadata = plan.metadata_parsed || plan.metadata;
     if (metadata) {
         md += `- __Metadata:__\n${formatJsonToMarkdownCodeBlock(metadata, 'json', 2)}\n`;
@@ -304,23 +303,47 @@ export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks:
                 .join(', ');
 
             if (dependencies) md += `- **Dependencies:** ${dependencies}\n`;
-            
+
             const filesInvolved = getParsedArrayField(task.files_involved);
             if (filesInvolved.length > 0) {
-                md += `- **Files Involved:** ${filesInvolved.map(f => formatValue(f, {isCodeOrId: true})).join(', ')}\n`;
+                md += `- **Files Involved:** ${filesInvolved.map(f => formatValue(f, { isCodeOrId: true })).join(', ')}\n`;
             }
 
             const toolsRequired = getParsedArrayField(task.tools_required_list);
             if (toolsRequired.length > 0) {
-                md += `- **Tools Required:** ${toolsRequired.map(t => formatValue(t, {isCodeOrId: true})).join(', ')}\n`;
+                md += `- **Tools Required:** ${toolsRequired.map(t => formatValue(t, { isCodeOrId: true })).join(', ')}\n`;
             }
-            
+
             if (task.code_content) {
                 const language = filesInvolved.length > 0 ? (filesInvolved[0].split('.').pop() || 'text') : 'text';
                 const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
-                
+
                 md += `- **Proposed Code Changes:**\n`;
                 md += `${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 2)}\n`;
+            }
+
+            // Display subtasks for this specific task
+            if (task.subtasks && Array.isArray(task.subtasks) && task.subtasks.length > 0) {
+                md += `\n#### Subtasks for Task ${task.task_number}:\n`;
+                task.subtasks.forEach((subtask: any) => {
+                    md += `\n- **Subtask ID:** ${formatValue(subtask.subtask_id, { isCodeOrId: true })}\n`;
+                    md += `  - **Title:** ${formatValue(subtask.title || 'N/A')}\n`;
+                    md += `  - **Status:** ${formatValue(subtask.status || 'N/A')}\n`;
+                    md += `  - **Description:** ${formatValue(subtask.description || 'N/A')}\n`;
+                    if (subtask.parent_task_id) {
+                        md += `  - **Parent Task ID:** ${formatValue(subtask.parent_task_id, { isCodeOrId: true })}\n`;
+                    }
+                    if (subtask.creation_timestamp_iso) {
+                        md += `  - **Created:** ${formatValue(subtask.creation_timestamp_iso ? new Date(subtask.creation_timestamp_iso) : null)}\n`;
+                    }
+                    if (subtask.last_updated_timestamp_iso) {
+                        md += `  - **Last Updated:** ${formatValue(subtask.last_updated_timestamp_iso ? new Date(subtask.last_updated_timestamp_iso) : null)}\n`;
+                    }
+                    if (subtask.completion_timestamp_iso) {
+                        md += `  - **Completed:** ${formatValue(subtask.completion_timestamp_iso ? new Date(subtask.completion_timestamp_iso) : null)}\n`;
+                    }
+                });
+                md += `\n`;
             }
         });
     }
@@ -341,7 +364,7 @@ export function formatPlansListToMarkdownTable(plans: any[]): string {
     md += "|---------|-------|--------|----------------|---------|---------|\n";
     plans.forEach(plan => {
         const goalSummary = (String(plan.overall_goal || 'N/A')).substring(0, 30) + ((plan.overall_goal && plan.overall_goal.length > 30) ? '...' : '');
-        md += `| ${formatValue(plan.plan_id, {isCodeOrId: true})} `
+        md += `| ${formatValue(plan.plan_id, { isCodeOrId: true })} `
             + `| ${formatValue(plan.title || 'N/A')} `
             + `| ${formatValue(plan.status || 'N/A')} `
             + `| ${formatValue(goalSummary)} ` // Goal summary is plain text
@@ -351,125 +374,95 @@ export function formatPlansListToMarkdownTable(plans: any[]): string {
     return md;
 }
 
-export function formatCorrectionLogToMarkdown(log: any): string {
-    if (!log) return "*No correction log details provided.*\n";
-    // Each log as a list item
-    let md = `- **Correction ID:** ${formatValue(log.correction_id, {isCodeOrId: true})}\n`;
-    md += `  - **Agent ID:** ${formatValue(log.agent_id, {isCodeOrId: true})}\n`;
-    md += `  - **Type:** ${formatValue(log.correction_type)}\n`;
-    if (log.original_entry_id) md += `  - **Original Entry ID:** ${formatValue(log.original_entry_id, {isCodeOrId: true})}\n`;
-
-    const originalValue = log.original_value_parsed || log.original_value_json;
-    if (originalValue) {
-        md += `  - **Original Value:**\n${formatJsonToMarkdownCodeBlock(originalValue).split('\n').map(line => `    ${line}`).join('\n')}\n`;
-    }
-    const correctedValue = log.corrected_value_parsed || log.corrected_value_json;
-    if (correctedValue) {
-        md += `  - **Corrected Value:**\n${formatJsonToMarkdownCodeBlock(correctedValue).split('\n').map(line => `    ${line}`).join('\n')}\n`;
-    }
-    if (log.reason) {
-        md += `  - **Reason:**\n`;
-        md += `${String(log.reason).split('\n').map(line => `    > ${line}`).join('\n')}\n`;
-    }
-    if (log.correction_summary) {
-        md += `  - **Summary of Correction:**\n`; // Clarified label
-        md += `${String(log.correction_summary).split('\n').map(line => `    > ${line}`).join('\n')}\n`;
-    }
-    md += `  - **Applied Automatically:** ${log.applied_automatically ? 'Yes' : 'No'}\n`;
-    md += `  - **Status:** ${formatValue(log.status)}\n`;
-    if (log.creation_timestamp_iso) md += `  - **Created:** ${formatValue(log.creation_timestamp_iso ? new Date(log.creation_timestamp_iso) : null)}\n`;
-    if (log.last_updated_timestamp_iso) md += `  - **Last Updated:** ${formatValue(log.last_updated_timestamp_iso ? new Date(log.last_updated_timestamp_iso) : null)}\n`;
-    return md;
-}
-
-export function formatToolExecutionLogToMarkdown(log: any): string {
-    if (!log) return "*No tool execution log details provided.*\n";
-    // Each log as a list item
-    let md = `- **Log ID:** ${formatValue(log.log_id, {isCodeOrId: true})}\n`;
-    md += `  - **Agent ID:** ${formatValue(log.agent_id, {isCodeOrId: true})}\n`;
-    md += `  - **Tool Name:** ${formatValue(log.tool_name, {isCodeOrId: true})}\n`;
-    md += `  - **Status:** ${formatValue(log.status)}\n`;
-    if (log.plan_id) md += `  - **Plan ID:** ${formatValue(log.plan_id, {isCodeOrId: true})}\n`;
-    if (log.task_id) md += `  - **Task ID:** ${formatValue(log.task_id, {isCodeOrId: true})}\n`;
-    if (log.subtask_id) md += `  - **Subtask ID:** ${formatValue(log.subtask_id, {isCodeOrId: true})}\n`;
-
-    // Add a separator for better visual distinction of arguments/output
-    md += `\n---\n\n`;
-
-    const args = log.arguments_parsed || log.arguments_json;
-    if (args) {
-        md += `  - **Arguments:**\n\n`; // Extra newline for separation
-        md += `${formatJsonToMarkdownCodeBlock(args).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
-    }
-    if (log.output_summary) {
-        md += `  - **Output Summary:**\n\n`; // Extra newline for separation
-        md += `${formatValue(log.output_summary, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
-    }
-    if (log.execution_start_timestamp_iso) md += `  - **Started:** ${formatValue(log.execution_start_timestamp_iso ? new Date(log.execution_start_timestamp_iso) : null)}\n`;
-    if (log.execution_end_timestamp_iso) md += `  - **Ended:** ${formatValue(log.execution_end_timestamp_iso ? new Date(log.execution_end_timestamp_iso) : null)}\n`;
-    if (typeof log.duration_ms === 'number') md += `  - **Duration:** ${log.duration_ms} ms\n`;
-    if (log.step_number_executed) md += `  - **Step Executed:** ${formatValue(log.step_number_executed)}\n`;
-    if (log.plan_step_title) md += `  - **Plan Step Title:** ${formatValue(log.plan_step_title)}\n`;
-    return md;
-}
-
-export function formatTaskProgressLogToMarkdown(log: any): string {
-    if (!log) return "*No task progress log details provided.*\n";
-    // Each log as a list item
-    let md = `- **Progress Log ID:** ${formatValue(log.progress_log_id, {isCodeOrId: true})}\n`;
-    md += `  - **Agent ID:** ${formatValue(log.agent_id, {isCodeOrId: true})}\n`;
-    md += `  - **Plan ID:** ${formatValue(log.associated_plan_id, {isCodeOrId: true})}\n`;
-    md += `  - **Task ID:** ${formatValue(log.associated_task_id, {isCodeOrId: true})}\n`;
-    if (log.associated_subtask_id) md += `  - **Subtask ID:** ${formatValue(log.associated_subtask_id, {isCodeOrId: true})}\n`;
-    if (log.step_number_executed) md += `  - **Step Executed:** ${formatValue(log.step_number_executed)}\n`;
-    if (log.plan_step_title) md += `  - **Plan Step Title:** ${formatValue(log.plan_step_title)}\n`;
-    if (log.action_tool_used) md += `  - **Tool Used:** ${formatValue(log.action_tool_used, {isCodeOrId: true})}\n`;
-
-    const toolParams = log.tool_parameters_summary_parsed || log.tool_parameters_summary_json;
-    if (toolParams) {
-        md += `  - **Tool Parameters:**\n${formatJsonToMarkdownCodeBlock(toolParams).split('\n').map(line => `    ${line}`).join('\n')}\n`;
+export function formatPlanGenerationResponseToMarkdown(response: any): string {
+    if (!response) {
+        return "*No plan generation response provided.*\n";
     }
 
-    const filesModified = getParsedArrayField(log.files_modified_list_parsed || log.files_modified_list_json);
-    if (filesModified.length > 0) md += `  - **Files Modified:** ${filesModified.map((f:string) => formatValue(f, {isCodeOrId: true})).join(', ')}\n`;
+    let md = `## Refined Prompt & Plan Generation Summary\n\n`;
 
-    if (log.change_summary_text) md += `  - **Change Summary:** ${formatValue(log.change_summary_text)}\n`;
-    md += `  - **Execution Status:** ${formatValue(log.status_of_step_execution)}\n`;
-    if (log.output_summary_or_error) {
-        md += `  - **Output/Error:**\n${formatValue(log.output_summary_or_error, {isBlockContent: true, lang: 'text'}).split('\n').map(line => `    ${line}`).join('\n')}\n`;
-    }
-    if (log.execution_timestamp_iso) md += `  - **Executed At:** ${formatValue(log.execution_timestamp_iso ? new Date(log.execution_timestamp_iso) : null)}\n`;
-    return md;
-}
-
-export function formatErrorLogToMarkdown(log: any): string {
-    if (!log) return "*No error log details provided.*\n";
-
-    // Main entry as a list item for better structure when multiple logs are displayed.
-    let md = `- **Error ID:** ${formatValue(log.error_log_id, { isCodeOrId: true })}\n`;
-    md += `  - **Agent ID:** ${formatValue(log.agent_id, { isCodeOrId: true })}\n`;
-    md += `  - **Type:** ${formatValue(log.error_type)}\n`;
-    md += `  - **Severity:** ${formatValue(log.severity)}\n`;
-    md += `  - **Status:** ${formatValue(log.status)}\n`;
-    if (log.associated_plan_id) md += `  - **Plan ID:** ${formatValue(log.associated_plan_id, {isCodeOrId: true})}\n`;
-    if (log.associated_task_id) md += `  - **Task ID:** ${formatValue(log.associated_task_id, {isCodeOrId: true})}\n`;
-    if (log.associated_subtask_id) md += `  - **Subtask ID:** ${formatValue(log.associated_subtask_id, {isCodeOrId: true})}\n`;
-    if (log.associated_tool_execution_log_id) md += `  - **Tool Log ID:** ${formatValue(log.associated_tool_execution_log_id, {isCodeOrId: true})}\n`;
-    if (log.source_file) {
-        md += `  - **Source:** ${formatValue(log.source_file, { isCodeOrId: true })}${log.source_line ? ` (Line: ${log.source_line})` : ''}\n`;
+    const metadata = response.generation_metadata_parsed || response.generation_metadata;
+    if (metadata) {
+        md += `### Generation & Context Analysis:\n`;
+        if (metadata.rag_metrics) {
+            md += `- **RAG Metrics:** Total Iterations: ${metadata.rag_metrics.totalIterations}, Context Items Added: ${metadata.rag_metrics.contextItemsAdded}, Web Searches: ${metadata.rag_metrics.webSearchesPerformed}\n`;
+        }
+        if (metadata.context_summary && metadata.context_summary.length > 0) {
+            md += `- **Context Sources Used:** ${metadata.context_summary.length} items (e.g., \`${metadata.context_summary[0].source}\`)\n`;
+        } else {
+            md += `- **Context Sources Used:** 0 items\n`;
+        }
+        if (metadata.web_sources && metadata.web_sources.length > 0) {
+            md += `- **Web Sources Found:** ${metadata.web_sources.length} sources\n`;
+        }
+        md += `\n`;
     }
 
-    // Add a separator for better visual distinction of message/stack trace
-    md += `\n---\n\n`;
-
-    md += `  - **Message:**\n\n`; // Extra newline for separation
-    md += `${formatValue(log.error_message, { isBlockContent: true, lang: 'text' }).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
-    
-    if (log.stack_trace) {
-        md += `  - **Stack Trace:**\n\n`; // Extra newline for separation
-        md += `${formatValue(log.stack_trace, { isBlockContent: true }).split('\n').map(line => `    ${line}`).join('\n')}\n\n`; // Indent and extra newline
+    md += `### Generated Plan Details:\n`;
+    md += `- **Plan Title:** ${formatValue(response.plan_title || response.overall_goal || 'N/A')}\n`;
+    md += `- **Estimated Duration:** ${formatValue(response.estimated_duration_days)} days\n`;
+    md += `- **Target Dates:** ${formatValue(response.target_start_date)} to ${formatValue(response.target_end_date)}\n`;
+    if (response.refinement_engine_model) {
+        md += `- **Refinement Model:** ${formatValue(response.refinement_engine_model)}\n`;
     }
-    if (log.resolution_details) md += `  - **Resolution:** ${formatValue(log.resolution_details)}\n`;
-    if (log.error_timestamp_iso) md += `  - **Occurred At:** ${formatValue(log.error_timestamp_iso ? new Date(log.error_timestamp_iso) : null)}\n`;
+    if (response.refinement_timestamp) {
+        md += `- **Generated At:** ${formatValue(new Date(response.refinement_timestamp))}\n`;
+    }
+    if (response.original_prompt_text) {
+        md += `- **Original Query:** ${formatValue(response.original_prompt_text)}\n`;
+    }
+    if (response.target_ai_persona) {
+        md += `- **Target AI Persona:** ${formatValue(response.target_ai_persona)}\n`;
+    }
+    if (response.refined_prompt_id) {
+        md += `- **Refined Prompt ID:** ${formatValue(response.refined_prompt_id, { isCodeOrId: true })}\n`;
+    }
+
+    const risks = response.plan_risks_and_mitigations || [];
+    if (risks.length > 0) {
+        md += `\n### Identified Risks and Mitigations:\n`;
+        risks.forEach((risk: any, index: number) => {
+            md += `\n**Risk ${index + 1}:**\n`;
+            md += `- **Description:** ${formatValue(risk.risk_description)}\n`;
+            md += `- **Mitigation Strategy:** ${formatValue(risk.mitigation_strategy)}\n`;
+        });
+    }
+
+    // CORRECTED LOGIC: Check for the correct task properties from RefinedPrompt object
+    const tasks = response.decomposed_tasks_parsed || response.decomposed_tasks || [];
+    if (tasks.length > 0) {
+        md += `\n### Proposed Tasks:\n`;
+        tasks.forEach((task: any, index: number) => {
+            const taskNumber = task.task_number || (index + 1);
+            md += `\n--- Task ${formatValue(taskNumber)} ---\n`;
+            md += `- **Title:** ${formatValue(task.title)}\n`;
+            md += `- **Description:** ${formatValue(task.description)}\n`;
+            md += `- **Purpose:** ${formatValue(task.purpose)}\n`;
+
+            const filesInvolved = getParsedArrayField(task.files_involved_json);
+            if (filesInvolved.length > 0) {
+                md += `- **Suggested Files Involved:** ${filesInvolved.map((f: string) => formatValue(f, { isCodeOrId: true })).join(', ')}\n`;
+            }
+
+            const dependencies = getParsedArrayField(task.dependencies_task_ids_json);
+            if (dependencies.length > 0) {
+                // This field from the prompt contains task titles, not IDs. We format them as is.
+                md += `- **Dependencies:** ${dependencies.map((d: string) => `"${formatValue(d)}"`).join(', ')}\n`;
+            }
+
+            if (task.success_criteria_text) {
+                md += `- **Completion Criteria:** ${formatValue(task.success_criteria_text)}\n`;
+            }
+
+            if (task.code_content) {
+                const language = filesInvolved.length > 0 ? (filesInvolved[0].split('.').pop() || 'text') : 'text';
+                const codeType = task.code_content.startsWith('--- a/') ? 'diff' : language;
+                md += `- **Proposed Code Content:**\n${formatJsonToMarkdownCodeBlock(task.code_content, codeType, 2)}\n`;
+            }
+        });
+    } else {
+        md += "\n*No specific tasks proposed in this plan.*\n";
+    }
+
     return md;
 }

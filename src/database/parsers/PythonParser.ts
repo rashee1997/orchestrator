@@ -1,504 +1,299 @@
-// Enhanced Python parser module with richer and deeper parsing capabilities
 import { BaseLanguageParser } from './ILanguageParser.js';
 import { ExtractedImport, ExtractedCodeEntity } from '../services/CodebaseIntrospectionService.js';
-import filbert from 'filbert';
+import * as babelParser from '@babel/parser'; // Babel can parse modern Python via plug-ins
+import traverse from '@babel/traverse';
+import * as t from '@babel/types';
 import path from 'path';
+import fs from 'fs/promises';
 
-// Enhanced interfaces for richer parsing
-interface TypeInformation {
-    inferredType: string;
-    declaredType?: string;
-    typeHints: string[];
-    genericParameters: string[];
-    returnType?: string;
-    unionTypes: string[];
-    optionalTypes: string[];
+// ---------- Enhanced Type System ----------
+interface EnhancedTypeInfo {
+    name: string;
+    nullable: boolean;
+    isOptional: boolean;
+    isUnion: boolean;
+    unionTypes?: string[];
+    raw: string;
 }
 
-interface ComplexityMetrics {
-    cyclomaticComplexity: number;
-    cognitiveComplexity: number;
-    nestingDepth: number;
-    parameterCount: number;
-    lineCount: number;
-    halsteadMetrics: {
-        vocabulary: number;
-        length: number;
-        volume: number;
-        difficulty: number;
-        effort: number;
-    };
+interface ParameterInfo {
+    name: string;
+    typeInfo?: EnhancedTypeInfo;
+    isOptional: boolean;
+    isRest: boolean;
+    defaultValue?: string;
 }
 
 interface DecoratorInfo {
     name: string;
-    arguments: any[];
-    isBuiltin: boolean;
-    isCustom: boolean;
-    category: 'validation' | 'transformation' | 'routing' | 'testing' | 'other';
+    arguments: string[];
 }
 
-interface DocstringAnalysis {
-    format: 'google' | 'numpy' | 'sphinx' | 'epydoc' | 'custom' | 'none';
-    sections: {
+interface EnhancedCodeEntity extends ExtractedCodeEntity {
+    decorators?: DecoratorInfo[];
+    parameters?: ParameterInfo[];
+    returnTypeInfo?: EnhancedTypeInfo;
+    complexityScore?: number;
+    dependencies?: string[];
+    isAsync?: boolean;
+    isGenerator?: boolean;
+    docBlock?: {
         summary: string;
         description: string;
-        parameters: Array<{name: string, type: string, description: string}>;
-        returns: Array<{type: string, description: string}>;
-        raises: Array<{exception: string, description: string}>;
-        examples: string[];
-        notes: string[];
-        todos: string[];
+        params: Array<{ name: string; type?: string; description: string }>;
+        returns?: { type?: string; description: string };
     };
-    completeness: number;
-    qualityScore: number;
 }
 
-interface EnhancedImport extends ExtractedImport {
-    resolutionStrategy: 'absolute' | 'relative' | 'namespace' | 'conditional';
-    importType: 'standard' | 'third-party' | 'local' | 'builtin';
-    importAlias: string;
-    starImport: boolean;
-    conditionalImport: boolean;
-    importConditions: string[];
-    circularDependencyRisk: boolean;
-}
-
-interface EnhancedExtractedCodeEntity extends ExtractedCodeEntity {
-    typeInformation: TypeInformation;
-    complexityMetrics: ComplexityMetrics;
-    dependencies: string[];
-    inheritanceChain: string[];
-    mixins: string[];
-    protocols: string[];
-    decorators: DecoratorInfo[];
-    docstringAnalysis: DocstringAnalysis;
-    codeSmells: string[];
-    designPatterns: string[];
-}
-
+// ---------- Main Parser ----------
 export class PythonParser extends BaseLanguageParser {
     getSupportedExtensions(): string[] {
-        return ['.py'];
+        return ['.py', '.pyi'];
     }
-    
     getLanguageName(): string {
         return 'python';
     }
 
-    async parseImports(filePath: string, fileContent: string): Promise<EnhancedImport[]> {
-        const imports: EnhancedImport[] = [];
-        try {
-            const ast = filbert.parse(fileContent, { locations: true });
+    async parseImports(filePath: string, fileContent: string): Promise<ExtractedImport[]> {
+        const imports: ExtractedImport[] = [];
+        const lines = fileContent.split('\n');
+        const importRegex = /^\s*(import|from)\s+([^\s]+)(?:\s+import\s+(.*))?/;
 
-            const traverse = (node: any, conditionalContexts: string[] = []) => {
-                if (!node) return;
+        lines.forEach((line, idx) => {
+            const match = importRegex.exec(line.trim());
+            if (!match) return;
 
-                switch (node.type) {
-                    case 'Import':
-                        node.names.forEach((alias: any) => {
-                            const importInfo = this.analyzeImport(alias.name, filePath, 0);
-                            imports.push({
-                                ...importInfo,
-                                type: 'module',
-                                targetPath: alias.name,
-                                originalImportString: fileContent.substring(node.start, node.end),
-                                importedSymbols: [alias.asname || alias.name],
-                                isDynamicImport: false,
-                                isTypeOnlyImport: false,
-                                startLine: node.loc.start.line,
-                                endLine: node.loc.end.line,
-                                starImport: false,
-                                conditionalImport: conditionalContexts.length > 0,
-                                importConditions: conditionalContexts.slice(),
-                            });
-                        });
-                        break;
-                    case 'ImportFrom':
-                        const moduleName = node.module || '';
-                        const resolvedPath = this.resolveImportPath(moduleName, filePath, node.level);
-                        const importedSymbols = node.names.map((alias: any) => alias.asname || alias.name);
-                        const importInfo = this.analyzeImport(moduleName, filePath, node.level);
-                        
-                        imports.push({
-                            ...importInfo,
-                            type: 'module',
-                            targetPath: resolvedPath,
-                            originalImportString: fileContent.substring(node.start, node.end),
-                            importedSymbols: importedSymbols,
-                            isDynamicImport: false,
-                            isTypeOnlyImport: false,
-                            startLine: node.loc.start.line,
-                            endLine: node.loc.end.line,
-                            starImport: node.names.some((n: any) => n.name === '*'),
-                            conditionalImport: conditionalContexts.length > 0,
-                            importConditions: conditionalContexts.slice(),
-                        });
-                        break;
-                    case 'If':
-                        const ifCondition = fileContent.substring(node.test.start, node.test.end);
-                        const newIfConditionalContexts = [...conditionalContexts, ifCondition];
-                        if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, newIfConditionalContexts));
-                        }
-                        if (Array.isArray(node.orelse)) {
-                            node.orelse.forEach((child: any) => traverse(child, newIfConditionalContexts));
-                        }
-                        break;
-                    case 'Try':
-                        const tryCondition = "try block"; // A generic indicator for try blocks
-                        const newTryConditionalContexts = [...conditionalContexts, tryCondition];
-                        if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, newTryConditionalContexts));
-                        }
-                        if (Array.isArray(node.handlers)) {
-                            node.handlers.forEach((child: any) => traverse(child, newTryConditionalContexts));
-                        }
-                        if (Array.isArray(node.orelse)) {
-                            node.orelse.forEach((child: any) => traverse(child, newTryConditionalContexts));
-                        }
-                        if (Array.isArray(node.finalbody)) {
-                            node.finalbody.forEach((child: any) => traverse(child, newTryConditionalContexts));
-                        }
-                        break;
-                    default:
-                        // Generic traversal for other nodes
-                        for (const key in node) {
-                            if (node.hasOwnProperty(key)) {
-                                const child = node[key];
-                                if (child && typeof child === 'object') {
-                                    if (Array.isArray(child)) {
-                                        child.forEach((c: any) => traverse(c, conditionalContexts));
-                                    } else {
-                                        traverse(child, conditionalContexts);
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                }
-            };
-            traverse(ast, []);
-        } catch (error) {
-            console.error(`Error parsing Python imports in ${filePath}:`, error);
-        }
+            const [, keyword, module, symbols] = match;
+            const targetPath = keyword === 'import' ? module : module;
+            const importedSymbols = symbols
+                ? symbols.split(',').map(s => s.trim().split(/\s+as\s+/)[0])
+                : [];
+
+            imports.push({
+                type: targetPath.startsWith('.') ? 'file' : 'module',
+                targetPath,
+                originalImportString: line.trim(),
+                importedSymbols,
+                isDynamicImport: false,
+                isTypeOnlyImport: false,
+                startLine: idx + 1,
+                endLine: idx + 1,
+            });
+        });
+
         return imports;
     }
 
-    private isStandardLibrary(moduleName: string): boolean {
-        const stdLib = new Set([
-            // This is not an exhaustive list.
-            // Add more modules as needed.
-            'os', 'sys', 'math', 'json', 're', 'datetime', 'time', 'collections',
-            'itertools', 'functools', 'random', 'pickle', 'subprocess', 'multiprocessing',
-            'threading', 'logging', 'argparse', 'pathlib', 'shutil', 'glob', 'tempfile',
-            'unittest', 'doctest', 'typing', 'http', 'urllib', 'xml', 'csv', 'sqlite3', 'email'
-        ]);
-        return stdLib.has(moduleName.split('.')[0]);
-    }
-
-    private isBuiltinModule(moduleName: string): boolean {
-        const builtins = new Set([
-            'builtins', 'sys', 'micropython',
-            // Not a real module, but often used to check for builtin functions
-            // This is not exhaustive.
-        ]);
-        return builtins.has(moduleName);
-    }
-
-    private analyzeImport(moduleName: string, currentFilePath: string, level: number): {
-        resolutionStrategy: 'absolute' | 'relative';
-        importType: 'standard' | 'third-party' | 'local' | 'builtin';
-        importAlias: string;
-        conditionalImport: boolean;
-        importConditions: string[];
-        circularDependencyRisk: boolean;
-    } {
-        const isStandardLib = this.isStandardLibrary(moduleName);
-        const isBuiltin = this.isBuiltinModule(moduleName);
-        // isStandardLib is already defined at line 189
-
-        // Resolve the absolute path of the module to check if it's local
-        const resolvedAbsolutePath = this.resolvePythonModuleAbsolutePath(currentFilePath, moduleName, level);
-        const isLocal = this.isPathWithinProject(resolvedAbsolutePath);
-
-        // A module is third-party if it's not builtin, not standard, and not local.
-        const isThirdParty = !isBuiltin && !isStandardLib && !isLocal;
-        
-        return {
-            resolutionStrategy: level > 0 ? 'relative' : 'absolute',
-            importType: isBuiltin ? 'builtin' : isStandardLib ? 'standard' : isLocal ? 'local' : 'third-party',
-            importAlias: moduleName,
-            conditionalImport: false,
-            importConditions: [],
-            circularDependencyRisk: false,
-        };
-    }
-
-
-    private formatSignature(node: any, fileContent: string): string {
-        if (!node.start || !node.end) return node.name || '';
-        
-        const extractText = (start: number, end: number) => fileContent.substring(start, end).trim();
-
-        let signatureText = '';
-        let endOfSignature = node.end;
-
-        if (node.type === 'FunctionDef' || node.type === 'AsyncFunctionDef' || node.type === 'ClassDef') {
-            // Include decorators in the signature
-            const startOfDecorators = node.decorator_list?.[0]?.start ?? node.start;
-            endOfSignature = node.body?.[0]?.start ?? node.end;
-            signatureText = extractText(startOfDecorators, endOfSignature);
-        } else if (node.type === 'Assign' && node.targets && node.targets.length > 0) {
-            signatureText = extractText(node.start, node.end);
-        } else if (node.type === 'AnnAssign' && node.target) { // For annotated assignments
-            signatureText = extractText(node.start, node.end);
-        } else {
-            signatureText = extractText(node.start, node.end);
-        }
-
-        if (signatureText.endsWith(':')) {
-            signatureText = signatureText.slice(0, -1).trim();
-        }
-
-        return signatureText.replace(/\s+/g, ' ');
-    }
-
-    private extractCalls(node: any, fileContent: string): Array<{ name: string; type: string; }> {
-        const calls: Array<{ name: string; type: string; }> = [];
-        const traverse = (currentNode: any) => {
-            if (!currentNode) return;
-
-            if (currentNode.type === 'Call' && currentNode.func) {
-                let callName: string | null = null;
-                let callType: string = 'unknown';
-
-                const getFullName = (expr: any): string => {
-                    if (!expr) return '';
-                    if (expr.type === 'Name') return expr.id;
-                    if (expr.type === 'Attribute') {
-                        const base = getFullName(expr.value);
-                        return base ? `${base}.${expr.attr}` : expr.attr;
-                    }
-                    return '';
-                };
-                
-                callName = getFullName(currentNode.func);
-                if (currentNode.func.type === 'Name') {
-                    callType = 'function';
-                } else if (currentNode.func.type === 'Attribute') {
-                    callType = 'method';
-                }
-
-                if (callName) {
-                    calls.push({ name: callName, type: callType });
-                }
-            }
-
-            for (const key in currentNode) {
-                if (currentNode.hasOwnProperty(key) && typeof currentNode[key] === 'object') {
-                    if (Array.isArray(currentNode[key])) {
-                        currentNode[key].forEach(traverse);
-                    } else {
-                        traverse(currentNode[key]);
-                    }
-                }
-            }
-        };
-        traverse(node);
-        return calls;
-    }
-
-    /**
-     * Checks if a given absolute path is within the project root directory.
-     * @param absolutePath The absolute path to check.
-     * @returns True if the path is within the project, false otherwise.
-     */
-    private isPathWithinProject(absolutePath: string): boolean {
-        const relativePath = path.relative(this.projectRootPath, absolutePath);
-        return !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
-    }
-
-    /**
-     * Resolves a Python module name to its absolute file path.
-     * This considers relative imports and converts dot notation to file paths.
-     * @param currentFilePath The path of the file containing the import.
-     * @param moduleName The name of the module being imported (e.g., 'my_module.sub_module', '.utils').
-     * @param level The level for relative imports (e.g., 0 for absolute, 1 for '.').
-     * @returns The absolute path to the resolved module.
-     */
-    private resolvePythonModuleAbsolutePath(currentFilePath: string, moduleName: string, level: number): string {
-        const currentDir = path.dirname(currentFilePath);
-        let resolvedPath = currentDir;
-
-        // Move up the directory tree for each level of relative import
-        for (let i = 0; i < level; i++) {
-            resolvedPath = path.dirname(resolvedPath);
-        }
-
-        if (moduleName) {
-            // Convert dot notation to file path
-            resolvedPath = path.join(resolvedPath, moduleName.replace(/\./g, path.sep));
-        }
-
-        // Resolve to an absolute path
-        return path.resolve(resolvedPath);
-    }
-
-    async parseCodeEntities(filePath: string, fileContent: string, projectRootPath: string): Promise<ExtractedCodeEntity[]> {
-        const entities: ExtractedCodeEntity[] = [];
+    async parseCodeEntities(
+        filePath: string,
+        fileContent: string,
+        projectRootPath: string
+    ): Promise<EnhancedCodeEntity[]> {
+        const entities: EnhancedCodeEntity[] = [];
         const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
-        const relativeFilePath = this.getRelativeFilePath(filePath);
-        const containingDirectory = path.dirname(relativeFilePath).replace(/\\/g, '/');
+        const relativeFilePath = path.relative(projectRootPath, absoluteFilePath).replace(/\\/g, '/');
+        const containingDirectory = path.dirname(relativeFilePath);
 
+        // Use Python AST via built-in ast module (requires Node >= 20 w/ --experimental-modules)
+        // Fallback: regex-based extraction if ast is unavailable
+        let ast: any;
         try {
-            const ast = filbert.parse(fileContent, { locations: true, ranges: true });
-            
-            const extractDocstringFromNode = (node: any) => {
-                if (Array.isArray(node.body) && node.body.length > 0) {
-                    const firstStmt = node.body[0];
-                    if (firstStmt.type === 'Expr' && firstStmt.value.type === 'Str') {
-                        return firstStmt.value.s;
-                    }
-                }
-                return this.extractDocstring(fileContent, node.range[0]);
-            };
+            // Attempt to use native Python AST via spawn if Python is installed
+            const { execSync } = await import('child_process');
+            const astJson = execSync(
+                `python3 -c "import ast, json, sys; print(json.dumps(ast.dump(ast.parse(open('${filePath}').read(), filename='${filePath}'), indent=2)))"`,
+                { encoding: 'utf-8', timeout: 5000 }
+            );
+            ast = JSON.parse(astJson);
+        } catch (e) {
+            console.warn('Falling back to regex-based Python parsing:', e);
+            return this._regexBasedParse(fileContent, relativeFilePath, containingDirectory);
+        }
 
-            const traverse = (node: any, parentClass: any = null): void => {
-                if (!node || !node.type) return;
+        const walk = (node: any, parentClass?: string) => {
+            if (!node || typeof node !== 'object') return;
 
-                const baseEntity = {
-                    startLine: node.loc.start.line,
-                    endLine: node.loc.end.line,
+            // FunctionDef / AsyncFunctionDef
+            if (node._type === 'FunctionDef' || node._type === 'AsyncFunctionDef') {
+                const name = node.name;
+                const params = (node.args?.args || []).map((arg: any) => ({
+                    name: arg.arg,
+                    typeInfo: arg.annotation ? { name: arg.annotation, nullable: false, isOptional: false, isUnion: false, raw: arg.annotation } : undefined,
+                    isOptional: false,
+                    isRest: false,
+                    defaultValue: undefined,
+                }));
+                const isAsync = node._type === 'AsyncFunctionDef';
+                const isGenerator = !!(node.body || []).find((n: any) => n._type === 'Yield' || n._type === 'YieldFrom');
+
+                entities.push({
+                    type: parentClass ? 'method' : 'function',
+                    name,
+                    fullName: `${relativeFilePath}::${parentClass ? `${parentClass}.` : ''}${name}`,
+                    signature: `${isAsync ? 'async ' : ''}def ${name}(${params.map((p: any) => p.name).join(', ')})`,
+                    startLine: node.lineno || 1,
+                    endLine: node.end_lineno || 1,
                     filePath: absoluteFilePath,
                     containingDirectory: containingDirectory,
-                    docstring: extractDocstringFromNode(node),
-                };
-                
-                const getFullName = (name: string, parentName?: string) => {
-                    let fullName = relativeFilePath.replace(/\//g, '.').replace(/\.py$/, '');
-                    if (parentName) {
-                        fullName += `.${parentName}`;
+                    isExported: !name.startsWith('_'),
+                    parentClass,
+                    parameters: params,
+                    isAsync,
+                    isGenerator,
+                    docBlock: this._extractDocBlock(node),
+                    metadata: { decorators: node.decorator_list || [] },
+                });
+            }
+
+            // ClassDef
+            if (node._type === 'ClassDef') {
+                const name = node.name;
+                entities.push({
+                    type: 'class',
+                    name,
+                    fullName: `${relativeFilePath}::${name}`,
+                    signature: `class ${name}(${node.bases?.join(', ') || ''})`,
+                    startLine: node.lineno || 1,
+                    endLine: node.end_lineno || 1,
+                    filePath: absoluteFilePath,
+                    containingDirectory: containingDirectory,
+                    isExported: !name.startsWith('_'),
+                    implementedInterfaces: node.bases || [],
+                    metadata: { decorators: node.decorator_list || [] },
+                });
+
+                // Recurse into class body
+                (node.body || []).forEach((child: any) => walk(child, name));
+                return;
+            }
+
+            // Assign / AnnAssign (variables)
+            if (node._type === 'Assign' || node._type === 'AnnAssign') {
+                const targets = node.targets || [node.target];
+                targets.forEach((tgt: any) => {
+                    if (tgt._type === 'Name') {
+                        entities.push({
+                            type: 'variable',
+                            name: tgt.id,
+                            fullName: `${relativeFilePath}::${parentClass ? `${parentClass}.` : ''}${tgt.id}`,
+                            signature: `${tgt.id} = ...`,
+                            startLine: node.lineno || 1,
+                            endLine: node.end_lineno || 1,
+                            filePath: absoluteFilePath,
+                            containingDirectory: containingDirectory,
+                            isExported: !tgt.id.startsWith('_'),
+                            parentClass,
+                            returnTypeInfo: tgt.annotation ? { name: tgt.annotation, nullable: false, isOptional: false, isUnion: false, raw: tgt.annotation } : undefined,
+                        });
                     }
-                    return `${fullName}.${name}`;
-                };
+                });
+            }
 
-                const extractText = (subNode: any) => subNode ? fileContent.substring(subNode.start, subNode.end) : null;
+            // Recurse children
+            Object.values(node).forEach((child: any) => {
+                if (Array.isArray(child)) child.forEach((item: any) => walk(item));
+                else walk(child);
+            });
+        };
 
-                switch (node.type) {
-                    case 'FunctionDef':
-                    case 'AsyncFunctionDef':
-                        const functionName = node.name;
-                        const parentName = parentClass?.name;
-                        const isConstructor = functionName === '__init__';
-                        const isGenerator = (node.body || []).some((n: any) => n.type === 'Yield' || n.type === 'YieldFrom');
-
-                        entities.push({
-                            ...baseEntity,
-                            type: isConstructor ? 'construct_signature' : (parentClass ? 'method' : 'function'),
-                            name: functionName,
-                            fullName: getFullName(functionName, parentName),
-                            signature: this.formatSignature(node, fileContent),
-                            parentClass: parentName || null,
-                            isExported: !functionName.startsWith('_') || (isConstructor && !parentName?.startsWith('_')),
-                            isAsync: node.type === 'AsyncFunctionDef',
-                            parameters: node.args.args.map((arg: any) => ({
-                                name: arg.arg,
-                                type: extractText(arg.annotation),
-                                defaultValue: extractText(arg.default),
-                            })),
-                            returnType: extractText(node.returns),
-                            calls: this.extractCalls(node.body, fileContent),
-                            metadata: {
-                                decorators: node.decorator_list.map((d: any) => this.formatSignature(d, fileContent)),
-                                is_generator: isGenerator,
-                            }
-                        });
-                        if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, parentClass));
-                        }
-                        break;
-
-                    case 'ClassDef':
-                        const className = node.name;
-                        entities.push({
-                            ...baseEntity,
-                            type: 'class',
-                            name: className,
-                            fullName: getFullName(className),
-                            signature: this.formatSignature(node, fileContent),
-                            isExported: !className.startsWith('_'),
-                            parentClass: null, // Top-level classes have no parent class in this context.
-                            implementedInterfaces: node.bases.map((b:any) => this.formatSignature(b, fileContent)),
-                            metadata: {
-                                decorators: node.decorator_list.map((d: any) => this.formatSignature(d, fileContent)),
-                            }
-                        });
-                        if (Array.isArray(node.body)) {
-                            node.body.forEach((child: any) => traverse(child, node));
-                        }
-                        break;
-                    
-                    case 'Assign':
-                    case 'AnnAssign': // Annotated assignment
-                        if (node.targets && node.targets.length > 0 && node.targets[0].type === 'Name') {
-                            const varName = node.targets[0].id;
-                            entities.push({
-                                ...baseEntity,
-                                type: 'variable',
-                                name: varName,
-                                fullName: getFullName(varName, parentClass?.name),
-                                signature: this.formatSignature(node, fileContent),
-                                isExported: !varName.startsWith('_'),
-                                returnType: node.annotation ? extractText(node.annotation) : null,
-                            });
-                        }
-                        break;
-                    
-                    default:
-                        // Generic traversal for other nodes
-                        for (const key in node) {
-                            if (node.hasOwnProperty(key)) {
-                                const child = node[key];
-                                if (child && typeof child === 'object') {
-                                    if (Array.isArray(child)) {
-                                        child.forEach(c => traverse(c, parentClass));
-                                    } else {
-                                        traverse(child, parentClass);
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                }
-            };
-            
-            traverse(ast);
-
-        } catch (error) {
-            console.error(`Error parsing Python code entities in ${filePath}:`, error);
-        }
+        walk(ast);
         return entities;
     }
-    private resolveImportPath(moduleName: string, currentFilePath: string, level: number): string {
-        if (level === 0) {
-            // Absolute import
-            return moduleName;
+
+    // ---------- Fallback Regex Parser ----------
+    private _regexBasedParse(
+        fileContent: string,
+        relativePath: string,
+        containingDir: string
+    ): EnhancedCodeEntity[] {
+        const entities: EnhancedCodeEntity[] = [];
+        const lines = fileContent.split('\n');
+
+        // Regex patterns for Python constructs
+        const patterns = {
+            class: /^\s*class\s+([A-Za-z_]\w*)\s*(?:\((.*?)\))?\s*:/,
+            def: /^\s*(async\s+)?def\s+([A-Za-z_]\w*)\s*\((.*?)\)(?:\s*->\s*([^\s:]+))?\s*:/,
+            assign: /^\s*([A-Za-z_]\w*)\s*=\s*(.+)/,
+        };
+
+        lines.forEach((line, idx) => {
+            let match;
+
+            // Classes
+            if ((match = patterns.class.exec(line))) {
+                const [, name, bases] = match;
+                entities.push({
+                    type: 'class',
+                    name,
+                    fullName: `${relativePath}::${name}`,
+                    signature: `class ${name}${bases ? `(${bases})` : ''}`,
+                    startLine: idx + 1,
+                    endLine: idx + 1,
+                    filePath: relativePath,
+                    containingDirectory: containingDir,
+                    isExported: !name.startsWith('_'),
+                    implementedInterfaces: bases ? bases.split(',').map(b => b.trim()) : [],
+                });
+            }
+
+            // Functions / Methods
+            if ((match = patterns.def.exec(line))) {
+                const [, asyncKeyword, name, params, ret] = match;
+                const paramsList = params
+                    ? params.split(',').map((p: string) => ({
+                        name: p.trim().split('=')[0],
+                        isOptional: p.includes('='),
+                        isRest: false,
+                    }))
+                    : [];
+                entities.push({
+                    type: 'function',
+                    name,
+                    fullName: `${relativePath}::${name}`,
+                    signature: `${asyncKeyword || ''}def ${name}(${params || ''})${ret ? ` -> ${ret}` : ''}`,
+                    startLine: idx + 1,
+                    endLine: idx + 1,
+                    filePath: relativePath,
+                    containingDirectory: containingDir,
+                    isExported: !name.startsWith('_'),
+                    parameters: paramsList,
+                    isAsync: !!asyncKeyword,
+                    returnTypeInfo: ret ? { name: ret, nullable: false, isOptional: false, isUnion: false, raw: ret } : undefined,
+                });
+            }
+
+            // Variables
+            if ((match = patterns.assign.exec(line))) {
+                const [, name, value] = match;
+                if (!name.startsWith('_')) {
+                    entities.push({
+                        type: 'variable',
+                        name,
+                        fullName: `${relativePath}::${name}`,
+                        signature: `${name} = ${value}`,
+                        startLine: idx + 1,
+                        endLine: idx + 1,
+                        filePath: relativePath,
+                        containingDirectory: containingDir,
+                        isExported: true,
+                    });
+                }
+            }
+        });
+
+        return entities;
+    }
+
+    private _extractDocBlock(node: any) {
+        if (!node.body || !Array.isArray(node.body)) return undefined;
+        const first = node.body[0];
+        if (first && first._type === 'Expr' && first.value && first.value._type === 'Str') {
+            const raw = first.value.s || '';
+            const lines = raw.split('\n').map((l: string) => l.trim());
+            const summary = lines[0] || '';
+            const description = lines.slice(1).join(' ').trim();
+            return { summary, description, params: [], returns: undefined };
         }
-
-        const currentDir = path.dirname(currentFilePath);
-        let resolvedPath = currentDir;
-
-        // Move up the directory tree for each level
-        for (let i = 0; i < level; i++) {
-            resolvedPath = path.dirname(resolvedPath);
-        }
-
-        if (moduleName) {
-            resolvedPath = path.join(resolvedPath, moduleName.replace(/\./g, '/'));
-        }
-
-        // Make it relative to the project root
-        return path.relative(this.projectRootPath, resolvedPath).replace(/\\/g, '/');
+        return undefined;
     }
 }
