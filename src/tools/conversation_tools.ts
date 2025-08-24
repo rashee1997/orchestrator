@@ -125,6 +125,17 @@ export const conversationToolDefinitions = [
             required: ['session_id'],
         },
     },
+    {
+        name: 'summarize_conversation',
+        description: 'Generates a summary of a specific conversation session.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                session_id: { type: 'string', description: 'The unique ID of the conversation session to summarize.' }
+            },
+            required: ['session_id'],
+        },
+    },
 ];
 
 // --- Type definitions for tool arguments ---
@@ -309,6 +320,16 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
                     `  - **Joined:** ${new Date(p.join_timestamp).toLocaleString()}\n`;
             });
             return { content: [{ type: 'text', text: md }] };
+        },
+        'summarize_conversation': async (args: { session_id: string }) => {
+            const { session_id } = args;
+            const summary = await memoryManager.summarizeConversation(session_id);
+            return {
+                content: [{
+                    type: 'text',
+                    text: formatSimpleMessage(summary, "Conversation Summary")
+                }]
+            };
         },
     };
 }

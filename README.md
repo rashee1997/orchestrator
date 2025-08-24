@@ -91,7 +91,7 @@ Instead of enforcing a rigid workflow, this server provides a rich toolkit of **
 -   **Tavily**: Provides advanced, AI-optimized web search capabilities to ground your agent in real-world information.
 
 ### 🛡️ Robust & Reliable
--   **Comprehensive Logging Suite**: Dedicated tools for logging tool executions, task progress, errors, and corrections.
+
 -   **Data Validation**: All tool inputs are validated against a JSON schema to ensure data integrity.
 -   **Database Utilities**: Includes tools for backing up and restoring the primary SQLite database.
 
@@ -111,8 +111,8 @@ Instead of enforcing a rigid workflow, this server provides a rich toolkit of **
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/memory-mcp-server.git
-cd memory-mcp-server
+git clone https://github.com/rashee1997/orchestrator
+cd orchestrator
 
 # 2. Install dependencies
 npm install

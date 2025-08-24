@@ -19,3 +19,5 @@ vector_store.db-wal
 .vincent/
 .vscode/
 history/
+embedding_cache.json
+GEMINI.MD

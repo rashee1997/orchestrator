@@ -162,6 +162,10 @@ export class MemoryManager {
         return this.conversationHistoryManager.getConversationSessions(...args);
     }
 
+    async summarizeConversation(...args: Parameters<ConversationHistoryManager['summarizeConversation']>) {
+        return this.conversationHistoryManager.summarizeConversation(...args);
+    }
+
     // --- Conversation Messages ---
     async storeConversationMessage(...args: Parameters<ConversationHistoryManager['storeConversationMessage']>) {
         return this.conversationHistoryManager.storeConversationMessage(...args);
