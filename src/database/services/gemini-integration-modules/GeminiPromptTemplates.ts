@@ -257,6 +257,12 @@ You will be given a structured input object and your task is to generate a **com
 - Do NOT include \`\`\`json\` markers or any other formatting.
 - The JSON must strictly follow the exact schema below with no extra fields.
 
+**JSON String Escaping Rules:**
+- For any multiline strings (like in \`description\` or \`code_content\`), you MUST escape characters correctly:
+  - Escape all backslashes (\`\\\`) as \`\\\\\`.
+  - Escape all newline characters as \`\\n\`.
+  - Escape all double quotes (\`"\`) as \`\\"\`.
+
 Required JSON Schema:
 {
   "plan_title": "string (max 10 words)",

@@ -7,110 +7,112 @@ export interface RagAnalysisResponse {
     nextCodebaseQuery?: string;
     nextWebQuery?: string;
     confidenceScore?: number;
-    // New fields for comprehensive logging
-    contextUsed?: string; // The context string provided to Gemini for this analysis
-    promptSent?: string; // The full prompt sent to Gemini for this analysis
-    rawGeminiResponse?: string; // The raw text response received from Gemini for this analysis
+    /** Full context string that was fed to Gemini for this turn (debugging). */
+    contextUsed?: string;
+    /** The exact prompt sent to Gemini (debugging). */
+    promptSent?: string;
+    /** Raw Gemini response text (debugging). */
+    rawGeminiResponse?: string;
 }
 
 /**
  * Robust parser for the iterative RAG analysis response from Gemini.
- * This replaces the brittle regex-based parsing with structured extraction.
+ * Handles flexible whitespace, optional sections, and keeps the raw text for debugging.
  */
 export class RagResponseParser {
     /**
-     * Parses the raw text response from Gemini's analysis prompt.
-     * @param rawResponseText The raw text response from Gemini
-     * @param rawResponseText The raw text response from Gemini
-     * @param contextUsed The context string used for the Gemini analysis
-     * @param promptSent The full prompt sent to Gemini for the analysis
-     * @returns Parsed response object or null if parsing fails
+     * Parse the raw Gemini text into a structured object.
+     *
+     * @param rawResponseText  The plain‑text response from Gemini.
+     * @param contextUsed      (optional) The context string that was supplied to Gemini.
+     * @param promptSent       (optional) The full prompt that was sent.
+     * @returns                Parsed object or `null` on failure.
      */
-    static parseAnalysisResponse(rawResponseText: string, contextUsed?: string, promptSent?: string): RagAnalysisResponse | null {
+    static parseAnalysisResponse(
+        rawResponseText: string,
+        contextUsed?: string,
+        promptSent?: string
+    ): RagAnalysisResponse | null {
         try {
-            // Normalize line endings and trim whitespace
-            const normalizedText = rawResponseText.replace(/\r\n/g, '\n').trim();
+            const txt = rawResponseText.replace(/\r\n/g, '\n').trim();
 
-            // More flexible regex for decision
-            const decisionMatch = normalizedText.match(/Decision:\s*(ANSWER|SEARCH_AGAIN|SEARCH_WEB)/i);
+            // ---------- Decision ----------
+            const decisionMatch = txt.match(/Decision:\s*(ANSWER|SEARCH_AGAIN|SEARCH_WEB)/i);
             if (!decisionMatch) {
-                console.warn(`[RagResponseParser] Decision not found in response. Raw text: "${normalizedText}"`);
+                console.warn('[RagResponseParser] Decision line missing.');
                 return null;
             }
             const decision = decisionMatch[1].toUpperCase() as 'ANSWER' | 'SEARCH_AGAIN' | 'SEARCH_WEB';
 
-            // Function to extract content between a start key and a set of end keys
-            const extractContent = (startKey: string, endKeys: string[]): string => {
-                const startRegex = new RegExp(`${startKey}:\\s*`, 'i');
-                const startIndexMatch = normalizedText.match(startRegex);
-                if (!startIndexMatch || startIndexMatch.index === undefined) {
-                    return '';
+            // Helper to extract a block that starts with a label and stops before any of the given end‑labels.
+            const extractBlock = (label: string, endLabels: string[]): string => {
+                const start = new RegExp(`${label}:\\s*`, 'i');
+                const startIdx = txt.search(start);
+                if (startIdx === -1) return '';
+                const afterStart = txt.slice(startIdx + label.length + 1);
+                let endIdx = afterStart.length;
+                for (const end of endLabels) {
+                    const re = new RegExp(`\\n${end}:`, 'i');
+                    const m = afterStart.search(re);
+                    if (m !== -1 && m < endIdx) endIdx = m;
                 }
-                const contentStartIndex = startIndexMatch.index + startIndexMatch[0].length;
-                let endIndex = normalizedText.length;
-
-                for (const endKey of endKeys) {
-                    const endRegex = new RegExp(`\\n${endKey}:`, 'i');
-                    const endIndexMatch = normalizedText.substring(contentStartIndex).match(endRegex);
-                    if (endIndexMatch && endIndexMatch.index !== undefined) {
-                        const potentialEndIndex = contentStartIndex + endIndexMatch.index;
-                        if (potentialEndIndex < endIndex) {
-                            endIndex = potentialEndIndex;
-                        }
-                    }
-                }
-                return normalizedText.substring(contentStartIndex, endIndex).trim();
+                return afterStart.slice(0, endIdx).trim();
             };
 
-            const allEndKeys = ['Next Codebase Search Query', 'Next Web Search Query', 'Confidence', '---'];
-            const reasoning = extractContent('Reasoning', allEndKeys);
-            const nextCodebaseQuery = decision === 'SEARCH_AGAIN' ? extractContent('Next Codebase Search Query', allEndKeys.filter(k => k !== 'Next Codebase Search Query')) : undefined;
-            const nextWebQuery = decision === 'SEARCH_WEB' ? extractContent('Next Web Search Query', allEndKeys.filter(k => k !== 'Next Web Search Query')) : undefined;
+            const allEndLabels = [
+                'Next Codebase Search Query',
+                'Next Web Search Query',
+                'Confidence',
+                '---'
+            ];
 
-            // Extract confidence score with a more flexible regex
+            const reasoning = extractBlock('Reasoning', allEndLabels);
+            const nextCodebaseQuery =
+                decision === 'SEARCH_AGAIN'
+                    ? extractBlock('Next Codebase Search Query', allEndLabels.filter(l => l !== 'Next Codebase Search Query'))
+                    : undefined;
+            const nextWebSearchQuery =
+                decision === 'SEARCH_WEB'
+                    ? extractBlock('Next Web Search Query', allEndLabels.filter(l => l !== 'Next Web Search Query'))
+                    : undefined;
+
+            // ---------- Confidence ----------
             let confidenceScore: number | undefined;
-            const confidenceMatch = normalizedText.match(/Confidence:\s*(\d*\.?\d+)/i);
-            if (confidenceMatch) {
-                confidenceScore = parseFloat(confidenceMatch[1]);
-            }
+            const confidenceMatch = txt.match(/Confidence:\s*([0-9]*\.?[0-9]+)/i);
+            if (confidenceMatch) confidenceScore = parseFloat(confidenceMatch[1]);
 
             return {
                 decision,
                 reasoning,
                 nextCodebaseQuery,
-                nextWebQuery,
+                nextWebQuery: nextWebSearchQuery,
                 confidenceScore,
                 contextUsed,
                 promptSent,
-                rawGeminiResponse: rawResponseText // Store the raw response as well
+                rawGeminiResponse: rawResponseText
             };
-        } catch (error) {
-            console.error('[RagResponseParser] Error parsing response:', error);
+        } catch (e) {
+            console.error('[RagResponseParser] Unexpected error while parsing.', e);
             return null;
         }
     }
 
     /**
-     * Validates the parsed response to ensure it meets the required criteria.
-     * @param response The parsed response to validate
-     * @returns True if valid, false otherwise
+     * Validate that the parsed object contains the fields required for the decision.
      */
     static validateResponse(response: RagAnalysisResponse): boolean {
         if (!response.decision) {
-            console.warn('[RagResponseParser] Missing decision in response');
+            console.warn('[RagResponseParser] Missing decision.');
             return false;
         }
-
         if (response.decision === 'SEARCH_AGAIN' && !response.nextCodebaseQuery) {
-            console.warn('[RagResponseParser] Missing next codebase query for SEARCH_AGAIN decision');
+            console.warn('[RagResponseParser] SEARCH_AGAIN without nextCodebaseQuery.');
             return false;
         }
-
         if (response.decision === 'SEARCH_WEB' && !response.nextWebQuery) {
-            console.warn('[RagResponseParser] Missing next web query for SEARCH_WEB decision');
+            console.warn('[RagResponseParser] SEARCH_WEB without nextWebQuery.');
             return false;
         }
-
         return true;
     }
 }
