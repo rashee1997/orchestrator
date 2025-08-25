@@ -1,18 +1,11 @@
 # 🧠 Memory MCP Server — Orchestrator
 
-<div align="center">
-
 ![Memory MCP Server](https://img.shields.io/badge/Memory%20MCP%20Server-Orchestrator-blue?style=for-the-badge&logo=brain&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green?style=for-the-badge&logo=node.js)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 
-<h3>
-🚀 Your AI Agent's Persistent Brain: <br>
-A vivid backend for memory, task planning, and codebase intelligence.
-</h3>
-
-</div>
+**🚀 Your AI Agent's Persistent Brain: A vivid backend for memory, task planning, and codebase intelligence.**
 
 ---
 
@@ -23,6 +16,7 @@ A vivid backend for memory, task planning, and codebase intelligence.
 - [🚀 Installation](#-installation)
 - [⚙️ Configuration](#️-configuration)
 - [🛠️ Available Tools](#-available-tools)
+- [⚡ Example Workflow](#-example-workflow)
 - [🏗️ Architecture](#️-architecture)
 - [💻 Development](#-development)
 - [🤝 Contributing](#-contributing)
@@ -38,12 +32,12 @@ Memory MCP Server (Orchestrator) is a state-of-the-art backend that transforms A
 
 ## ✨ Features
 
-- **🧠 Persistent Memory:** Multi-user conversation sessions, versioned context, and reference keys.
-- **📊 Project & Task Planning:** Manage plans, tasks, and subtasks; boost with AI-powered plan/task generation and analysis.
-- **💡 Knowledge Graph:** Portable, human-readable codebase graph (JSONL); store and query entities & relationships.
-- **🔍 Semantic Code Search:** Embed and search code for conceptual matches, not just keywords.
-- **🤖 Integrated AI Services:** Google Gemini for planning, summarization, and code analysis; Tavily for grounded web search.
-- **🛡️ Data Validation & Utilities:** Input schema validation, robust error handling, and database backup/restore tools.
+- **Persistent Memory:** Multi-user conversation sessions, versioned context, and reference keys.
+- **Project & Task Planning:** Manage plans, tasks, and subtasks; boost with AI-powered plan/task generation and analysis.
+- **Knowledge Graph:** Portable, human-readable codebase graph (JSONL); store and query entities & relationships.
+- **Semantic Code Search:** Embed and search code for conceptual matches, not just keywords.
+- **Integrated AI Services:** Google Gemini for planning, summarization, and code analysis; Tavily for grounded web search.
+- **Data Validation & Utilities:** Input schema validation, robust error handling, and database backup/restore tools.
 
 ---
 
@@ -72,23 +66,24 @@ npm run build
 
 ### API Keys Setup
 
-Set external service keys (Gemini/Tavily) in your MCP client’s environment or as system environment variables.
+The server requires API keys for external services. These are best configured in your MCP client's settings file to avoid exposing them in your shell environment. For Google Gemini, you can provide multiple API keys (e.g., from different projects or for failover/load balancing) by appending an underscore and a number (e.g., `GEMINI_API_KEY_2`, `GOOGLE_API_KEY_3`). The server will automatically use these in a round-robin fashion.
 
 | Service         | Environment Variable       | Required | Get API Key                                        |
 | --------------- | -------------------------- | -------- | -------------------------------------------------- |
 | Google Gemini   | `GEMINI_API_KEY`           | ✅       | [Get Key](https://makersuite.google.com/app/apikey) |
 |                 | `GEMINI_API_KEY_2`, etc.   | 🔀 (Optional) |                                                    |
+|                 | `GOOGLE_API_KEY`           | ➡️ (Alias) |                                                    |
+|                 | `GOOGLE_API_KEY_2`, etc.   | 🔀 (Optional) |                                                    |
 | Tavily Search   | `TAVILY_API_KEY`           | ✅       | [Get Key](https://tavily.com/)                      |
 
 ### MCP Client Configuration (VS Code Client Example)
-_Keep this setup for smooth local development:_
 
-1. **Locate the settings file**:
-    - **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
-    - **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-    - **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+1.  **Locate the settings file**:
+    -   **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+    -   **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+    -   **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 
-2. **Add the server configuration**:
+2.  **Add the server configuration**:
 
 ```json
 {
@@ -103,106 +98,52 @@ _Keep this setup for smooth local development:_
     ],
     "env": {
       "GEMINI_API_KEY": "your-primary-gemini-api-key",
+      "GEMINI_API_KEY_2": "your-secondary-gemini-api-key",
+      "GOOGLE_API_KEY": "another-gemini-key-alias",
       "TAVILY_API_KEY": "your-tavily-api-key-here"
     }
   }
 }
 ```
-> ⚡️ Replace `/absolute/path/to/memory-mcp-server/` with your actual path.
+
+> Replace `/absolute/path/to/memory-mcp-server/` with your actual path.
 
 ---
 
 ## 🛠️ Available Tools
 
-<details>
-<summary><b>💬 Conversation Management</b></summary>
+- **Conversation Management:** Create, manage, and retrieve conversation sessions and messages for persistent, multi-user dialogue.
+    - _Examples: `create_conversation_session`, `get_conversation_messages`_
+- **Plan & Task Management:** Organize and update project plans, tasks, and subtasks, assign tasks, and track progress.
+    - _Examples: `create_task_plan`, `list_tasks`, `assign_task`_
+- **Subtask Management:** Break tasks into subtasks for finer granularity and progress tracking.
+    - _Examples: `create_subtask`, `list_subtasks`_
+- **Knowledge Graph Tools:** Parse your codebase, build a knowledge graph, and query or update code entities and relationships.
+    - _Examples: `ingest_codebase_structure`, `query_knowledge_graph`_
+- **Embeddings & Semantic Search:** Generate and query vector embeddings for conceptual code search.
+    - _Examples: `ingest_codebase_embeddings`, `query_codebase_embeddings`_
+- **AI-Enhanced Planning/Tasks:** Use AI to decompose tasks, suggest details, or analyze plans for coherence and completeness.
+    - _Examples: `ai_suggest_subtasks`, `ai_analyze_plan`_
+- **Prompt Refinement & AI:** Refine natural language prompts and generate answers with Gemini.
+    - _Examples: `get_refined_prompt`, `ask_gemini`_
+- **Web Search & Database Utilities:** Integrate grounded results via Tavily, export data, and manage DB backups.
+    - _Examples: `tavily_web_search`, `backup_database`, `list_tools`_
 
-- create_conversation_session
-- end_conversation_session
-- store_conversation_messages
-- get_conversation_session
-- get_conversation_sessions
-- get_conversation_messages
-- add_participant_to_session
-- get_session_participants
+---
 
-</details>
+## ⚡ Example Workflow
 
-<details>
-<summary><b>📊 Plan & Task Management</b></summary>
+Here’s how you might orchestrate a multi-step AI workflow with these tools:
 
-- create_task_plan
-- get_task_plan
-- update_task_plan
-- delete_task_plan
-- list_task_plans
-- create_task
-- get_task
-- update_task
-- delete_task
-- list_tasks
-- assign_task
+1. **Understand the Goal**: Use `ask_gemini` (with `execution_mode: plan_generation`) to turn a high-level prompt into a structured project plan.
+2. **Create the Plan**: Call `create_task_plan` with the refined prompt to initialize a new plan.
+3. **Analyze Codebase**: Run `ingest_codebase_structure` to map code files and entities.
+4. **Enrich Tasks**: Use `ai_suggest_subtasks` to break complex tasks into actionable subtasks.
+5. **Track Progress**: Store and retrieve progress via `get_task`, `update_task`, and related tools.
+6. **Search & Context**: Use `query_codebase_embeddings` or `tavily_web_search` as context for tasks or code review.
+7. **Audit & Export**: Regularly export data with `export_data_to_csv` or back up the database.
 
-</details>
-
-<details>
-<summary><b>📝 Subtask Management</b></summary>
-
-- create_subtask
-- get_subtask
-- update_subtask
-- list_subtasks
-
-</details>
-
-<details>
-<summary><b>💡 Knowledge Graph</b></summary>
-
-- ingest_codebase_structure
-- ingest_file_code_entities
-- list_knowledge_graph_entities
-- query_knowledge_graph
-- update_knowledge_graph_entry
-- delete_knowledge_graph_entry
-
-</details>
-
-<details>
-<summary><b>🔍 Embeddings & Semantic Search</b></summary>
-
-- ingest_codebase_embeddings
-- query_codebase_embeddings
-- clean_up_embeddings
-
-</details>
-
-<details>
-<summary><b>🤖 AI-Enhanced Planning/Tasks</b></summary>
-
-- ai_suggest_subtasks
-- ai_suggest_task_details
-- ai_analyze_plan
-
-</details>
-
-<details>
-<summary><b>✨ Prompt Refinement & AI</b></summary>
-
-- get_refined_prompt
-- ask_gemini
-
-</details>
-
-<details>
-<summary><b>🌐 Web Search & Database Utilities</b></summary>
-
-- tavily_web_search
-- export_data_to_csv
-- backup_database
-- restore_database
-- list_tools
-
-</details>
+[See the docs/ directory or the [project wiki](https://github.com/rashee1997/orchestrator/wiki) for more workflow recipes and advanced usage.]
 
 ---
 
@@ -267,10 +208,4 @@ MIT — see [LICENSE](LICENSE.md) for details.
 
 ---
 
-<div align="center">
-
-💡 **Built with creativity and care for next-gen AI agents.**
-
-[⬆ Back to Top](#-memory-mcp-server--orchestrator)
-
-</div>
+_Built with creativity and care for next-gen AI agents._
