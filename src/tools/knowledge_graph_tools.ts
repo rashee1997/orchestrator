@@ -128,7 +128,6 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
             ...schemas.ingestFileCodeEntities,
             properties: {
                 ...schemas.ingestFileCodeEntities.properties,
-                file_path: undefined, // Remove old property
                 paths: {
                     oneOf: [
                         { type: 'string', description: "A single absolute path to a code file to parse." },
