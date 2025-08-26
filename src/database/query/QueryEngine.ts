@@ -240,7 +240,6 @@ export class QueryEngine {
     private async executeTraverseQuery(ast: TraverseQuery, allNodes: NodeType[], allRelations: RelationType[]): Promise<NodeType[]> {
         const { startEntityId, direction, depth, relationTypes } = ast;
 
-        // --- START: MODIFICATION - Resilient start-node-finding logic ---
         let startNode: NodeType | undefined = allNodes.find(node => node.name === startEntityId);
 
         if (!startNode) {
@@ -255,7 +254,6 @@ export class QueryEngine {
                 return [];
             }
         }
-        // --- END: MODIFICATION ---
 
         const idToNodeMap = new Map(allNodes.map(n => [n.id, n]));
         const visited = new Set<string>();

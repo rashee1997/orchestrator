@@ -83,16 +83,16 @@ export class NLPQueryProcessor {
     extractEntities(query: string): ExtractedEntity[] {
         const entities: ExtractedEntity[] = [];
         const seen = new Set<string>();
-        
-        const add = (text: string, type: EntityType, confidence: number, qualifiers: string[], position?: {start: number, end: number}) => {
+
+        const add = (text: string, type: EntityType, confidence: number, qualifiers: string[], position?: { start: number, end: number }) => {
             const key = `${text}:${type}`.toLowerCase();
             if (!seen.has(key)) {
                 // Extract context around the entity
                 const context = this.extractContext(query, position?.start || 0, position?.end || 0);
-                entities.push({ 
-                    text, 
-                    type, 
-                    confidence: Math.min(1.0, confidence), 
+                entities.push({
+                    text,
+                    type,
+                    confidence: Math.min(1.0, confidence),
                     qualifiers,
                     context,
                     position
@@ -100,7 +100,19 @@ export class NLPQueryProcessor {
                 seen.add(key);
             }
         };
-        
+
+        // Quoted entities for exact matches
+        const quotedRegex = /"([^"]+)"/g;
+        let m;
+        while ((m = quotedRegex.exec(query)) !== null) {
+            const text = m[1];
+            const position = {
+                start: m.index,
+                end: m.index + m[0].length
+            };
+            add(text, 'unknown', 0.95, [], position); // High confidence for quoted text
+        }
+
         // Patterns
         for (const [type, regex] of Object.entries(this.patterns)) {
             let m;
@@ -114,14 +126,13 @@ export class NLPQueryProcessor {
             }
             regex.lastIndex = 0;
         }
-        
+
         // Qualifiers
         const tokens = query.toLowerCase().split(/\s+/);
         const foundQualifiers = tokens.filter(t => this.qualifiers.has(t));
-        
+
         // CamelCase / PascalCase
         const camelRegex = /\b[A-Z][a-z]+[A-Z]\w*\b/g;
-        let m;
         while ((m = camelRegex.exec(query)) !== null) {
             const position = {
                 start: m.index,
@@ -129,7 +140,7 @@ export class NLPQueryProcessor {
             };
             add(m[0], 'unknown', 0.5, foundQualifiers, position); // Pass foundQualifiers
         }
-        
+
         // Snake_case
         const snakeRegex = /\b[a-z][a-z0-9]*(_[a-z0-9]+)+\b/g;
         while ((m = snakeRegex.exec(query)) !== null) {
@@ -139,7 +150,7 @@ export class NLPQueryProcessor {
             };
             add(m[0], 'unknown', 0.4, foundQualifiers, position);
         }
-        
+
         // kebab-case
         const kebabRegex = /\b[a-z][a-z0-9]*(-[a-z0-9]+)+\b/g;
         while ((m = kebabRegex.exec(query)) !== null) {
@@ -149,11 +160,11 @@ export class NLPQueryProcessor {
             };
             add(m[0], 'unknown', 0.4, foundQualifiers, position);
         }
-        
+
         // Adjust confidence based on context
         entities.forEach(e => {
             if (e.qualifiers?.length) e.confidence += 0.1;
-            
+
             // Adjust confidence based on context words
             if (e.context) {
                 const contextWords = e.context.toLowerCase().split(/\s+/);
@@ -170,7 +181,7 @@ export class NLPQueryProcessor {
                     }
                 }
             }
-            
+
             // Adjust confidence based on position in query
             if (e.position) {
                 const positionRatio = e.position.start / query.length;
@@ -182,10 +193,10 @@ export class NLPQueryProcessor {
             // Ensure confidence does not exceed 1.0
             e.confidence = Math.min(1.0, e.confidence);
         });
-        
+
         return entities;
     }
-    
+
     /**
      * Extract context around a position in the query
      */
@@ -202,15 +213,15 @@ export class NLPQueryProcessor {
         const tokens = tokenize(query);
         let best: QueryIntent = { type: 'unknown', confidence: 0 };
         let bestScore = 0;
-        
+
         // Check for question marks (indicates semantic intent)
         const hasQuestionMark = query.includes('?');
-        
+
         for (const [intent, keywords] of this.intentLexicon) {
             let score = 0;
             const matched: string[] = [];
             const negated: string[] = [];
-            
+
             // Check for keyword matches
             for (const kw of keywords) {
                 if (lower.includes(kw)) {
@@ -219,7 +230,7 @@ export class NLPQueryProcessor {
                     matched.push(kw);
                 }
             }
-            
+
             // Negations
             const negationWords = ['no', 'not', 'without', 'exclude', 'except', "don't", "doesn't", "isn't"];
             for (const n of negationWords) {
@@ -228,58 +239,58 @@ export class NLPQueryProcessor {
                     score += 0.5; // Negations add context
                 }
             }
-            
+
             // Boost for question marks
             if (hasQuestionMark && intent === 'semantic') score += 2;
-            
+
             // Check for specific patterns that indicate intent
             if (intent === 'compare' && lower.includes('vs')) score += 3;
             if (intent === 'aggregate' && lower.includes('how many')) score += 2;
             if (intent === 'transform' && lower.includes('convert')) score += 2;
-            
+
             // Normalize score
             const normalizedScore = score / keywords.length;
-            
+
             if (normalizedScore > bestScore) {
                 bestScore = normalizedScore;
-                best = { 
-                    type: intent, 
-                    action: matched[0], 
-                    modifiers: matched.slice(1), 
+                best = {
+                    type: intent,
+                    action: matched[0],
+                    modifiers: matched.slice(1),
                     negations: negated,
                     confidence: Math.min(1.0, normalizedScore)
                 };
             }
         }
-        
+
         // If no clear intent, check for other patterns
         if (bestScore < 0.3) {
             // Check for comparison patterns
             if (lower.includes('difference between') || lower.includes('compare')) {
-                best = { 
-                    type: 'compare', 
-                    action: 'compare', 
+                best = {
+                    type: 'compare',
+                    action: 'compare',
                     confidence: 0.6
                 };
             }
             // Check for analysis patterns
             else if (lower.includes('analyze') || lower.includes('breakdown')) {
-                best = { 
-                    type: 'analyze', 
-                    action: 'analyze', 
+                best = {
+                    type: 'analyze',
+                    action: 'analyze',
                     confidence: 0.6
                 };
             }
             // Check for transformation patterns
             else if (lower.includes('transform') || lower.includes('convert') || lower.includes('refactor')) {
-                best = { 
-                    type: 'transform', 
-                    action: 'transform', 
+                best = {
+                    type: 'transform',
+                    action: 'transform',
                     confidence: 0.6
                 };
             }
         }
-        
+
         return best;
     }
     // ------------------------------------------------------------------
@@ -289,48 +300,56 @@ export class NLPQueryProcessor {
         const intent = this.identifyIntent(query);
         const entities = this.extractEntities(query);
         const lower = query.toLowerCase();
-        const sq: StructuredQuery = { 
-            type: intent.type, 
+        const sq: StructuredQuery = {
+            type: intent.type,
             confidence: intent.confidence,
             originalQuery: query,
             context: this.extractQueryContext(query)
         };
-        
+
+        if (entities.length > 0) {
+            sq.entities = entities.map(e => e.text);
+            const entityTypes = [...new Set(entities.map(e => e.type).filter(t => t !== 'unknown'))];
+            if (entityTypes.length > 0) {
+                sq.entityTypes = entityTypes as EntityType[];
+            }
+        }
+
         // Relations
         const relations = ['imports', 'exports', 'extends', 'implements', 'calls', 'uses', 'depends', 'references', 'inherits', 'composes'];
         const found = relations.filter(r => lower.includes(r));
         if (found.length) sq.relationTypes = found;
-        
+
         // Numeric parameters
         const depthMatch = query.match(/\b(?:depth|level)\s*(\d+)\b/i);
         if (depthMatch) sq.depth = parseInt(depthMatch[1]);
-        
+
         const limitMatch = query.match(/\b(?:top|first|limit)\s*(\d+)\b/i);
         if (limitMatch) sq.limit = parseInt(limitMatch[1]);
-        
+
         // Filters
         const filters: Record<string, any> = { ...(sq.filters || {}) };
-        
+
         // Test-related filters
         if (lower.includes('test')) filters.isTest = true;
         if (lower.includes('not test') || lower.includes('non-test')) filters.isTest = false;
-        
+
         // Type filters
         if (lower.includes('interface')) filters.entityType = 'interface';
         if (lower.includes('class')) filters.entityType = 'class';
         if (lower.includes('function') || lower.includes('method')) filters.entityType = 'function';
         if (lower.includes('pattern')) filters.pattern = true;
-        
+
         // Modifier filters
         if (lower.includes('abstract')) filters.modifiers = [...(filters.modifiers || []), 'abstract'];
         if (lower.includes('async')) filters.modifiers = [...(filters.modifiers || []), 'async'];
         if (lower.includes('static')) filters.modifiers = [...(filters.modifiers || []), 'static'];
         if (lower.includes('public')) filters.modifiers = [...(filters.modifiers || []), 'public'];
         if (lower.includes('private')) filters.modifiers = [...(filters.modifiers || []), 'private'];
-        
+
         // Apply negations from intent
         if (intent.negations?.includes('test')) filters.isTest = false;
-        
+
         // Date filters
         const dateMatch = query.match(/\b(before|after|since|until)\s+([0-9]{4}-[0-9]{2}-[0-9]{2})\b/i);
         if (dateMatch) {
@@ -339,7 +358,7 @@ export class NLPQueryProcessor {
                 [relation === 'before' || relation === 'until' ? '$lt' : '$gte']: new Date(dateStr)
             };
         }
-        
+
         // Size filters
         const sizeMatch = query.match(/\b(larger|smaller|bigger|greater|less)\s+than\s+(\d+)\s*(lines|bytes|kb|mb)\b/i);
         if (sizeMatch) {
@@ -353,9 +372,9 @@ export class NLPQueryProcessor {
             if (!filters.size) filters.size = {};
             filters.size[comparison === 'larger' || comparison === 'bigger' || comparison === 'greater' ? '$gt' : '$lt'] = actualSize;
         }
-        
+
         sq.filters = filters;
-        
+
         // Sorting / grouping
         const sortMatch = query.match(/\bsort by (\w+)(?:\s+(asc|ascending|desc|descending))?\b/i);
         if (sortMatch) {
@@ -364,10 +383,10 @@ export class NLPQueryProcessor {
                 sq.sortOrder = sortMatch[2].startsWith('asc') ? 'asc' : 'desc';
             }
         }
-        
+
         const groupMatch = query.match(/\bgroup by (\w+)\b/i);
         if (groupMatch) sq.groupBy = groupMatch[1];
-        
+
         // Additional parameters for specific intents
         if (intent.type === 'compare') {
             const compareTargets = this.extractComparisonTargets(query);
@@ -383,10 +402,10 @@ export class NLPQueryProcessor {
                 sq.parameters.transformType = transformType;
             }
         }
-        
+
         return sq;
     }
-    
+
     /**
      * Extract overall context for the query
      */
@@ -394,13 +413,13 @@ export class NLPQueryProcessor {
         // Simple heuristic: extract the first and last parts of the query
         const words = query.split(/\s+/);
         if (words.length <= 10) return query;
-        
+
         const firstPart = words.slice(0, 5).join(' ');
         const lastPart = words.slice(-5).join(' ');
-        
+
         return `${firstPart} ... ${lastPart}`;
     }
-    
+
     /**
      * Extract targets for comparison queries
      */
@@ -408,22 +427,22 @@ export class NLPQueryProcessor {
         // Simple pattern: "compare A and B" or "A vs B"
         const comparePattern = /compare\s+(.+?)\s+(?:and|vs|versus)\s+(.+?)(?:\s|$)/i;
         const match = query.match(comparePattern);
-        
+
         if (match) {
             return [match[1].trim(), match[2].trim()];
         }
-        
+
         // Alternative pattern: "difference between A and B"
         const diffPattern = /difference between\s+(.+?)\s+and\s+(.+?)(?:\s|$)/i;
         const diffMatch = query.match(diffPattern);
-        
+
         if (diffMatch) {
             return [diffMatch[1].trim(), diffMatch[2].trim()];
         }
-        
+
         return [];
     }
-    
+
     /**
      * Extract transformation type for transformation queries
      */
@@ -434,14 +453,14 @@ export class NLPQueryProcessor {
             { pattern: /refactor to (\w+)/i, group: 1 },
             { pattern: /change to (\w+)/i, group: 1 }
         ];
-        
+
         for (const { pattern, group } of transformTypes) {
             const match = query.match(pattern);
             if (match) {
                 return match[group].trim();
             }
         }
-        
+
         return null;
     }
     // ------------------------------------------------------------------
@@ -452,7 +471,7 @@ export class NLPQueryProcessor {
         if (base.type === 'nlp_structured_query' && base.confidence !== undefined && base.confidence > 0.5) {
             return base;
         }
-        
+
         // Pattern libraries
         const patterns = [
             { rx: /singleton pattern/i, cfg: { type: 'search', filters: { pattern: 'singleton' } } },
@@ -487,7 +506,7 @@ export class NLPQueryProcessor {
             { rx: /transform (.*) into (.*)/i, cfg: { type: 'transform', entities: ['$1'], parameters: { transformType: '$2' } } },
             { rx: /refactor (.*) to (.*)/i, cfg: { type: 'transform', entities: ['$1'], parameters: { transformType: '$2' } } }
         ];
-        
+
         for (const { rx, cfg } of patterns) {
             const m = query.match(rx);
             if (m) {
@@ -495,26 +514,26 @@ export class NLPQueryProcessor {
                     // Replace $1, $2, etc. with captured groups
                     return e.replace(/\$(\d+)/g, (_, i) => m[parseInt(i)] || '');
                 });
-                
-                const parameters = cfg.parameters ? 
+
+                const parameters = cfg.parameters ?
                     Object.entries(cfg.parameters).reduce((acc, [key, value]) => {
-                        acc[key] = typeof value === 'string' ? 
-                            value.replace(/\$(\d+)/g, (_, i) => m[parseInt(i)] || '') : 
+                        acc[key] = typeof value === 'string' ?
+                            value.replace(/\$(\d+)/g, (_, i) => m[parseInt(i)] || '') :
                             value;
                         return acc;
-                    }, {} as Record<string, any>) : 
+                    }, {} as Record<string, any>) :
                     undefined;
-                
-                return { 
-                    ...base, 
-                    ...cfg, 
-                    type: cfg.type as IntentType, 
+
+                return {
+                    ...base,
+                    ...cfg,
+                    type: cfg.type as IntentType,
                     entities,
                     parameters
                 };
             }
         }
-        
+
         // If no pattern matches, try to extract meaningful entities and default to search
         if (base.entities && base.entities.length > 0) {
             return {
@@ -522,7 +541,7 @@ export class NLPQueryProcessor {
                 type: 'search'
             };
         }
-        
+
         // Last resort: return a generic search query
         return {
             ...base,

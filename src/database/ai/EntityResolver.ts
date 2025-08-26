@@ -61,34 +61,35 @@ export class EntityResolver {
         let score = 0;
         const normName = name.toLowerCase();
 
-        // Exact / alias match
-        const allNames = [entity.name, ...(entity.aliases || [])].map(n => n.toLowerCase());
-        if (allNames.includes(normName)) score += 100;
-
-        // Partial / fuzzy match
-        // Partial / fuzzy match
         // Helper: Jaccard similarity for sets of characters
         function jaccardSimilarity(a: string, b: string): number {
             const setA = new Set(a);
             const setB = new Set(b);
             const intersection = new Set([...setA].filter(x => setB.has(x)));
             const union = new Set([...setA, ...setB]);
-            return intersection.size / union.size;
+            return union.size > 0 ? intersection.size / union.size : 0;
         }
 
-        const nameSimRaw = Math.max(...allNames.map(n => 1 - levenshteinDistance(n, normName) / Math.max(n.length, normName.length)));
-        const jaccardSim = Math.max(...allNames.map(n => jaccardSimilarity(n, normName)));
+        // 1. Name Matching Score (up to 100 for exact, ~45 for fuzzy)
+        const allNames = [entity.name, ...(entity.aliases || [])].map(n => n.toLowerCase());
+        if (allNames.includes(normName)) {
+            score += 100;
+        } else {
+            const levenshteinSim = Math.max(...allNames.map(n => 1 - levenshteinDistance(n, normName) / Math.max(n.length, normName.length)));
+            const jaccardSim = Math.max(...allNames.map(n => jaccardSimilarity(n, normName)));
+            const startsWithBonus = Math.max(...allNames.map(n => n.startsWith(normName) ? 0.2 : 0));
 
-        // Penalize short matches: reduce score if either string is short
-        const minLen = Math.min(normName.length, ...allNames.map(n => n.length));
-        const lengthPenalty = minLen < 5 ? 0.5 : 1; // 50% penalty for short strings
+            // Smoother length penalty for short strings
+            const minLen = Math.min(normName.length, ...allNames.map(n => n.length));
+            const lengthPenalty = minLen < 3 ? 0.4 : (minLen < 5 ? 0.7 : 1.0);
 
-        // Combine metrics (weighted average)
-        const combinedSim = (nameSimRaw * 0.7 + jaccardSim * 0.3) * lengthPenalty;
+            // Combine metrics (weighted average), with bonus
+            const combinedSim = (levenshteinSim * 0.7 + jaccardSim * 0.3 + startsWithBonus) * lengthPenalty;
 
-        score += combinedSim * 40;
+            score += Math.min(1.0, combinedSim) * 45; // Max 45 points from fuzzy match
+        }
 
-        // Type match (including hierarchy)
+        // 2. Type Match Score (up to 30 points)
         if (ctx.entityType) {
             const wanted = ctx.entityType.toLowerCase();
             const actual = entity.entityType.toLowerCase();
@@ -97,24 +98,33 @@ export class EntityResolver {
             else if (this.typeHierarchy[wanted]?.includes(actual)) score += 10;
         }
 
-        // Contextual clues in observations
+        // 3. Contextual Clues Score (up to 25 points)
         const clues = [ctx.surroundingText, ...ctx.relatedEntities ?? []]
             .filter(Boolean)
-            .map(s => s!.toLowerCase());
-        const obsText = (entity.observations || []).join(' ').toLowerCase();
-        for (const clue of clues) {
-            if (obsText.includes(clue) || clue.includes(obsText)) score += 5;
+            .flatMap(s => s!.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+
+        if (clues.length > 0) {
+            const obsText = (entity.observations || []).join(' ').toLowerCase();
+            let contextMatches = 0;
+            for (const clue of new Set(clues)) { // Use Set for unique clues
+                if (obsText.includes(clue)) {
+                    contextMatches++;
+                }
+            }
+            // 5 points per match, capped at 25.
+            score += Math.min(contextMatches * 5, 25);
         }
 
-        // Vector similarity
+        // 4. Vector Similarity Score (up to 50 points)
         if (entity.embedding && ctx.queryEmbedding) {
             const sim = cosineSimilarity(entity.embedding, ctx.queryEmbedding);
             score += sim * 50;
         }
 
-        // Metadata boosters
+        // 5. Metadata Boosters/Penalties
         if (entity.metadata?.popular) score += 20;
-        if (entity.metadata?.deprecated) score -= 25;
+        if (entity.metadata?.deprecated) score -= 30; // Increased penalty
+        if (entity.metadata?.partialMatch && score < 40) score += 10; // Bonus if it's a weak match otherwise
 
         return score;
     }

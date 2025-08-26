@@ -282,7 +282,29 @@ export class CodebaseEmbeddingRepository {
                 similarity: similarityMap.get(meta.embedding_id) || 0,
             }));
 
-            // Sort by similarity and return the top K results.
+            // Step 4: Re-rank results based on keyword and entity name matching.
+            const queryTokens = new Set(queryText.toLowerCase().split(/\s+/).filter(t => t.length > 2));
+            results.forEach(result => {
+                let rerankScore = result.similarity;
+
+                // Boost for exact entity name match in query
+                if (result.entity_name && queryText.toLowerCase().includes(result.entity_name.toLowerCase())) {
+                    rerankScore += 0.15;
+                }
+
+                // Boost for keyword overlap in chunk text
+                if (queryTokens.size > 0 && result.chunk_text) {
+                    const chunkTokens = new Set(result.chunk_text.toLowerCase().split(/\s+/));
+                    const overlap = [...queryTokens].filter(token => chunkTokens.has(token));
+                    const overlapBonus = (overlap.length / queryTokens.size) * 0.1; // Max 0.1 bonus
+                    rerankScore += overlapBonus;
+                }
+
+                // Update similarity to be the re-ranked score
+                result.similarity = Math.min(1.0, rerankScore); // Cap similarity at 1.0
+            });
+
+            // Sort by the new re-ranked similarity and return the top K results.
             results.sort((a, b) => b.similarity - a.similarity);
 
             return results.slice(0, topK);
