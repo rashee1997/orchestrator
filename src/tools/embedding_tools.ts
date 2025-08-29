@@ -201,7 +201,7 @@ ${changelog}
         console.warn(`Unified AI summarizer failed:`, e);
     }
 
-    return `\n### AI Change Summary:\n${summaryText}\n`;
+    return `\n### 🤖 AI Change Summary\n> ${summaryText.replace(/\n/g, '\n> ')}\n`;
 }
 
 
@@ -274,11 +274,17 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed' or 'paths_to_embed' must be provided.");
             }
 
+            let detailedOutput = `## 🧠 Codebase Ingestion Report\n\n> ${outputMessage}\n\n`;
 
-            let detailedOutput = `## Ingestion Summary\n${outputMessage}\n\n### Overall Statistics:\n`
-                + `- **New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
-                + `- **Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
-                + `- **Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
+            detailedOutput += `### 📊 Overall Statistics\n`
+                + `- **✨ New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
+                + `- **♻️ Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
+                + `- **🗑️ Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
+
+            if (!disable_ai_output_summary) {
+                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
+                detailedOutput += unifiedSummary;
+            }
 
             const fileStats = new Map<string, { new: number; reused: number; deleted: number }>();
             const aggregate = (list: typeof resultCounts.newEmbeddings, type: 'new' | 'reused' | 'deleted') => {
@@ -295,59 +301,16 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             aggregate(resultCounts.deletedEmbeddings, 'deleted');
 
             if (fileStats.size > 0) {
-                detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files processed):\n`;
+                detailedOutput += `\n### 📁 File-by-File Ingestion Report (${fileStats.size} files processed)\n`;
                 const sortedFiles = Array.from(fileStats.keys()).sort();
 
                 sortedFiles.forEach(filePath => {
                     const counts = fileStats.get(filePath)!;
-                    detailedOutput += `- \`${filePath}\` (New: ${counts.new}, Reused: ${counts.reused}, Deleted: ${counts.deleted})\n`;
+                    detailedOutput += `- \`${filePath}\` (✨ ${counts.new}, ♻️ ${counts.reused}, 🗑️ ${counts.deleted})\n`;
                 });
             }
 
-            // New section: Detailed Chunk Changes
-            const addedChunksByFile = new Map<string, typeof resultCounts.newEmbeddings>();
-            resultCounts.newEmbeddings.forEach(chunk => {
-                const list = addedChunksByFile.get(chunk.file_path_relative) || [];
-                list.push(chunk);
-                addedChunksByFile.set(chunk.file_path_relative, list);
-            });
-
-            const deletedChunksByFile = new Map<string, typeof resultCounts.deletedEmbeddings>();
-            resultCounts.deletedEmbeddings.forEach(chunk => {
-                const list = deletedChunksByFile.get(chunk.file_path_relative) || [];
-                list.push(chunk);
-                deletedChunksByFile.set(chunk.file_path_relative, list);
-            });
-
-            if (addedChunksByFile.size > 0 || deletedChunksByFile.size > 0) {
-                detailedOutput += `\n### Detailed Chunk Changes:\n`;
-                const allAffectedFiles = new Set([...Array.from(addedChunksByFile.keys()), ...Array.from(deletedChunksByFile.keys())]);
-                const sortedAffectedFiles = Array.from(allAffectedFiles).sort();
-
-                sortedAffectedFiles.forEach(filePath => {
-                    detailedOutput += `\n#### File: \`${filePath}\`\n`;
-
-                    const added = addedChunksByFile.get(filePath);
-                    if (added && added.length > 0) {
-                        detailedOutput += `##### Added Chunks:\n`;
-                        added.forEach((chunk, index) => {
-                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
-                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
-                        });
-                    }
-
-                    const deleted = deletedChunksByFile.get(filePath);
-                    if (deleted && deleted.length > 0) {
-                        detailedOutput += `##### Deleted Chunks:\n`;
-                        deleted.forEach((chunk, index) => {
-                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
-                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
-                        });
-                    }
-                });
-            }
-
-            detailedOutput += `\n### Performance Metrics:\n`;
+            detailedOutput += `\n### ⚙️ Performance Metrics\n`;
             if (resultCounts.embeddingRequestCount !== undefined) detailedOutput += `- **Embedding API Requests:** ${resultCounts.embeddingRequestCount}\n`;
             if (resultCounts.embeddingRetryCount !== undefined) detailedOutput += `- **Embedding API Retries:** ${resultCounts.embeddingRetryCount}\n`;
             if (resultCounts.namingApiCallCount !== undefined) detailedOutput += `- **Naming API Calls:** ${resultCounts.namingApiCallCount}\n`;
@@ -363,11 +326,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (resultCounts.totalTimeMs !== undefined) {
                 const totalTimeSeconds = (resultCounts.totalTimeMs / 1000).toFixed(2);
                 detailedOutput += `- **Total Time Taken:** ${totalTimeSeconds} seconds\n`;
-            }
-
-            if (!disable_ai_output_summary) {
-                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
-                detailedOutput += unifiedSummary;
             }
 
             return { content: [{ type: 'text', text: detailedOutput }] };
@@ -449,31 +407,32 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
                 const resultMarkdown = finalResults.map((res, index) => {
                     const metadataLines = [
-                        `- **File:** \`${res.file_path_relative}\``,
-                        res.entity_name && `- **Entity:** \`${res.entity_name}\``,
-                        res.metadata?.full_file_path && `- **Full Path:** \`${res.metadata.full_file_path}\``,
-                        (res.metadata?.startLine && res.metadata?.endLine) && `- **Lines:** ${res.metadata.startLine}-${res.metadata.endLine}`,
-                        res.metadata?.type && `- **Chunk Type:** ${res.metadata.type}`,
-                        enable_dmqr && res.metadata?.dmqr_source_query && res.metadata.dmqr_source_query !== query_text && `- **DMQR Source:** "${res.metadata.dmqr_source_query}"`
-                    ].filter(Boolean).join('\n');
+                        `📁 **File:** \`${res.file_path_relative}\``,
+                        res.entity_name && `🧩 **Entity:** \`${res.entity_name}\``,
+                        (res.metadata?.startLine && res.metadata?.endLine) && `🔢 **Lines:** ${res.metadata.startLine}-${res.metadata.endLine}`,
+                        res.metadata?.type && `🏷️ **Type:** ${res.metadata.type}`,
+                        enable_dmqr && res.metadata?.dmqr_source_query && res.metadata.dmqr_source_query !== query_text && `🎯 **DMQR Source:** "${res.metadata.dmqr_source_query}"`
+                    ].filter(Boolean).join(' | ');
 
                     let contentBlock;
+                    const lang = res.file_path_relative.split('.').pop() || 'text';
+
                     if (res.metadata?.type?.endsWith('_summary')) {
-                        const originalCode = `**Original Code Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'typescript')}`;
-                        const aiSummary = res.ai_summary_text ? `\n**AI Summary:**\n${formatJsonToMarkdownCodeBlock(res.ai_summary_text, 'text')}` : '';
+                        const originalCode = `#### Original Code Snippet\n${formatJsonToMarkdownCodeBlock(res.chunk_text, lang)}`;
+                        const aiSummary = res.ai_summary_text ? `\n#### 🤖 AI Summary\n> ${res.ai_summary_text.replace(/\n/g, '\n> ')}\n` : '';
                         contentBlock = `${originalCode}${aiSummary}\n`;
                     } else {
-                        contentBlock = `**Content Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'text')}\n`;
+                        contentBlock = `#### Content Snippet\n${formatJsonToMarkdownCodeBlock(res.chunk_text, lang)}\n`;
                     }
 
-                    return `### Result ${index + 1} (Score: ${res.score.toFixed(4)})\n${metadataLines}\n${contentBlock}`;
+                    return `### ✨ Result ${index + 1} (Score: ${res.score.toFixed(4)})\n${metadataLines}\n\n${contentBlock}`;
                 }).join('---\n');
 
                 const queryInfo = enable_dmqr
                     ? ` (DMQR enabled: searched with ${generatedQueries.length} queries)`
                     : '';
 
-                const finalMarkdown = `## Similar Code Chunks for Query: "${query_text}"${queryInfo} (Top ${finalResults.length})\n\n${resultMarkdown}`;
+                const finalMarkdown = `## 🔍 Similar Code Chunks for Query\n> "${query_text}"${queryInfo}\n\n${resultMarkdown}`;
                 return { content: [{ type: 'text', text: finalMarkdown }] };
 
             } catch (error: any) {
@@ -517,7 +476,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     project_root_path,
                     filter_by_agent
                 );
-                const message = formatSimpleMessage(`Successfully deleted ${result.deletedCount} embeddings for the specified file paths.`, "Clean Up Embeddings Result");
+                const message = formatSimpleMessage(`Successfully deleted ${result.deletedCount} embeddings for the specified file paths.`, "🗑️ Clean Up Embeddings");
                 return { content: [{ type: 'text', text: message }] };
             } catch (error: any) {
                 console.error(`Error cleaning up embeddings for agent ${agent_id}:`, error);

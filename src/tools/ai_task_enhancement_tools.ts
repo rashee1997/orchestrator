@@ -160,7 +160,7 @@ Provide only the JSON array. Do not include any other text or markdown.`;
     }
 
     if (!Array.isArray(suggestedSubtasks) || suggestedSubtasks.length === 0) {
-        return { markdown: `\n### For Task: "${parentTask.title}" (ID: \`${parentTask.task_id}\`)\nNo subtasks were suggested by the AI.\n`, subtasksToCreate: [] };
+        return { markdown: `\n### 🎯 For Task: "${parentTask.title}" (\`${parentTask.task_id}\`)\n\n> 🤖 No subtasks were suggested by the AI.\n`, subtasksToCreate: [] };
     }
 
     const itemsForDisplay = suggestedSubtasks.map(s => {
@@ -171,16 +171,16 @@ Provide only the JSON array. Do not include any other text or markdown.`;
         return { ...s, resolved_title: title };
     });
 
-    let markdown = `\n### For Task: "${parentTask.title}" (ID: \`${parentTask.task_id}\`)\n`;
+    let markdown = `\n### 🎯 For Task: "${parentTask.title}" (\`${parentTask.task_id}\`)\n`;
     itemsForDisplay.forEach((subtask, index) => {
-        markdown += `#### Suggestion ${index + 1}: ${subtask.resolved_title}\n`;
-        if (subtask.suggested_description) markdown += `- **Description:** ${subtask.suggested_description}\n`;
+        markdown += `\n---\n\n#### 💡 Suggestion ${index + 1}: ${subtask.resolved_title}\n`;
+        if (subtask.suggested_description) markdown += `\n> ${subtask.suggested_description}\n`;
         if (subtask.dependencies_parent_task_ids?.length) {
             const deps = subtask.dependencies_parent_task_ids.map(id => {
                 const parent = otherTasksInPlan.find(t => t.task_id === id);
                 return parent ? `\`${id}\` ("${parent.title}")` : `\`${id}\``;
             }).join(', ');
-            markdown += `- **Dependencies on Other Tasks:** ${deps}\n`;
+            markdown += `\n- **🔗 Dependencies:** ${deps}\n`;
         }
     });
 
@@ -224,13 +224,13 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
 
         const { markdown, subtasksToCreate } = await _generateSubtasksForParent(agent_id, plan_id, parentTask, allTasksInPlan, max_suggestions, geminiService);
 
-        let finalMarkdown = `## AI Suggested Subtasks\n${markdown}`;
+        let finalMarkdown = `## ✨ AI Suggested Subtasks\n${markdown}`;
 
         try {
             const createdIds = await subtaskManager.createSubtasks(agent_id, plan_id, subtasksToCreate);
-            finalMarkdown += `\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks in the database.`;
+            finalMarkdown += `\n\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks in the database.`;
         } catch (dbError: any) {
-            finalMarkdown += `\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
+            finalMarkdown += `\n\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
         }
 
         return { content: [{ type: 'text', text: finalMarkdown }] };
@@ -272,58 +272,41 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
 
         if (tasksForSubtaskGeneration.length === 0) {
             const analysisSummary = complexityAnalyses.map(a =>
-                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+                `- **${a.title}**: Complexity ${a.complexity_score}/10 - Recommendation: *${a.recommended_action}*`
             ).join('\n');
 
             return {
                 content: [{
                     type: 'text', text: formatSimpleMessage(
-                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
-                        "AI Subtask Suggestions"
+                        `Task Complexity Analysis completed. No tasks met the criteria for subtask generation.\n\n${analysisSummary}`,
+                        "🤖 AI Subtask Suggestions"
                     )
                 }]
             };
         }
-
-        // DEBUG: Log the complexity analysis results
-        console.log('=== COMPLEXITY ANALYSIS DEBUG ===');
-        complexityAnalyses.forEach(analysis => {
-            console.log(`Task: ${analysis.title}`);
-            console.log(`Score: ${analysis.complexity_score}/10`);
-            console.log(`Action: ${analysis.recommended_action}`);
-            console.log(`Factors: ${analysis.complexity_factors.join(', ')}`);
-            console.log('---');
-        });
-        console.log(`Tasks for subtask generation: ${tasksForSubtaskGeneration.length}`);
-        console.log('=== END DEBUG ===');
-
-        // === AGENT 2: Subtask Generator (only gets high/medium complexity tasks) ===
+        
         const complexTaskIds = tasksForSubtaskGeneration.map(t => t.task_id);
-
-        // Generate analysis summary for context
-        const analysisSummary = tasksForSubtaskGeneration.map(a =>
-            `- **${a.title}** (Score: ${a.complexity_score}/10): ${a.complexity_factors.slice(0, 2).join(', ')}`
-        ).join('\n');
-
-        // Use Agent 1's analysis directly - no need for second AI call since we already have the complex task IDs
-        // The complexTaskIds are already determined by Agent 1's analysis
 
         if (complexTaskIds.length === 0) {
             const analysisSummary = complexityAnalyses.map(a =>
-                `- **${a.title}**: ${a.complexity_score}/10 - ${a.recommended_action} (${a.complexity_factors.join(', ')})`
+                `- **${a.title}**: Complexity ${a.complexity_score}/10 - Recommendation: *${a.recommended_action}*`
             ).join('\n');
 
             return {
                 content: [{
                     type: 'text', text: formatSimpleMessage(
-                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation:\n\n${analysisSummary}`,
-                        "AI Subtask Suggestions"
+                        `Task Complexity Analysis completed. No tasks meet the criteria for subtask generation.\n\n${analysisSummary}`,
+                        "🤖 AI Subtask Suggestions"
                     )
                 }]
             };
         }
 
-        let fullMarkdownReport = `## AI-Suggested Subtasks for Complex Tasks in Plan \`${plan_id}\`\n`;
+        let fullMarkdownReport = `## ✨ AI-Suggested Subtasks for Plan \`${plan_id}\`\n\nBased on complexity analysis, subtasks have been generated for the following tasks:\n`;
+        tasksForSubtaskGeneration.forEach(a => {
+            fullMarkdownReport += `- **${a.title}** (Complexity: ${a.complexity_score}/10)\n`;
+        });
+        
         const allSubtasksToCreate: any[] = [];
 
         for (const taskId of complexTaskIds) {
@@ -338,12 +321,12 @@ async function aiSuggestSubtasksHandler(args: any, memoryManager: MemoryManager)
         if (allSubtasksToCreate.length > 0) {
             try {
                 const createdIds = await subtaskManager.createSubtasks(agent_id, plan_id, allSubtasksToCreate);
-                fullMarkdownReport += `\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks across ${complexTaskIds.length} parent tasks.`;
+                fullMarkdownReport += `\n\n**✅ Automatic Creation:** Successfully created ${createdIds.length} subtasks across ${complexTaskIds.length} parent tasks.`;
             } catch (dbError: any) {
-                fullMarkdownReport += `\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
+                fullMarkdownReport += `\n\n**❌ Automatic Creation Failed:** Could not create subtasks. Error: ${dbError.message}`;
             }
         } else {
-            fullMarkdownReport += `\n*No new subtasks were generated by the AI for the selected complex tasks.*`;
+            fullMarkdownReport += `\n\n> 🤖 No new subtasks were generated by the AI for the selected complex tasks.`;
         }
 
         return { content: [{ type: 'text', text: fullMarkdownReport }] };
@@ -396,21 +379,28 @@ async function aiSuggestTaskDetailsHandler(args: any, memoryManager: MemoryManag
     }
 
     // 4. Format output
-    let markdownOutput = `## AI Suggested Details for Task: "${task_title}" (ID: \`${task_id}\`)\n\n`;
-    markdownOutput += `**Plan ID:** \`${plan_id}\`\n\n`;
-    if (suggestedDetails.suggested_description) markdownOutput += `### Suggested Description:\n${suggestedDetails.suggested_description}\n\n`;
-    if (suggestedDetails.suggested_purpose) markdownOutput += `### Suggested Purpose:\n${suggestedDetails.suggested_purpose}\n\n`;
-    if (suggestedDetails.suggested_action_description) markdownOutput += `### Suggested Action Description:\n${suggestedDetails.suggested_action_description}\n\n`;
-    if (suggestedDetails.suggested_files_involved?.length) markdownOutput += `**Suggested Files Involved:** ${suggestedDetails.suggested_files_involved.map(f => `\`${f}\``).join(', ')}\n`;
-    if (suggestedDetails.suggested_dependencies_task_ids?.length) markdownOutput += `**Suggested Dependencies (Task IDs):** ${suggestedDetails.suggested_dependencies_task_ids.map(d => `\`${d}\``).join(', ')}\n`;
-    if (suggestedDetails.suggested_tools_required_list?.length) markdownOutput += `**Suggested Tools Required:** ${suggestedDetails.suggested_tools_required_list.map(t => `\`${t}\``).join(', ')}\n`;
-    if (suggestedDetails.suggested_inputs_summary) markdownOutput += `**Suggested Inputs Summary:** ${suggestedDetails.suggested_inputs_summary}\n`;
-    if (suggestedDetails.suggested_outputs_summary) markdownOutput += `**Suggested Outputs Summary:** ${suggestedDetails.suggested_outputs_summary}\n`;
-    if (suggestedDetails.suggested_success_criteria_text) markdownOutput += `**Suggested Success Criteria:**\n${suggestedDetails.suggested_success_criteria_text}\n\n`;
-    if (suggestedDetails.suggested_estimated_effort_hours !== undefined) markdownOutput += `**Suggested Estimated Effort:** ${suggestedDetails.suggested_estimated_effort_hours} hours\n`;
-    if (suggestedDetails.suggested_verification_method) markdownOutput += `**Suggested Verification Method:** ${suggestedDetails.suggested_verification_method}\n`;
-    if (suggestedDetails.rationale_for_suggestions) markdownOutput += `\n### Rationale for Suggestions:\n${suggestedDetails.rationale_for_suggestions}\n`;
-    markdownOutput += `\n*Note: These are AI suggestions. Review and use the appropriate plan/task update tools to apply these details if desired.*`;
+    let markdownOutput = `## 💡 AI Suggested Details for Task: "${task_title}"\n`;
+    markdownOutput += `*ID: \`${task_id}\` | Plan ID: \`${plan_id}\`*\n\n`;
+    
+    if (suggestedDetails.suggested_purpose) markdownOutput += `### 🎯 Suggested Purpose\n> ${suggestedDetails.suggested_purpose}\n\n`;
+    if (suggestedDetails.suggested_description) markdownOutput += `### 📖 Suggested Description\n${suggestedDetails.suggested_description}\n\n`;
+    if (suggestedDetails.suggested_action_description) markdownOutput += `### ⚡ Suggested Action\n${suggestedDetails.suggested_action_description}\n\n`;
+
+    markdownOutput += `--- \n\n### 📋 Details\n\n`
+    if (suggestedDetails.suggested_files_involved?.length) markdownOutput += `- **Affected Files:** ${suggestedDetails.suggested_files_involved.map(f => `\`${f}\``).join(', ')}\n`;
+    if (suggestedDetails.suggested_dependencies_task_ids?.length) markdownOutput += `- **🔗 Dependencies (Task IDs):** ${suggestedDetails.suggested_dependencies_task_ids.map(d => `\`${d}\``).join(', ')}\n`;
+    if (suggestedDetails.suggested_tools_required_list?.length) markdownOutput += `- **🛠️ Tools Required:** ${suggestedDetails.suggested_tools_required_list.map(t => `\`${t}\``).join(', ')}\n`;
+    if (suggestedDetails.suggested_estimated_effort_hours !== undefined) markdownOutput += `- **⏳ Estimated Effort:** ${suggestedDetails.suggested_estimated_effort_hours} hours\n`;
+    
+    markdownOutput += `\n### 📈 Execution & Verification\n\n`
+    if (suggestedDetails.suggested_inputs_summary) markdownOutput += `- **Inputs:** ${suggestedDetails.suggested_inputs_summary}\n`;
+    if (suggestedDetails.suggested_outputs_summary) markdownOutput += `- **Outputs:** ${suggestedDetails.suggested_outputs_summary}\n`;
+    if (suggestedDetails.suggested_success_criteria_text) markdownOutput += `- **✅ Success Criteria:**\n${suggestedDetails.suggested_success_criteria_text}\n`;
+    if (suggestedDetails.suggested_verification_method) markdownOutput += `- **🔍 Verification Method:** ${suggestedDetails.suggested_verification_method}\n`;
+
+    if (suggestedDetails.rationale_for_suggestions) markdownOutput += `\n---\n\n### 🤔 Rationale for Suggestions\n> ${suggestedDetails.rationale_for_suggestions}\n`;
+    
+    markdownOutput += `\n---\n\n*Note: These are AI suggestions. Review and use the \`update_task\` tool to apply these details if desired.*`;
 
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
@@ -427,7 +417,6 @@ async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Pr
     const planTaskManager = memoryManager.planTaskManager;
     const subtaskManager = memoryManager.subtaskManager;
     const geminiService = memoryManager.getGeminiIntegrationService();
-    const contextRetriever = memoryManager.getCodebaseContextRetrieverService();
 
     const plan = await planTaskManager.getPlan(agent_id, plan_id);
     if (!plan) {
@@ -465,38 +454,44 @@ async function aiAnalyzePlanHandler(args: any, memoryManager: MemoryManager): Pr
     }
 
     // 4. Format output
-    let markdownOutput = `## AI Plan Analysis Report for Plan ID: \`${plan_id}\` (Agent: \`${agent_id}\`)\n\n`;
-    markdownOutput += `### Overall Summary:\n${analysisResult.overall_summary || 'No overall summary provided.'}\n\n`;
-    markdownOutput += "### Scores (out of 10):\n";
-    if (analysisResult.overall_coherence_score !== undefined) markdownOutput += `- **Overall Coherence:** ${analysisResult.overall_coherence_score}\n`;
-    if (analysisResult.clarity_of_goal_score !== undefined) markdownOutput += `- **Clarity of Goal:** ${analysisResult.clarity_of_goal_score}\n`;
-    if (analysisResult.actionability_of_tasks_score !== undefined) markdownOutput += `- **Actionability of Tasks:** ${analysisResult.actionability_of_tasks_score}\n`;
-    if (analysisResult.completeness_score !== undefined) markdownOutput += `- **Completeness:** ${analysisResult.completeness_score}\n\n`;
+    const renderScore = (score?: number) => score !== undefined ? `${'🔵'.repeat(score)}${'⚪️'.repeat(10 - score)} (${score}/10)` : 'N/A';
+
+    let markdownOutput = `# 📊 AI Plan Analysis Report\n*For Plan ID: \`${plan_id}\`*\n\n`;
+    markdownOutput += `> ### 💬 Overall Summary\n> ${analysisResult.overall_summary || 'No overall summary provided.'}\n\n`;
+    
+    markdownOutput += "### 📈 Scores\n";
+    markdownOutput += `- **Coherence:** ${renderScore(analysisResult.overall_coherence_score)}\n`;
+    markdownOutput += `- **Clarity:** ${renderScore(analysisResult.clarity_of_goal_score)}\n`;
+    markdownOutput += `- **Actionability:** ${renderScore(analysisResult.actionability_of_tasks_score)}\n`;
+    markdownOutput += `- **Completeness:** ${renderScore(analysisResult.completeness_score)}\n\n`;
 
     if (analysisResult.identified_strengths?.length) {
-        markdownOutput += "### Identified Strengths:\n" + analysisResult.identified_strengths.map(s => `- ${s}`).join('\n') + "\n\n";
+        markdownOutput += "### ✅ Identified Strengths\n" + analysisResult.identified_strengths.map(s => `- ${s}`).join('\n') + "\n\n";
     }
     if (analysisResult.potential_risks_or_issues?.length) {
-        markdownOutput += "### Potential Risks or Issues:\n";
+        markdownOutput += "### ⚠️ Potential Risks & Issues\n";
         analysisResult.potential_risks_or_issues.forEach(r => {
             markdownOutput += `- **Risk:** ${r.risk}\n`;
-            if (r.mitigation_suggestion) markdownOutput += `  - *Mitigation:* ${r.mitigation_suggestion}\n`;
-            if (r.related_tasks?.length) markdownOutput += `  - *Related Tasks:* ${r.related_tasks.map(t => `\`${t}\``).join(', ')}\n`;
+            if (r.mitigation_suggestion) markdownOutput += `  - **💡 Mitigation:** ${r.mitigation_suggestion}\n`;
+            if (r.related_tasks?.length) markdownOutput += `  - **🔗 Related Tasks:** ${r.related_tasks.map(t => `\`${t}\``).join(', ')}\n`;
         });
         markdownOutput += "\n";
     }
+    
+    markdownOutput += `--- \n\n### 🛠️ Recommendations\n\n`
+    if (analysisResult.suggestions_for_improvement?.length) {
+        markdownOutput += "#### General Improvements\n" + analysisResult.suggestions_for_improvement.map(s => `- ${s}`).join('\n') + "\n\n";
+    }
     if (analysisResult.missing_tasks_or_steps?.length) {
-        markdownOutput += "### Missing Tasks or Steps:\n" + analysisResult.missing_tasks_or_steps.map(m => `- ${m}`).join('\n') + "\n\n";
+        markdownOutput += "#### 🧩 Missing Tasks or Steps\n" + analysisResult.missing_tasks_or_steps.map(m => `- ${m}`).join('\n') + "\n\n";
     }
     if (analysisResult.dependency_concerns?.length) {
-        markdownOutput += "### Dependency Concerns:\n" + analysisResult.dependency_concerns.map(d => `- ${d}`).join('\n') + "\n\n";
-    }
-    if (analysisResult.resource_allocation_comments) markdownOutput += `### Resource Allocation Comments:\n${analysisResult.resource_allocation_comments}\n\n`;
-    if (analysisResult.codebase_context_impact) markdownOutput += `### Codebase Context Impact:\n${analysisResult.codebase_context_impact}\n\n`;
-    if (analysisResult.suggestions_for_improvement?.length) {
-        markdownOutput += "### Suggestions for Improvement:\n" + analysisResult.suggestions_for_improvement.map(s => `- ${s}`).join('\n') + "\n\n";
+        markdownOutput += "#### 🔗 Dependency Concerns\n" + analysisResult.dependency_concerns.map(d => `- ${d}`).join('\n') + "\n\n";
     }
 
+    if (analysisResult.resource_allocation_comments) markdownOutput += `#### 📦 Resource Allocation Comments\n> ${analysisResult.resource_allocation_comments}\n\n`;
+    if (analysisResult.codebase_context_impact) markdownOutput += `#### 💻 Codebase Context Impact\n> ${analysisResult.codebase_context_impact}\n\n`;
+    
     return { content: [{ type: 'text', text: markdownOutput }] };
 }
 // #endregion

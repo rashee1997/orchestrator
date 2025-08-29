@@ -57,10 +57,8 @@ export function parseGeminiJsonResponse(textResponse: string): any {
 
         // b) Escape stray back‑slashes that are NOT part of a valid JSON escape
         //    Valid escapes: \", \\, \/ , \b , \f , \n , \r , \t , \uXXXX
-        extracted = extracted.replace(
-            /(?<!\\)\\(?!["\\/bfnrtu])/g,
-            '\\\\'
-        );
+        //    Using a more compatible approach without negative lookbehind
+        extracted = extracted.replace(/\\(?!["\\/bfnrtu]|\\$)/gm, '\\\\');
 
         // c) Ensure all internal new‑lines are escaped (JSON strings cannot contain raw \n)
         //    This is safe because we already escaped stray back‑slashes above.

@@ -32,7 +32,7 @@ function formatUsage(inputSchema: any): string {
     for (const key of Object.keys(props)) {
         const prop = props[key];
         const isRequired = required.includes(key);
-        usage += `- \`${key}\` (${prop.type}${isRequired ? ', required' : prop.default !== undefined ? `, optional (default: ${prop.default})` : ', optional'})${prop.description ? `: ${prop.description}` : ''}\n`;
+        usage += `- **\`${key}\`** (*${prop.type}*): ${prop.description || ''} ${isRequired ? '**[Required]**' : ''}\n`;
     }
     return usage;
 }
@@ -48,17 +48,17 @@ export const listToolsToolDefinition: InternalToolDefinition = {
     func: async (args: any, memoryManagerInstance?: MemoryManager) => {
         if (!memoryManagerInstance) throw new McpError(ErrorCode.InternalError, "MemoryManager instance is required for list_tools");
         const allDefs = await getAllToolDefinitions(memoryManagerInstance);
-        let md = '## Available Tools\n\n';
+        let md = '# 🛠️ Available Tools\n\n';
         for (const tool of allDefs) {
-            md += `### \`${tool.name}\`\n`;
-            md += `${tool.description}\n\n`;
+            md += `## \`${tool.name}\`\n\n`;
+            md += `> ${tool.description}\n\n`;
             if (tool.inputSchema && Object.keys(tool.inputSchema.properties || {}).length > 0) {
-                md += `**Parameters:**\n`;
+                md += `### Parameters\n`;
                 md += formatUsage(tool.inputSchema);
             } else {
                 md += `*This tool takes no parameters.*\n`
             }
-            md += '\n---\n\n';
+            md += '\n---\n';
         }
         return { content: [{ type: 'text', text: md }] };
     }

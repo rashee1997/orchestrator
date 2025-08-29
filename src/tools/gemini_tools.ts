@@ -388,7 +388,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 parsedResponse.refined_prompt_id = stored_id;
 
                 const aiResponseText = formatPlanGenerationResponseToMarkdown(parsedResponse);
-                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', { context: finalContext });
+                // Store AI response for plan generation mode
+                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', aiResponseText, 'text', {
+                    context: finalContext,
+                    execution_mode: 'plan_generation',
+                    refined_prompt_id: stored_id
+                });
                 return { content: [{ type: 'text', text: aiResponseText }] };
 
             } catch (error: any) {
@@ -453,98 +458,76 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         }
 
         // Build the final markdown output
-        let markdownOutput = `## Gemini Response\n\n> "${query}"\n\n### AI Answer\n${finalAnswer}\n\n---`;
+        let markdownOutput = `## 🤖 Gemini Response\n\n> ${query}\n\n${finalAnswer}\n\n---`;
 
         // Check if we have any sources to display
         const hasIterativeSources = iterativeResult?.webSearchSources && iterativeResult.webSearchSources.length > 0;
         const hasGoogleSources = googleSearchSources && googleSearchSources.length > 0;
         const hasAnySources = hasIterativeSources || hasGoogleSources;
 
-        // Store the AI's response and web chunks in conversation history
-        await conversationHistoryManager.storeConversationMessage(
-            currentSessionId,
-            'ai',
-            finalAnswer,
-            'text',
-            null, // tool_info
-            null, // context_snapshot_id
-            null, // parent_message_id
-            {
-                context: finalContext,
-                web_chunks: webChunksToStore,
-                search_metrics: iterativeResult?.searchMetrics,
-                web_search_sources: iterativeResult?.webSearchSources
-            }
-        );
-
+      
         if (iterativeResult || hasAnySources) {
-            markdownOutput += "\n\n### Search & Reasoning Trajectory\n";
+            markdownOutput += "\n\n### 🔍 Search & Reasoning Trajectory\n";
 
             if (iterativeResult) {
                 const { searchMetrics } = iterativeResult;
-                markdownOutput += `\n**RAG Metrics:**\n`;
-                markdownOutput += `- **Termination Reason:** ${searchMetrics.terminationReason}\n`;
-                markdownOutput += `- **Total Iterations:** ${searchMetrics.totalIterations}\n`;
-                markdownOutput += `- **Self-Correction Loops:** ${searchMetrics.selfCorrectionLoops}\n`;
-                markdownOutput += `- **Context Items Found:** ${searchMetrics.contextItemsAdded}\n`;
+                markdownOutput += `\n**📊 RAG Metrics:**\n`;
+                markdownOutput += `*   **Termination Reason:** ${searchMetrics.terminationReason}\n`;
+                markdownOutput += `*   **Total Iterations:** ${searchMetrics.totalIterations}\n`;
+                markdownOutput += `*   **Self-Correction Loops:** ${searchMetrics.selfCorrectionLoops}\n`;
+                markdownOutput += `*   **Context Items Found:** ${searchMetrics.contextItemsAdded}\n`;
                 if (searchMetrics.dmqr.enabled) {
-                    markdownOutput += `- **DMQR:** Enabled (${searchMetrics.dmqr.generatedQueries?.length} queries)\n`;
+                    markdownOutput += `*   **DMQR:** Enabled (${searchMetrics.dmqr.generatedQueries?.length} queries)\n`;
                 }
                 if (searchMetrics.webSearchesPerformed > 0) {
-                    markdownOutput += `- **Iterative Web Searches:** ${searchMetrics.webSearchesPerformed}\n`;
+                    markdownOutput += `*   **Iterative Web Searches:** ${searchMetrics.webSearchesPerformed}\n`;
                 }
             }
 
             // Display Google Search sources if available
             if (hasGoogleSources) {
-                markdownOutput += `- **Gemini Google Searches:** ${googleSearchSources.length}\n`;
-            }
+                markdownOutput += `*   **Gemini Google Searches:** ${googleSearchSources.length}\n`;
 
-            // Display all sources
-            if (hasAnySources) {
-                markdownOutput += "\n**Sources:**\n";
-
-                // Display iterative RAG sources first
-                if (hasIterativeSources) {
-                    markdownOutput += "**Iterative RAG Sources:**\n";
-                    iterativeResult!.webSearchSources.forEach((source: any, i: number) => {
-                        markdownOutput += `${i + 1}. **[${source.title}](${source.url})**\n`;
-                    });
-                    if (hasGoogleSources) markdownOutput += "\n";
-                }
-
-                // Display Google Search sources
-                if (hasGoogleSources) {
-                    markdownOutput += "**Gemini Google Search Sources:**\n";
-                    googleSearchSources.forEach((source: any, i: number) => {
-                        const index = (hasIterativeSources ? iterativeResult!.webSearchSources.length : 0) + i + 1;
-                        markdownOutput += `${index}. **[${source.title}](${source.url})**\n`;
-                    });
-                }
+                markdownOutput += `\n**🌐 Web Sources:**\n`;
+                googleSearchSources.forEach((source: any, i: number) => {
+                    markdownOutput += `${i + 1}. [${source.title}](${source.url})\n`;
+                });
             }
 
             if (iterativeResult?.decisionLog && iterativeResult.decisionLog.length > 0) {
-                markdownOutput += "\n**Decision Log:**\n";
-                iterativeResult.decisionLog.forEach((log, i) => {
-                    markdownOutput += `${i + 1}. **Decision:** ${log.decision} - **Reasoning:** ${log.reasoning}\n`;
+                markdownOutput += "\n**🤔 Decision Log:**\n";
+                iterativeResult.decisionLog.forEach((log, index) => {
+                    markdownOutput += `<details><summary>Step ${index + 1}: ${log.reasoning}</summary>\n\n`
+                        + `*   **Decision:** \`${log.decision}\`\n`
+                        + `*   **Next Query:** ${log.nextCodebaseQuery || log.nextWebQuery || 'N/A'}\n`
+                        + `</details>\n`;
                 });
             }
         }
 
-
-
-        await conversationHistoryManager.storeConversationMessage(currentSessionId, 'ai', markdownOutput, 'text', {
-            context: finalContext,
-            sources: iterativeResult?.webSearchSources,
-            googleSearchSources: googleSearchSources,  // Add Google search sources to metadata
-            metrics: iterativeResult?.searchMetrics,
-            decisionLog: iterativeResult?.decisionLog,
-            autonomousFocusDecision: autonomousFocusDecision,
-        });
+        // Store the AI's response with complete metadata (only once)
+        await conversationHistoryManager.storeConversationMessage(
+            currentSessionId,
+            'ai',
+            markdownOutput,
+            'text',
+            {
+                context: finalContext,
+                web_chunks: webChunksToStore,
+                search_metrics: iterativeResult?.searchMetrics,
+                web_search_sources: iterativeResult?.webSearchSources,
+                google_search_sources: googleSearchSources,
+                decision_log: iterativeResult?.decisionLog,
+                autonomous_focus_decision: autonomousFocusDecision,
+                execution_mode: 'generative_answer'
+            }
+        );
 
         return { content: [{ type: 'text', text: markdownOutput }] };
     }
 };
+
+export const geminiToolDefinitions = [askGeminiToolDefinition];
 
 export function getGeminiToolHandlers(memoryManager: MemoryManager) {
     return {
@@ -556,11 +539,3 @@ export function getGeminiToolHandlers(memoryManager: MemoryManager) {
         }
     };
 }
-
-export const geminiToolDefinitions: InternalToolDefinition[] = [
-    {
-        name: askGeminiToolDefinition.name,
-        description: askGeminiToolDefinition.description,
-        inputSchema: askGeminiToolDefinition.inputSchema
-    }
-];
