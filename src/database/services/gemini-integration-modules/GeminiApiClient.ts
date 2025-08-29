@@ -37,8 +37,8 @@ export class GeminiApiClient {
     constructor(genAIInstance?: GoogleGenAI) {
         if (genAIInstance) {
             this.genAI = genAIInstance;
-        } else {
-            this.genAI = undefined;
+        } else if (this.apiKeys.length > 0) {
+            this.genAI = new GoogleGenAI({ apiKey: this.apiKeys[this.currentApiKeyIndex] });
         }
     }
     private get apiKeys(): string[] {

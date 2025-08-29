@@ -190,10 +190,7 @@ export class GeminiIntegrationService {
         await this._checkRateLimit('askGemini');
 
         try {
-            const results = await this._executeWithRetry(
-                () => this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, undefined, thinkingConfig, toolConfig),
-                'askGemini'
-            );
+            const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, undefined, thinkingConfig, toolConfig);
 
             if (results.length > 0) {
                 const result = results[0];
@@ -229,10 +226,7 @@ export class GeminiIntegrationService {
         await this._checkRateLimit('batchAskGemini');
 
         try {
-            const results = await this._executeWithRetry(
-                () => this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, undefined, thinkingConfig, toolConfig),
-                'batchAskGemini'
-            );
+            const results = await this.geminiApiClient.batchAskGemini(queries, modelName || this.defaultAskModelName, systemInstruction, undefined, thinkingConfig, toolConfig);
 
             const finalResults = results.map(result => ({ ...result, confidenceScore: undefined, groundingMetadata: result.groundingMetadata }));
 
