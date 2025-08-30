@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.4.0",
+    "@mistralai/mistralai": "^1.9.18",
     "@modelcontextprotocol/sdk": "^1.11.0",
     "@tavily/core": "^0.5.2",
     "@types/node-sql-parser": "^1.1.0",

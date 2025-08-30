@@ -1,9 +1,14 @@
 import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
+import { MistralEmbeddingService } from '../gemini-integration-modules/MistralEmbeddingService.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.js';
 import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
 
+export type EmbeddingProviderType = 'gemini' | 'mistral';
+
 export class AIEmbeddingProvider {
     public geminiService: GeminiIntegrationService;
+    private mistralService?: MistralEmbeddingService;
+    private providerType: EmbeddingProviderType;
     private maxRetries: number;
     private baseDelay: number;
     private maxBatchSize: number;
@@ -16,6 +21,7 @@ export class AIEmbeddingProvider {
 
     constructor(
         geminiService: GeminiIntegrationService,
+        providerType: EmbeddingProviderType = 'gemini',
         maxRetries: number = 3,
         baseDelay: number = 1000,
         maxBatchSize: number = 100,
@@ -23,6 +29,7 @@ export class AIEmbeddingProvider {
         requestTimeout: number = 30000
     ) {
         this.geminiService = geminiService;
+        this.providerType = providerType;
         this.maxRetries = maxRetries;
         this.baseDelay = baseDelay;
         this.maxBatchSize = maxBatchSize;
@@ -32,6 +39,17 @@ export class AIEmbeddingProvider {
         this.currentApiKeyIndex = 0;
         this.rateLimiter = new Map();
         this.maxRequestsPerMinute = 60;
+
+        // Initialize Mistral service if needed
+        if (providerType === 'mistral') {
+            try {
+                this.mistralService = new MistralEmbeddingService();
+            } catch (error) {
+                console.warn('Failed to initialize Mistral embedding service:', error);
+                console.warn('Falling back to Gemini provider');
+                this.providerType = 'gemini';
+            }
+        }
     }
 
     private _loadApiKeys(): string[] {
@@ -253,6 +271,17 @@ export class AIEmbeddingProvider {
         embeddings: Array<{ vector: number[], dimensions: number } | null>;
         totalTokensProcessed: number;
     }> {
+        if (this.providerType === 'mistral' && this.mistralService) {
+            try {
+                const result = await this.mistralService.getEmbeddings(texts);
+                return result;
+            } catch (error) {
+                console.error('Mistral embedding failed, falling back to Gemini:', error);
+                // Fall back to Gemini if Mistral fails
+                this.providerType = 'gemini';
+            }
+        }
+
         const genAIInstance = this.geminiService.getGenAIInstance();
         if (!genAIInstance) {
             throw new Error('Gemini API not initialized');

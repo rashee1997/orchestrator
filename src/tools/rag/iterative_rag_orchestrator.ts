@@ -19,6 +19,7 @@ import {
 import { GeminiApiNotInitializedError } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
+import { globalPerformanceTracker } from '../../utils/performance_tracker.js';
 
 /**
  * Result returned by the orchestrator after the whole iterative search finishes.
@@ -96,6 +97,16 @@ export class IterativeRagOrchestrator {
     private geminiService: GeminiIntegrationService;
     private diverseQueryRewriterService: DiverseQueryRewriterService;
 
+    // Performance optimization: Session-level context cache
+    private sessionContextCache: Map<string, {
+        context: RetrievedCodeContext[];
+        timestamp: number;
+        query: string;
+        options: ContextRetrievalOptions;
+    }>;
+    private readonly CACHE_TTL = 10 * 60 * 1000; // 10 minutes for session cache
+    private readonly MAX_SESSION_CACHE_SIZE = 50;
+
     constructor(
         memoryManagerInstance: MemoryManager,
         geminiService: GeminiIntegrationService,
@@ -104,6 +115,122 @@ export class IterativeRagOrchestrator {
         this.memoryManagerInstance = memoryManagerInstance;
         this.geminiService = geminiService;
         this.diverseQueryRewriterService = diverseQueryRewriterService;
+        this.sessionContextCache = new Map();
+    }
+
+    /**
+     * Generate cache key for session context cache.
+     */
+    private _generateSessionCacheKey(query: string, options: ContextRetrievalOptions): string {
+        const optionsStr = JSON.stringify({
+            topKEmbeddings: options.topKEmbeddings,
+            kgQueryDepth: options.kgQueryDepth,
+            topKKgResults: options.topKKgResults,
+            targetFilePaths: options.targetFilePaths?.sort(),
+            embeddingScoreThreshold: options.embeddingScoreThreshold,
+            useHybridSearch: options.useHybridSearch,
+            enableReranking: options.enableReranking
+        });
+        return `${query}:${optionsStr}`;
+    }
+
+    /**
+     * Check if cached context is still valid.
+     */
+    private _isSessionCacheValid(timestamp: number): boolean {
+        return (Date.now() - timestamp) < this.CACHE_TTL;
+    }
+
+    /**
+     * Clean up expired session cache entries.
+     */
+    private _cleanupSessionCache(): void {
+        if (this.sessionContextCache.size > this.MAX_SESSION_CACHE_SIZE) {
+            const entries = Array.from(this.sessionContextCache.entries());
+            entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+            const toRemove = entries.slice(0, Math.floor(this.MAX_SESSION_CACHE_SIZE * 0.3));
+            toRemove.forEach(([key]) => this.sessionContextCache.delete(key));
+            console.log(`[IterativeRagOrchestrator] Cleaned up ${toRemove.length} expired session cache entries`);
+        }
+    }
+
+    /**
+     * Retrieve context with session-level caching and parallel processing.
+     */
+    private async _retrieveContextWithCache(
+        agentId: string,
+        queries: string[],
+        options: ContextRetrievalOptions
+    ): Promise<RetrievedCodeContext[]> {
+        const operationId = globalPerformanceTracker.startOperation('retrieveContextWithCache', {
+            queryCount: queries.length,
+            agentId
+        });
+
+        try {
+            const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
+            const allContexts: RetrievedCodeContext[] = [];
+            const uncachedQueries: string[] = [];
+            const cachedContexts: RetrievedCodeContext[] = [];
+
+        // Check cache for each query
+        for (const query of queries) {
+            const cacheKey = this._generateSessionCacheKey(query, options);
+            const cached = this.sessionContextCache.get(cacheKey);
+
+            if (cached && this._isSessionCacheValid(cached.timestamp)) {
+                console.log(`[Session Cache HIT] Using cached context for query: "${query.substring(0, 50)}..."`);
+                cachedContexts.push(...cached.context);
+            } else {
+                uncachedQueries.push(query);
+            }
+        }
+
+        // Parallel retrieval for uncached queries
+        if (uncachedQueries.length > 0) {
+            console.log(`[Parallel Retrieval] Processing ${uncachedQueries.length} uncached queries`);
+
+            const retrievalPromises = uncachedQueries.map(async (query) => {
+                try {
+                    const context = await contextRetriever.retrieveContextForPrompt(agentId, query, options);
+                    // Cache the result
+                    const cacheKey = this._generateSessionCacheKey(query, options);
+                    this.sessionContextCache.set(cacheKey, {
+                        context,
+                        timestamp: Date.now(),
+                        query,
+                        options
+                    });
+                    return context;
+                } catch (error) {
+                    console.error(`[Parallel Retrieval] Failed to retrieve context for query "${query}":`, error);
+                    return [];
+                }
+            });
+
+            try {
+                const retrievedContexts = await Promise.allSettled(retrievalPromises);
+                retrievedContexts.forEach((result) => {
+                    if (result.status === 'fulfilled') {
+                        allContexts.push(...result.value);
+                    }
+                });
+            } catch (error) {
+                console.error('[Parallel Retrieval] Error in parallel context retrieval:', error);
+            }
+
+            this._cleanupSessionCache();
+        }
+
+        // Combine cached and newly retrieved contexts
+        allContexts.push(...cachedContexts);
+
+        globalPerformanceTracker.endOperation(operationId, true);
+        return allContexts;
+        } catch (error: any) {
+            globalPerformanceTracker.endOperation(operationId, false, error.message);
+            throw error;
+        }
     }
 
     /**
@@ -260,25 +387,28 @@ export class IterativeRagOrchestrator {
     }
 
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
-        const {
-            agent_id,
-            query,
-            model,
-            max_iterations = 3,
-            context_options,
-            focus_area,
-            analysis_focus_points,
-            enable_web_search,
-            hallucination_check_threshold = 0.8,
-            tavily_search_depth = 'basic',
-            tavily_max_results = 5,
-            tavily_include_raw_content = false,
-            thinkingConfig,
-            enable_dmqr,
-            dmqr_query_count
-        } = args;
+        const operationId = globalPerformanceTracker.startOperation('performIterativeSearch', { query: args.query });
 
-        const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
+        try {
+            const {
+                agent_id,
+                query,
+                model,
+                max_iterations = 3,
+                context_options,
+                focus_area,
+                analysis_focus_points,
+                enable_web_search,
+                hallucination_check_threshold = 0.8,
+                tavily_search_depth = 'basic',
+                tavily_max_results = 5,
+                tavily_include_raw_content = false,
+                thinkingConfig,
+                enable_dmqr,
+                dmqr_query_count
+            } = args;
+
+            const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
 
         let accumulatedContext: RetrievedCodeContext[] = [];
         const webSearchSources: { title: string; url: string }[] = [];
@@ -322,6 +452,17 @@ export class IterativeRagOrchestrator {
                 searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
                 console.log(`[Iterative RAG] DMQR produced ${baseQueries.length} queries.`);
+
+                // Pre-fetch context for all DMQR queries to warm up the cache
+                if (baseQueries.length > 1) {
+                    console.log('[Iterative RAG] Pre-fetching context for DMQR queries...');
+                    try {
+                        await this._retrieveContextWithCache(agent_id, baseQueries, context_options || {});
+                        console.log('[Iterative RAG] DMQR context pre-fetching completed.');
+                    } catch (error) {
+                        console.warn('[Iterative RAG] DMQR context pre-fetching failed:', error);
+                    }
+                }
             } catch (e: any) {
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = e.message ?? 'unknown';
@@ -353,7 +494,9 @@ export class IterativeRagOrchestrator {
             console.log(`[Iterative RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
 
             const contextBefore = accumulatedContext.length;
-            const rawContext = await contextRetriever.retrieveContextForPrompt(agent_id, turnQuery, context_options || {});
+
+            // Use parallel retrieval for current query in this turn
+            const rawContext = await this._retrieveContextWithCache(agent_id, [turnQuery], context_options || {});
             accumulatedContext = deduplicateContexts([...accumulatedContext, ...rawContext]);
             const addedNow = accumulatedContext.length - contextBefore;
             searchMetrics.contextItemsAdded += addedNow;
@@ -444,5 +587,23 @@ export class IterativeRagOrchestrator {
         const fallbackResult = await this.geminiService.askGemini(fallbackPrompt, model, 'You are a helpful AI assistant providing accurate answers based on the given context.');
 
         return { accumulatedContext, webSearchSources, finalAnswer: fallbackResult.content[0].text ?? 'Unable to formulate an answer.', decisionLog, searchMetrics };
+        } catch (error: any) {
+            globalPerformanceTracker.endOperation(operationId, false, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Get performance metrics summary for monitoring and optimization.
+     */
+    getPerformanceMetrics(): any {
+        return globalPerformanceTracker.getSummary();
+    }
+
+    /**
+     * Clear performance metrics (useful for testing or resetting metrics).
+     */
+    clearPerformanceMetrics(): void {
+        globalPerformanceTracker.clear();
     }
 }

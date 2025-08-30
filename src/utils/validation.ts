@@ -165,6 +165,12 @@ export const schemas = {
                 default: 'auto',
                 description: "Strategy for chunking code before embedding ('file', 'function', 'class', or 'auto')."
             },
+            provider_type: {
+                type: 'string',
+                enum: ['gemini', 'mistral'],
+                default: 'gemini',
+                description: "The embedding provider to use ('gemini' or 'mistral'). Mistral will fallback to Gemini if unavailable."
+            },
             disable_ai_output_summary: { type: 'boolean', default: false, description: "If true, disables the AI-generated summary of the embedding process results." },
             include_summary_patterns: {
                 type: 'array',

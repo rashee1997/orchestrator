@@ -219,7 +219,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_embeddings: ${errorDetails}`);
             }
 
-            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
+            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, provider_type, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
             const absoluteProjectRootPath = path.resolve(project_root_path);
             let resultCounts: EmbeddingIngestionResult;
@@ -245,6 +245,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     normalizedPaths,
                     absoluteProjectRootPath,
                     chunking_strategy as ChunkingStrategy,
+                    provider_type,
                     include_summary_patterns,
                     exclude_summary_patterns,
                     storeEntitySummaries
@@ -264,9 +265,9 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 }
 
                 if (is_directory) {
-                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, provider_type, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
                 } else {
-                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, provider_type, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
                 }
                 const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;

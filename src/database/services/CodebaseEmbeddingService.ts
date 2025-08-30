@@ -83,6 +83,7 @@ export class CodebaseEmbeddingService {
         filePath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -92,6 +93,7 @@ export class CodebaseEmbeddingService {
             [filePath],
             projectRootPath,
             strategy,
+            providerType,
             includeSummaryPatterns,
             excludeSummaryPatterns,
             storeEntitySummaries
@@ -103,6 +105,7 @@ export class CodebaseEmbeddingService {
         filesToProcess: Array<{ absolutePath: string, relativePath: string }>,
         projectRootPath: string,
         strategy: ChunkingStrategy,
+        providerType: string,
         storeEntitySummaries: boolean,
         existingFileHashes: Map<string, string>
     ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
@@ -292,7 +295,7 @@ export class CodebaseEmbeddingService {
                         entity_name_vector_dimensions: entityNameVectorDimensions,
                         vector_blob: vectorBuffer,
                         vector_dimensions: embeddingResult.dimensions,
-                        model_name: DEFAULT_EMBEDDING_MODEL,
+                        model_name: providerType === 'mistral' ? 'codestral-embed' : DEFAULT_EMBEDDING_MODEL,
                         chunk_hash: chunk.chunk_hash || this.generateChunkHash(chunk.chunk_text),
                         file_hash: fileInfo.fileHash,
                         metadata_json: JSON.stringify(chunk.metadata || {}),
@@ -334,6 +337,7 @@ export class CodebaseEmbeddingService {
         filePaths: string[],
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -353,6 +357,7 @@ export class CodebaseEmbeddingService {
             filesToProcess,
             absoluteProjectRootPath,
             strategy,
+            providerType,
             storeEntitySummaries,
             existingFileHashes
         );
@@ -370,6 +375,7 @@ export class CodebaseEmbeddingService {
         directoryPath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -405,6 +411,7 @@ export class CodebaseEmbeddingService {
             filesToProcess,
             absoluteProjectRootPath,
             strategy,
+            providerType,
             storeEntitySummaries,
             existingFileHashes
         );
@@ -453,37 +460,63 @@ export class CodebaseEmbeddingService {
         score: number;
         metadata?: Record<string, any> | null
     }>> {
-        let queryEmbedding;
+        let queryEmbeddingGemini;
+        let queryEmbeddingMistral;
         try {
-            const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText]);
-            queryEmbedding = embeddings[0];
+            const embeddingsGemini = await this.aiProvider.getEmbeddingsForChunks([queryText], 'models/text-embedding-004');
+            queryEmbeddingGemini = embeddingsGemini.embeddings[0];
         } catch (error) {
-            console.error(`Error generating query embedding:`, error);
-            throw new Error(`Failed to generate embedding for query text: ${error instanceof Error ? error.message : String(error)}`);
+            console.error(`Error generating Gemini query embedding:`, error);
+        }
+        try {
+            const embeddingsMistral = await this.aiProvider.getEmbeddingsForChunks([queryText], 'codestral-embed');
+            queryEmbeddingMistral = embeddingsMistral.embeddings[0];
+        } catch (error) {
+            console.error(`Error generating Mistral query embedding:`, error);
         }
 
-        if (!queryEmbedding || !queryEmbedding.vector) {
+        if (!queryEmbeddingGemini && !queryEmbeddingMistral) {
             throw new Error("Failed to generate embedding for query text.");
         }
 
         try {
-            // Step 1: Retrieve initial set of relevant chunks
-            const initialChunks = await this.repository.findSimilarEmbeddingsWithMetadata(
-                queryEmbedding.vector,
-                queryText, // Pass query text for potential hybrid search in repo
-                topK * 2, // Retrieve more initial chunks to find unique parents
-                agentId,
-                targetFilePaths,
-                exclude_chunk_types
-            );
+            // Step 1: Retrieve initial set of relevant chunks from Gemini
+            let initialChunksGemini: CodebaseEmbeddingRecord[] = [];
+            if (queryEmbeddingGemini) {
+                initialChunksGemini = await this.repository.findSimilarEmbeddingsWithMetadata(
+                    queryEmbeddingGemini.vector,
+                    queryText,
+                    topK * 2,
+                    agentId,
+                    targetFilePaths,
+                    exclude_chunk_types
+                );
+            }
 
-            if (initialChunks.length === 0) {
+            // Step 2: Retrieve initial set of relevant chunks from Mistral
+            let initialChunksMistral: CodebaseEmbeddingRecord[] = [];
+            if (queryEmbeddingMistral) {
+                initialChunksMistral = await this.repository.findSimilarEmbeddingsWithMetadata(
+                    queryEmbeddingMistral.vector,
+                    queryText,
+                    topK * 2,
+                    agentId,
+                    targetFilePaths,
+                    exclude_chunk_types
+                );
+            }
+
+            // Combine results from both providers and filter out chunks without similarity scores
+            const combinedInitialChunks = [...initialChunksGemini, ...initialChunksMistral]
+                .filter(chunk => chunk.similarity !== undefined && chunk.similarity !== null);
+
+            if (combinedInitialChunks.length === 0) {
                 return [];
             }
 
-            // Step 2: Implement Parent Document Retrieval logic
+            // Step 3: Implement Parent Document Retrieval logic
             const parentIds = new Set<string>();
-            initialChunks.forEach(chunk => {
+            combinedInitialChunks.forEach(chunk => {
                 if (chunk.parent_embedding_id) {
                     parentIds.add(chunk.parent_embedding_id);
                 }
@@ -494,11 +527,11 @@ export class CodebaseEmbeddingService {
                 parentChunks = await this.repository.getEmbeddingsByIds(Array.from(parentIds));
             }
 
-            // Step 3: Combine and deduplicate results
+            // Step 4: Combine and deduplicate results
             // Give parent chunks a slight score boost to prioritize them
             const combinedResults = [
-                ...initialChunks,
-                ...parentChunks.map(p => ({ ...p, similarity: 0.9 })) // Assign high similarity
+                ...combinedInitialChunks,
+                ...parentChunks.map(p => ({ ...p, similarity: 0.9 }))
             ];
 
             const uniqueResults = Array.from(new Map(combinedResults.map(item => [item.embedding_id, item])).values());
@@ -513,7 +546,7 @@ export class CodebaseEmbeddingService {
                 ai_summary_text: chunk.ai_summary_text,
                 file_path_relative: chunk.file_path_relative,
                 entity_name: chunk.entity_name,
-                score: chunk.similarity,
+                score: chunk.similarity ?? 0,
                 metadata: chunk.metadata_json ? JSON.parse(chunk.metadata_json) : null
             }));
 
