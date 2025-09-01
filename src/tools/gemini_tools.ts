@@ -48,16 +48,88 @@ async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrati
     try {
         const classificationPrompt = INTENT_CLASSIFICATION_PROMPT.replace('{query}', query);
         const result = await geminiService.askGemini(classificationPrompt, 'gemini-2.5-flash');
-        const intent = result.content[0].text?.trim() || '';
+        const rawResponse = result.content[0].text || '';
+
+        // Clean and normalize the response
+        let intent = rawResponse
+            .trim()
+            .toLowerCase()
+            .replace(/[`*]/g, '') // Remove markdown formatting
+            .replace(/^-+\s*/g, '') // Remove leading dashes
+            .replace(/\s*-\s*$/g, '') // Remove trailing dashes
+            .replace(/^\s*["']|["']\s*$/g, '') // Remove surrounding quotes
+            .trim();
+
+        console.log(`[ask_gemini] Raw Gemini response: "${rawResponse}"`);
+        console.log(`[ask_gemini] Processed intent: "${intent}"`);
+
+        // Check if the processed intent is valid
         if (VALID_FOCUS_AREAS.includes(intent)) {
+            console.log(`[ask_gemini] Valid focus area selected: "${intent}"`);
             return intent;
         }
-        console.warn(`[ask_gemini] Intent classification returned an invalid focus area: "${intent}". Falling back to default.`);
-        return null;
-    } catch (error) {
+
+        // Try partial matching for common variations
+        const partialMatch = VALID_FOCUS_AREAS.find(area =>
+            intent.includes(area.replace(/_/g, ' ')) ||
+            area.includes(intent.replace(/\s+/g, '_'))
+        );
+
+        if (partialMatch) {
+            console.log(`[ask_gemini] Partial match found, using: "${partialMatch}"`);
+            return partialMatch;
+        }
+
+        console.warn(`[ask_gemini] Intent classification returned an invalid focus area: "${intent}". Valid areas: ${VALID_FOCUS_AREAS.join(', ')}`);
+
+        // Fallback to a reasonable default based on query content
+        const fallbackIntent = _getFallbackIntent(query);
+        console.log(`[ask_gemini] Using fallback intent: "${fallbackIntent}"`);
+        return fallbackIntent;
+
+    } catch (error: any) {
         console.error(`[ask_gemini] Error during AI-powered intent classification:`, error);
-        return null;
+
+        // Even on error, try to provide a reasonable fallback
+        const fallbackIntent = _getFallbackIntent(query);
+        console.log(`[ask_gemini] Using fallback intent after error: "${fallbackIntent}"`);
+        return fallbackIntent;
     }
+}
+
+// Helper function to determine a reasonable fallback intent based on query content
+function _getFallbackIntent(query: string): string {
+    const lowerQuery = query.toLowerCase();
+
+    // Code review related keywords
+    if (lowerQuery.includes('review') || lowerQuery.includes('bug') || lowerQuery.includes('error') ||
+        lowerQuery.includes('fix') || lowerQuery.includes('issue')) {
+        return 'code_review';
+    }
+
+    // Enhancement related keywords
+    if (lowerQuery.includes('improve') || lowerQuery.includes('enhance') || lowerQuery.includes('optimize') ||
+        lowerQuery.includes('better') || lowerQuery.includes('performance')) {
+        return 'enhancement_suggestions';
+    }
+
+    // Documentation related keywords
+    if (lowerQuery.includes('doc') || lowerQuery.includes('comment') || lowerQuery.includes('readme')) {
+        return 'documentation';
+    }
+
+    // Testing related keywords
+    if (lowerQuery.includes('test') || lowerQuery.includes('spec')) {
+        return 'testing';
+    }
+
+    // Refactoring related keywords
+    if (lowerQuery.includes('refactor') || lowerQuery.includes('clean') || lowerQuery.includes('structure')) {
+        return 'refactoring';
+    }
+
+    // Default fallback for general queries
+    return 'codebase_analysis';
 }
 
 async function _performIterativeRagSearch(args: IterativeRagArgs, memoryManagerInstance: MemoryManager, geminiService: GeminiIntegrationService): Promise<IterativeRagResult> {

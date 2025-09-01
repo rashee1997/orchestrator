@@ -2,23 +2,42 @@ import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
 import { MistralEmbeddingService } from '../gemini-integration-modules/MistralEmbeddingService.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.js';
 import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
+import { ApiKeyManager } from './ApiKeyManager.js';
+import { RateLimiter } from './RateLimiter.js';
+import { BatchProcessor } from './BatchProcessor.js';
 
 export type EmbeddingProviderType = 'gemini' | 'mistral';
 
+/**
+ * AI Embedding Provider handles generating embeddings for text chunks using various AI providers.
+ * Supports batch processing, rate limiting, API key rotation, and fallback providers.
+ */
 export class AIEmbeddingProvider {
+    // Public services
     public geminiService: GeminiIntegrationService;
+
+    // Private services and configuration
     private mistralService?: MistralEmbeddingService;
     private providerType: EmbeddingProviderType;
     private maxRetries: number;
     private baseDelay: number;
-    private maxBatchSize: number;
-    private maxTokensPerBatch: number;
-    private apiKeys: string[];
-    private currentApiKeyIndex: number;
     private requestTimeout: number;
-    private rateLimiter: Map<string, { count: number; resetTime: number }>;
-    private maxRequestsPerMinute: number;
 
+    // Injected services for better separation of concerns
+    private apiKeyManager: ApiKeyManager;
+    private rateLimiter: RateLimiter;
+    private batchProcessor: BatchProcessor;
+
+    /**
+     * Creates an instance of AIEmbeddingProvider.
+     * @param geminiService The Gemini integration service
+     * @param providerType The embedding provider type ('gemini' or 'mistral')
+     * @param maxRetries Maximum number of retry attempts for failed requests
+     * @param baseDelay Base delay in milliseconds for exponential backoff
+     * @param maxBatchSize Maximum number of texts per batch
+     * @param maxTokensPerBatch Maximum tokens per batch
+     * @param requestTimeout Request timeout in milliseconds
+     */
     constructor(
         geminiService: GeminiIntegrationService,
         providerType: EmbeddingProviderType = 'gemini',
@@ -32,13 +51,12 @@ export class AIEmbeddingProvider {
         this.providerType = providerType;
         this.maxRetries = maxRetries;
         this.baseDelay = baseDelay;
-        this.maxBatchSize = maxBatchSize;
-        this.maxTokensPerBatch = maxTokensPerBatch;
         this.requestTimeout = requestTimeout;
-        this.apiKeys = this._loadApiKeys();
-        this.currentApiKeyIndex = 0;
-        this.rateLimiter = new Map();
-        this.maxRequestsPerMinute = 60;
+
+        // Initialize supporting services
+        this.apiKeyManager = new ApiKeyManager();
+        this.rateLimiter = new RateLimiter();
+        this.batchProcessor = new BatchProcessor(maxBatchSize, maxTokensPerBatch);
 
         // Initialize Mistral service if needed
         if (providerType === 'mistral') {
@@ -52,29 +70,7 @@ export class AIEmbeddingProvider {
         }
     }
 
-    private _loadApiKeys(): string[] {
-        const keys: string[] = [];
-        let i = 1;
 
-        while (true) {
-            const geminiKeyName = `GEMINI_API_KEY${i > 1 ? i : ''}`;
-            const googleKeyName = `GOOGLE_API_KEY${i > 1 ? i : ''}`;
-            const geminiKey = process.env[geminiKeyName];
-            const googleKey = process.env[googleKeyName];
-
-            if (geminiKey) keys.push(geminiKey);
-            if (googleKey) keys.push(googleKey);
-
-            if (!geminiKey && !googleKey) break;
-            i++;
-        }
-
-        if (keys.length === 0) {
-            console.warn('No Gemini API keys found. Embedding provider will not be functional.');
-        }
-
-        return keys;
-    }
 
     public setProvider(providerType: EmbeddingProviderType, modelName?: string): void {
         this.providerType = providerType;
@@ -89,35 +85,17 @@ export class AIEmbeddingProvider {
         }
     }
 
+
     private _rotateApiKey(): void {
-        if (this.apiKeys.length > 1) {
-            this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % this.apiKeys.length;
-        }
+        this.apiKeyManager.rotateKey();
     }
 
     private _getCurrentApiKey(): string {
-        if (this.apiKeys.length === 0) {
-            throw new Error('No API keys available');
-        }
-        return this.apiKeys[this.currentApiKeyIndex];
+        return this.apiKeyManager.getCurrentKey();
     }
 
     private async _checkRateLimit(identifier: string): Promise<void> {
-        const now = Date.now();
-        const limit = this.rateLimiter.get(identifier);
-
-        if (!limit || now > limit.resetTime) {
-            // Reset the rate limit
-            this.rateLimiter.set(identifier, { count: 1, resetTime: now + 60 * 1000 });
-            return;
-        }
-
-        if (limit.count >= this.maxRequestsPerMinute) {
-            const waitTime = limit.resetTime - now;
-            throw new Error(`Rate limit exceeded for ${identifier}. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
-        }
-
-        limit.count++;
+        await this.rateLimiter.checkRateLimit(identifier);
     }
 
     public async generateMeaningfulEntityName(codeChunk: string, language: string | undefined): Promise<string> {
@@ -170,11 +148,11 @@ export class AIEmbeddingProvider {
             return { embeddings: [], requestCount: 0, retryCount: 0, totalTokensProcessed: 0, failedRequests: 0 };
         }
 
-        if (this.apiKeys.length === 0) {
+        if (!this.apiKeyManager.hasKeys()) {
             throw new Error('No API keys available for embedding generation');
         }
 
-        const batches = this._createOptimizedBatches(texts);
+        const batches = this.batchProcessor.createOptimizedBatches(texts);
         const finalResults: Array<{ vector: number[], dimensions: number } | null> = new Array(texts.length).fill(null);
         let totalRequests = 0;
         let totalRetries = 0;
@@ -332,41 +310,7 @@ export class AIEmbeddingProvider {
             ));
     }
 
-    private _createOptimizedBatches(texts: string[]): Array<{
-        texts: string[];
-        originalIndices: number[];
-    }> {
-        const batches: Array<{ texts: string[], originalIndices: number[] }> = [];
-        let currentBatch: string[] = [];
-        let currentIndices: number[] = [];
-        let currentTokenCount = 0;
 
-        texts.forEach((text, index) => {
-            const tokenCount = this._estimateTokens(text);
-
-            if (currentBatch.length >= this.maxBatchSize ||
-                (currentTokenCount + tokenCount > this.maxTokensPerBatch && currentBatch.length > 0)) {
-                batches.push({ texts: [...currentBatch], originalIndices: [...currentIndices] });
-                currentBatch = [];
-                currentIndices = [];
-                currentTokenCount = 0;
-            }
-
-            currentBatch.push(text);
-            currentIndices.push(index);
-            currentTokenCount += tokenCount;
-        });
-
-        if (currentBatch.length > 0) {
-            batches.push({ texts: currentBatch, originalIndices: currentIndices });
-        }
-
-        return batches;
-    }
-
-    private _estimateTokens(text: string): number {
-        return Math.ceil(text.length / 4);
-    }
 
     public async summarizeCodeChunk(codeChunk: string, entityType: string, language: string): Promise<string> {
         try {
