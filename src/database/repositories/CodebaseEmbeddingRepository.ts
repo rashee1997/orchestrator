@@ -229,13 +229,28 @@ export class CodebaseEmbeddingRepository {
         }
     }
 
+    public async getAvailableEmbeddingModels(agentId?: string): Promise<string[]> {
+        return this._executeWithRetry(() => {
+            let sql = `SELECT DISTINCT model_name FROM ${this.metadataTable}`;
+            const params: string[] = [];
+            if (agentId) {
+                sql += ` WHERE agent_id = ?`;
+                params.push(agentId);
+            }
+            const stmt = this.db.prepare(sql);
+            const rows = stmt.all(...params) as { model_name: string }[];
+            return rows.map(row => row.model_name);
+        }, 'getAvailableEmbeddingModels');
+    }
+
     public async findSimilarEmbeddingsWithMetadata(
         queryEmbedding: number[],
         queryText: string,
         topK: number,
         agentId?: string,
         targetFilePaths?: string[],
-        excludeChunkTypes?: string[]
+        excludeChunkTypes?: string[],
+        model?: string // Add model parameter
     ): Promise<Array<CodebaseEmbeddingRecord & { similarity: number }>> {
         try {
             // Step 1: Perform Vector Search to find the most relevant chunks.
@@ -269,6 +284,11 @@ export class CodebaseEmbeddingRepository {
             if (excludeChunkTypes && excludeChunkTypes.length > 0) {
                 sql += ` AND embedding_type NOT IN (${excludeChunkTypes.map(() => '?').join(',')})`;
                 params.push(...excludeChunkTypes);
+            }
+
+            if (model) { // Add model filter
+                sql += ` AND model_name = ?`;
+                params.push(model);
             }
 
             const metadataRows = await this._executeWithRetry(() => {

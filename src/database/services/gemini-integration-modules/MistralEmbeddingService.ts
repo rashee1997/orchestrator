@@ -1,14 +1,15 @@
 import { Mistral } from '@mistralai/mistralai';
 export class MistralEmbeddingService {
     private client: Mistral;
-    private model: string = "codestral-embed";
+    private model: string;
 
-    constructor() {
+    constructor(model: string = "codestral-embed") {
         const apiKey = process.env.MISTRAL_API_KEY;
         if (!apiKey) {
             throw new Error('MISTRAL_API_KEY environment variable is required');
         }
         this.client = new Mistral({ apiKey: apiKey });
+        this.model = model;
     }
 
     async getEmbeddings(inputs: string[]): Promise<{

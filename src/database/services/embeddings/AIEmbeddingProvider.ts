@@ -76,6 +76,19 @@ export class AIEmbeddingProvider {
         return keys;
     }
 
+    public setProvider(providerType: EmbeddingProviderType, modelName?: string): void {
+        this.providerType = providerType;
+        if (providerType === 'mistral') {
+            try {
+                this.mistralService = new MistralEmbeddingService(modelName);
+            } catch (error) {
+                console.warn('Failed to initialize Mistral embedding service during setProvider:', error);
+                console.warn('Falling back to Gemini provider');
+                this.providerType = 'gemini';
+            }
+        }
+    }
+
     private _rotateApiKey(): void {
         if (this.apiKeys.length > 1) {
             this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % this.apiKeys.length;
@@ -276,9 +289,8 @@ export class AIEmbeddingProvider {
                 const result = await this.mistralService.getEmbeddings(texts);
                 return result;
             } catch (error) {
-                console.error('Mistral embedding failed, falling back to Gemini:', error);
-                // Fall back to Gemini if Mistral fails
-                this.providerType = 'gemini';
+                console.error('Mistral embedding failed:', error);
+                throw error;
             }
         }
 

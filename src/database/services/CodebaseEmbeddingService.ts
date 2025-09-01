@@ -237,7 +237,9 @@ export class CodebaseEmbeddingService {
             const textsToEmbed = chunksToEmbed.map(item => item.chunk.chunk_text);
             let embeddings;
             try {
-                embeddings = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
+                const modelName = providerType === 'mistral' ? 'codestral-embed' : DEFAULT_EMBEDDING_MODEL;
+                this.aiProvider.setProvider(providerType as 'gemini' | 'mistral', modelName);
+                embeddings = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed, modelName);
                 report.embeddingRequestCount = embeddings.requestCount;
                 report.embeddingRetryCount = embeddings.retryCount;
                 report.totalTokensProcessed = embeddings.totalTokensProcessed;
@@ -460,55 +462,55 @@ export class CodebaseEmbeddingService {
         score: number;
         metadata?: Record<string, any> | null
     }>> {
-        let queryEmbeddingGemini;
-        let queryEmbeddingMistral;
-        try {
-            const embeddingsGemini = await this.aiProvider.getEmbeddingsForChunks([queryText], 'models/text-embedding-004');
-            queryEmbeddingGemini = embeddingsGemini.embeddings[0];
-        } catch (error) {
-            console.error(`Error generating Gemini query embedding:`, error);
-        }
-        try {
-            const embeddingsMistral = await this.aiProvider.getEmbeddingsForChunks([queryText], 'codestral-embed');
-            queryEmbeddingMistral = embeddingsMistral.embeddings[0];
-        } catch (error) {
-            console.error(`Error generating Mistral query embedding:`, error);
+        const availableModels = await this.repository.getAvailableEmbeddingModels(agentId);
+        const embeddingsMap = new Map<string, any>();
+
+        for (const model of availableModels) {
+            try {
+                const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
+                this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
+                const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
+                if (embeddings && embeddings[0]) {
+                    embeddingsMap.set(model, embeddings[0]);
+                }
+            } catch (error) {
+                console.error(`Error generating query embedding for model ${model}:`, error);
+            }
         }
 
-        if (!queryEmbeddingGemini && !queryEmbeddingMistral) {
-            throw new Error("Failed to generate embedding for query text.");
+        if (embeddingsMap.size === 0) {
+            throw new Error("Failed to generate embedding for query text with any available model.");
         }
 
         try {
-            // Step 1: Retrieve initial set of relevant chunks from Gemini
-            let initialChunksGemini: CodebaseEmbeddingRecord[] = [];
-            if (queryEmbeddingGemini) {
-                initialChunksGemini = await this.repository.findSimilarEmbeddingsWithMetadata(
-                    queryEmbeddingGemini.vector,
-                    queryText,
-                    topK * 2,
-                    agentId,
-                    targetFilePaths,
-                    exclude_chunk_types
-                );
+            const allChunks: CodebaseEmbeddingRecord[] = [];
+            for (const [model, embedding] of embeddingsMap.entries()) {
+                if (embedding) {
+                    const chunks = await this.repository.findSimilarEmbeddingsWithMetadata(
+                        embedding.vector,
+                        queryText,
+                        topK * 2, // Fetch more to allow for diverse results
+                        agentId,
+                        targetFilePaths,
+                        exclude_chunk_types,
+                        model // Filter by model
+                    );
+                    allChunks.push(...chunks);
+                }
             }
 
-            // Step 2: Retrieve initial set of relevant chunks from Mistral
-            let initialChunksMistral: CodebaseEmbeddingRecord[] = [];
-            if (queryEmbeddingMistral) {
-                initialChunksMistral = await this.repository.findSimilarEmbeddingsWithMetadata(
-                    queryEmbeddingMistral.vector,
-                    queryText,
-                    topK * 2,
-                    agentId,
-                    targetFilePaths,
-                    exclude_chunk_types
-                );
-            }
+            const combinedInitialChunks = deduplicateContexts(allChunks.map(c => ({
+                sourcePath: c.file_path_relative,
+                entityName: c.entity_name,
+                type: (c.embedding_type === 'chunk' ? 'generic_code_chunk' : 'documentation'), // Map to compatible type
+                content: c.chunk_text,
+                relevanceScore: c.similarity, // Use 'similarity' from CodebaseEmbeddingRecord
+                metadata: c.metadata_json ? JSON.parse(c.metadata_json) : undefined
+            } as RetrievedCodeContext))).map(rc => {
+                const original = allChunks.find(ic => ic.file_path_relative === rc.sourcePath && ic.entity_name === rc.entityName);
+                return { ...original, score: rc.relevanceScore };
+            }) as CodebaseEmbeddingRecord[];
 
-            // Combine results from both providers and filter out chunks without similarity scores
-            const combinedInitialChunks = [...initialChunksGemini, ...initialChunksMistral]
-                .filter(chunk => chunk.similarity !== undefined && chunk.similarity !== null);
 
             if (combinedInitialChunks.length === 0) {
                 return [];
