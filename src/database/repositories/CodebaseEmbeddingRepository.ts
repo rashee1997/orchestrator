@@ -302,10 +302,21 @@ export class CodebaseEmbeddingRepository {
                 similarity: similarityMap.get(meta.embedding_id) || 0,
             }));
 
-            // Step 4: Re-rank results based on keyword and entity name matching.
+            // Step 4: Re-rank results based on keyword and entity name matching, with enhanced support for code snippets alongside summaries
             const queryTokens = new Set(queryText.toLowerCase().split(/\s+/).filter(t => t.length > 2));
             results.forEach(result => {
                 let rerankScore = result.similarity;
+
+                // Parse metadata to determine chunk type
+                let metadata: any = {};
+                try {
+                    metadata = result.metadata_json ? JSON.parse(result.metadata_json) : {};
+                } catch (e) {
+                    // Ignore parsing errors
+                }
+
+                const isSummary = result.embedding_type === 'summary' || metadata.type === 'file_summary';
+                const isCodeSnippet = result.embedding_type === 'chunk' && !isSummary;
 
                 // Boost for exact entity name match in query
                 if (result.entity_name && queryText.toLowerCase().includes(result.entity_name.toLowerCase())) {
@@ -318,6 +329,25 @@ export class CodebaseEmbeddingRepository {
                     const overlap = [...queryTokens].filter(token => chunkTokens.has(token));
                     const overlapBonus = (overlap.length / queryTokens.size) * 0.1; // Max 0.1 bonus
                     rerankScore += overlapBonus;
+                }
+
+                // Additional boost for code snippets to ensure they appear alongside summaries
+                if (isCodeSnippet) {
+                    rerankScore += 0.05; // Small boost to favor code snippets
+                }
+
+                // Boost for specific code-related keywords in the query
+                const codeKeywords = ['function', 'class', 'method', 'variable', 'interface', 'type', 'const', 'let', 'var'];
+                const hasCodeKeywords = codeKeywords.some(keyword => queryText.toLowerCase().includes(keyword));
+                if (hasCodeKeywords && isCodeSnippet) {
+                    rerankScore += 0.08; // Additional boost when query contains code-related terms
+                }
+
+                // Boost for summaries when query seems to be asking for overview/high-level information
+                const overviewKeywords = ['overview', 'summary', 'architecture', 'structure', 'design', 'how does', 'what is'];
+                const hasOverviewKeywords = overviewKeywords.some(keyword => queryText.toLowerCase().includes(keyword));
+                if (hasOverviewKeywords && isSummary) {
+                    rerankScore += 0.08; // Additional boost for summaries when query asks for overview
                 }
 
                 // Update similarity to be the re-ranked score

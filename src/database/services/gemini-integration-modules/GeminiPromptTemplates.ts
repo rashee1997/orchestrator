@@ -467,33 +467,85 @@ Return ONLY the JSON object.`;
 
 
 // ============================================================================
-// RAG (Retrieval-Augmented Generation) Prompts
+// Enhanced RAG (Retrieval-Augmented Generation) Prompts - 2025 Edition
+// Featuring: Agentic Planning, Reflection, Hybrid Search, Citations, Corrective RAG
 // ============================================================================
 
 export const RAG_DECISION_PROMPT = `
-You are a highly efficient AI assistant responsible for optimizing a Retrieval-Augmented Generation (RAG) system. Your task is to analyze an ongoing conversation and a new user query to decide if a new RAG search is necessary.
+You are an advanced RAG optimization agent with intelligent decision-making capabilities for 2025 RAG systems. Your task is to analyze conversation context and determine the most efficient retrieval strategy using enhanced decision criteria.
 
-**Your Goal:** Avoid unnecessary RAG searches if the answer is already present in the conversation history.
+**ENHANCED DECISION CAPABILITIES:**
+- Context sufficiency analysis with quality scoring
+- Strategic RAG approach selection (vector, graph, hybrid, web)
+- Query optimization and reformulation
+- Citation and source quality assessment
+- Progressive information building analysis
 
-**Analysis Steps:**
-1.  Review the provided **<conversation_history>**.
-2.  Analyze the **<new_query>**.
-3.  Decide if the **<conversation_history>** contains enough information to fully and accurately answer the **<new_query>**.
+**Your Goal:** Optimize information retrieval by intelligently deciding between conversation reuse, targeted RAG search, or enhanced multi-modal retrieval.
 
-**Output Format:**
-You MUST respond with ONLY a valid JSON object in the following format. Do not include any other text or markdown.
+**COMPREHENSIVE ANALYSIS FRAMEWORK:**
+
+1. **Conversation Context Analysis:**
+   - Information completeness and quality assessment
+   - Source reliability and recency evaluation
+   - Gap identification and missing information analysis
+   - Technical depth and implementation detail sufficiency
+
+2. **Query Intent Classification:**
+   - Information seeking vs. clarification requests
+   - Technical depth requirements
+   - Implementation detail needs
+   - Comparative analysis requirements
+
+3. **Strategic Retrieval Planning:**
+   - Optimal search modality selection
+   - Query reformulation for maximum effectiveness
+   - Citation and attribution requirements
+   - Quality threshold establishment
+
+**ENHANCED OUTPUT FORMAT:**
+Provide a comprehensive decision analysis:
 
 \`\`\`json
 {
-  "decision": "ANSWER_FROM_HISTORY | PERFORM_RAG",
-  "rag_query": "A self-contained, optimized query for the RAG system, or null if answering from history."
+  "decision": "ANSWER_FROM_HISTORY | PERFORM_SIMPLE_RAG | PERFORM_ENHANCED_RAG | PERFORM_HYBRID_RAG",
+  "confidence_score": 0.0-1.0,
+  "context_analysis": {
+    "sufficiency_score": 0.0-1.0,
+    "quality_score": 0.0-1.0,
+    "completeness_assessment": "complete|partial|insufficient",
+    "identified_gaps": ["specific missing information areas"]
+  },
+  "rag_strategy": {
+    "primary_query": "optimized query for RAG system or null",
+    "search_modality": "vector|graph|hybrid|web|multi_modal",
+    "complexity_level": "simple|moderate|comprehensive",
+    "expected_sources": ["types of sources expected to provide answers"],
+    "quality_targets": {
+      "minimum_relevance": 0.0-1.0,
+      "citation_requirements": "specific|general|comprehensive",
+      "depth_requirement": "overview|detailed|comprehensive"
+    }
+  },
+  "fallback_strategy": "alternative approach if primary strategy fails",
+  "reasoning": "detailed explanation of decision rationale",
+  "estimated_value": "high|medium|low value of performing RAG vs using history"
 }
 \`\`\`
 
-**Decision Rules:**
--   If the history is sufficient, set \`decision\` to \`"ANSWER_FROM_HISTORY"\` and \`rag_query\` to \`null\`.
--   If the history is INSUFFICIENT, set \`decision\` to \`"PERFORM_RAG"\`.
--   If you decide to \`PERFORM_RAG\`, you MUST formulate a clear, self-contained \`rag_query\`. This query should be understandable without the conversation history (e.g., transform "What about its methods?" into "What are the methods of the ContextInformationManager class?").
+**ENHANCED DECISION CRITERIA:**
+
+- **ANSWER_FROM_HISTORY:** History contains comprehensive, high-quality information (completeness >0.9, quality >0.8)
+- **PERFORM_SIMPLE_RAG:** Need specific additional details, simple vector search sufficient
+- **PERFORM_ENHANCED_RAG:** Complex query requiring multi-turn search with quality assurance
+- **PERFORM_HYBRID_RAG:** Need combination of semantic and structural information, multi-modal approach
+
+**QUERY OPTIMIZATION RULES:**
+- Transform contextual references into self-contained queries
+- Include domain-specific terminology from conversation context
+- Specify technical depth and implementation detail requirements
+- Design queries for optimal citation and source attribution
+- Consider progressive information building for complex topics
 
 ---
 **<conversation_history>**
@@ -506,10 +558,20 @@ You MUST respond with ONLY a valid JSON object in the following format. Do not i
 **</new_query>**
 ---
 
-Now, provide the JSON object only.
+**For backward compatibility:** If you need to provide the simple format, use the "primary_query" field as "rag_query" and map decision types to the original format.
+
+Provide your comprehensive analysis:
 `;
 
-export const RAG_ANALYSIS_PROMPT = `You are an intelligent search orchestrator. Your goal is to answer the user's original query by iteratively searching a codebase and, if necessary, the web.
+export const RAG_ANALYSIS_PROMPT = `You are an advanced agentic search orchestrator powered by 2025 RAG technology. Your goal is to strategically gather information through multiple modalities to comprehensively answer the user's query.
+
+**AGENTIC CAPABILITIES:**
+- Strategic planning with adaptive search strategies
+- Multi-modal information fusion (vector, graph, web)
+- Self-reflection and quality assurance
+- Corrective search based on gap analysis
+- Citation-aware response generation
+
 Original Query: "{originalQuery}"
 Current Search Turn: {currentTurn} of {maxIterations}
 {focusString}
@@ -517,29 +579,80 @@ Current Search Turn: {currentTurn} of {maxIterations}
 Accumulated Context So Far:
 {accumulatedContext}
 ---
-Based on the accumulated context, make a decision. Respond in this exact plain text format:
-Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB]
-Reasoning: [Analyze what is known and what is still missing to answer the original query. If searching again, be specific about what you're looking for. If answering, confirm all parts of the query can be addressed.]
-Next Codebase Search Query: [Only if decision is SEARCH_AGAIN, provide a NEW, specific query to find the missing information. Do not repeat previous queries.]
-Next Web Search Query: [Only if decision is SEARCH_WEB, provide a concise query for a web search engine.]
-Confidence: [A number between 0 and 1 indicating your confidence in this decision]
+Current Search Strategy: {currentStrategy}
+Previous Quality Score: {previousQuality}
+Citation Coverage: {citationCoverage}
 ---
-**Instructions & Strategy:**
-- **Goal-Oriented:** Your primary objective is to gather enough information to fully answer the **original query**.
-- **Analyze Gaps:** Before searching again, clearly state in your 'Reasoning' what specific information is missing from the 'Accumulated Context'.
-- **Formulate Strategic Queries:** Your 'Next Codebase Search Query' should be targeted to fill the identified gaps. Avoid broad or repetitive questions.
-- **ANSWER:** Choose 'ANSWER' only when you are confident the accumulated context is sufficient.
-- **SEARCH_WEB:** Choose 'SEARCH_WEB' only for information that CANNOT exist in the codebase (e.g., third-party library documentation, general programming concepts, real-time data).
-- **Self-Correction:** If a previous search returned no new results, your next query should take a different approach (e.g., search for a caller instead of a definition, broaden the search term).
-- **Final Turn:** On the last turn ({maxIterations}), you MUST choose 'ANSWER'.
+
+**ENHANCED DECISION FRAMEWORK:**
+Analyze the context and choose the most effective next action.
+
+Respond in this exact format:
+Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB|HYBRID_SEARCH|CORRECTIVE_SEARCH|REFLECT]
+Strategy: [vector_search|graph_traversal|hybrid_search|web_augmented|corrective_search|reflection]
+Reasoning: [Detailed analysis of information gaps, context quality, and strategic rationale for chosen approach]
+Next Codebase Search Query: [Only if decision involves codebase search - specific, targeted query]
+Next Web Search Query: [Only if decision is SEARCH_WEB - concise web search query]
+Next Graph Query: [Only if using graph traversal - entity relationships to explore]
+Quality Assessment: [Score 0.0-1.0 - assess current context quality and completeness]
+Missing Information: [Specific gaps that need to be filled]
+Citation Targets: [What sources/entities should be cited in the final answer]
+Confidence: [0.0-1.0 confidence in this strategic decision]
+Fallback Strategy: [Alternative approach if current strategy fails]
+---
+
+**ENHANCED INSTRUCTIONS & STRATEGY:**
+- **Agentic Planning:** Adapt your search strategy based on context quality and information gaps
+- **Multi-Modal Fusion:** Combine vector similarity, knowledge graph relationships, and web sources intelligently
+- **Quality-First Approach:** Prioritize information quality and source reliability over quantity
+- **Strategic Diversification:** Use different search modalities to build comprehensive understanding
+- **Self-Reflection:** Periodically assess context quality and adjust strategy accordingly
+- **Citation Awareness:** Identify key sources that should be cited in the final answer
+- **Gap Analysis:** Explicitly identify what information is missing and why it's needed
+- **Corrective Search:** When previous searches fail, use reflection to reformulate approach
+- **Hybrid Intelligence:** Combine structured (graph) and unstructured (vector) search when beneficial
+- **Final Turn Strategy:** On turn {maxIterations}, choose ANSWER with comprehensive citation plan
+
+**DECISION CRITERIA:**
+- **ANSWER:** Context is comprehensive, quality score >0.8, all query aspects covered
+- **SEARCH_AGAIN:** Need specific additional information, clear gap identified
+- **SEARCH_WEB:** Information cannot exist in codebase (standards, best practices, external APIs)
+- **HYBRID_SEARCH:** Complex query requiring both semantic and structural understanding
+- **CORRECTIVE_SEARCH:** Previous searches failed, need alternative approach based on reflection
+- **REFLECT:** Context quality unclear, need to assess completeness and accuracy
 `;
 
 
-export const RAG_ANALYSIS_SYSTEM_INSTRUCTION = `You are a highly precise AI. Your ONLY output must be in the exact plain text format specified in the user's prompt. Do NOT include any conversational text, markdown, or any other characters.`;
+export const RAG_ANALYSIS_SYSTEM_INSTRUCTION = `You are an advanced agentic RAG orchestrator with strategic planning capabilities. You must analyze the context comprehensively and make intelligent decisions about search strategies.
 
-export const RAG_VERIFICATION_PROMPT = `You are an adversarial fact-checker. Your task is to find any claims in the "Proposed Answer" that are NOT supported by the "Context".
-                
+**CORE COMPETENCIES:**
+- Strategic search planning and adaptation
+- Multi-modal information synthesis
+- Quality assessment and gap analysis
+- Citation-aware response generation
+- Self-reflection and corrective reasoning
+
+**OUTPUT REQUIREMENTS:**
+- Follow the exact format specified in the user prompt
+- Provide detailed strategic reasoning for each decision
+- Include quality assessments and gap analysis
+- Suggest specific, actionable next steps
+- Maintain consistency with agentic planning principles
+
+**PRECISION MANDATE:** Your output must be in the exact format specified. Do not deviate from the required structure.`;
+
+export const RAG_VERIFICATION_PROMPT = `You are an advanced AI quality assurance agent specialized in reflection-based verification for RAG systems. Your task is to perform comprehensive fact-checking and quality assessment of generated responses.
+
+**ENHANCED VERIFICATION CAPABILITIES:**
+- Hallucination detection with confidence scoring
+- Source attribution validation
+- Citation accuracy assessment
+- Completeness gap analysis
+- Quality scoring with improvement suggestions
+
 Original Query: "{originalQuery}"
+Context Sources: {contextSources}
+Citation Coverage: {citationCoverage}
 
 --- CONTEXT START ---
 {contextString}
@@ -549,43 +662,241 @@ Original Query: "{originalQuery}"
 {generatedAnswer}
 --- PROPOSED ANSWER END ---
 
-**Verification Steps:**
-1.  **Component Check:** First, list all primary classes, services, or functions mentioned in the "Proposed Answer". For each one, verify if it is explicitly defined or mentioned in the "Context".
-2.  **Logic Check:** Scrutinize every statement and description of logic in the "Proposed Answer". Verify that the described behavior is exactly what the code in the "Context" shows.
+**COMPREHENSIVE VERIFICATION FRAMEWORK:**
 
-**Your Response:**
--   If all components and all logic in the answer are fully and directly supported by the context, respond ONLY with the word "VERIFIED".
--   If you find ANY component (class, method, etc.) or ANY piece of logic that is not explicitly present in the context, respond with "HALLUCINATION_DETECTED" followed by a list of the specific unsupported claims or invented components.`;
+1. **Factual Accuracy Check:**
+   - Verify each claim against specific context sources
+   - Check for invented components, functions, or logic
+   - Validate technical details and implementation specifics
 
-export const RAG_ANSWER_PROMPT = `Based on the following context, please provide a comprehensive answer to the original query: "{originalQuery}"
-{focusString}
-Context:
-{contextString}
+2. **Citation Verification:**
+   - Ensure all citations reference actual context sources
+   - Verify citation accuracy and relevance
+   - Check for missing citations on factual claims
+
+3. **Completeness Assessment:**
+   - Identify aspects of the original query not addressed
+   - Detect missing critical information
+   - Assess depth and breadth of response coverage
+
+4. **Quality Analysis:**
+   - Evaluate response coherence and organization
+   - Check for technical accuracy and precision
+   - Assess practical utility and actionability
+
+**ENHANCED RESPONSE FORMAT:**
+Provide a detailed JSON assessment:
+
+{
+  "verification_status": "VERIFIED|HALLUCINATION_DETECTED|INCOMPLETE|NEEDS_IMPROVEMENT",
+  "confidence_score": 0.0-1.0,
+  "factual_accuracy": {
+    "supported_claims": ["list of verified claims"],
+    "unsupported_claims": ["list of unverified/hallucinated claims"],
+    "accuracy_score": 0.0-1.0
+  },
+  "citation_analysis": {
+    "valid_citations": number,
+    "missing_citations": number,
+    "citation_accuracy": 0.0-1.0,
+    "source_coverage": 0.0-1.0
+  },
+  "completeness_assessment": {
+    "query_coverage": 0.0-1.0,
+    "missing_aspects": ["list of unaddressed query aspects"],
+    "depth_score": 0.0-1.0
+  },
+  "quality_metrics": {
+    "coherence_score": 0.0-1.0,
+    "technical_accuracy": 0.0-1.0,
+    "practical_utility": 0.0-1.0
+  },
+  "improvement_suggestions": ["specific recommendations for enhancement"],
+  "corrective_actions": ["suggested next steps if verification fails"]
+}
+
+If verification is successful (all scores >0.8), you may respond with just "VERIFIED" for brevity.`;
+
+export const RAG_ANSWER_PROMPT = `You are an advanced RAG response generator with enhanced citation capabilities and quality assurance. Generate a comprehensive, well-structured answer that synthesizes information from multiple sources with proper attribution.
+
+**ENHANCED RESPONSE CAPABILITIES:**
+- Multi-source information synthesis
+- Granular citation tracking
+- Quality-assured content generation
+- Structured response formatting
+- Source reliability assessment
+
 Original Query: "{originalQuery}"
-Please provide your answer:`;
+Search Strategy Used: {searchStrategy}
+Context Quality Score: {contextQuality}
+Total Sources: {totalSources}
+{focusString}
+
+--- CONTEXT SOURCES ---
+{contextString}
+--- END CONTEXT ---
+
+**RESPONSE GENERATION REQUIREMENTS:**
+
+1. **Comprehensive Coverage:**
+   - Address all aspects of the original query
+   - Synthesize information from multiple sources
+   - Provide sufficient detail for practical use
+   - Include relevant examples and specifics
+
+2. **Enhanced Citation System:**
+   - Use format [cite_N] for each factual claim
+   - Ensure granular source attribution
+   - Include confidence indicators where appropriate
+   - Reference specific file paths and line numbers when available
+
+3. **Quality Assurance:**
+   - Maintain factual accuracy based solely on provided context
+   - Organize information logically and coherently
+   - Use clear, professional technical language
+   - Provide actionable insights and recommendations
+
+4. **Source Reliability:**
+   - Prioritize information from high-confidence sources
+   - Acknowledge any limitations in available information
+   - Distinguish between definitive facts and inferred details
+
+**RESPONSE STRUCTURE:**
+
+## Executive Summary
+[Brief overview addressing the core query]
+
+## Detailed Analysis
+[Comprehensive response with proper citations]
+
+## Key Findings
+[Bullet points of main insights with citations]
+
+## Implementation Considerations
+[Practical guidance and recommendations]
+
+## Source References
+[Numbered list of all cited sources with confidence scores]
+
+**CITATION FORMAT:**
+Use [cite_N] immediately after claims, where N corresponds to:
+- cite_1: [Source path/entity] (confidence: X.XX)
+- cite_2: [Source path/entity] (confidence: X.XX)
+
+**QUALITY GATES:**
+- Every factual claim must have a citation
+- All citations must reference actual context sources
+- Response must be comprehensive yet concise
+- Technical accuracy is paramount
+
+Generate your comprehensive, citation-rich response:`;
 
 export const RAG_DIVERSE_QUERIES_PROMPT = `
-You are an expert senior software engineer and query optimization specialist. Your task is to generate {numQueries} semantically diverse and strategically crafted search queries to explore different facets of the original user query.
+**Role:** You are an advanced agentic query strategist and semantic search optimization specialist. Your task is to generate diverse, strategically-designed queries using the latest 2025 RAG techniques including multi-modal search, agentic planning, and quality-aware retrieval.
 
-**QUERY GENERATION FRAMEWORK:**
-Your queries should cover the following perspectives to build a comprehensive understanding:
-1.  **High-Level Abstraction:** How does this feature work conceptually? What is the main entry point or orchestrator? (e.g., "Show the main controller for user authentication")
-2.  **Component Interaction & Dependencies:** How does this component connect with others? What services does it call? What interfaces does it implement? (e.g., "Find where the AuthService is used", "Show implementations of the IUserRepository interface")
-3.  **Specific Implementation Details:** What is the exact logic of a key function or algorithm? (e.g., "Show the code for the 'calculatePrice' function", "Implementation of the token validation logic")
-4.  **Configuration & Environment:** How is this feature configured? What environment variables does it need? (e.g., "Find the configuration file for the database connection", "How are API timeouts configured")
-5.  **Error Handling & Edge Cases:** How does the code handle errors, validation, and unexpected inputs? (e.g., "Show error handling for failed payments", "Input validation for the user registration form")
-6.  **Data Models & Schema:** What are the primary data structures or database tables associated with this feature? (e.g., "Definition of the 'Order' data model", "Database schema for the products table")
+**ENHANCED QUERY GENERATION CAPABILITIES:**
+- Strategic query diversification with modality awareness
+- Context-aware query planning with dependency mapping
+- Quality-oriented query design for better retrieval
+- Citation-conscious query formulation
+- Adaptive query complexity based on domain analysis
 
-**Original Query**: "{originalQuery}"
+**Objective:** Generate {numQueries} semantically and strategically distinct search queries that explore multiple dimensions of the original query using advanced RAG techniques.
 
-**Generate {numQueries} diverse queries based on the framework above.**
+Original Query: "{originalQuery}"
+Domain Context: {domainContext}
+Complexity Level: {complexityLevel}
+Expected Modalities: {expectedModalities}
 
-**Output Format**: Provide the result as a JSON array of strings. Each query should be optimized for semantic search and code retrieval.
+**ENHANCED QUERY GENERATION FRAMEWORK:**
 
-Example Output Structure:
-["high-level overview of the payment processing workflow", "implementation of the Stripe API client", "error handling for credit card declines", "database schema for the transactions table", "configuration for payment gateway API keys"]
+**1. Multi-Modal Query Planning:**
+- **Vector Search Queries:** Semantic similarity-based queries for concept discovery
+- **Graph Traversal Queries:** Relationship-focused queries for dependency exploration  
+- **Hybrid Queries:** Combined semantic and structural queries for comprehensive coverage
+- **Web Augmentation Queries:** External knowledge queries for standards and best practices
+
+**2. Strategic Query Categories:**
+
+*   **A. Architectural Overview & System Design:**
+    - Focus on high-level system architecture and design patterns
+    - *Example:* "System architecture and design patterns used in the authentication module"
+
+*   **B. Component Relationships & Integration Points:**
+    - Explore inter-component dependencies and communication patterns
+    - *Example:* "Integration patterns and dependencies between AuthService and UserManager components"
+
+*   **C. Implementation Deep Dive & Algorithm Analysis:**
+    - Detailed examination of core algorithms and implementation logic
+    - *Example:* "Core authentication algorithm implementation including token validation and session management"
+
+*   **D. Data Flow & State Management:**
+    - Trace data movement and state transitions through the system
+    - *Example:* "User authentication data flow from login request to session establishment"
+
+*   **E. Error Handling & Resilience Patterns:**
+    - Focus on error management, validation, and system resilience
+    - *Example:* "Comprehensive error handling and retry mechanisms in authentication workflow"
+
+*   **F. Performance & Optimization Strategies:**
+    - Examine performance considerations and optimization techniques
+    - *Example:* "Performance optimization and caching strategies in user authentication system"
+
+*   **G. Security & Compliance Implementation:**
+    - Focus on security measures and compliance requirements
+    - *Example:* "Security implementation including encryption, authorization, and audit logging"
+
+*   **H. Configuration & Environment Management:**
+    - Investigate configuration patterns and environment-specific behavior
+    - *Example:* "Configuration management and environment-specific settings for authentication services"
+
+**3. Query Quality Enhancement:**
+- Ensure each query targets specific, retrievable information
+- Design queries to maximize citation potential
+- Balance breadth and depth for comprehensive coverage
+- Include context-aware specificity based on domain expertise
+
+**4. Modality-Specific Optimization:**
+- **Vector-Optimized:** Use conceptual language for semantic matching
+- **Graph-Optimized:** Focus on relationships and dependencies
+- **Hybrid-Optimized:** Combine semantic concepts with structural elements
+- **Citation-Optimized:** Target information that can be precisely attributed
+
+**Advanced Constraints:**
+- Generate queries with varying complexity levels (simple → complex)
+- Ensure queries are mutually complementary, not redundant
+- Design queries to build upon each other for progressive understanding
+- Include both broad conceptual queries and specific implementation queries
+- Avoid generic queries that would overwhelm the retrieval system
+- Focus on actionable, implementable information needs
+
+**Enhanced Output Format:**
+Provide a JSON object with strategic query organization:
+
+\`\`\`json
+{
+  "strategic_queries": [
+    {
+      "query": "specific search query text",
+      "category": "architectural_overview|component_relationships|implementation_details|data_flow|error_handling|performance|security|configuration",
+      "modality": "vector|graph|hybrid|web",
+      "complexity": "simple|moderate|complex",
+      "expected_sources": ["file_types or entity_types expected to contain relevant information"],
+      "priority": 1-5
+    }
+  ],
+  "query_strategy": "Brief explanation of the overall query strategy and expected synergies",
+  "coverage_assessment": "How these queries collectively address the original query"
+}
+\`\`\`
+
+**Quality Assurance:**
+- Each query must be self-contained and actionable
+- Queries should collectively provide comprehensive coverage
+- Balance between exploratory and targeted queries
+- Ensure queries are optimized for the specified modalities
+- Design queries to support high-quality citation and attribution
 `;
-
 
 // ============================================================================
 // Meta Prompts (High-level task-specific prompts)
@@ -1059,12 +1370,81 @@ You are an expert research assistant with access to Google's search capabilities
 - Acknowledge any limitations in the available information
 `;
 
-export const RAG_SELF_CORRECTION_PROMPT = `You are a search expert. A previous search query failed to find any new information. Your task is to reformulate the query to better achieve the original goal.
-Consider the context found so far and try a different angle. Be more specific, more general, or use different keywords as appropriate.
+export const RAG_SELF_CORRECTION_PROMPT = `You are an advanced corrective RAG agent with reflection-based improvement capabilities. Your task is to analyze search failures and generate improved queries using sophisticated error analysis and strategic reformulation.
 
+**CORRECTIVE RAG CAPABILITIES:**
+- Failure pattern analysis with root cause identification
+- Strategic query reformulation based on context gaps
+- Multi-modal search strategy adaptation
+- Quality-aware query enhancement
+- Citation-conscious information targeting
+
+**FAILURE ANALYSIS CONTEXT:**
 Original Goal: "{originalGoal}"
 Failed Query: "{failedQuery}"
+Search Strategy Used: {searchStrategy}
+Failure Type: {failureType}
+Context Quality Score: {contextQuality}
+Previous Attempts: {previousAttempts}
+
 Context Found So Far:
 {contextSummary}
 
-New, improved search query:`;
+Search History:
+{searchHistory}
+
+**COMPREHENSIVE FAILURE ANALYSIS:**
+
+1. **Root Cause Assessment:**
+   - Query specificity issues (too broad/narrow)
+   - Terminology mismatch with codebase
+   - Wrong search modality selection
+   - Missing domain context
+   - Insufficient strategic planning
+
+2. **Context Gap Analysis:**
+   - What information is still missing?
+   - Which aspects of the original goal are unaddressed?
+   - What alternative approaches could work?
+   - Are there related entities or concepts to explore?
+
+3. **Strategic Reformulation Approaches:**
+   - **Semantic Expansion:** Use broader conceptual terms
+   - **Semantic Narrowing:** Focus on specific implementation details
+   - **Perspective Shift:** Search from different system viewpoints
+   - **Modality Switch:** Change from vector to graph search or vice versa
+   - **Relationship Exploration:** Search for connected entities instead of direct targets
+   - **Abstraction Level Adjustment:** Move up/down the abstraction hierarchy
+
+**ENHANCED CORRECTIVE RESPONSE FORMAT:**
+Provide a comprehensive correction strategy:
+
+{
+  "failure_analysis": {
+    "root_causes": ["specific reasons why the query failed"],
+    "missing_information": ["what specific information gaps exist"],
+    "strategy_assessment": "evaluation of the failed search strategy"
+  },
+  "corrective_strategy": {
+    "primary_approach": "main strategy for improvement",
+    "alternative_approaches": ["backup strategies if primary fails"],
+    "modality_recommendation": "vector|graph|hybrid|web",
+    "complexity_adjustment": "simpler|more_specific|broader|different_angle"
+  },
+  "improved_queries": [
+    {
+      "query": "reformulated query text",
+      "rationale": "why this reformulation should work better",
+      "expected_improvement": "specific expected outcomes",
+      "fallback_plan": "what to do if this also fails"
+    }
+  ],
+  "quality_targets": {
+    "minimum_context_items": number,
+    "target_relevance_score": 0.0-1.0,
+    "citation_requirements": "specific source types needed"
+  },
+  "success_indicators": ["how to measure if correction succeeded"]
+}
+
+If you need to provide just the corrected query for backward compatibility, select the best improved query from your analysis.`;

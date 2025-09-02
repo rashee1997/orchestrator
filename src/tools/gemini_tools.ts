@@ -101,6 +101,12 @@ async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrati
 function _getFallbackIntent(query: string): string {
     const lowerQuery = query.toLowerCase();
 
+    // Explanatory queries - highest priority
+    if (lowerQuery.includes('how') || lowerQuery.includes('explain') || lowerQuery.includes('what is') ||
+        lowerQuery.includes('describe') || lowerQuery.includes('tell me about')) {
+        return 'code_explanation';
+    }
+
     // Code review related keywords
     if (lowerQuery.includes('review') || lowerQuery.includes('bug') || lowerQuery.includes('error') ||
         lowerQuery.includes('fix') || lowerQuery.includes('issue')) {
@@ -479,8 +485,15 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let webChunksToStore: any[] = [];
 
         if (!finalAnswer) {
-            const conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
+            let conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
             const contextForPrompt = formatRetrievedContextForPrompt(finalContext)[0]?.text || 'No context was provided.';
+
+            // If RAG was performed, prepend the context to the conversation history
+            if (finalContext.length > 0) {
+                const ragContextString = `\n\n--- Retrieved Context ---\n${contextForPrompt}\n--- End Context ---\n`;
+                conversationHistoryForPrompt = ragContextString + conversationHistoryForPrompt;
+            }
+
             const template = hasConversationHistory ? CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT : DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
 
             let finalPrompt;

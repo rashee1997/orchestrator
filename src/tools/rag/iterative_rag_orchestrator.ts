@@ -9,6 +9,14 @@ import {
     RAG_VERIFICATION_PROMPT,
     RAG_SELF_CORRECTION_PROMPT
 } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import {
+    AGENTIC_RAG_PLANNING_PROMPT,
+    RAG_REFLECTION_PROMPT,
+    CORRECTIVE_RAG_PROMPT,
+    HYBRID_RAG_COORDINATION_PROMPT,
+    LONG_RAG_CHUNKING_PROMPT,
+    CITATION_ATTRIBUTION_PROMPT
+} from './enhanced_rag_prompts.js';
 import { RagAnalysisResponse } from './rag_response_parser.js';
 import { RagResponseParser } from './rag_response_parser.js';
 import { DiverseQueryRewriterService } from './diverse_query_rewriter_service.js';
@@ -20,6 +28,42 @@ import { GeminiApiNotInitializedError } from '../../database/services/gemini-int
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
 import { globalPerformanceTracker } from '../../utils/performance_tracker.js';
+import { KnowledgeGraphManager } from '../../database/managers/KnowledgeGraphManager.js';
+
+export interface Citation {
+    id: string;
+    source: string;
+    sourceType: 'code' | 'documentation' | 'web' | 'knowledge_graph';
+    title: string;
+    url?: string;
+    filePath?: string;
+    lineNumbers?: [number, number];
+    confidence: number;
+    relevanceScore: number;
+    extractedText: string;
+    context?: string;
+}
+
+export interface ReflectionResult {
+    hasHallucinations: boolean;
+    missingInfo: string[];
+    qualityScore: number;
+    suggestions: string[];
+    corrections: string[];
+    confidence: number;
+}
+
+export interface AgenticRagPlan {
+    strategy: 'vector_search' | 'graph_traversal' | 'hybrid_search' | 'web_augmented' | 'corrective_search';
+    steps: Array<{
+        action: string;
+        target: string;
+        priority: number;
+        reasoning: string;
+    }>;
+    expectedOutcome: string;
+    fallbackStrategy?: string;
+}
 
 /**
  * Result returned by the orchestrator after the whole iterative search finishes.
@@ -33,6 +77,12 @@ export interface IterativeRagResult {
     finalAnswer?: string;
     /** Full log of every RAG‑analysis response (useful for debugging). */
     decisionLog: RagAnalysisResponse[];
+    /** Source citations with detailed attribution */
+    citations: Citation[];
+    /** Reflection analysis results for quality control */
+    reflectionResults: ReflectionResult[];
+    /** Agentic planning results */
+    agenticPlan?: AgenticRagPlan;
     /** Metrics that give insight into the search behaviour. */
     searchMetrics: {
         totalIterations: number;
@@ -41,6 +91,9 @@ export interface IterativeRagResult {
         hallucinationChecksPerformed: number;
         selfCorrectionLoops: number;
         terminationReason: string;
+        graphTraversals: number;
+        hybridSearches: number;
+        citationAccuracy: number;
         dmqr: {
             enabled: boolean;
             queryCount?: number;
@@ -50,14 +103,17 @@ export interface IterativeRagResult {
             error?: string;
         };
         /** Timestamped record of each turn – handy for UI visualisation. */
-        turnLog: {
+        turnLog: Array<{
             turn: number;
             query: string;
+            strategy: string;
             newContextCount: number;
             decision: string;
             reasoning: string;
-            type: 'initial' | 'iterative' | 'self-correction';
-        }[];
+            type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection';
+            quality: number;
+            citations: number;
+        }>;
     };
 }
 
@@ -87,6 +143,14 @@ export interface IterativeRagArgs {
     thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' };
     enable_dmqr?: boolean;
     dmqr_query_count?: number;
+    enable_agentic_planning?: boolean;
+    enable_reflection?: boolean;
+    enable_hybrid_search?: boolean;
+    enable_long_rag?: boolean;
+    enable_corrective_rag?: boolean;
+    citation_accuracy_threshold?: number;
+    long_rag_chunk_size?: number;
+    reflection_frequency?: number;
 }
 
 /**
@@ -96,6 +160,7 @@ export class IterativeRagOrchestrator {
     private memoryManagerInstance: MemoryManager;
     private geminiService: GeminiIntegrationService;
     private diverseQueryRewriterService: DiverseQueryRewriterService;
+    private knowledgeGraphManager?: KnowledgeGraphManager;
 
     // Performance optimization: Session-level context cache
     private sessionContextCache: Map<string, {
@@ -106,15 +171,18 @@ export class IterativeRagOrchestrator {
     }>;
     private readonly CACHE_TTL = 10 * 60 * 1000; // 10 minutes for session cache
     private readonly MAX_SESSION_CACHE_SIZE = 50;
+    private citationIdCounter = 0;
 
     constructor(
         memoryManagerInstance: MemoryManager,
         geminiService: GeminiIntegrationService,
-        diverseQueryRewriterService: DiverseQueryRewriterService
+        diverseQueryRewriterService: DiverseQueryRewriterService,
+        knowledgeGraphManager?: KnowledgeGraphManager
     ) {
         this.memoryManagerInstance = memoryManagerInstance;
         this.geminiService = geminiService;
         this.diverseQueryRewriterService = diverseQueryRewriterService;
+        this.knowledgeGraphManager = knowledgeGraphManager;
         this.sessionContextCache = new Map();
     }
 
@@ -139,6 +207,238 @@ export class IterativeRagOrchestrator {
      */
     private _isSessionCacheValid(timestamp: number): boolean {
         return (Date.now() - timestamp) < this.CACHE_TTL;
+    }
+
+    private _generateCitation(
+        context: RetrievedCodeContext,
+        extractedText: string,
+        confidence: number = 0.8
+    ): Citation {
+        return {
+            id: `cite_${++this.citationIdCounter}`,
+            source: context.sourcePath,
+            sourceType: context.type as Citation['sourceType'],
+            title: context.entityName || context.sourcePath,
+            filePath: context.sourcePath,
+            lineNumbers: context.metadata?.startLine && context.metadata?.endLine ? [context.metadata.startLine, context.metadata.endLine] : undefined,
+            confidence,
+            relevanceScore: context.relevanceScore || 0.7,
+            extractedText: extractedText.substring(0, 200),
+            context: context.content.substring(0, 500)
+        };
+    }
+
+    private async _performAgenticPlanning(
+        originalQuery: string,
+        currentQuery: string,
+        currentContext: RetrievedCodeContext[],
+        iteration: number,
+        model?: string
+    ): Promise<AgenticRagPlan> {
+        const contextSummary = currentContext.slice(-3).map(c => 
+            `- ${c.type}: ${c.entityName || 'Unknown'} (${c.sourcePath})`
+        ).join('\n');
+        
+        const previousStrategy = iteration > 1 ? 'vector_search' : 'initial';
+        const contextQuality = currentContext.length > 0 ? 0.7 : 0.3;
+        const informationGaps = currentContext.length < 3 ? ['implementation details', 'usage examples'] : ['edge cases'];
+        
+        const planningPrompt = AGENTIC_RAG_PLANNING_PROMPT
+            .replace('{originalQuery}', originalQuery)
+            .replace('{currentQuery}', currentQuery)
+            .replace('{currentIteration}', iteration.toString())
+            .replace('{previousStrategy}', previousStrategy)
+            .replace('{contextQuality}', contextQuality.toString())
+            .replace('{informationGaps}', informationGaps.join(', '))
+            .replace('{contextSummary}', contextSummary);
+
+        const result = await this.geminiService.askGemini(planningPrompt, model || 'gemini-2.5-flash');
+        try {
+            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
+            return {
+                strategy: parsed.recommended_strategy?.primary_modality || 'vector_search',
+                steps: parsed.execution_plan?.immediate_actions?.map((action: string, idx: number) => ({
+                    action,
+                    target: currentQuery,
+                    priority: idx + 1,
+                    reasoning: `Step ${idx + 1} of agentic plan`
+                })) || [{ action: 'search', target: currentQuery, priority: 1, reasoning: 'default action' }],
+                expectedOutcome: parsed.execution_plan?.query_formulation || 'relevant context',
+                fallbackStrategy: parsed.contingency_planning?.fallback_strategy || 'hybrid_search'
+            };
+        } catch (error) {
+            console.warn('[Agentic Planning] Failed to parse response, using fallback:', error);
+            return {
+                strategy: 'vector_search',
+                steps: [{ action: 'search', target: currentQuery, priority: 3, reasoning: 'fallback plan' }],
+                expectedOutcome: 'relevant context',
+                fallbackStrategy: 'hybrid_search'
+            };
+        }
+    }
+
+    private async _performReflection(
+        originalQuery: string,
+        context: RetrievedCodeContext[],
+        currentAnswer: string,
+        model?: string
+    ): Promise<ReflectionResult> {
+        const sourceContext = context.map(c => 
+            `Source: ${c.sourcePath} | Entity: ${c.entityName || 'Unknown'} | Type: ${c.type}`
+        ).join('\n');
+        const searchStrategy = 'hybrid_search'; // This would come from the current strategy
+        const iterationCount = 1; // This would be passed in
+        
+        const reflectionPrompt = RAG_REFLECTION_PROMPT
+            .replace('{originalQuery}', originalQuery)
+            .replace('{generatedResponse}', currentAnswer)
+            .replace('{sourceContext}', sourceContext)
+            .replace('{searchStrategy}', searchStrategy)
+            .replace('{iterationCount}', iterationCount.toString());
+
+        const result = await this.geminiService.askGemini(reflectionPrompt, model || 'gemini-2.5-flash');
+        try {
+            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
+            return {
+                hasHallucinations: parsed.hallucination_analysis?.detected_hallucinations?.length > 0 || false,
+                missingInfo: parsed.completeness_analysis?.missing_aspects || [],
+                qualityScore: parsed.overall_assessment?.quality_score || 0.5,
+                suggestions: parsed.improvement_recommendations?.enhancement_suggestions || [],
+                corrections: parsed.improvement_recommendations?.immediate_fixes || [],
+                confidence: parsed.overall_assessment?.overall_confidence || 0.5
+            };
+        } catch (error) {
+            console.warn('[Reflection] Failed to parse response, using fallback:', error);
+            return {
+                hasHallucinations: false,
+                missingInfo: [],
+                qualityScore: 0.5,
+                suggestions: [],
+                corrections: [],
+                confidence: 0.5
+            };
+        }
+    }
+
+    private async _performHybridSearch(
+        agentId: string,
+        query: string,
+        options: ContextRetrievalOptions,
+        plan?: AgenticRagPlan
+    ): Promise<RetrievedCodeContext[]> {
+        const results: RetrievedCodeContext[] = [];
+
+        // Vector search
+        const vectorResults = await this._retrieveContextWithCache(agentId, [query], options);
+        results.push(...vectorResults);
+
+        // Knowledge graph search (if available)
+        if (this.knowledgeGraphManager && plan?.strategy === 'hybrid_search') {
+            try {
+                const graphQuery = await this.knowledgeGraphManager.queryNaturalLanguage(agentId, query);
+                const graphData = JSON.parse(graphQuery);
+                
+                if (graphData.results && Array.isArray(graphData.results.nodes)) {
+                    graphData.results.nodes.forEach((node: any) => {
+                        results.push({
+                            type: 'kg_node_info',
+                            sourcePath: `kg://${node.name}`,
+                            entityName: node.name,
+                            content: JSON.stringify(node.observations),
+                            relevanceScore: 0.85,
+                            metadata: { nodeType: node.entityType }
+                        });
+                    });
+                }
+            } catch (error) {
+                console.warn('[Hybrid Search] Knowledge graph query failed:', error);
+            }
+        }
+
+        return deduplicateContexts(results);
+    }
+
+    private async _performCorrectiveSearch(
+        agentId: string,
+        originalQuery: string,
+        previousContext: RetrievedCodeContext[],
+        reflectionResult: ReflectionResult,
+        options: ContextRetrievalOptions,
+        model?: string
+    ): Promise<RetrievedCodeContext[]> {
+        if (!reflectionResult.hasHallucinations && reflectionResult.missingInfo.length === 0) {
+            return [];
+        }
+
+        const currentContext = previousContext.slice(-3).map(c => 
+            `${c.sourcePath}: ${c.entityName || 'Unknown'}`
+        ).join(', ');
+        
+        const correctionPrompt = CORRECTIVE_RAG_PROMPT
+            .replace('{currentQuery}', originalQuery)
+            .replace('{reflectionResults}', JSON.stringify(reflectionResult))
+            .replace('{currentContext}', currentContext)
+            .replace('{hasHallucinations}', reflectionResult.hasHallucinations.toString())
+            .replace('{missingInfo}', reflectionResult.missingInfo.join(', '))
+            .replace('{qualityScore}', reflectionResult.qualityScore.toString());
+        
+        try {
+            const result = await this.geminiService.askGemini(correctionPrompt, model || 'gemini-2.5-flash');
+            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
+            const correctedQueries = parsed.correctedQueries || [
+                `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim()
+            ];
+            
+            return await this._retrieveContextWithCache(agentId, correctedQueries, options);
+        } catch (error) {
+            console.warn('[Corrective Search] Failed to use enhanced prompt, using fallback:', error);
+            const fallbackQuery = `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim();
+            return await this._retrieveContextWithCache(agentId, [fallbackQuery], options);
+        }
+    }
+
+    private _processLongContexts(contexts: RetrievedCodeContext[], maxChunkSize: number = 2000): RetrievedCodeContext[] {
+        return contexts.flatMap(context => {
+            if (context.content.length <= maxChunkSize) {
+                return [context];
+            }
+
+            const chunks: RetrievedCodeContext[] = [];
+            const content = context.content;
+            let startIndex = 0;
+
+            while (startIndex < content.length) {
+                let endIndex = startIndex + maxChunkSize;
+                
+                // Try to break at natural boundaries (sentences, paragraphs)
+                if (endIndex < content.length) {
+                    const lastPeriod = content.lastIndexOf('.', endIndex);
+                    const lastNewline = content.lastIndexOf('\n', endIndex);
+                    const breakPoint = Math.max(lastPeriod, lastNewline);
+                    
+                    if (breakPoint > startIndex + maxChunkSize * 0.5) {
+                        endIndex = breakPoint + 1;
+                    }
+                }
+
+                const chunkContent = content.slice(startIndex, endIndex);
+                chunks.push({
+                    ...context,
+                    content: chunkContent,
+                    entityName: `${context.entityName || 'chunk'}_${chunks.length + 1}`,
+                    metadata: {
+                        ...context.metadata,
+                        isChunk: true,
+                        chunkIndex: chunks.length,
+                        originalLength: content.length
+                    }
+                });
+
+                startIndex = endIndex;
+            }
+
+            return chunks;
+        });
     }
 
     /**
@@ -287,19 +587,28 @@ export class IterativeRagOrchestrator {
     }
 
     /**
-     * Create an intelligent context flow that prioritizes recent and relevant information.
+     * Create an enhanced context flow that prioritizes recent and relevant information with Long RAG support.
      * This addresses the "context rot" problem by organizing context logically.
      */
     private _createContextFlow(
         accumulatedContext: RetrievedCodeContext[],
         currentQuery: string,
-        recentItemsCount: number
+        recentItemsCount: number,
+        enableLongRag: boolean = false,
+        longRagChunkSize: number = 2000
     ): RetrievedCodeContext[] {
         if (accumulatedContext.length === 0) return [];
 
+        let processedContexts = accumulatedContext;
+
+        // Apply Long RAG processing if enabled
+        if (enableLongRag) {
+            processedContexts = this._processLongContexts(processedContexts, longRagChunkSize);
+        }
+
         // Separate recent context from older context
-        const recentContext = accumulatedContext.slice(-recentItemsCount);
-        const olderContext = accumulatedContext.slice(0, -recentItemsCount);
+        const recentContext = processedContexts.slice(-recentItemsCount);
+        const olderContext = processedContexts.slice(0, -recentItemsCount);
 
         // Sort contexts by relevance and type priority
         const sortByPriority = (contexts: RetrievedCodeContext[]): RetrievedCodeContext[] => {
@@ -308,7 +617,8 @@ export class IterativeRagOrchestrator {
                 'method': 4,
                 'class': 3,
                 'file': 2,
-                'documentation': 1
+                'documentation': 1,
+                'knowledge_graph': 6
             };
 
             return contexts.sort((a, b) => {
@@ -355,36 +665,6 @@ export class IterativeRagOrchestrator {
         return uniqueContexts;
     }
 
-    private async _selfCorrectQuery(
-        originalGoal: string,
-        failedQuery: string,
-        accumulatedContext: RetrievedCodeContext[],
-        model?: string
-    ): Promise<string> {
-        console.log(`[Self-Correction] Reformulating failed query: "${failedQuery}"`);
-        const contextSummary = accumulatedContext
-            .slice(-5) // Use most recent context
-            .map(c => ` - [${c.type}] ${c.sourcePath} (Entity: ${c.entityName || 'N/A'})`)
-            .join('\n');
-
-        const correctionPrompt = RAG_SELF_CORRECTION_PROMPT
-            .replace('{originalGoal}', originalGoal)
-            .replace('{failedQuery}', failedQuery)
-            .replace('{contextSummary}', contextSummary || "No context found yet.");
-
-        try {
-            const result = await this.geminiService.askGemini(correctionPrompt, model || 'gemini-2.5-flash');
-            const newQuery = result.content[0].text?.trim();
-            if (newQuery && newQuery !== failedQuery) {
-                console.log(`[Self-Correction] New query: "${newQuery}"`);
-                return newQuery;
-            }
-        } catch (error) {
-            console.error("[Self-Correction] Failed to get corrected query from AI:", error);
-        }
-        // Fallback if AI fails or returns the same query
-        return `${failedQuery} details`;
-    }
 
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
         const operationId = globalPerformanceTracker.startOperation('performIterativeSearch', { query: args.query });
@@ -405,7 +685,15 @@ export class IterativeRagOrchestrator {
                 tavily_include_raw_content = false,
                 thinkingConfig,
                 enable_dmqr,
-                dmqr_query_count
+                dmqr_query_count,
+                enable_agentic_planning = true,
+                enable_reflection = true,
+                enable_hybrid_search = true,
+                enable_long_rag = true,
+                enable_corrective_rag = true,
+                citation_accuracy_threshold = 0.9,
+                long_rag_chunk_size = 2000,
+                reflection_frequency = 2
             } = args;
 
             const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
@@ -413,7 +701,10 @@ export class IterativeRagOrchestrator {
         let accumulatedContext: RetrievedCodeContext[] = [];
         const webSearchSources: { title: string; url: string }[] = [];
         const decisionLog: RagAnalysisResponse[] = [];
+        const citations: Citation[] = [];
+        const reflectionResults: ReflectionResult[] = [];
         const queryHistory = new Set<string>();
+        let agenticPlan: AgenticRagPlan | undefined;
 
         const searchMetrics = {
             totalIterations: 0,
@@ -421,6 +712,9 @@ export class IterativeRagOrchestrator {
             webSearchesPerformed: 0,
             hallucinationChecksPerformed: 0,
             selfCorrectionLoops: 0,
+            graphTraversals: 0,
+            hybridSearches: 0,
+            citationAccuracy: 0,
             terminationReason: "In progress",
             dmqr: {
                 enabled: !!enable_dmqr,
@@ -430,39 +724,44 @@ export class IterativeRagOrchestrator {
                 contextItemsGenerated: 0,
                 error: undefined as string | undefined
             },
-            turnLog: [] as {
+            turnLog: [] as Array<{
                 turn: number;
                 query: string;
+                strategy: string;
                 newContextCount: number;
                 decision: string;
                 reasoning: string;
-                type: 'initial' | 'iterative' | 'self-correction';
-            }[]
+                type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection';
+                quality: number;
+                citations: number;
+            }>
         };
 
         const focusString = this._generateFocusString(focus_area, analysis_focus_points);
-        console.log(`[Iterative RAG] Starting search for query: "${query}"`);
+        console.log(`[Enhanced RAG] Starting enhanced search for query: "${query}"`);
 
         let baseQueries: string[] = [query];
         if (enable_dmqr) {
-            console.log('[Iterative RAG] DMQR enabled – generating diverse queries...');
+            console.log('[Enhanced RAG] DMQR enabled – generating diverse queries...');
             try {
                 const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, { queryCount: dmqr_query_count });
                 baseQueries = dmqrResult.generatedQueries;
                 searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
-                console.log(`[Iterative RAG] DMQR produced ${baseQueries.length} queries.`);
+                console.log(`[Enhanced RAG] DMQR produced ${baseQueries.length} queries.`);
 
-                // Pre-fetch context for all DMQR queries to warm up the cache
-                if (baseQueries.length > 1) {
-                    console.log('[Iterative RAG] Pre-fetching context for DMQR queries...');
-                    try {
-                        await this._retrieveContextWithCache(agent_id, baseQueries, context_options || {});
-                        console.log('[Iterative RAG] DMQR context pre-fetching completed.');
-                    } catch (error) {
-                        console.warn('[Iterative RAG] DMQR context pre-fetching failed:', error);
-                    }
-                }
+        // Pre-fetch context for all DMQR queries to warm up the cache
+        if (baseQueries.length > 1) {
+            console.log('[Enhanced RAG] Pre-fetching context for DMQR queries...');
+            try {
+                const dmqrContexts = await this._retrieveContextWithCache(agent_id, baseQueries, context_options || {});
+                searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
+                console.log(`[Enhanced RAG] DMQR context pre-fetching completed. Generated ${dmqrContexts.length} context items.`);
+            } catch (error) {
+                console.warn('[Enhanced RAG] DMQR context pre-fetching failed:', error);
+                searchMetrics.dmqr.contextItemsGenerated = 0;
+            }
+        }
             } catch (e: any) {
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = e.message ?? 'unknown';
@@ -485,44 +784,83 @@ export class IterativeRagOrchestrator {
             }
 
             if (queryHistory.has(turnQuery)) {
-                console.log(`[Iterative RAG] Skipping duplicate query: "${turnQuery}"`);
+                console.log(`[Enhanced RAG] Skipping duplicate query: "${turnQuery}"`);
                 continue;
             }
             queryHistory.add(turnQuery);
 
             const isInitialTurn = baseQueries.includes(turnQuery);
-            console.log(`[Iterative RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
+            console.log(`[Enhanced RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
+
+            // Agentic Planning Phase
+            if (enable_agentic_planning && turn > 1) {
+                agenticPlan = await this._performAgenticPlanning(query, turnQuery, accumulatedContext, turn, model);
+                console.log(`[Enhanced RAG] Agentic plan: ${agenticPlan.strategy}`);
+            }
 
             const contextBefore = accumulatedContext.length;
+            let rawContext: RetrievedCodeContext[] = [];
 
-            // Use parallel retrieval for current query in this turn
-            const rawContext = await this._retrieveContextWithCache(agent_id, [turnQuery], context_options || {});
+            // Execute search based on agentic plan or default to hybrid
+            if (enable_hybrid_search && agenticPlan?.strategy === 'hybrid_search') {
+                rawContext = await this._performHybridSearch(agent_id, turnQuery, context_options || {}, agenticPlan);
+                searchMetrics.hybridSearches++;
+            } else if (agenticPlan?.strategy === 'graph_traversal' && this.knowledgeGraphManager) {
+                try {
+                    const graphResult = await this.knowledgeGraphManager.queryNaturalLanguage(agent_id, turnQuery);
+                    const graphData = JSON.parse(graphResult);
+                    if (graphData.results && Array.isArray(graphData.results.nodes)) {
+                        rawContext = graphData.results.nodes.map((node: any) => ({
+                            type: 'knowledge_graph',
+                            sourcePath: `kg://${node.name}`,
+                            entityName: node.name,
+                            content: JSON.stringify(node.observations),
+                            relevanceScore: 0.85
+                        }));
+                    }
+                    searchMetrics.graphTraversals++;
+                } catch (error) {
+                    console.warn('[Enhanced RAG] Graph traversal failed, falling back to vector search');
+                    rawContext = await this._retrieveContextWithCache(agent_id, [turnQuery], context_options || {});
+                }
+            } else {
+                rawContext = await this._retrieveContextWithCache(agent_id, [turnQuery], context_options || {});
+            }
+
             accumulatedContext = deduplicateContexts([...accumulatedContext, ...rawContext]);
             const addedNow = accumulatedContext.length - contextBefore;
             searchMetrics.contextItemsAdded += addedNow;
 
-            // Self-correction logic
-            if (addedNow === 0 && !isInitialTurn) {
+            // Generate citations for new context
+            rawContext.forEach(context => {
+                const citation = this._generateCitation(
+                    context,
+                    context.content.substring(0, 200),
+                    context.relevanceScore || 0.8
+                );
+                citations.push(citation);
+            });
+
+            // Corrective RAG: Self-correction logic with reflection
+            if (addedNow === 0 && !isInitialTurn && enable_corrective_rag) {
                 stabilityCounter++;
                 if (stabilityCounter >= 2) {
                     searchMetrics.terminationReason = "Context stable, no new information found.";
-                    console.log(`[Iterative RAG] Context has been stable for ${stabilityCounter} turns. Terminating search.`);
+                    console.log(`[Enhanced RAG] Context has been stable for ${stabilityCounter} turns. Terminating search.`);
                     break;
                 }
-
-                searchMetrics.selfCorrectionLoops++;
-                const correctedQuery = await this._selfCorrectQuery(query, turnQuery, accumulatedContext, model);
-                // Add corrected query to the front of the queue
-                if (correctedQuery) currentQueries.unshift(correctedQuery);
-
-                searchMetrics.turnLog.push({ turn, query: turnQuery, newContextCount: 0, decision: "SELF_CORRECT", reasoning: "No new context found, reformulating query.", type: 'self-correction' });
-                continue; // Skip analysis for this turn and proceed with corrected query
             } else {
-                stabilityCounter = 0; // Reset stability counter if we find new context
+                stabilityCounter = 0;
             }
 
-            // Create context flow: recent/relevant first, then summarized older context
-            const contextFlow = this._createContextFlow(accumulatedContext, turnQuery, addedNow);
+            // Create enhanced context flow with Long RAG support
+            const contextFlow = this._createContextFlow(
+                accumulatedContext, 
+                turnQuery, 
+                addedNow,
+                enable_long_rag,
+                long_rag_chunk_size
+            );
             const formattedContext = formatContextForGemini(contextFlow)[0].text || '';
             const analysisPrompt = RAG_ANALYSIS_PROMPT
                 .replace('{originalQuery}', query)
@@ -545,17 +883,85 @@ export class IterativeRagOrchestrator {
                 break;
             }
             decisionLog.push(parsed);
-            searchMetrics.turnLog.push({ turn, query: turnQuery, newContextCount: addedNow, decision: parsed.decision, reasoning: parsed.reasoning, type: isInitialTurn ? 'initial' : 'iterative' });
+
+            // Reflection Phase (periodic)
+            if (enable_reflection && turn % reflection_frequency === 0) {
+                const tempAnswer = analysisResult.content[0].text || '';
+                const reflection = await this._performReflection(query, contextFlow, tempAnswer, model);
+                reflectionResults.push(reflection);
+                searchMetrics.hallucinationChecksPerformed++;
+
+                if (reflection.missingInfo.length > 0 || reflection.hasHallucinations) {
+                    const correctiveContext = await this._performCorrectiveSearch(
+                        agent_id, query, accumulatedContext, reflection, context_options || {}, model
+                    );
+
+                    if (correctiveContext.length > 0) {
+                        accumulatedContext = deduplicateContexts([...accumulatedContext, ...correctiveContext]);
+                        searchMetrics.selfCorrectionLoops++;
+                        
+                        searchMetrics.turnLog.push({
+                            turn,
+                            query: turnQuery,
+                            strategy: 'corrective_search',
+                            newContextCount: correctiveContext.length,
+                            decision: "CORRECTIVE_SEARCH",
+                            reasoning: `Applied corrective search based on reflection: ${reflection.suggestions.join(', ')}`,
+                            type: 'self-correction',
+                            quality: reflection.qualityScore,
+                            citations: correctiveContext.length
+                        });
+                    }
+                }
+            }
+
+            const strategy = agenticPlan?.strategy || 'vector_search';
+            const quality = reflectionResults.length > 0 ? 
+                reflectionResults[reflectionResults.length - 1].qualityScore : 0.7;
+
+            searchMetrics.turnLog.push({
+                turn,
+                query: turnQuery,
+                strategy,
+                newContextCount: addedNow,
+                decision: parsed.decision,
+                reasoning: parsed.reasoning,
+                type: isInitialTurn ? 'initial' : 'iterative',
+                quality,
+                citations: addedNow
+            });
 
             if (parsed.decision === 'ANSWER') {
                 searchMetrics.terminationReason = "ANSWER decision reached.";
-                console.log('[Iterative RAG] Decision: ANSWER – generating final answer.');
-                const answerPrompt = RAG_ANSWER_PROMPT
+                console.log('[Enhanced RAG] Decision: ANSWER – generating final answer with citations.');
+                
+                const enhancedAnswerPrompt = RAG_ANSWER_PROMPT
                     .replace('{originalQuery}', query)
                     .replace('{contextString}', formattedContext)
-                    .replace('{focusString}', focusString);
-                const answerResult = await this.geminiService.askGemini(answerPrompt, model, 'You are a helpful AI assistant providing accurate answers based on the given context.');
-                return { accumulatedContext, webSearchSources, finalAnswer: answerResult.content[0].text ?? '', decisionLog, searchMetrics };
+                    .replace('{focusString}', focusString) +
+                    `\n\nIMPORTANT: Include proper citations in your answer using the format [cite_N] where N is the citation number. Each claim should be supported by specific source references.`;
+                
+                const answerResult = await this.geminiService.askGemini(
+                    enhancedAnswerPrompt, 
+                    model, 
+                    'You are a helpful AI assistant providing accurate answers with proper citations based on the given context.'
+                );
+                
+                // Calculate citation accuracy
+                const finalAnswer = answerResult.content[0].text ?? '';
+                const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
+                searchMetrics.citationAccuracy = Math.min(citationMatches.length / citations.length, 1.0);
+                
+                return { 
+                    accumulatedContext, 
+                    webSearchSources, 
+                    finalAnswer, 
+                    decisionLog, 
+                    citations,
+                    reflectionResults,
+                    agenticPlan,
+                    searchMetrics 
+                };
             } else if (parsed.decision === 'SEARCH_AGAIN' && parsed.nextCodebaseQuery) {
                 currentQueries.push(parsed.nextCodebaseQuery);
             } else if (parsed.decision === 'SEARCH_WEB' && enable_web_search && parsed.nextWebQuery) {
@@ -565,9 +971,20 @@ export class IterativeRagOrchestrator {
                     webResults.forEach((r: WebSearchResult) => {
                         webSearchSources.push({ title: r.title, url: r.url });
                         accumulatedContext.push({ type: 'documentation', sourcePath: r.url, entityName: r.title, content: r.content, relevanceScore: 0.95 });
+                        
+                        const webCitation = this._generateCitation({
+                            type: 'documentation',
+                            sourcePath: r.url,
+                            entityName: r.title,
+                            content: r.content,
+                            relevanceScore: 0.95
+                        }, r.content.substring(0, 200), 0.9);
+                        webCitation.sourceType = 'web';
+                        webCitation.url = r.url;
+                        citations.push(webCitation);
                     });
                 } catch (e: any) {
-                    console.error('[Iterative RAG] Web search failed:', e);
+                    console.error('[Enhanced RAG] Web search failed:', e);
                 }
             }
         }
@@ -576,17 +993,43 @@ export class IterativeRagOrchestrator {
             searchMetrics.terminationReason = "Max iterations reached.";
         }
 
-        console.log('[Iterative RAG] Max iterations reached or terminated early. Generating final answer from accumulated context.');
-        // Use the same context flow logic for final answer generation
-        const finalContextFlow = this._createContextFlow(accumulatedContext, query, 0);
+        console.log('[Enhanced RAG] Generating final answer from accumulated context with citations.');
+        
+        const finalContextFlow = this._createContextFlow(
+            accumulatedContext, 
+            query, 
+            0, 
+            enable_long_rag, 
+            long_rag_chunk_size
+        );
         const fallbackContext = formatContextForGemini(finalContextFlow)[0].text || '';
         const fallbackPrompt = RAG_ANSWER_PROMPT
             .replace('{originalQuery}', query)
             .replace('{contextString}', fallbackContext)
-            .replace('{focusString}', focusString);
-        const fallbackResult = await this.geminiService.askGemini(fallbackPrompt, model, 'You are a helpful AI assistant providing accurate answers based on the given context.');
+            .replace('{focusString}', focusString) +
+            `\n\nIMPORTANT: Include proper citations in your answer using the format [cite_N] where N is the citation number.`;
+        
+        const fallbackResult = await this.geminiService.askGemini(
+            fallbackPrompt, 
+            model, 
+            'You are a helpful AI assistant providing accurate answers with citations based on the given context.'
+        );
 
-        return { accumulatedContext, webSearchSources, finalAnswer: fallbackResult.content[0].text ?? 'Unable to formulate an answer.', decisionLog, searchMetrics };
+        const finalAnswer = fallbackResult.content[0].text ?? 'Unable to formulate an answer.';
+        const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
+        searchMetrics.citationAccuracy = citations.length > 0 ? 
+            Math.min(citationMatches.length / citations.length, 1.0) : 0;
+
+        return { 
+            accumulatedContext, 
+            webSearchSources, 
+            finalAnswer, 
+            decisionLog, 
+            citations,
+            reflectionResults,
+            agenticPlan,
+            searchMetrics 
+        };
         } catch (error: any) {
             globalPerformanceTracker.endOperation(operationId, false, error.message);
             throw error;

@@ -47,12 +47,27 @@ export class DiverseQueryRewriterService {
             const llmResponse = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
             const responseText = llmResponse.content[0].text ?? '';
 
-            generatedQueries = parseGeminiJsonResponse(responseText);
+            // Parse the LLM response which should be a JSON object with strategic_queries array
+            const parsedResponse = parseGeminiJsonResponse(responseText);
 
-            // Basic validation
-            if (!Array.isArray(generatedQueries) || generatedQueries.some(q => typeof q !== 'string')) {
-                console.warn('LLM returned malformed JSON for diverse queries. Falling back to original query.');
-                generatedQueries = []; // Clear malformed queries
+            // Extract queries from the expected structure
+            if (parsedResponse && parsedResponse.strategic_queries && Array.isArray(parsedResponse.strategic_queries)) {
+                generatedQueries = parsedResponse.strategic_queries
+                    .filter((item: any) => item && typeof item.query === 'string')
+                    .map((item: any) => item.query);
+                console.log(`[DiverseQueryRewriter] Successfully extracted ${generatedQueries.length} diverse queries from LLM response`);
+            } else if (Array.isArray(parsedResponse)) {
+                // Fallback: if LLM returned a direct array of strings
+                generatedQueries = parsedResponse.filter((q: any) => typeof q === 'string');
+                console.log(`[DiverseQueryRewriter] LLM returned direct array of ${generatedQueries.length} queries`);
+            } else {
+                console.warn('LLM returned unexpected JSON structure for diverse queries. Expected strategic_queries array.');
+                generatedQueries = [];
+            }
+
+            // Additional validation
+            if (generatedQueries.length === 0) {
+                console.warn('No valid queries extracted from LLM response. Falling back to original query.');
             }
         } catch (error) {
             console.error('Error generating diverse queries with LLM, falling back to original query:', error);
