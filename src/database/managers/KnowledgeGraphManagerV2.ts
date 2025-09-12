@@ -16,6 +16,7 @@ import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../typ
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
 import { parseGeminiJsonResponse as centralParseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
 import { NLP_QUERY_PROMPT_TEMPLATE } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { getCurrentModel } from '../services/gemini-integration-modules/GeminiConfig.js';
 
 export class KnowledgeGraphManagerV2 {
     private jsonlStorage: JsonlStorageManager;
@@ -617,7 +618,7 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
                 .replace('${graphRepresentation}', graphContext)
                 .replace('${naturalLanguageQuery}', naturalLanguageQuery);
 
-            const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
+            const geminiResponse = await this.geminiService.askGemini(prompt, getCurrentModel());
             usedGemini = true;
             const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "[]";
             structuredQueriesFromAI = this._parseGeminiJsonResponse(geminiResponseText);
@@ -734,7 +735,7 @@ If no new relations can be confidently inferred, return an empty array [].`;
         let proposedByAI: Array<{ from: string; to: string; relationType: string; confidence: number; evidence: string }> = [];
         if (this.geminiService) {
             try {
-                const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
+                const geminiResponse = await this.geminiService.askGemini(prompt, getCurrentModel());
                 const parsedResponse = this._parseGeminiJsonResponse(geminiResponse.content[0]?.text?.trim() || "[]");
                 proposedByAI = Array.isArray(parsedResponse) ? parsedResponse : [];
                 console.log(`[KGManagerV2.inferRelations] Gemini proposed ${proposedByAI.length} relations.`);

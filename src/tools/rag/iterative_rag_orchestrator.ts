@@ -27,6 +27,7 @@ import {
 import { GeminiApiNotInitializedError } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
+import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
 import { globalPerformanceTracker } from '../../utils/performance_tracker.js';
 import { KnowledgeGraphManager } from '../../database/managers/KnowledgeGraphManager.js';
 
@@ -252,7 +253,7 @@ export class IterativeRagOrchestrator {
             .replace('{informationGaps}', informationGaps.join(', '))
             .replace('{contextSummary}', contextSummary);
 
-        const result = await this.geminiService.askGemini(planningPrompt, model || 'gemini-2.5-flash');
+        const result = await this.geminiService.askGemini(planningPrompt, model || getCurrentModel());
         try {
             const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
             return {
@@ -296,7 +297,7 @@ export class IterativeRagOrchestrator {
             .replace('{searchStrategy}', searchStrategy)
             .replace('{iterationCount}', iterationCount.toString());
 
-        const result = await this.geminiService.askGemini(reflectionPrompt, model || 'gemini-2.5-flash');
+        const result = await this.geminiService.askGemini(reflectionPrompt, model || getCurrentModel());
         try {
             const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
             return {
@@ -383,7 +384,7 @@ export class IterativeRagOrchestrator {
             .replace('{qualityScore}', reflectionResult.qualityScore.toString());
         
         try {
-            const result = await this.geminiService.askGemini(correctionPrompt, model || 'gemini-2.5-flash');
+            const result = await this.geminiService.askGemini(correctionPrompt, model || getCurrentModel());
             const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
             const correctedQueries = parsed.correctedQueries || [
                 `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim()

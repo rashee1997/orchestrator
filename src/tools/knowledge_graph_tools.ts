@@ -246,7 +246,7 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
                 query: { type: 'string', description: 'Natural language query about the codebase (e.g., "What modules does OrderController import?", "Find all test files for the auth module", "Which classes extend BaseService?")' },
-                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash"). Defaults to "gemini-2.5-flash".', nullable: true },
+                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash"). Defaults to current model.', nullable: true },
             },
             required: ['agent_id', 'query'],
         },

@@ -10,7 +10,7 @@ import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PRO
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
-import { REFINEMENT_MODEL_NAME } from '../database/services/gemini-integration-modules/GeminiConfig.js';
+import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
@@ -47,7 +47,7 @@ async function findProjectRoot(startDir: string): Promise<string> {
 async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrationService): Promise<string | null> {
     try {
         const classificationPrompt = INTENT_CLASSIFICATION_PROMPT.replace('{query}', query);
-        const result = await geminiService.askGemini(classificationPrompt, 'gemini-2.5-flash');
+        const result = await geminiService.askGemini(classificationPrompt, getCurrentModel());
         const rawResponse = result.content[0].text || '';
 
         // Clean and normalize the response
@@ -162,7 +162,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 nullable: true
             },
             conversation_history_limit: { type: 'number', description: 'The number of recent messages to include from the session history.', default: 15 },
-            model: { type: 'string', description: 'Optional: The Gemini model to use.', default: 'gemini-2.5-flash' },
+            model: { type: 'string', description: 'Optional: The Gemini model to use.', default: getCurrentModel() },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Enable Retrieval-Augmented Generation (RAG).', default: false, nullable: true },
             enable_iterative_search: {
@@ -350,7 +350,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{conversation_history}', conversationHistoryForPrompt)
                     .replace('{new_query}', query);
 
-                const decisionResult = await geminiService.askGemini(decisionPrompt, 'gemini-2.5-flash');
+                const decisionResult = await geminiService.askGemini(decisionPrompt, getCurrentModel());
                 const decisionResponse = parseGeminiJsonResponse(decisionResult.content[0].text ?? '');
 
                 // Store the autonomous decision in tool_info for transparency

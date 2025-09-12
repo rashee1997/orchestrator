@@ -1,5 +1,8 @@
 // File: src/database/parsers/ParserFactory.ts
 import { ILanguageParser } from './ILanguageParser.js';
+
+// Re-export ILanguageParser for other modules
+export type { ILanguageParser };
 import { EnhancedTypeScriptParser } from './EnhancedTypeScriptParser.js';
 import { PythonParser } from './PythonParser.js';
 import { HTMLParser } from './HTMLParser.js';

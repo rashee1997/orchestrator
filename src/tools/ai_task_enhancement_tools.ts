@@ -13,6 +13,7 @@ import {
     AI_ANALYZE_PLAN_PROMPT
 } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 
 // #region Type Definitions
 interface AiSuggestedSubtask {
@@ -70,7 +71,7 @@ interface TaskComplexityAnalysis {
 async function callGeminiAndParseJson<T>(
     geminiService: GeminiIntegrationService,
     prompt: string,
-    model: string = "gemini-2.5-flash-preview-05-20"
+    model: string = getCurrentModel()
 ): Promise<T> {
     const geminiResponse = await geminiService.askGemini(prompt, model);
     const responseText = geminiResponse.content[0]?.text ?? "";

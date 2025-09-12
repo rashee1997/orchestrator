@@ -4,6 +4,7 @@ import { RetrievedCodeContext } from '../../database/services/CodebaseContextRet
 import { RAG_DIVERSE_QUERIES_PROMPT } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
 import { parseGeminiJsonResponse } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
 
 export interface DiverseQueryRewriterOptions {
     queryCount?: number;
@@ -44,7 +45,7 @@ export class DiverseQueryRewriterService {
         // 2. Use GeminiIntegrationService to get diverse queries from LLM
         let generatedQueries: string[] = [];
         try {
-            const llmResponse = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const llmResponse = await this.geminiService.askGemini(prompt, getCurrentModel());
             const responseText = llmResponse.content[0].text ?? '';
 
             // Parse the LLM response which should be a JSON object with strategic_queries array

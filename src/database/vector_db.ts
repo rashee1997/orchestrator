@@ -6,6 +6,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import * as os from 'os';
+import { getCurrentEmbeddingDimensions } from './services/gemini-integration-modules/GeminiConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -168,15 +169,18 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
                 console.log('[vector_db] Vector store database schema applied successfully.');
             }
 
-            // Create vec virtual table if not exists
+            // Create vec virtual table if not exists with dynamic dimensions
             try {
+                const vectorDimensions = getCurrentEmbeddingDimensions();
+                console.log(`[vector_db] Creating vec virtual table with ${vectorDimensions} dimensions...`);
+                
                 db.exec(`
                     CREATE VIRTUAL TABLE IF NOT EXISTS codebase_embeddings_vec_idx USING vec0(
                         embedding_id TEXT,
-                        embedding float[768]
+                        embedding float[${vectorDimensions}]
                     );
                 `);
-                console.log('[vector_db] vec virtual table created or already exists.');
+                console.log(`[vector_db] vec virtual table created or already exists with ${vectorDimensions} dimensions.`);
             } catch (vssError) {
                 console.error('[vector_db] Error creating vec virtual table:', vssError);
                 throw vssError;

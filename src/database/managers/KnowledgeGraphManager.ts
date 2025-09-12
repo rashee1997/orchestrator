@@ -4,6 +4,7 @@ import { GeminiIntegrationService } from '../services/GeminiIntegrationService.j
 import { CodebaseEmbeddingService } from '../services/CodebaseEmbeddingService.js'; // Import CodebaseEmbeddingService
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { parseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
+import { getCurrentModel } from '../services/gemini-integration-modules/GeminiConfig.js';
 // fs, fsp, and path are not used in this manager based on current code, can be removed if not planned for future use.
 // import fs from 'fs';
 // import fsp from 'fs/promises';
@@ -457,7 +458,7 @@ Instructions for translation:
 
 Translate the above NL Query into the structured JSON format. Provide only the JSON object.`;
 
-            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, getCurrentModel());
             if (!geminiResponseObject || !geminiResponseObject.content || geminiResponseObject.content.length === 0 || !geminiResponseObject.content[0].text) {
                 throw new McpError(ErrorCode.InternalError, "Gemini did not return a valid response structure for natural language query.");
             }
@@ -642,7 +643,7 @@ Example output:
   }
 ]`;
 
-            const geminiResponseObject = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const geminiResponseObject = await this.geminiService.askGemini(prompt, getCurrentModel());
             if (!geminiResponseObject || !geminiResponseObject.content || geminiResponseObject.content.length === 0 || !geminiResponseObject.content[0].text) {
                 throw new McpError(ErrorCode.InternalError, "Gemini did not return a valid response structure for relation inference.");
             }

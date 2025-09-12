@@ -3,7 +3,8 @@ import { Stats } from 'fs';
 import path from 'path';
 import { MemoryManager } from '../memory_manager.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-import { ILanguageParser } from '../parsers/ILanguageParser.js';
+import { ILanguageParser } from '../parsers/ParserFactory.js';
+import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 import { ParserFactory } from '../parsers/ParserFactory.js';
 import { DETECT_LANGUAGE_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
 
@@ -109,7 +110,7 @@ export class CodebaseIntrospectionService {
     }
 
     private registerParser(parser: ILanguageParser): void {
-        parser.getSupportedExtensions().forEach(ext => {
+        parser.getSupportedExtensions().forEach((ext: string) => {
             if (this.languageParsers.has(ext)) {
                 console.warn(`Warning: Duplicate parser registration for extension '${ext}'. Overwriting.`);
             }
@@ -298,7 +299,7 @@ export class CodebaseIntrospectionService {
         const prompt = DETECT_LANGUAGE_PROMPT.replace('{fileContentSnippet}', fileContentSnippet);
 
         try {
-            const response = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
+            const response = await this.geminiService.askGemini(prompt, getCurrentModel());
             if (response.content && response.content.length > 0 && response.content[0].text) {
                 const detectedLang = response.content[0].text.trim().toLowerCase();
                 // More robust check for valid language identifier

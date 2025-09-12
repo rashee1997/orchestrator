@@ -11,6 +11,7 @@ import {
     PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
     PLANNER_USER_QUERY_GOAL_PROMPT
 } from './gemini-integration-modules/GeminiPromptTemplates.js';
+import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -99,7 +100,7 @@ export interface InitialDetailedPlanAndTasks {
 // -------------------------------------------------------------------------
 const PLAN_STATUS_DRAFT = 'DRAFT';
 const TASK_STATUS_PLANNED = 'PLANNED';
-const GEMINI_MODEL_PLANNER = 'gemini-2.5-flash-preview-05-20';
+const GEMINI_MODEL_PLANNER = getCurrentModel();
 
 export class GeminiPlannerService {
     private geminiIntegrationService: GeminiIntegrationService;

@@ -4,6 +4,7 @@ import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { PlanTaskManager } from '../managers/PlanTaskManager.js';
 import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 export interface ContextRetrievalOptions {
     topKEmbeddings?: number;
@@ -291,7 +292,7 @@ User prompt: "${prompt}"
 Respond with only the category name.`;
 
         try {
-            const response = await this.geminiService.askGemini(intentPrompt, 'gemini-2.5-flash');
+            const response = await this.geminiService.askGemini(intentPrompt, getCurrentModel());
             const classification = response.content[0].text?.trim().toLowerCase() as QueryIntent;
 
             if (['find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code'].includes(classification)) {
@@ -424,7 +425,7 @@ ONLY respond with the JSON object, and nothing else.`;
         filterPrompt += `\n\nContext Items:\n${contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 150)}...`).join('\n')}`;
 
         try {
-            const response = await this.geminiService.askGemini(filterPrompt, 'gemini-2.5-flash');
+            const response = await this.geminiService.askGemini(filterPrompt, getCurrentModel());
             const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
 
             if (!parsedResponse || !Array.isArray(parsedResponse.relevant_indices)) {
@@ -476,7 +477,7 @@ If no critical information is missing, respond with {"missing_entities": []}.
 ONLY respond with the JSON object.`;
 
         try {
-            const response = await this.geminiService.askGemini(gapAnalysisPrompt, 'gemini-2.5-flash');
+            const response = await this.geminiService.askGemini(gapAnalysisPrompt, getCurrentModel());
             const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
 
             if (!parsedResponse || !Array.isArray(parsedResponse.missing_entities) || parsedResponse.missing_entities.length === 0) {
@@ -514,7 +515,7 @@ Example: {"suggested_entities": ["DatabaseConnection", "OrderRepository"]}
 ONLY respond with the JSON object.`;
 
         try {
-            const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-2.5-flash');
+            const response = await this.geminiService.askGemini(expansionPrompt, getCurrentModel());
             const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
 
             if (parsedResponse && Array.isArray(parsedResponse.suggested_entities) && parsedResponse.suggested_entities.length > 0) {
@@ -563,7 +564,7 @@ Example: {"entities": ["src/services/api.ts", "getUserProfile", "UserProfile"]}
 Prompt: "${prompt}"`;
 
         try {
-            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash");
+            const result = await this.geminiService.askGemini(extractionPrompt, getCurrentModel());
             const parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
 
             if (parsedResponse && Array.isArray(parsedResponse.entities)) {

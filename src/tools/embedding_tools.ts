@@ -8,6 +8,7 @@ import { EmbeddingIngestionResult, ChunkingStrategy } from '../types/codebase_em
 import { formatJsonToMarkdownCodeBlock, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
 import { DiverseQueryRewriterService } from './rag/diverse_query_rewriter_service.js';
+import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 
 // Define the interface for the chunk result, including the new original_code_snippet
 interface CodeChunkResult {
@@ -192,7 +193,7 @@ ${changelog}
     try {
         const geminiService = memoryManager.getGeminiIntegrationService();
         if (geminiService) {
-            const response = await geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const response = await geminiService.askGemini(prompt, getCurrentModel());
             if (response?.content?.[0]?.text) {
                 summaryText = response.content[0].text.trim();
             }
