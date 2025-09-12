@@ -5,23 +5,28 @@ import { RAG_DIVERSE_QUERIES_PROMPT } from '../../database/services/gemini-integ
 import { deduplicateContexts } from '../../utils/context_utils.js';
 import { parseGeminiJsonResponse } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
+import { KnowledgeGraphQueryProducer, KnowledgeGraphQuery, KGQueryResult } from './kg_query_producer.js';
 
 export interface DiverseQueryRewriterOptions {
     queryCount?: number;
+    kgQueryCount?: number;
 }
 
 export interface DiverseQueryResult {
     generatedQueries: string[];
     contexts: RetrievedCodeContext[];
+    knowledgeGraphQueries?: KnowledgeGraphQuery[];
 }
 
 export class DiverseQueryRewriterService {
     private geminiService: GeminiIntegrationService;
     private memoryManager: MemoryManager;
+    private kgQueryProducer: KnowledgeGraphQueryProducer;
 
     constructor(geminiService: GeminiIntegrationService, memoryManager: MemoryManager) {
         this.geminiService = geminiService;
         this.memoryManager = memoryManager;
+        this.kgQueryProducer = new KnowledgeGraphQueryProducer(geminiService);
     }
 
     /**
@@ -36,7 +41,33 @@ export class DiverseQueryRewriterService {
         options: DiverseQueryRewriterOptions = {},
     ): Promise<DiverseQueryResult> {
         const numQueries = options.queryCount || 3; // Default to 3 queries
+        const kgQueryCount = options.kgQueryCount || Math.max(2, Math.floor(numQueries / 2)); // Default to half of embedding queries
 
+        // 1. Generate embedding queries and KG queries in parallel (always both when DMQR is used)
+        const promises: Promise<any>[] = [
+            this.generateEmbeddingQueries(originalQuery, numQueries),
+            this.generateKGQueries(originalQuery, kgQueryCount)
+        ];
+
+        const results = await Promise.all(promises);
+        const generatedQueries = results[0] || [originalQuery];
+        const knowledgeGraphQueries = results[1] || [];
+
+        console.log(`[DiverseQueryRewriter] Generated ${generatedQueries.length} embedding queries and ${knowledgeGraphQueries.length} KG queries`);
+
+        // Retrieval is now handled by the orchestrator in a deep-search loop.
+        // This method now focuses solely on rewriting queries.
+        return {
+            generatedQueries,
+            contexts: [], // Return empty context array, as per new architecture
+            knowledgeGraphQueries
+        };
+    }
+
+    /**
+     * Generate diverse embedding queries using the existing logic
+     */
+    private async generateEmbeddingQueries(originalQuery: string, numQueries: number): Promise<string[]> {
         // 1. Generate the prompt for diverse queries
         const prompt = RAG_DIVERSE_QUERIES_PROMPT
             .replace('{originalQuery}', originalQuery)
@@ -84,13 +115,39 @@ export class DiverseQueryRewriterService {
             generatedQueries = [originalQuery]; // Should not happen if unshift works, but as a safeguard
         }
 
-        console.log(`[DiverseQueryRewriter] Generated ${generatedQueries.length} queries:`, generatedQueries);
+        return generatedQueries;
+    }
 
-        // Retrieval is now handled by the orchestrator in a deep-search loop.
-        // This method now focuses solely on rewriting queries.
-        return {
-            generatedQueries,
-            contexts: [] // Return empty context array, as per new architecture
-        };
+    /**
+     * Generate specialized Knowledge Graph queries using the KG Query Producer
+     */
+    private async generateKGQueries(originalQuery: string, queryCount: number): Promise<KnowledgeGraphQuery[]> {
+        try {
+            const kgResult = await this.kgQueryProducer.generateKGQueries(originalQuery, {
+                queryCount
+            });
+            
+            // Combine all types of KG queries
+            const allKGQueries = [
+                ...kgResult.structuralQueries,
+                ...kgResult.semanticQueries,
+                ...kgResult.hybridQueries
+            ];
+            
+            console.log(`[DiverseQueryRewriter] Generated ${allKGQueries.length} KG queries`);
+            return allKGQueries;
+        } catch (error) {
+            console.error('Error generating KG queries:', error);
+            // Return fallback KG query
+            return [{
+                query: originalQuery,
+                entityTypes: ['function', 'class', 'file'],
+                relationTypes: ['contains', 'imports'],
+                searchStrategy: 'semantic',
+                searchDepth: 1,
+                focusAreas: ['general'],
+                confidence: 0.5
+            }];
+        }
     }
 }

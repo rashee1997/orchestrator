@@ -180,12 +180,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             },
             enable_dmqr: {
                 type: 'boolean',
-                description: 'Enable Diverse Multi-Query Rewriting (DMQR) for the initial RAG context.',
+                description: 'Enable Diverse Multi-Query Rewriting (DMQR) for enhanced RAG context. When enabled, automatically generates diverse queries for both embeddings-based retrieval and knowledge graph queries for comprehensive context gathering.',
                 default: false
             },
             dmqr_query_count: {
                 type: 'number',
-                description: 'The number of diverse queries to generate for DMQR.',
+                description: 'The number of diverse embedding queries to generate for DMQR. Knowledge graph queries are automatically generated (typically half this number) when DMQR is enabled.',
                 default: 3,
                 minimum: 2,
                 maximum: 5
@@ -562,7 +562,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 markdownOutput += `*   **Self-Correction Loops:** ${searchMetrics.selfCorrectionLoops}\n`;
                 markdownOutput += `*   **Context Items Found:** ${searchMetrics.contextItemsAdded}\n`;
                 if (searchMetrics.dmqr.enabled) {
-                    markdownOutput += `*   **DMQR:** Enabled (${searchMetrics.dmqr.generatedQueries?.length} queries)\n`;
+                    const embeddingQueriesCount = searchMetrics.dmqr.generatedQueries?.length || 0;
+                    const totalKGTraversals = searchMetrics.graphTraversals || 0;
+                    markdownOutput += `*   **DMQR:** Enabled (${embeddingQueriesCount} embedding queries${totalKGTraversals > 0 ? `, ${totalKGTraversals} KG queries` : ''})\n`;
                 }
                 if (searchMetrics.webSearchesPerformed > 0) {
                     markdownOutput += `*   **Iterative Web Searches:** ${searchMetrics.webSearchesPerformed}\n`;

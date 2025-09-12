@@ -743,26 +743,73 @@ export class IterativeRagOrchestrator {
 
         let baseQueries: string[] = [query];
         if (enable_dmqr) {
-            console.log('[Enhanced RAG] DMQR enabled – generating diverse queries...');
+            console.log('[Enhanced RAG] DMQR enabled – generating diverse queries for both embeddings and KG...');
             try {
-                const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, { queryCount: dmqr_query_count });
+                const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, { 
+                    queryCount: dmqr_query_count,
+                    kgQueryCount: Math.max(2, Math.floor((dmqr_query_count || 3) / 2))
+                });
+                
                 baseQueries = dmqrResult.generatedQueries;
                 searchMetrics.dmqr.generatedQueries = baseQueries;
                 searchMetrics.dmqr.success = true;
-                console.log(`[Enhanced RAG] DMQR produced ${baseQueries.length} queries.`);
+                
+                console.log(`[Enhanced RAG] DMQR produced ${baseQueries.length} embedding queries and ${dmqrResult.knowledgeGraphQueries?.length || 0} KG queries.`);
 
-        // Pre-fetch context for all DMQR queries to warm up the cache
-        if (baseQueries.length > 1) {
-            console.log('[Enhanced RAG] Pre-fetching context for DMQR queries...');
-            try {
-                const dmqrContexts = await this._retrieveContextWithCache(agent_id, baseQueries, context_options || {});
-                searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
-                console.log(`[Enhanced RAG] DMQR context pre-fetching completed. Generated ${dmqrContexts.length} context items.`);
-            } catch (error) {
-                console.warn('[Enhanced RAG] DMQR context pre-fetching failed:', error);
-                searchMetrics.dmqr.contextItemsGenerated = 0;
-            }
-        }
+                // Pre-fetch context for all DMQR embedding queries to warm up the cache
+                if (baseQueries.length > 1) {
+                    console.log('[Enhanced RAG] Pre-fetching context for DMQR embedding queries...');
+                    try {
+                        const dmqrContexts = await this._retrieveContextWithCache(agent_id, baseQueries, context_options || {});
+                        searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
+                        console.log(`[Enhanced RAG] DMQR embedding context pre-fetching completed. Generated ${dmqrContexts.length} context items.`);
+                    } catch (error) {
+                        console.warn('[Enhanced RAG] DMQR embedding context pre-fetching failed:', error);
+                        searchMetrics.dmqr.contextItemsGenerated = 0;
+                    }
+                }
+                
+                // Process KG queries if available and KG manager exists
+                if (dmqrResult.knowledgeGraphQueries && dmqrResult.knowledgeGraphQueries.length > 0 && this.knowledgeGraphManager) {
+                    console.log(`[Enhanced RAG] Processing ${dmqrResult.knowledgeGraphQueries.length} DMQR KG queries...`);
+                    try {
+                        const kgContexts: RetrievedCodeContext[] = [];
+                        
+                        for (const kgQuery of dmqrResult.knowledgeGraphQueries) {
+                            try {
+                                const graphResult = await this.knowledgeGraphManager.queryNaturalLanguage(agent_id, kgQuery.query);
+                                const graphData = JSON.parse(graphResult);
+                                
+                                if (graphData.results && Array.isArray(graphData.results.nodes)) {
+                                    const kgNodes = graphData.results.nodes.map((node: any) => ({
+                                        type: 'knowledge_graph' as const,
+                                        sourcePath: `kg://${node.name}`,
+                                        entityName: node.name,
+                                        content: JSON.stringify(node.observations),
+                                        relevanceScore: kgQuery.confidence || 0.85,
+                                        metadata: { 
+                                            nodeType: node.entityType,
+                                            kgQueryType: kgQuery.searchStrategy,
+                                            focusAreas: kgQuery.focusAreas
+                                        }
+                                    }));
+                                    kgContexts.push(...kgNodes);
+                                }
+                            } catch (kgError) {
+                                console.warn(`[Enhanced RAG] KG query failed for "${kgQuery.query}":`, kgError);
+                            }
+                        }
+                        
+                        if (kgContexts.length > 0) {
+                            accumulatedContext = deduplicateContexts([...accumulatedContext, ...kgContexts]);
+                            searchMetrics.dmqr.contextItemsGenerated += kgContexts.length;
+                            searchMetrics.graphTraversals += dmqrResult.knowledgeGraphQueries.length;
+                            console.log(`[Enhanced RAG] DMQR KG processing completed. Generated ${kgContexts.length} additional context items.`);
+                        }
+                    } catch (error) {
+                        console.warn('[Enhanced RAG] DMQR KG processing failed:', error);
+                    }
+                }
             } catch (e: any) {
                 searchMetrics.dmqr.success = false;
                 searchMetrics.dmqr.error = e.message ?? 'unknown';
