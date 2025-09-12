@@ -220,13 +220,56 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_embeddings: ${errorDetails}`);
             }
 
-            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, provider_type, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
+            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, provider_type, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries, resume_failed_files } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
             const absoluteProjectRootPath = path.resolve(project_root_path);
-            let resultCounts: EmbeddingIngestionResult;
-            let outputMessage: string;
+            let resultCounts: EmbeddingIngestionResult = {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                reusedFilesCount: 0,
+                deletedEmbeddingsCount: 0,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                reusedFiles: [],
+                deletedEmbeddings: [],
+                scannedFiles: [],
+                embeddingRequestCount: 0,
+                embeddingRetryCount: 0,
+                totalTokensProcessed: 0,
+                namingApiCallCount: 0,
+                summarizationApiCallCount: 0,
+                dbCallCount: 0,
+                dbCallLatencyMs: 0,
+                processingErrors: [],
+                batchStatus: 'complete',
+                resumeInfo: { failedFiles: [] },
+                aiSummary: '',
+                totalTimeMs: 0
+            };
+            let outputMessage: string = '';
+            
+            // Handle resume functionality
+            if (resume_failed_files && Array.isArray(resume_failed_files) && resume_failed_files.length > 0) {
+                console.log(`[ingest_codebase_embeddings] Resuming ${resume_failed_files.length} failed files...`);
+                
+                resultCounts = await embeddingService.resumeFailedEmbeddingBatch(
+                    agent_id,
+                    resume_failed_files,
+                    absoluteProjectRootPath,
+                    chunking_strategy as ChunkingStrategy || 'auto',
+                    provider_type || 'gemini',
+                    include_summary_patterns,
+                    exclude_summary_patterns,
+                    storeEntitySummaries
+                );
+                
+                outputMessage = `🔄 Resumed processing of ${resume_failed_files.length} previously failed files.`;
+            }
 
-            if (paths_to_embed && paths_to_embed.length > 0) {
+            // If we've already handled resume_failed_files, skip other conditions
+            if (resume_failed_files && Array.isArray(resume_failed_files) && resume_failed_files.length > 0) {
+                // Already processed in the section above
+            } else if (paths_to_embed && paths_to_embed.length > 0) {
                 const normalizedPaths = paths_to_embed.map((fp: string) => {
                     const absoluteFilePath = path.isAbsolute(fp)
                         ? fp
@@ -273,15 +316,49 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
             } else {
-                throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed' or 'paths_to_embed' must be provided.");
+                throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed', 'paths_to_embed', or 'resume_failed_files' must be provided.");
             }
 
             let detailedOutput = `## 🧠 Codebase Ingestion Report\n\n> ${outputMessage}\n\n`;
+            
+            // Add batch status indicator
+            const statusIcon = resultCounts.batchStatus === 'complete' ? '✅' : 
+                              resultCounts.batchStatus === 'partial' ? '⚠️' : '❌';
+            detailedOutput += `### ${statusIcon} Batch Status: ${resultCounts.batchStatus.toUpperCase()}\n\n`;
 
             detailedOutput += `### 📊 Overall Statistics\n`
                 + `- **✨ New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
                 + `- **♻️ Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
+                + `- **📁 Reused Files (Unchanged):** ${resultCounts.reusedFilesCount || 0}\n`
                 + `- **🗑️ Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
+            
+            // Add error reporting if there are issues
+            if (resultCounts.processingErrors && resultCounts.processingErrors.length > 0) {
+                detailedOutput += `\n### ❌ Processing Errors (${resultCounts.processingErrors.length})\n`;
+                const errorsByStage = new Map<string, any[]>();
+                resultCounts.processingErrors.forEach(error => {
+                    if (!errorsByStage.has(error.stage)) {
+                        errorsByStage.set(error.stage, []);
+                    }
+                    errorsByStage.get(error.stage)!.push(error);
+                });
+                
+                for (const [stage, errors] of errorsByStage.entries()) {
+                    detailedOutput += `\n**${stage.replace('_', ' ').toUpperCase()} Failures (${errors.length}):**\n`;
+                    errors.forEach(error => {
+                        detailedOutput += `- \`${error.file_path_relative}\`: ${error.error}\n`;
+                    });
+                }
+                
+                // Add resumption guidance
+                if (resultCounts.resumeInfo && resultCounts.resumeInfo.failedFiles.length > 0) {
+                    detailedOutput += `\n### 🔄 Resumption Available\n`;
+                    detailedOutput += `**${resultCounts.resumeInfo.failedFiles.length} files** failed processing and can be resumed.\n\n`;
+                    detailedOutput += `**To resume failed files, you can:**\n`;
+                    detailedOutput += `1. Re-run the ingestion for the same directory (failed files will be automatically retried)\n`;
+                    detailedOutput += `2. Or target specific failed files: \`${resultCounts.resumeInfo.failedFiles.slice(0, 3).join(', ')}${resultCounts.resumeInfo.failedFiles.length > 3 ? '...' : ''}\`\n\n`;
+                }
+            }
 
             if (!disable_ai_output_summary) {
                 const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);

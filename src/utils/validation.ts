@@ -184,13 +184,20 @@ export const schemas = {
                 nullable: true,
                 description: "Optional: Array of glob patterns to exclude specific files from AI summary generation. Files matching these patterns will not have summaries generated."
             },
-            storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." }
+            storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." },
+            resume_failed_files: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of relative file paths that previously failed processing and should be resumed. When provided, other path options are ignored."
+            }
         },
         required: ['agent_id', 'project_root_path'],
         additionalProperties: false,
         oneOf: [
             { required: ["path_to_embed"] },
-            { required: ["paths_to_embed"] }
+            { required: ["paths_to_embed"] },
+            { required: ["resume_failed_files"] }
         ]
     },
     ingestFileCodeEntities: {

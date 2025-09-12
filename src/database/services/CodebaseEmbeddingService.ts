@@ -113,8 +113,10 @@ export class CodebaseEmbeddingService {
         const report: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'> = {
             newEmbeddingsCount: 0,
             reusedEmbeddingsCount: 0,
+            reusedFilesCount: 0,
             newEmbeddings: [],
             reusedEmbeddings: [],
+            reusedFiles: [],
             deletedEmbeddings: [],
             scannedFiles: [],
             embeddingRequestCount: 0,
@@ -123,7 +125,10 @@ export class CodebaseEmbeddingService {
             namingApiCallCount: 0,
             summarizationApiCallCount: 0,
             dbCallCount: 0,
-            dbCallLatencyMs: 0
+            dbCallLatencyMs: 0,
+            processingErrors: [],
+            batchStatus: 'complete',
+            resumeInfo: { failedFiles: [] }
         };
 
         // Process files in parallel with error isolation
@@ -138,7 +143,36 @@ export class CodebaseEmbeddingService {
                 const currentFileHash = this.generateFileHash(fileContent);
                 if (existingFileHashes.get(fileInfo.relativePath) === currentFileHash) {
                     console.log(`[Idempotency Skip] File has not changed: ${fileInfo.relativePath}`);
-                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'skipped' });
+                    
+                    // Get existing embeddings count for this file to report reuse accurately
+                    const existingEmbeddingsForUnchangedFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+                    const existingChunkCount = existingEmbeddingsForUnchangedFile.length;
+                    
+                    // Update metrics to reflect file-level reuse
+                    report.reusedFilesCount++;
+                    report.reusedFiles.push({
+                        file_path_relative: fileInfo.relativePath,
+                        reason: 'file_unchanged',
+                        chunk_count: existingChunkCount
+                    });
+                    
+                    // Add to reused embeddings count (these embeddings are effectively reused)
+                    report.reusedEmbeddingsCount += existingChunkCount;
+                    
+                    // Add existing embeddings to reused embeddings list for reporting
+                    for (const existingEmbedding of existingEmbeddingsForUnchangedFile) {
+                        report.reusedEmbeddings.push({
+                            file_path_relative: fileInfo.relativePath,
+                            chunk_text: existingEmbedding.chunk_text.substring(0, 100) + '...', // Truncate for display
+                            entity_name: existingEmbedding.entity_name
+                        });
+                    }
+                    
+                    report.scannedFiles.push({ 
+                        file_path_relative: fileInfo.relativePath, 
+                        status: 'skipped',
+                        skipReason: 'file_unchanged' 
+                    });
                     return;
                 }
 
@@ -161,8 +195,23 @@ export class CodebaseEmbeddingService {
                     multiVectorChunks = result.chunks;
                     summarizationApiCallCount = result.summarizationApiCallCount;
                 } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
                     console.error(`Error chunking file ${fileInfo.relativePath}:`, error);
-                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'error' });
+                    
+                    report.processingErrors.push({
+                        file_path_relative: fileInfo.relativePath,
+                        error: errorMessage,
+                        stage: 'chunking'
+                    });
+                    
+                    report.resumeInfo!.failedFiles.push(fileInfo.relativePath);
+                    report.batchStatus = 'partial';
+                    
+                    report.scannedFiles.push({ 
+                        file_path_relative: fileInfo.relativePath, 
+                        status: 'error',
+                        skipReason: `chunking_failed: ${errorMessage}` 
+                    });
                     return;
                 }
 
@@ -227,8 +276,23 @@ export class CodebaseEmbeddingService {
 
                 report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'processed' });
             } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
                 console.error(`Error processing file ${fileInfo.absolutePath}:`, err);
-                report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'error' });
+                
+                report.processingErrors.push({
+                    file_path_relative: fileInfo.relativePath,
+                    error: errorMessage,
+                    stage: 'file_processing'
+                });
+                
+                report.resumeInfo!.failedFiles.push(fileInfo.relativePath);
+                report.batchStatus = 'partial';
+                
+                report.scannedFiles.push({ 
+                    file_path_relative: fileInfo.relativePath, 
+                    status: 'error',
+                    skipReason: `processing_failed: ${errorMessage}` 
+                });
             }
         }));
 
@@ -244,8 +308,34 @@ export class CodebaseEmbeddingService {
                 report.embeddingRetryCount = embeddings.retryCount;
                 report.totalTokensProcessed = embeddings.totalTokensProcessed;
             } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 console.error(`Error generating embeddings:`, error);
-                // Return partial results
+                
+                // Mark all files with chunks to embed as failed for this batch
+                const affectedFiles = new Set(chunksToEmbed.map(item => item.fileInfo.relativePath));
+                for (const filePath of affectedFiles) {
+                    report.processingErrors.push({
+                        file_path_relative: filePath,
+                        error: errorMessage,
+                        stage: 'embedding_generation'
+                    });
+                    
+                    if (!report.resumeInfo!.failedFiles.includes(filePath)) {
+                        report.resumeInfo!.failedFiles.push(filePath);
+                    }
+                    
+                    // Update scan status for affected files
+                    const scanEntry = report.scannedFiles.find(f => f.file_path_relative === filePath);
+                    if (scanEntry && scanEntry.status === 'processed') {
+                        scanEntry.status = 'partial';
+                        scanEntry.skipReason = `embedding_failed: ${errorMessage}`;
+                    }
+                }
+                
+                report.batchStatus = 'partial';
+                console.warn(`Embedding generation failed for ${affectedFiles.size} files. These files will need to be reprocessed.`);
+                
+                // Return partial results with detailed error information
                 return report;
             }
 
@@ -325,8 +415,25 @@ export class CodebaseEmbeddingService {
                 try {
                     await this.repository.bulkInsertEmbeddings(newEmbeddingsToStore);
                 } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
                     console.error(`Error bulk inserting embeddings:`, error);
-                    // Return partial results
+                    
+                    // Mark files as having database insertion failures
+                    const affectedFiles = new Set(newEmbeddingsToStore.map(embedding => embedding.file_path_relative));
+                    for (const filePath of affectedFiles) {
+                        report.processingErrors.push({
+                            file_path_relative: filePath,
+                            error: errorMessage,
+                            stage: 'database_insertion'
+                        });
+                        
+                        if (!report.resumeInfo!.failedFiles.includes(filePath)) {
+                            report.resumeInfo!.failedFiles.push(filePath);
+                        }
+                    }
+                    
+                    report.batchStatus = 'partial';
+                    console.warn(`Database insertion failed for ${affectedFiles.size} files. Embeddings were generated but not stored.`);
                 }
             }
         }
@@ -372,6 +479,72 @@ export class CodebaseEmbeddingService {
         };
     }
 
+    public async resumeFailedEmbeddingBatch(
+        agentId: string,
+        failedFiles: string[],
+        projectRootPath: string,
+        strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
+        includeSummaryPatterns?: string[],
+        excludeSummaryPatterns?: string[],
+        storeEntitySummaries: boolean = true
+    ): Promise<EmbeddingIngestionResult> {
+        console.log(`[CodebaseEmbeddingService] Resuming failed batch for ${failedFiles.length} files...`);
+        
+        // Filter out files that don't exist or are no longer eligible
+        const validFailedFiles: string[] = [];
+        for (const filePath of failedFiles) {
+            try {
+                const absolutePath = path.resolve(projectRootPath, filePath);
+                await fs.access(absolutePath); // Check if file exists
+                validFailedFiles.push(filePath);
+            } catch (error) {
+                console.warn(`Skipping failed file that no longer exists: ${filePath}`);
+            }
+        }
+        
+        if (validFailedFiles.length === 0) {
+            console.log(`[CodebaseEmbeddingService] No valid failed files to resume.`);
+            return {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                reusedFilesCount: 0,
+                deletedEmbeddingsCount: 0,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                reusedFiles: [],
+                deletedEmbeddings: [],
+                scannedFiles: [],
+                embeddingRequestCount: 0,
+                embeddingRetryCount: 0,
+                totalTokensProcessed: 0,
+                namingApiCallCount: 0,
+                summarizationApiCallCount: 0,
+                dbCallCount: 0,
+                dbCallLatencyMs: 0,
+                processingErrors: [],
+                batchStatus: 'complete',
+                resumeInfo: { failedFiles: [] },
+                aiSummary: 'No files to resume',
+                totalTimeMs: 0
+            };
+        }
+        
+        console.log(`[CodebaseEmbeddingService] Resuming processing for ${validFailedFiles.length} failed files`);
+        
+        // Process only the failed files
+        return this.generateAndStoreEmbeddingsForMultipleFiles(
+            agentId,
+            validFailedFiles,
+            projectRootPath,
+            strategy,
+            providerType,
+            includeSummaryPatterns,
+            excludeSummaryPatterns,
+            storeEntitySummaries
+        );
+    }
+    
     public async generateAndStoreEmbeddingsForDirectory(
         agentId: string,
         directoryPath: string,
@@ -440,6 +613,27 @@ export class CodebaseEmbeddingService {
             }
         }
 
+        // Set final batch status based on overall processing
+        if (result.batchStatus === 'partial' || result.processingErrors.length > 0) {
+            result.batchStatus = 'partial';
+        } else if (result.processingErrors.length === 0 && result.resumeInfo!.failedFiles.length === 0) {
+            result.batchStatus = 'complete';
+        }
+        
+        // Log summary of processing results
+        console.log(`[CodebaseEmbeddingService] Directory processing complete:`);
+        console.log(`  - Status: ${result.batchStatus}`);
+        console.log(`  - Files processed: ${result.scannedFiles.filter(f => f.status === 'processed').length}`);
+        console.log(`  - Files skipped: ${result.scannedFiles.filter(f => f.status === 'skipped').length}`);
+        console.log(`  - Files with errors: ${result.processingErrors.length}`);
+        console.log(`  - New embeddings: ${result.newEmbeddingsCount}`);
+        console.log(`  - Reused embeddings: ${result.reusedEmbeddingsCount}`);
+        console.log(`  - Reused files: ${result.reusedFilesCount}`);
+        
+        if (result.resumeInfo!.failedFiles.length > 0) {
+            console.warn(`  - Files requiring retry: ${result.resumeInfo!.failedFiles.join(', ')}`);
+        }
+        
         return {
             ...result,
             deletedEmbeddingsCount,

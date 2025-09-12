@@ -27,11 +27,13 @@ export interface CodebaseEmbeddingRecord {
 export interface EmbeddingIngestionResult {
     newEmbeddingsCount: number;
     reusedEmbeddingsCount: number;
+    reusedFilesCount: number; // New: Count of files skipped due to unchanged file hash
     deletedEmbeddingsCount: number;
     newEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
     reusedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
+    reusedFiles: Array<{ file_path_relative: string; reason: string; chunk_count?: number; }>; // New: Track reused files
     deletedEmbeddings: Array<{ file_path_relative: string; chunk_text: string; entity_name?: string | null; }>;
-    scannedFiles: Array<{ file_path_relative: string; status: 'processed' | 'skipped' | 'error'; }>; // New field
+    scannedFiles: Array<{ file_path_relative: string; status: 'processed' | 'skipped' | 'error' | 'partial'; skipReason?: string; }>; // Enhanced with skip reason
     aiSummary?: string;
     embeddingRequestCount: number;
     embeddingRetryCount: number;
@@ -41,6 +43,9 @@ export interface EmbeddingIngestionResult {
     dbCallLatencyMs: number;
     totalTimeMs: number;
     totalTokensProcessed?: number;
+    processingErrors: Array<{ file_path_relative: string; error: string; stage: string; }>; // New: Track processing errors
+    batchStatus: 'complete' | 'partial' | 'failed'; // New: Overall batch status
+    resumeInfo?: { failedFiles: string[]; lastSuccessfulFile?: string; }; // New: Resume information
 }
 
 export interface CachedChunk {
