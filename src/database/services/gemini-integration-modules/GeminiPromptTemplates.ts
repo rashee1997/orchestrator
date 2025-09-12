@@ -135,66 +135,118 @@ You are a highly efficient intent classification AI. Your task is to analyze the
 export const EXTRACT_ENTITIES_PROMPT = `Extract key entities and keywords from the following text. Provide the output as a JSON object with two arrays: "entities" and "keywords".\n\nText:\n{textToExtractFrom}`;
 
 
+
+
 // ============================================================================
-// Knowledge Graph Prompts
+// Enhanced Knowledge Graph Natural Language Processing Prompts
 // ============================================================================
-export const NLP_QUERY_PROMPT_TEMPLATE = `You are an expert in translating natural language questions about software codebases into a structured query for a knowledge graph.
-The knowledge graph contains nodes representing files, directories, functions, classes, interfaces, modules, and variables.
-Node observations often include 'absolute_path', 'language', 'signature', 'lines', 'defined_in_file'.
-Key relation types include: 'contains_item', 'imports_file', 'imports_module', 'defined_in_file', 'has_method', 'calls_function', 'uses_class'.
 
-Given a natural language query, translate it into a JSON array of operation objects. Each object must have an "operation" and "args" field.
+export const ENHANCED_KG_NL_TRANSLATION_PROMPT = `
+You are an expert Knowledge Graph query translator specialized in understanding code structure and relationships. Analyze this natural language query about a codebase and translate it into an optimized Knowledge Graph search.
 
-Supported operations and their 'args' structure:
-1. 'search_nodes': args = { "query": "key:value key2:value2 ..." }
-   - The "query" string uses key:value pairs. Supported keys: 'entityType', 'name', 'file', 'obs', 'id', 'limit', 'defined_in_file_path', 'parent_class_full_name'.
-   - This is for finding nodes based on their properties.
-   - Example NLQ: "Find all functions in 'src/utils.ts' that mention 'format'"
-   - Translation: [{ "operation": "search_nodes", "args": { "query": "entityType:function file:src/utils.ts obs:format" } }]
+**Query to Analyze**: "{naturalLanguageQuery}"
 
-2. 'open_nodes': args = { "names": ["exact_node_name1", "exact_node_name2"] }
-   - Use for fetching specific nodes by their exact names.
+**Your Task:**
+Transform this natural language query into a comprehensive KG search specification that understands:
+1. **Structural Patterns**: How code entities are organized and related
+2. **Semantic Intent**: What the user is trying to understand or find
+3. **Graph Traversal Strategy**: How to navigate relationships effectively
+4. **Entity Hierarchy**: The importance and priority of different entity types
 
-3. 'graph_traversal': args = { "start_node": "node_name", "relation_types": ["relation1"], "depth": number }
-   - Use for FORWARD (OUTGOING) traversal from a starting node.
-   - Answers questions like "What does X call?", "What does Y import?".
-   - Example NLQ: "What functions does 'AuthService' call?"
-   - Translation: [{ "operation": "graph_traversal", "args": { "start_node": "AuthService", "relation_types": ["calls_function"], "depth": 1 } }]
+**Advanced Analysis Context:**
+- **Codebase Domain**: Software engineering, with focus on classes, functions, modules, files, and their relationships
+- **Relationship Types Available**: imports, exports, calls, inherits, implements, contains, depends_on, defines, references
+- **Entity Types Available**: file, module, class, function, method, variable, interface, type, enum, constant
+- **Search Strategies**: semantic (content-based), structural (relationship-based), hybrid (both), traversal (multi-hop)
 
-4. 'find_inbound_relations': args = { "target_node_name": "node_name", "relation_type": "relation_name" }
-   - Use for INVERSE (INCOMING) traversal to find source nodes.
-   - Answers questions like "Who calls X?", "Which files import Y?", "Where is Z used?".
-   - Example NLQ: "Who calls the 'processAndRefinePrompt' function?"
-   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "processAndRefinePrompt", "relation_type": "calls_function" } }]
-   - Example NLQ: "Which files import 'CodebaseContextRetrieverService'?"
-   - Translation: [{ "operation": "find_inbound_relations", "args": { "target_node_name": "CodebaseContextRetrieverService", "relation_type": "imports_file" } }]
+**Enhanced Response Format:**
+{
+  "enhanced_query": "Sophisticated query optimized for graph structure understanding",
+  "query_intent": "What the user is fundamentally trying to accomplish",
+  "search_strategy": "semantic|structural|hybrid|traversal",
+  "primary_entity_types": ["most relevant entity types"],
+  "secondary_entity_types": ["supporting entity types"],
+  "key_relation_types": ["essential relationships to explore"],
+  "traversal_depth": 1-5,
+  "structural_patterns": ["patterns to look for: hierarchy, dependency_chain, cluster, etc."],
+  "semantic_keywords": ["key terms for semantic matching"],
+  "graph_traversal_rules": {
+    "start_nodes": "where to begin the search",
+    "follow_relations": ["which relationships to follow"],
+    "stop_conditions": "when to stop traversing"
+  },
+  "search_optimization": {
+    "weight_structure": 0.0-1.0,
+    "weight_semantic": 0.0-1.0,
+    "expected_result_count": "estimated number of relevant results",
+    "confidence": 0.0-1.0
+  }
+}
 
-5. 'read_graph': args = {}
-   - Use only if the query is very general like "show me the graph".
+**Example for Complex Query:**
+Input: "Find all functions related to iterative RAG processing and their dependencies"
+Output:
+{
+  "enhanced_query": "Locate all function entities containing 'iterative' and 'RAG' terms, then traverse their dependency relationships to find connected processing components",
+  "query_intent": "Discover the complete functional ecosystem around iterative RAG processing",
+  "search_strategy": "hybrid",
+  "primary_entity_types": ["function", "method"],
+  "secondary_entity_types": ["class", "module", "file"],
+  "key_relation_types": ["calls", "depends_on", "contains", "references"],
+  "traversal_depth": 3,
+  "structural_patterns": ["dependency_chain", "functional_cluster"],
+  "semantic_keywords": ["iterative", "RAG", "processing", "orchestrator", "retrieval"],
+  "graph_traversal_rules": {
+    "start_nodes": "Functions matching semantic keywords",
+    "follow_relations": ["calls", "depends_on"],
+    "stop_conditions": "When reaching files or reaching depth limit"
+  },
+  "search_optimization": {
+    "weight_structure": 0.6,
+    "weight_semantic": 0.7,
+    "expected_result_count": "10-20 primary results",
+    "confidence": 0.9
+  }
+}
 
-Knowledge Graph Structure (or summary):
----
-\${graphRepresentation}
----
+Provide ONLY the JSON response with comprehensive graph-optimized analysis.`;
 
-Natural Language Query: "\${naturalLanguageQuery}"
+export const KG_STRUCTURE_UNDERSTANDING_PROMPT = `
+You are a specialized Knowledge Graph structure analyzer. Given a query and preliminary KG results, enhance the understanding by analyzing structural patterns and suggesting improved search strategies.
 
----
-Instructions for translation:
-1. Analyze the NLQ and choose the most appropriate "operation(s)".
-2. If the query asks about what a node DOES (e.g., calls, contains, imports), use 'graph_traversal'.
-3. If the query asks about WHO acts upon a node (e.g., callers of, importers of, users of), use 'find_inbound_relations'.
-4. If a query asks for multiple distinct items (e.g., "Find class A and function B"), break it down into multiple separate operations in the array.
-   - Example NLQ: "Show me the GeminiApiClient class and the batchAskGemini method"
-   - Translation: [{ "operation": "open_nodes", "args": { "names": ["GeminiApiClient"] } }, { "operation": "open_nodes", "args": { "names": ["batchAskGemini"] } }]
-5. If the query asks for a process description, implementation details, or "how" something works (e.g., "how are API keys managed?"), it requires code analysis beyond simple graph lookups. In this case, return a single error operation.
-   - Example NLQ: "how are API keys managed in GeminiApiClient?"
-   - Translation: [{ "operation": "error", "args": { "message": "Could not translate query: This query requires code analysis of implementation details. Consider using a RAG tool like 'ask_gemini' with codebase context." } }]
-6. If the query cannot be reasonably translated for other reasons, return a single error operation:
-   [{ "operation": "error", "args": { "message": "Could not translate query: [brief explanation]" } }]
+**Original Query**: "{originalQuery}"
+**Current Results**: {currentResults}
+**Search Strategy Used**: {searchStrategy}
 
-Translate the above Natural Language Query into the structured JSON array format. Provide ONLY the JSON array.
-`;
+**Analysis Tasks:**
+1. **Pattern Recognition**: Identify structural patterns in the current results
+2. **Gap Analysis**: What important related entities might be missing?
+3. **Relationship Mapping**: What additional relationships should be explored?
+4. **Query Refinement**: How can the query be improved for better structure understanding?
+
+**Response Format:**
+{
+  "structural_analysis": {
+    "patterns_found": ["list of identified patterns"],
+    "entity_clusters": ["groups of related entities"],
+    "relationship_density": "sparse|moderate|dense",
+    "coverage_assessment": "incomplete|partial|comprehensive"
+  },
+  "missing_elements": {
+    "potential_entities": ["entities that might be missing"],
+    "unexplored_relations": ["relationship types not fully explored"],
+    "structural_gaps": ["areas where structure understanding is incomplete"]
+  },
+  "improvement_suggestions": {
+    "refined_queries": ["improved query formulations"],
+    "additional_strategies": ["complementary search approaches"],
+    "traversal_adjustments": ["modifications to graph traversal"]
+  },
+  "confidence_score": 0.0-1.0
+}
+
+Provide ONLY the JSON response with detailed structural analysis.`;
+
 // ============================================================================
 // Plan & Task Management Prompts
 // ============================================================================
