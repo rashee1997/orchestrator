@@ -95,6 +95,9 @@ export interface IterativeRagResult {
         graphTraversals: number;
         hybridSearches: number;
         citationAccuracy: number;
+    citationCoverage: number;
+    totalCitationsGenerated: number;
+    totalCitationsUsed: number;
         dmqr: {
             enabled: boolean;
             queryCount?: number;
@@ -132,6 +135,8 @@ export interface IterativeRagArgs {
     focus_area?: string;
     analysis_focus_points?: string[];
     enable_web_search?: boolean;
+    google_search?: boolean;
+    continue_session?: boolean;
     max_iterations?: number;
     hallucination_check_threshold?: number;
     tavily_search_depth?: 'basic' | 'advanced';
@@ -173,6 +178,14 @@ export class IterativeRagOrchestrator {
     private readonly CACHE_TTL = 10 * 60 * 1000; // 10 minutes for session cache
     private readonly MAX_SESSION_CACHE_SIZE = 50;
     private citationIdCounter = 0;
+    
+    // Enhanced search cache for hybrid results
+    private hybridSearchCache: Map<string, {
+        results: RetrievedCodeContext[];
+        timestamp: number;
+        searchStrategy: string;
+    }>;
+    private readonly HYBRID_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
     constructor(
         memoryManagerInstance: MemoryManager,
@@ -185,6 +198,7 @@ export class IterativeRagOrchestrator {
         this.diverseQueryRewriterService = diverseQueryRewriterService;
         this.knowledgeGraphManager = knowledgeGraphManager;
         this.sessionContextCache = new Map();
+        this.hybridSearchCache = new Map();
     }
 
     /**
@@ -328,35 +342,75 @@ export class IterativeRagOrchestrator {
         plan?: AgenticRagPlan
     ): Promise<RetrievedCodeContext[]> {
         const results: RetrievedCodeContext[] = [];
+        const hybridOptions = { ...options, useHybridSearch: true };
 
-        // Vector search
-        const vectorResults = await this._retrieveContextWithCache(agentId, [query], options);
-        results.push(...vectorResults);
+        // Enhanced Hybrid Search with Task Types
+        console.log(`[Enhanced Hybrid Search] Starting hybrid search with Gemini task types for query: "${query}"`);
 
-        // Knowledge graph search (if available)
-        if (this.knowledgeGraphManager && plan?.strategy === 'hybrid_search') {
-            try {
-                const graphQuery = await this.knowledgeGraphManager.queryNaturalLanguage(agentId, query);
-                const graphData = JSON.parse(graphQuery);
-                
-                if (graphData.results && Array.isArray(graphData.results.nodes)) {
-                    graphData.results.nodes.forEach((node: any) => {
-                        results.push({
-                            type: 'kg_node_info',
-                            sourcePath: `kg://${node.name}`,
-                            entityName: node.name,
-                            content: JSON.stringify(node.observations),
-                            relevanceScore: 0.85,
-                            metadata: { nodeType: node.entityType }
-                        });
-                    });
-                }
-            } catch (error) {
-                console.warn('[Hybrid Search] Knowledge graph query failed:', error);
+        // 1. Vector Search with RETRIEVAL_QUERY task type
+        const vectorSearchPromise = this._retrieveContextWithCache(agentId, [query], {
+            ...hybridOptions,
+            taskType: 'RETRIEVAL_QUERY'
+        });
+
+        // 2. Keyword-based Search with CODE_RETRIEVAL_QUERY task type
+        const keywordSearchPromise = this._performEnhancedKeywordSearch(agentId, query, {
+            ...hybridOptions,
+            taskType: 'CODE_RETRIEVAL_QUERY'
+        });
+
+        // 3. Knowledge Graph Search (if available)
+        const kgSearchPromise = this.knowledgeGraphManager && plan?.strategy === 'hybrid_search'
+            ? this._performKnowledgeGraphSearch(agentId, query, hybridOptions)
+            : Promise.resolve([]);
+
+        // Execute searches in parallel with Gemini batch processing
+        try {
+            const [vectorResults, keywordResults, kgResults] = await Promise.allSettled([
+                vectorSearchPromise,
+                keywordSearchPromise, 
+                kgSearchPromise
+            ]);
+
+            // Process vector results
+            if (vectorResults.status === 'fulfilled') {
+                results.push(...vectorResults.value);
+                console.log(`[Hybrid Search] Vector search yielded ${vectorResults.value.length} results`);
+            } else {
+                console.warn('[Hybrid Search] Vector search failed:', vectorResults.reason);
             }
-        }
 
-        return deduplicateContexts(results);
+            // Process keyword results
+            if (keywordResults.status === 'fulfilled') {
+                results.push(...keywordResults.value);
+                console.log(`[Hybrid Search] Keyword search yielded ${keywordResults.value.length} results`);
+            } else {
+                console.warn('[Hybrid Search] Keyword search failed:', keywordResults.reason);
+            }
+
+            // Process KG results
+            if (kgResults.status === 'fulfilled') {
+                results.push(...kgResults.value);
+                console.log(`[Hybrid Search] KG search yielded ${kgResults.value.length} results`);
+            } else if (kgResults.status === 'rejected') {
+                console.warn('[Hybrid Search] KG search failed:', kgResults.reason);
+            }
+
+            // Apply hybrid ranking using Reciprocal Rank Fusion
+            const rankedResults = this._applyHybridRanking([
+                vectorResults.status === 'fulfilled' ? vectorResults.value : [],
+                keywordResults.status === 'fulfilled' ? keywordResults.value : [],
+                kgResults.status === 'fulfilled' ? kgResults.value : []
+            ]);
+
+            console.log(`[Enhanced Hybrid Search] Combined and ranked ${rankedResults.length} results`);
+            return deduplicateContexts(rankedResults);
+
+        } catch (error) {
+            console.error('[Hybrid Search] Error during parallel search execution:', error);
+            // Fallback to sequential execution
+            return await this._fallbackSequentialSearch(agentId, query, hybridOptions, plan);
+        }
     }
 
     private async _performCorrectiveSearch(
@@ -395,6 +449,207 @@ export class IterativeRagOrchestrator {
             console.warn('[Corrective Search] Failed to use enhanced prompt, using fallback:', error);
             const fallbackQuery = `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim();
             return await this._retrieveContextWithCache(agentId, [fallbackQuery], options);
+        }
+    }
+
+        private async _performEnhancedKeywordSearch(
+        agentId: string,
+        query: string,
+        options: ContextRetrievalOptions
+    ): Promise<RetrievedCodeContext[]> {
+        try {
+            console.log(`[Enhanced Keyword Search] Performing keyword-based search for: "${query}"`);
+            
+            // Extract keywords using Gemini with CODE_RETRIEVAL_QUERY task type
+            const keywordExtractionPrompt = `Extract the most important technical keywords, function names, class names, and file patterns from this query for code search. Focus on identifiers that would appear in code.
+
+Query: "${query}"
+
+Return a JSON object with "keywords" array containing the extracted terms.
+Example: {"keywords": ["getUserData", "UserService", "authentication", "api"]}`;
+
+            const keywordResult = await this.geminiService.askGemini(
+                keywordExtractionPrompt,
+                getCurrentModel(),
+                'You are a code search expert. Extract precise technical keywords for effective code retrieval.'
+            );
+
+            let keywords: string[] = [];
+            try {
+                const parsed = JSON.parse(keywordResult.content[0].text || '{}');
+                keywords = parsed.keywords || [];
+            } catch {
+                // Fallback keyword extraction
+                keywords = query.split(/\s+/)
+                    .filter(word => word.length > 2)
+                    .filter(word => /[a-zA-Z_$][\w$]*/.test(word)); // Identifier-like words
+            }
+
+            if (keywords.length === 0) {
+                console.log('[Enhanced Keyword Search] No keywords extracted, falling back to vector search');
+                return [];
+            }
+
+            console.log(`[Enhanced Keyword Search] Using keywords: ${keywords.join(', ')}`);
+
+            // Perform parallel keyword searches
+            const keywordPromises = keywords.slice(0, 10).map(async (keyword) => {
+                try {
+                    // Search in multiple sources
+                    const [embeddingResults, kgResults] = await Promise.allSettled([
+                        // Vector search
+                        this._retrieveContextWithCache(agentId, [`"${keyword}"`], options),
+                        // Knowledge graph search if available
+                        this.knowledgeGraphManager ? 
+                            this.knowledgeGraphManager.searchNodes(agentId, keyword).catch(() => []) :
+                            Promise.resolve([])
+                    ]);
+
+                    const results: RetrievedCodeContext[] = [];
+
+                    // Process embedding results
+                    if (embeddingResults.status === 'fulfilled') {
+                        results.push(...embeddingResults.value);
+                    }
+
+                    // Process KG results
+                    if (kgResults.status === 'fulfilled' && this.knowledgeGraphManager) {
+                        const kgNodes = kgResults.value;
+                        if (Array.isArray(kgNodes) && kgNodes.length > 0) {
+                            const kgContexts = kgNodes.map(node => ({
+                                type: 'kg_node_info' as const,
+                                sourcePath: `kg://${node.name}`,
+                                entityName: node.name,
+                                content: JSON.stringify(node.observations || []),
+                                relevanceScore: 0.7, // Default relevance for KG results
+                                metadata: { nodeType: node.entityType }
+                            }));
+                            results.push(...kgContexts);
+                        }
+                    }
+
+                    return results;
+                } catch (error) {
+                    console.warn(`[Enhanced Keyword Search] Failed to search for keyword "${keyword}":`, error);
+                    return [];
+                }
+            });
+
+            const allResults = await Promise.all(keywordPromises);
+            const flattenedResults = allResults.flat();
+
+            // Deduplicate and rank results
+            const uniqueResults = deduplicateContexts(flattenedResults);
+            uniqueResults.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+
+            console.log(`[Enhanced Keyword Search] Found ${uniqueResults.length} results for ${keywords.length} keywords`);
+            return uniqueResults.slice(0, options.topKEmbeddings || 20);
+
+        } catch (error) {
+            console.error('[Enhanced Keyword Search] Error during keyword search:', error);
+            return [];
+        }
+    }
+
+    private async _performKnowledgeGraphSearch(
+        agentId: string,
+        query: string,
+        options: ContextRetrievalOptions
+    ): Promise<RetrievedCodeContext[]> {
+        if (!this.knowledgeGraphManager) {
+            return [];
+        }
+
+        try {
+            console.log(`[KG Search] Performing knowledge graph search for: "${query}"`);
+            const graphQuery = await this.knowledgeGraphManager.queryNaturalLanguage(agentId, query);
+            const graphData = JSON.parse(graphQuery);
+            
+            if (graphData.results && Array.isArray(graphData.results.nodes)) {
+                const kgResults = graphData.results.nodes.map((node: any) => ({
+                    type: 'kg_node_info' as const,
+                    sourcePath: `kg://${node.name}`,
+                    entityName: node.name,
+                    content: JSON.stringify(node.observations),
+                    relevanceScore: 0.85,
+                    metadata: { 
+                        nodeType: node.entityType,
+                        searchType: 'knowledge_graph'
+                    }
+                }));
+                
+                console.log(`[KG Search] Found ${kgResults.length} knowledge graph results`);
+                return kgResults;
+            }
+        } catch (error) {
+            console.warn('[KG Search] Knowledge graph query failed:', error);
+        }
+
+        return [];
+    }
+
+    private _applyHybridRanking(searchResults: RetrievedCodeContext[][]): RetrievedCodeContext[] {
+        // Use Reciprocal Rank Fusion with different weights for different search types
+        const weights = {
+            vector: 1.0,
+            keyword: 0.8,
+            knowledge_graph: 0.9
+        };
+
+        const scores: Map<string, { score: number; context: RetrievedCodeContext }> = new Map();
+        const k = 60; // RRF constant
+
+        searchResults.forEach((results, searchTypeIndex) => {
+            const searchTypes = ['vector', 'keyword', 'kg_node_info'];
+            const currentWeight = weights[searchTypes[searchTypeIndex] as keyof typeof weights] || 1.0;
+
+            results.forEach((context, rank) => {
+                const key = `${context.sourcePath}:${context.entityName || 'default'}:${context.content.substring(0, 100)}`;
+                const rrfScore = currentWeight * (1 / (k + rank + 1));
+                
+                if (scores.has(key)) {
+                    const existing = scores.get(key)!;
+                    existing.score += rrfScore;
+                } else {
+                    scores.set(key, {
+                        score: rrfScore,
+                        context: {
+                            ...context,
+                            relevanceScore: rrfScore
+                        }
+                    });
+                }
+            });
+        });
+
+        // Sort by combined score
+        return Array.from(scores.values())
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.context);
+    }
+
+    private async _fallbackSequentialSearch(
+        agentId: string,
+        query: string,
+        options: ContextRetrievalOptions,
+        plan?: AgenticRagPlan
+    ): Promise<RetrievedCodeContext[]> {
+        console.log('[Hybrid Search] Executing fallback sequential search');
+        const results: RetrievedCodeContext[] = [];
+
+        try {
+            // Sequential vector search
+            const vectorResults = await this._retrieveContextWithCache(agentId, [query], options);
+            results.push(...vectorResults);
+
+            // Sequential keyword search
+            const keywordResults = await this._performEnhancedKeywordSearch(agentId, query, options);
+            results.push(...keywordResults);
+
+            return deduplicateContexts(results);
+        } catch (error) {
+            console.error('[Hybrid Search] Fallback search also failed:', error);
+            return [];
         }
     }
 
@@ -581,7 +836,10 @@ export class IterativeRagOrchestrator {
                 }
             }
             if (focusString) {
-                focusString = `--- Focus Area ---\n${focusString}\n\n`;
+                focusString = `--- Focus Area ---
+${focusString}
+
+`;
             }
         }
         return focusString;
@@ -619,7 +877,7 @@ export class IterativeRagOrchestrator {
                 'class': 3,
                 'file': 2,
                 'documentation': 1,
-                'knowledge_graph': 6
+                'kg_node_info': 6
             };
 
             return contexts.sort((a, b) => {
@@ -667,6 +925,127 @@ export class IterativeRagOrchestrator {
     }
 
 
+    /**
+     * Process contexts in batches of three using Gemini task types
+     */
+    private async _processBatchContextAnalysis(
+        contexts: RetrievedCodeContext[],
+        originalQuery: string,
+        model?: string
+    ): Promise<{ analyzedContexts: RetrievedCodeContext[]; batchAnalysis: string[] }> {
+        const batchSize = 3;
+        const batches: RetrievedCodeContext[][] = [];
+        const batchAnalysis: string[] = [];
+
+        // Split contexts into batches of 3
+        for (let i = 0; i < contexts.length; i += batchSize) {
+            batches.push(contexts.slice(i, i + batchSize));
+        }
+
+        console.log(`[Batch Processing] Processing ${contexts.length} contexts in ${batches.length} batches of ${batchSize}`);
+
+        const processedBatches = await Promise.allSettled(
+            batches.map(async (batch, batchIndex) => {
+                const batchAnalysisPrompt = `Analyze the following ${batch.length} code contexts for relevance to the query "${originalQuery}". \nFor each context, provide:\n1. Relevance score (0.0-1.0)\n2. Key insights\n3. How it relates to the query\n\nContexts:\n${batch.map((ctx, idx) => `Context ${idx + 1}:\nFile: ${ctx.sourcePath}\nEntity: ${ctx.entityName || 'N/A'}\nContent: ${ctx.content.substring(0, 300)}...\n`).join('\n')}\n\nReturn JSON: {"analyses": [{"contextIndex": 0, "relevanceScore": 0.0, "insights": "", "relationship": ""}, ...]}`;
+
+                try {
+                    const result = await this.geminiService.askGemini(
+                        batchAnalysisPrompt,
+                        model || getCurrentModel(),
+                        'You are a code analysis expert. Analyze code contexts for query relevance with precision.'
+                    );
+
+                    const analysisText = result.content[0].text || '{"analyses": []}';
+                    batchAnalysis.push(`Batch ${batchIndex + 1}: ${analysisText}`);
+
+                    // Parse analysis and update context relevance scores
+                    let analyses: any[] = [];
+                    try {
+                        const parsed = JSON.parse(analysisText);
+                        analyses = parsed.analyses || [];
+                    } catch {
+                        console.warn(`[Batch Processing] Failed to parse batch ${batchIndex + 1} analysis`);
+                    }
+
+                    // Update contexts with analysis results
+                    return batch.map((context, idx) => {
+                        const analysis = analyses.find(a => a.contextIndex === idx);
+                        if (analysis) {
+                            return {
+                                ...context,
+                                relevanceScore: Math.max(context.relevanceScore || 0.5, analysis.relevanceScore || 0.5),
+                                metadata: {
+                                    ...context.metadata,
+                                    batchAnalysis: {
+                                        insights: analysis.insights,
+                                        relationship: analysis.relationship,
+                                        batchIndex: batchIndex + 1
+                                    }
+                                }
+                            };
+                        }
+                        return context;
+                    });
+                } catch (error) {
+                    console.error(`[Batch Processing] Error processing batch ${batchIndex + 1}:`, error);
+                    return batch; // Return original batch on error
+                }
+            })
+        );
+
+        // Combine all processed batches
+        const analyzedContexts: RetrievedCodeContext[] = [];
+        processedBatches.forEach((result) => {
+            if (result.status === 'fulfilled') {
+                analyzedContexts.push(...result.value);
+            }
+        });
+
+        console.log(`[Batch Processing] Successfully analyzed ${analyzedContexts.length} contexts`);
+        return { analyzedContexts, batchAnalysis };
+    }
+
+    /**
+     * Enhanced batch processing with Gemini task type capabilities
+     */
+    private async _performGeminiBatchAnalysis(
+        queries: string[],
+        contexts: RetrievedCodeContext[],
+        taskType: 'QUESTION_ANSWERING' | 'FACT_VERIFICATION' | 'CLASSIFICATION' = 'QUESTION_ANSWERING',
+        model?: string
+    ): Promise<{ results: string[]; confidence: number[] }> {
+        if (queries.length === 0 || contexts.length === 0) {
+            return { results: [], confidence: [] };
+        }
+
+        console.log(`[Gemini Batch Analysis] Processing ${queries.length} queries with ${contexts.length} contexts using task type: ${taskType}`);
+
+        const contextSummary = contexts.map((ctx, idx) => 
+            `Context ${idx + 1}: ${ctx.sourcePath} - ${ctx.content.substring(0, 200)}...`
+        ).join('\n\n');
+
+        const batchPrompts = queries.map(query => 
+            `Task Type: ${taskType}\n\nQuery: ${query}\n\nRelevant Contexts:\n${contextSummary}\n\nProvide a comprehensive answer based on the provided contexts.`
+        );
+
+        try {
+            const batchResults = await this.geminiService.batchAskGemini(
+                batchPrompts,
+                model || getCurrentModel(),
+                `You are an expert code assistant. Use the ${taskType} task type to provide accurate responses based on the given contexts.`
+            );
+
+            const results = batchResults.map(result => result.content[0].text || 'No response generated');
+            const confidence = batchResults.map(() => 0.85); // Placeholder confidence
+
+            console.log(`[Gemini Batch Analysis] Successfully processed ${results.length} queries`);
+            return { results, confidence };
+        } catch (error) {
+            console.error('[Gemini Batch Analysis] Batch processing failed:', error);
+            return { results: queries.map(() => 'Analysis failed'), confidence: queries.map(() => 0.1) };
+        }
+    }
+
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
         const operationId = globalPerformanceTracker.startOperation('performIterativeSearch', { query: args.query });
 
@@ -675,11 +1054,13 @@ export class IterativeRagOrchestrator {
                 agent_id,
                 query,
                 model,
-                max_iterations = 3,
+                max_iterations = 5,
                 context_options,
                 focus_area,
                 analysis_focus_points,
                 enable_web_search,
+                google_search,
+                continue_session,
                 hallucination_check_threshold = 0.8,
                 tavily_search_depth = 'basic',
                 tavily_max_results = 5,
@@ -716,6 +1097,9 @@ export class IterativeRagOrchestrator {
             graphTraversals: 0,
             hybridSearches: 0,
             citationAccuracy: 0,
+            citationCoverage: 0,
+            totalCitationsGenerated: 0,
+            totalCitationsUsed: 0,
             terminationReason: "In progress",
             dmqr: {
                 enabled: !!enable_dmqr,
@@ -782,7 +1166,7 @@ export class IterativeRagOrchestrator {
                                 
                                 if (graphData.results && Array.isArray(graphData.results.nodes)) {
                                     const kgNodes = graphData.results.nodes.map((node: any) => ({
-                                        type: 'knowledge_graph' as const,
+                                        type: 'kg_node_info' as const,
                                         sourcePath: `kg://${node.name}`,
                                         entityName: node.name,
                                         content: JSON.stringify(node.observations),
@@ -821,6 +1205,10 @@ export class IterativeRagOrchestrator {
         let turn = 0;
         let stabilityCounter = 0; // Counts consecutive turns with no new context
 
+        // Safety measures for infinite loop prevention
+        let noNewContextCounter = 0;
+        const maxNoNewContextIterations = 2;
+        
         while (turn < max_iterations) {
             turn++;
             searchMetrics.totalIterations = turn;
@@ -831,11 +1219,28 @@ export class IterativeRagOrchestrator {
                 break;
             }
 
+            // Safety check: Prevent infinite loops with duplicate queries
             if (queryHistory.has(turnQuery)) {
                 console.log(`[Enhanced RAG] Skipping duplicate query: "${turnQuery}"`);
+                noNewContextCounter++;
+                if (noNewContextCounter >= maxNoNewContextIterations) {
+                    searchMetrics.terminationReason = "No new context found in recent iterations - preventing infinite loop.";
+                    console.log('[Enhanced RAG] Safety termination: No new context in recent iterations.');
+                    break;
+                }
                 continue;
             }
             queryHistory.add(turnQuery);
+            
+            // Early termination for exceptional quality
+            if (turn > 1 && accumulatedContext.length >= 15) {
+                const estimatedCoverage = Math.min(accumulatedContext.length / 20, 1.0);
+                if (estimatedCoverage > 0.9 && searchMetrics.citationAccuracy > 0.9) {
+                    searchMetrics.terminationReason = "Exceptional quality achieved - early termination.";
+                    console.log('[Enhanced RAG] Early termination: Exceptional quality and coverage achieved.');
+                    break;
+                }
+            }
 
             const isInitialTurn = baseQueries.includes(turnQuery);
             console.log(`[Enhanced RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
@@ -859,7 +1264,7 @@ export class IterativeRagOrchestrator {
                     const graphData = JSON.parse(graphResult);
                     if (graphData.results && Array.isArray(graphData.results.nodes)) {
                         rawContext = graphData.results.nodes.map((node: any) => ({
-                            type: 'knowledge_graph',
+                            type: 'kg_node_info' as const,
                             sourcePath: `kg://${node.name}`,
                             entityName: node.name,
                             content: JSON.stringify(node.observations),
@@ -889,16 +1294,66 @@ export class IterativeRagOrchestrator {
                 citations.push(citation);
             });
 
-            // Corrective RAG: Self-correction logic with reflection
+            // Continuation mode with web search: Automatically perform web search when enabled
+            if (continue_session && (google_search || enable_web_search) && turn === 1) {
+                console.log('[Enhanced RAG] Continuation mode with web search enabled - performing web search');
+                searchMetrics.webSearchesPerformed++;
+                try {
+                    const webResults = await callTavilyApi(query, { 
+                        search_depth: tavily_search_depth, 
+                        max_results: tavily_max_results, 
+                        include_raw_content: tavily_include_raw_content 
+                    });
+                    
+                    webResults.forEach((r: WebSearchResult) => {
+                        webSearchSources.push({ title: r.title, url: r.url });
+                        accumulatedContext.push({ 
+                            type: 'documentation', 
+                            sourcePath: r.url, 
+                            entityName: r.title, 
+                            content: r.content, 
+                            relevanceScore: 0.95 
+                        });
+                        
+                        const webCitation = this._generateCitation({
+                            type: 'documentation',
+                            sourcePath: r.url,
+                            entityName: r.title,
+                            content: r.content,
+                            relevanceScore: 0.95
+                        }, r.content.substring(0, 200), 0.9);
+                        webCitation.sourceType = 'web';
+                        webCitation.url = r.url;
+                        citations.push(webCitation);
+                    });
+                    
+                    console.log(`[Enhanced RAG] Web search completed: added ${webResults.length} web sources to context`);
+                } catch (e: any) {
+                    console.error('[Enhanced RAG] Web search failed in continuation mode:', e);
+                }
+            }
+
+            // Enhanced Corrective RAG: Self-correction logic with reflection and safety measures
             if (addedNow === 0 && !isInitialTurn && enable_corrective_rag) {
                 stabilityCounter++;
+                noNewContextCounter++; // Track no new context for safety
+                
                 if (stabilityCounter >= 2) {
                     searchMetrics.terminationReason = "Context stable, no new information found.";
                     console.log(`[Enhanced RAG] Context has been stable for ${stabilityCounter} turns. Terminating search.`);
                     break;
                 }
+                
+                // Apply corrective search after no context found
+                if (stabilityCounter === 1) {
+                    const correctiveQuery = `Broaden search for: ${query}. Look for related concepts, alternative implementations, or background information.`;
+                    currentQueries.push(correctiveQuery);
+                    searchMetrics.selfCorrectionLoops++;
+                    console.log('[Enhanced RAG] Applied corrective search due to no new context.');
+                }
             } else {
                 stabilityCounter = 0;
+                noNewContextCounter = 0; // Reset safety counter when context is found
             }
 
             // Create enhanced context flow with Long RAG support
@@ -909,7 +1364,27 @@ export class IterativeRagOrchestrator {
                 enable_long_rag,
                 long_rag_chunk_size
             );
-            const formattedContext = formatContextForGemini(contextFlow)[0].text || '';
+
+            // Apply batch processing for context analysis (process 3 files at a time)
+            let analyzedContextFlow = contextFlow;
+            let batchAnalysisResults: string[] = [];
+            
+            if (contextFlow.length > 3) {
+                console.log(`[Enhanced RAG] Applying batch context analysis to ${contextFlow.length} contexts`);
+                const batchResult = await this._processBatchContextAnalysis(
+                    contextFlow,
+                    query, // Use original query for consistency
+                    model
+                );
+                analyzedContextFlow = batchResult.analyzedContexts;
+                batchAnalysisResults = batchResult.batchAnalysis;
+                
+                // Sort by updated relevance scores
+                analyzedContextFlow.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+                console.log(`[Enhanced RAG] Batch analysis completed, reordered ${analyzedContextFlow.length} contexts by relevance`);
+            }
+
+            const formattedContext = formatContextForGemini(analyzedContextFlow)[0].text || '';
             const analysisPrompt = RAG_ANALYSIS_PROMPT
                 .replace('{originalQuery}', query)
                 .replace('{currentTurn}', String(turn))
@@ -980,14 +1455,51 @@ export class IterativeRagOrchestrator {
             });
 
             if (parsed.decision === 'ANSWER') {
-                searchMetrics.terminationReason = "ANSWER decision reached.";
+                // Quality Gate: Check if we meet minimum quality thresholds before allowing ANSWER
+                const estimatedQuality = parsed.qualityScore || 0.7;
+                const contextSufficiency = Math.min(accumulatedContext.length / 10, 1.0); // Rough quality estimate
+                const iterationProgress = turn / max_iterations;
+                
+                console.log(`[Enhanced RAG] Quality Gate Check: quality=${estimatedQuality}, context=${contextSufficiency}, iteration=${iterationProgress}`);
+                
+                // Apply quality gates unless we're at maximum iterations
+                if (turn < max_iterations && (estimatedQuality < 0.8 || contextSufficiency < 0.6)) {
+                    console.log(`[Enhanced RAG] Quality gate failed: quality=${estimatedQuality} < 0.8 or context=${contextSufficiency} < 0.6. Continuing search.`);
+                    
+                    // Force another search iteration with corrective query
+                    const correctiveQuery = `Find additional comprehensive information about: ${query}. Focus on areas not yet covered in detail.`;
+                    currentQueries.push(correctiveQuery);
+                    searchMetrics.selfCorrectionLoops++;
+                    
+                    // Add to decision log
+                    decisionLog.push({
+                        decision: 'CORRECTIVE_SEARCH' as any,
+                        reasoning: `Quality gate failed: quality=${estimatedQuality}, context=${contextSufficiency}. Continuing search.`,
+                        nextCodebaseQuery: correctiveQuery,
+                        qualityScore: estimatedQuality,
+                        confidenceScore: 0.6,
+                        contextUsed: formattedContext.substring(0, 500) + '...',
+                        promptSent: analysisPrompt.substring(0, 200) + '...',
+                        rawGeminiResponse: analysisResult.content[0].text?.substring(0, 300) + '...'
+                    });
+                    continue;
+                }
+                
+                searchMetrics.terminationReason = turn >= max_iterations 
+                    ? "Max iterations reached with forced answer" 
+                    : "ANSWER decision reached with quality gates passed";
                 console.log('[Enhanced RAG] Decision: ANSWER – generating final answer with citations.');
                 
                 const enhancedAnswerPrompt = RAG_ANSWER_PROMPT
                     .replace('{originalQuery}', query)
                     .replace('{contextString}', formattedContext)
-                    .replace('{focusString}', focusString) +
-                    `\n\nIMPORTANT: Include proper citations in your answer using the format [cite_N] where N is the citation number. Each claim should be supported by specific source references.`;
+                    .replace('{focusString}', focusString)
+                    .replace('{totalSources}', analyzedContextFlow.length.toString())
+                    .replace('{searchStrategy}', 'enhanced_hybrid_search')
+                    .replace('{contextQuality}', '0.85')
+                    .replace('{web_search_flags}', `Web Search: ${(google_search || enable_web_search) ? 'ENABLED' : 'DISABLED'}`)
+                    .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`) +
+                    `\n\nIMPORTANT: You have ${analyzedContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Strive to utilize multiple sources and provide comprehensive coverage. Each claim should be supported by specific source references.`;
                 
                 const answerResult = await this.geminiService.askGemini(
                     enhancedAnswerPrompt, 
@@ -995,10 +1507,40 @@ export class IterativeRagOrchestrator {
                     'You are a helpful AI assistant providing accurate answers with proper citations based on the given context.'
                 );
                 
-                // Calculate citation accuracy
+                // Calculate citation accuracy (actual usage vs availability)
                 const finalAnswer = answerResult.content[0].text ?? '';
                 const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
-                searchMetrics.citationAccuracy = Math.min(citationMatches.length / citations.length, 1.0);
+                
+                // Calculate actual citation accuracy: unique citations used / total citations in answer
+                const uniqueCitationNumbers = new Set(
+                    citationMatches.map(match => {
+                        const num = match.match(/\d+/)?.[0];
+                        return num ? parseInt(num) : null;
+                    }).filter(num => num !== null)
+                );
+                
+                // Citation accuracy is the ratio of valid citations to total citation attempts
+                searchMetrics.citationAccuracy = citationMatches.length > 0 
+                    ? uniqueCitationNumbers.size / citationMatches.length 
+                    : (citations.length > 0 ? 0.0 : 1.0);
+                
+                // Calculate citation coverage: what percentage of available sources were cited
+                const citationCoverage = citations.length > 0 
+                    ? uniqueCitationNumbers.size / citations.length 
+                    : 1.0;
+                
+                // Store additional metrics
+                searchMetrics.citationCoverage = citationCoverage;
+                searchMetrics.totalCitationsGenerated = citations.length;
+                searchMetrics.totalCitationsUsed = uniqueCitationNumbers.size;
+                
+                console.log(`[Enhanced RAG] Citation metrics: accuracy=${(searchMetrics.citationAccuracy * 100).toFixed(1)}%, coverage=${(citationCoverage * 100).toFixed(1)}%, used=${uniqueCitationNumbers.size}/${citations.length}`);
+                
+                // Final quality gate: Check citation accuracy threshold
+                if (searchMetrics.citationAccuracy < citation_accuracy_threshold && citationCoverage < 0.8) {
+                    console.warn(`[Enhanced RAG] Quality warning: Citation accuracy ${(searchMetrics.citationAccuracy * 100).toFixed(1)}% and coverage ${(citationCoverage * 100).toFixed(1)}% below thresholds.`);
+                    searchMetrics.terminationReason += " (Quality warning: Low citation accuracy/coverage)";
+                }
                 
                 return { 
                     accumulatedContext, 
@@ -1054,8 +1596,13 @@ export class IterativeRagOrchestrator {
         const fallbackPrompt = RAG_ANSWER_PROMPT
             .replace('{originalQuery}', query)
             .replace('{contextString}', fallbackContext)
-            .replace('{focusString}', focusString) +
-            `\n\nIMPORTANT: Include proper citations in your answer using the format [cite_N] where N is the citation number.`;
+            .replace('{focusString}', focusString)
+            .replace('{totalSources}', finalContextFlow.length.toString())
+            .replace('{searchStrategy}', 'fallback_search')
+            .replace('{contextQuality}', '0.70')
+            .replace('{web_search_flags}', `Web Search: ${(google_search || enable_web_search) ? 'ENABLED' : 'DISABLED'}`)
+            .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`) +
+            `\n\nIMPORTANT: You have ${finalContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Utilize multiple sources when possible for comprehensive coverage.`;
         
         const fallbackResult = await this.geminiService.askGemini(
             fallbackPrompt, 
@@ -1065,8 +1612,23 @@ export class IterativeRagOrchestrator {
 
         const finalAnswer = fallbackResult.content[0].text ?? 'Unable to formulate an answer.';
         const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
-        searchMetrics.citationAccuracy = citations.length > 0 ? 
-            Math.min(citationMatches.length / citations.length, 1.0) : 0;
+        
+        // Apply same citation accuracy calculation as in main flow
+        const uniqueCitationNumbers = new Set(
+            citationMatches.map(match => {
+                const num = match.match(/\d+/)?.[0];
+                return num ? parseInt(num) : null;
+            }).filter(num => num !== null)
+        );
+        
+        searchMetrics.citationAccuracy = citationMatches.length > 0 
+            ? uniqueCitationNumbers.size / citationMatches.length 
+            : (citations.length > 0 ? 0.0 : 1.0);
+        searchMetrics.citationCoverage = citations.length > 0 
+            ? uniqueCitationNumbers.size / citations.length 
+            : 1.0;
+        searchMetrics.totalCitationsGenerated = citations.length;
+        searchMetrics.totalCitationsUsed = uniqueCitationNumbers.size;
 
         return { 
             accumulatedContext, 

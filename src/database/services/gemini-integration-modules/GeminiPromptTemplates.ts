@@ -587,10 +587,15 @@ Provide a comprehensive decision analysis:
 
 **ENHANCED DECISION CRITERIA:**
 
-- **ANSWER_FROM_HISTORY:** History contains comprehensive, high-quality information (completeness >0.9, quality >0.8)
+- **ANSWER_FROM_HISTORY:** History contains comprehensive, high-quality information (completeness >0.9, quality >0.8). Web search can be autonomously added if beneficial for current information.
 - **PERFORM_SIMPLE_RAG:** Need specific additional details, simple vector search sufficient
-- **PERFORM_ENHANCED_RAG:** Complex query requiring multi-turn search with quality assurance
+- **PERFORM_ENHANCED_RAG:** Complex query requiring multi-turn search with quality assurance  
 - **PERFORM_HYBRID_RAG:** Need combination of semantic and structural information, multi-modal approach
+
+**WEB SEARCH INTEGRATION RULES:**
+- Web search can be combined with any decision type when google_search=true OR enable_web_search=true
+- ANSWER_FROM_HISTORY + web search: Use conversation history as primary context, augment with fresh web information when relevant
+- RAG + web search: Perform comprehensive search combining codebase context with current web information
 
 **QUERY OPTIMIZATION RULES:**
 - Transform contextual references into self-contained queries
@@ -663,15 +668,20 @@ Fallback Strategy: [Alternative approach if current strategy fails]
 - **Gap Analysis:** Explicitly identify what information is missing and why it's needed
 - **Corrective Search:** When previous searches fail, use reflection to reformulate approach
 - **Hybrid Intelligence:** Combine structured (graph) and unstructured (vector) search when beneficial
-- **Final Turn Strategy:** On turn {maxIterations}, choose ANSWER with comprehensive citation plan
+- **Quality-First Strategy:** Choose ANSWER only when context quality >0.8 AND citation coverage >0.8, regardless of turn number
 
 **DECISION CRITERIA:**
-- **ANSWER:** Context is comprehensive, quality score >0.8, all query aspects covered
-- **SEARCH_AGAIN:** Need specific additional information, clear gap identified
+- **ANSWER:** Context is comprehensive, quality score >0.8, citation coverage >0.8, AND all query aspects covered
+- **SEARCH_AGAIN:** Need specific additional information, clear gap identified, OR quality/coverage thresholds not met
 - **SEARCH_WEB:** Information cannot exist in codebase (standards, best practices, external APIs)
 - **HYBRID_SEARCH:** Complex query requiring both semantic and structural understanding
 - **CORRECTIVE_SEARCH:** Previous searches failed, need alternative approach based on reflection
 - **REFLECT:** Context quality unclear, need to assess completeness and accuracy
+
+**QUALITY GATES:**
+- Never choose ANSWER if context quality <0.8 or citation coverage <0.8
+- Prioritize quality over speed - continue searching if information gaps exist
+- Only terminate early if exceptional quality (>0.9) with comprehensive coverage (>0.9)
 `;
 
 
@@ -772,16 +782,19 @@ If verification is successful (all scores >0.8), you may respond with just "VERI
 export const RAG_ANSWER_PROMPT = `You are an advanced RAG response generator with enhanced citation capabilities and quality assurance. Generate a comprehensive, well-structured answer that synthesizes information from multiple sources with proper attribution.
 
 **ENHANCED RESPONSE CAPABILITIES:**
-- Multi-source information synthesis
-- Granular citation tracking
+- Multi-source information synthesis (codebase + web + conversation history)
+- Granular citation tracking with source type identification
 - Quality-assured content generation
 - Structured response formatting
 - Source reliability assessment
+- Hybrid context integration (conversation continuity + live information)
 
 Original Query: "{originalQuery}"
 Search Strategy Used: {searchStrategy}
 Context Quality Score: {contextQuality}
 Total Sources: {totalSources}
+{web_search_flags}
+{continuation_mode}
 {focusString}
 
 --- CONTEXT SOURCES ---
@@ -795,12 +808,16 @@ Total Sources: {totalSources}
    - Synthesize information from multiple sources
    - Provide sufficient detail for practical use
    - Include relevant examples and specifics
+   - **CRITICAL:** You have access to {totalSources} context sources. Strive to reference and utilize information from multiple sources, not just the first few
+   - Actively seek complementary information across different sources to build a complete picture
 
 2. **Enhanced Citation System:**
    - Use format [cite_N] for each factual claim
    - Ensure granular source attribution
    - Include confidence indicators where appropriate
    - Reference specific file paths and line numbers when available
+   - **TARGET:** Aim to cite at least 60% of available sources when relevant to demonstrate comprehensive analysis
+   - Prioritize citing diverse sources over repeated citations from the same source
 
 3. **Quality Assurance:**
    - Maintain factual accuracy based solely on provided context
@@ -812,6 +829,15 @@ Total Sources: {totalSources}
    - Prioritize information from high-confidence sources
    - Acknowledge any limitations in available information
    - Distinguish between definitive facts and inferred details
+
+5. **Hybrid Response Integration (Continuation Mode):**
+   - When combining conversation history with web search results, clearly distinguish between:
+     * Historical context from previous conversation (cite as [cite_N] with "conversation history")
+     * Live web search results (cite as [cite_N] with "web source")
+     * Codebase/documentation sources (cite as [cite_N] with "codebase")
+   - Build upon previous conversation context while incorporating fresh information
+   - Address how new findings relate to or update previous discussion points
+   - Maintain conversation continuity while providing current/updated information
 
 **RESPONSE STRUCTURE:**
 
@@ -837,6 +863,9 @@ Use [cite_N] immediately after claims, where N corresponds to:
 
 **QUALITY GATES:**
 - Every factual claim must have a citation
+- **MINIMUM:** Use at least 40% of available sources when relevant information exists
+- **OPTIMAL:** Achieve 60%+ source utilization for comprehensive answers
+- Explain when certain sources are not relevant rather than ignoring them
 - All citations must reference actual context sources
 - Response must be comprehensive yet concise
 - Technical accuracy is paramount
@@ -1400,27 +1429,33 @@ You are an expert research assistant. Your primary goal is to synthesize the pro
 `;
 
 export const GEMINI_GOOGLE_SEARCH_PROMPT = `
-You are an expert research assistant with access to Google's search capabilities. Your task is to answer the user's query using the most current and relevant information available through Google Search.
+You are an expert research assistant with access to Google's search capabilities and conversation context. Your task is to answer the user's query by intelligently combining conversation history with current information from Google Search.
+
+**ENHANCED CAPABILITIES:**
+- **Conversation Continuity**: Build upon previous discussion points and maintain context
+- **Current Information Integration**: Augment conversation history with fresh web search results
+- **Hybrid Response Generation**: Synthesize historical context with live information
 
 **INSTRUCTIONS:**
-1. **Use Google Search to find current, relevant information** about the user's query.
-2. **Provide comprehensive, accurate answers** based on the search results.
-3. **Include inline citations** using the format [1], [2], etc., that correspond to the sources found.
-4. **Synthesize information** from multiple sources to provide a complete answer.
-5. **Focus on the most recent developments and current state** of the topic.
+1. **Analyze conversation context** (if provided) to understand the ongoing discussion
+2. **Use Google Search to find current, relevant information** that complements or updates the conversation
+3. **Provide comprehensive answers** that combine conversation history with fresh search results
+4. **Include inline citations** using the format [1], [2], etc., that correspond to the sources found
+5. **Synthesize information** from both conversation history and multiple web sources
+6. **Focus on the most recent developments** while maintaining conversation continuity
+7. **Clearly distinguish** between information from conversation history vs. new web search findings
+
+**CONTEXT PROVIDED:**
+{context}
 
 **Query to Research:**
 {query}
-
-**Additional Context:**
-{context}
 
 **Response Guidelines:**
 - Be specific and cite sources for factual claims
 - Include dates when discussing recent developments
 - Compare different approaches or technologies when relevant
-- Acknowledge any limitations in the available information
-`;
+- Acknowledge any limitations in the available information`;
 
 export const RAG_SELF_CORRECTION_PROMPT = `You are an advanced corrective RAG agent with reflection-based improvement capabilities. Your task is to analyze search failures and generate improved queries using sophisticated error analysis and strategic reformulation.
 

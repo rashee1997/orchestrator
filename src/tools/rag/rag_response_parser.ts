@@ -7,6 +7,7 @@ export interface RagAnalysisResponse {
     nextCodebaseQuery?: string;
     nextWebQuery?: string;
     confidenceScore?: number;
+    qualityScore?: number;
     /** Full context string that was fed to Gemini for this turn (debugging). */
     contextUsed?: string;
     /** The exact prompt sent to Gemini (debugging). */
@@ -63,6 +64,7 @@ export class RagResponseParser {
                 'Next Codebase Search Query',
                 'Next Web Search Query',
                 'Confidence',
+                'Quality',
                 '---'
             ];
 
@@ -81,12 +83,18 @@ export class RagResponseParser {
             const confidenceMatch = txt.match(/Confidence:\s*([0-9]*\.?[0-9]+)/i);
             if (confidenceMatch) confidenceScore = parseFloat(confidenceMatch[1]);
 
+            // ---------- Quality Score ----------
+            let qualityScore: number | undefined;
+            const qualityMatch = txt.match(/Quality:\s*([0-9]*\.?[0-9]+)/i);
+            if (qualityMatch) qualityScore = parseFloat(qualityMatch[1]);
+
             return {
                 decision,
                 reasoning,
                 nextCodebaseQuery,
                 nextWebQuery: nextWebSearchQuery,
                 confidenceScore,
+                qualityScore,
                 contextUsed,
                 promptSent,
                 rawGeminiResponse: rawResponseText

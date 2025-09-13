@@ -21,3 +21,5 @@ vector_store.db-wal
 history/
 embedding_cache.json
 GEMINI.MD
+QWEN.MD
+.qwen/

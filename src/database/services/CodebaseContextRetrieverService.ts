@@ -16,14 +16,18 @@ export interface ContextRetrievalOptions {
     useHybridSearch?: boolean;
     enableReranking?: boolean;
     maxContextLength?: number;
+    taskType?: 'RETRIEVAL_QUERY' | 'RETRIEVAL_DOCUMENT' | 'CODE_RETRIEVAL_QUERY' | 'SEMANTIC_SIMILARITY' | 'CLASSIFICATION';
+    enableKeywordSearch?: boolean;
+    keywordWeight?: number;
+    enableBatchProcessing?: boolean;
 }
 
 export interface RetrievedCodeContext {
     type: 'file_snippet' | 'function_definition' | 'class_definition' | 'interface_definition' | 'enum_definition' | 'type_alias_definition' | 'variable_definition' | 'kg_node_info' | 'directory_structure' | 'import_statement' | 'generic_code_chunk' | 'documentation' | 'task_log';
     sourcePath: string;
-    entityName?: string;
+    entityName: string | undefined;
     content: string;
-    relevanceScore?: number;
+    relevanceScore: number | undefined;
     metadata?: {
         startLine?: number;
         endLine?: number;
@@ -352,25 +356,142 @@ Respond with only the category name.`;
         if (topK === 0) return [];
 
         try {
+            console.log(`[Enhanced Semantic Search] Performing search with task type: ${options.taskType || 'RETRIEVAL_QUERY'}`);
+            
+            // Apply task-specific query enhancement
+            let enhancedPrompt = prompt;
+            if (options.taskType === 'CODE_RETRIEVAL_QUERY') {
+                enhancedPrompt = `Find code implementations and definitions related to: ${prompt}`;
+            } else if (options.taskType === 'SEMANTIC_SIMILARITY') {
+                enhancedPrompt = `Find semantically similar code patterns and concepts for: ${prompt}`;
+            }
+
             const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(
                 agentId,
-                prompt,
+                enhancedPrompt,
                 topK,
                 options.targetFilePaths
             );
 
-            return embeddingResults.map(res => ({
+            let results: RetrievedCodeContext[] = embeddingResults.map(res => ({
                 type: (res.metadata?.type as any) || 'generic_code_chunk',
                 sourcePath: res.file_path_relative,
                 entityName: res.entity_name || undefined,
                 content: res.chunk_text,
-                relevanceScore: res.score,
-                metadata: res.metadata || {},
+                relevanceScore: res.score || 0.0,
+                metadata: {
+                    ...res.metadata,
+                    searchType: 'semantic',
+                    taskType: options.taskType || 'RETRIEVAL_QUERY'
+                }
             }));
+
+            // Apply hybrid search if enabled
+            if (options.useHybridSearch && options.enableKeywordSearch) {
+                console.log('[Enhanced Semantic Search] Applying hybrid keyword enhancement');
+                const keywordResults = await this.performEnhancedKeywordSearch(agentId, prompt, options);
+                
+                // Combine and apply hybrid ranking
+                results = this.applyHybridRanking([results, keywordResults], options.keywordWeight || 0.7);
+            }
+
+            console.log(`[Enhanced Semantic Search] Found ${results.length} results with task type ${options.taskType}`);
+            return results;
         } catch (error) {
             console.error("Error during semantic search:", error);
             throw error;
         }
+    }
+
+    private async performEnhancedKeywordSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        try {
+            // Extract keywords using Gemini for better precision
+            const keywordPrompt = `Extract the most important technical keywords, function names, class names, and code identifiers from: "${prompt}". Focus on terms that would appear in code. Return JSON: {"keywords": ["term1", "term2", ...]}`;
+            
+            const keywordResult = await this.geminiService.askGemini(
+                keywordPrompt,
+                getCurrentModel(),
+                'You are a code search expert. Extract precise technical keywords for code retrieval.'
+            );
+
+            let keywords: string[] = [];
+            try {
+                const parsed = JSON.parse(keywordResult.content[0].text || '{}');
+                keywords = parsed.keywords || [];
+            } catch {
+                // Fallback keyword extraction
+                keywords = prompt.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+            }
+
+            if (keywords.length === 0) return [];
+
+            console.log(`[Enhanced Keyword Search] Using keywords: ${keywords.slice(0, 5).join(', ')}`);
+
+            // Search for each keyword and combine results
+            const keywordSearches = keywords.slice(0, 5).map(keyword => 
+                this.embeddingService.retrieveSimilarCodeChunks(
+                    agentId,
+                    `Code containing ${keyword}`,
+                    Math.max(3, Math.floor((options.topKEmbeddings || 10) / keywords.length)),
+                    options.targetFilePaths
+                )
+            );
+
+            const keywordResults = await Promise.allSettled(keywordSearches);
+            const allKeywordContexts: RetrievedCodeContext[] = [];
+
+            keywordResults.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    const contexts = result.value.map(res => ({
+                        type: (res.metadata?.type as any) || 'generic_code_chunk',
+                        sourcePath: res.file_path_relative,
+                        entityName: res.entity_name || undefined,
+                        content: res.chunk_text,
+                        relevanceScore: (res.score || 0.0) * (options.keywordWeight || 0.7),
+                        metadata: {
+                            ...res.metadata,
+                            searchType: 'keyword',
+                            searchKeyword: keywords[index],
+                            taskType: options.taskType || 'CODE_RETRIEVAL_QUERY'
+                        }
+                    }));
+                    allKeywordContexts.push(...contexts);
+                }
+            });
+
+            return allKeywordContexts;
+        } catch (error) {
+            console.error('[Enhanced Keyword Search] Error:', error);
+            return [];
+        }
+    }
+
+    private applyHybridRanking(resultSets: RetrievedCodeContext[][], keywordWeight: number = 0.7): RetrievedCodeContext[] {
+        const combinedScores = new Map<string, { context: RetrievedCodeContext; score: number }>();
+        const k = 60; // RRF constant
+
+        resultSets.forEach((results, setIndex) => {
+            const weight = setIndex === 0 ? 1.0 : keywordWeight; // First set (semantic) gets full weight
+            
+            results.forEach((context, rank) => {
+                const key = `${context.sourcePath}:${context.entityName || 'default'}`;
+                const rrfScore = weight * (1 / (k + rank + 1));
+                
+                if (combinedScores.has(key)) {
+                    const existing = combinedScores.get(key)!;
+                    existing.score += rrfScore;
+                } else {
+                    combinedScores.set(key, {
+                        context: { ...context, relevanceScore: context.relevanceScore || rrfScore },
+                        score: rrfScore
+                    });
+                }
+            });
+        });
+
+        return Array.from(combinedScores.values())
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.context);
     }
 
     private async performKgSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {

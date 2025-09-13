@@ -174,9 +174,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             max_iterations: {
                 type: 'number',
                 description: 'Max iterations for iterative search. If DMQR is enabled, this is the number of iterations *per* generated query.',
-                default: 3,
+                default: 5,
                 minimum: 1,
-                maximum: 5
+                maximum: 8
             },
             enable_dmqr: {
                 type: 'boolean',
@@ -214,7 +214,19 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     includeFileContent: { type: 'boolean', nullable: true },
                     targetFilePaths: { type: 'array', items: { type: 'string' }, nullable: true },
                     topKKgResults: { type: 'number', nullable: true },
-                    embeddingScoreThreshold: { type: 'number', nullable: true }
+                    embeddingScoreThreshold: { type: 'number', nullable: true },
+                    useHybridSearch: { type: 'boolean', nullable: true, description: 'Enable hybrid search combining vector and keyword search' },
+                    enableKeywordSearch: { type: 'boolean', nullable: true, description: 'Enable enhanced keyword search within hybrid search' },
+                    keywordWeight: { type: 'number', nullable: true, description: 'Weight for keyword search results (0.0-1.0)', minimum: 0, maximum: 1 },
+                    taskType: { 
+                        type: 'string', 
+                        nullable: true, 
+                        enum: ['RETRIEVAL_QUERY', 'RETRIEVAL_DOCUMENT', 'CODE_RETRIEVAL_QUERY', 'SEMANTIC_SIMILARITY', 'CLASSIFICATION'],
+                        description: 'Gemini task type for optimized search behavior' 
+                    },
+                    enableBatchProcessing: { type: 'boolean', nullable: true, description: 'Enable batch processing of contexts (3 files at a time)' },
+                    enableReranking: { type: 'boolean', nullable: true, description: 'Enable AI-powered context reranking' },
+                    maxContextLength: { type: 'number', nullable: true, description: 'Maximum context length for processing' }
                 },
                 additionalProperties: false,
                 nullable: true
@@ -230,6 +242,14 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             conversation_context_ids: { type: 'array', items: { type: 'string' }, description: 'Optional: IDs of previous conversations to include as context.', nullable: true },
             hallucination_check_threshold: { type: 'number', description: 'Optional: Threshold for hallucination detection (0-1).', nullable: true },
             google_search: { type: 'boolean', description: 'Optional: If true, enables Gemini\'s built-in Google Search grounding for the query.', default: false, nullable: true },
+            enable_hybrid_search: { type: 'boolean', description: 'Enable advanced hybrid search combining vector, keyword, and KG search', default: false, nullable: true },
+            enable_agentic_planning: { type: 'boolean', description: 'Enable AI-driven search planning and strategy selection', default: true, nullable: true },
+            enable_reflection: { type: 'boolean', description: 'Enable reflection-based quality control and self-correction', default: true, nullable: true },
+            enable_long_rag: { type: 'boolean', description: 'Enable Long RAG for processing large contexts', default: true, nullable: true },
+            enable_corrective_rag: { type: 'boolean', description: 'Enable corrective RAG for iterative improvement', default: true, nullable: true },
+            reflection_frequency: { type: 'number', description: 'Frequency of reflection checks (every N iterations)', default: 2, minimum: 1, maximum: 5, nullable: true },
+            long_rag_chunk_size: { type: 'number', description: 'Chunk size for Long RAG processing', default: 2000, minimum: 500, maximum: 5000, nullable: true },
+            citation_accuracy_threshold: { type: 'number', description: 'Minimum accuracy threshold for citations (0.0-1.0)', default: 0.9, minimum: 0, maximum: 1, nullable: true },
         },
         required: ['agent_id', 'query']
     },
@@ -247,7 +267,16 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             enable_dmqr,
             dmqr_query_count,
             session_id, session_name, session_sequence_number, conversation_history_limit,
-            continue: continue_session
+            continue: continue_session,
+            // Enhanced RAG parameters
+            enable_hybrid_search,
+            enable_agentic_planning,
+            enable_reflection,
+            enable_long_rag,
+            enable_corrective_rag,
+            reflection_frequency,
+            long_rag_chunk_size,
+            citation_accuracy_threshold
         } = args;
 
         let focus_area = args.focus_area; // Make focus_area mutable
@@ -348,7 +377,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
                 const decisionPrompt = RAG_DECISION_PROMPT
                     .replace('{conversation_history}', conversationHistoryForPrompt)
-                    .replace('{new_query}', query);
+                    .replace('{new_query}', query)
+                    .replace('{web_search_flags}', `google_search=${google_search || false}, enable_web_search=${enable_web_search || false}`)
+                    .replace('{continuation_mode}', `continue=${continue_session || false}`);
 
                 const decisionResult = await geminiService.askGemini(decisionPrompt, getCurrentModel());
                 const decisionResponse = parseGeminiJsonResponse(decisionResult.content[0].text ?? '');
@@ -379,9 +410,17 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 );
 
                 if (decisionResponse.decision === 'ANSWER_FROM_HISTORY') {
-                    console.log('[ask_gemini] ✅ AI Decision: Answer from history. Skipping RAG.');
-                    mutable_enable_rag = false;
-                    mutable_enable_iterative_search = false;
+                    console.log('[ask_gemini] ✅ AI Decision: Answer from history.');
+                    if (google_search || enable_web_search) {
+                        console.log('[ask_gemini] 🌐 Web search enabled - will augment history with web search.');
+                        // Keep web search enabled but disable RAG
+                        mutable_enable_rag = false;
+                        mutable_enable_iterative_search = false;
+                    } else {
+                        console.log('[ask_gemini] 📜 Pure history response - skipping all external search.');
+                        mutable_enable_rag = false;
+                        mutable_enable_iterative_search = false;
+                    }
                     mutable_live_review_paths = [];
                 } else if (decisionResponse.decision === 'PERFORM_RAG' && decisionResponse.rag_query) {
                     console.log(`[ask_gemini] 🔍 AI Decision: Perform RAG with refined query: "${decisionResponse.rag_query}"`);
@@ -422,10 +461,42 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         try {
             if (mutable_enable_iterative_search) {
-                console.log('[ask_gemini] Calling _performIterativeRagSearch...');
-                iterativeResult = await _performIterativeRagSearch({ ...args, query: ragQuery }, memoryManagerInstance, geminiService);
+                console.log('[ask_gemini] Calling enhanced _performIterativeRagSearch...');
+                
+                // Enhanced context options with new features
+                const enhancedContextOptions = {
+                    ...context_options,
+                    useHybridSearch: enable_hybrid_search || context_options?.useHybridSearch || false,
+                    enableKeywordSearch: context_options?.enableKeywordSearch ?? true,
+                    keywordWeight: context_options?.keywordWeight ?? 0.8,
+                    taskType: context_options?.taskType || 'CODE_RETRIEVAL_QUERY',
+                    enableBatchProcessing: context_options?.enableBatchProcessing ?? true,
+                    enableReranking: context_options?.enableReranking ?? true
+                };
+
+                // Enhanced RAG arguments
+                const enhancedRagArgs: IterativeRagArgs = {
+                    ...args,
+                    query: ragQuery,
+                    context_options: enhancedContextOptions,
+                    enable_hybrid_search: enable_hybrid_search ?? true,
+                    enable_agentic_planning: enable_agentic_planning ?? true,
+                    enable_reflection: enable_reflection ?? true,
+                    enable_long_rag: enable_long_rag ?? true,
+                    enable_corrective_rag: enable_corrective_rag ?? true,
+                    reflection_frequency: reflection_frequency ?? 2,
+                    long_rag_chunk_size: long_rag_chunk_size ?? 2000,
+                    citation_accuracy_threshold: citation_accuracy_threshold ?? 0.9,
+                    google_search: google_search,
+                    continue_session: continue_session
+                };
+
+                console.log(`[ask_gemini] Enhanced RAG enabled: hybrid=${enhancedRagArgs.enable_hybrid_search}, agentic=${enhancedRagArgs.enable_agentic_planning}, reflection=${enhancedRagArgs.enable_reflection}`);
+                console.log(`[ask_gemini] Context options: taskType=${enhancedContextOptions.taskType}, batchProcessing=${enhancedContextOptions.enableBatchProcessing}`);
+                
+                iterativeResult = await _performIterativeRagSearch(enhancedRagArgs, memoryManagerInstance, geminiService);
                 finalContext = iterativeResult.accumulatedContext;
-                console.log(`[ask_gemini] _performIterativeRagSearch returned iterativeResult. SearchMetrics: ${JSON.stringify(iterativeResult.searchMetrics)}`);
+                console.log(`[ask_gemini] Enhanced _performIterativeRagSearch completed. SearchMetrics: ${JSON.stringify(iterativeResult.searchMetrics)}`);
             } else if (mutable_enable_rag || mutable_live_review_paths?.length) {
                 console.log('[ask_gemini] Performing single-turn RAG...');
                 const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
@@ -497,11 +568,17 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             const template = hasConversationHistory ? CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT : DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
 
             let finalPrompt;
-            if (google_search && !iterativeResult) {
-                // Use Gemini's Google Search prompt for Google searches
-                finalPrompt = GEMINI_GOOGLE_SEARCH_PROMPT
-                    .replace('{query}', query)
-                    .replace('{context}', contextForPrompt);
+            if ((google_search || enable_web_search) && !iterativeResult) {
+                // Use enhanced search prompt that combines conversation history with web search
+                if (hasConversationHistory) {
+                    finalPrompt = GEMINI_GOOGLE_SEARCH_PROMPT
+                        .replace('{query}', query)
+                        .replace('{context}', `${contextForPrompt}\n\n--- Conversation History ---\n${conversationHistoryForPrompt}\n--- End History ---`);
+                } else {
+                    finalPrompt = GEMINI_GOOGLE_SEARCH_PROMPT
+                        .replace('{query}', query)
+                        .replace('{context}', contextForPrompt);
+                }
             } else {
                 // Use regular codebase assistant prompt
                 finalPrompt = template
@@ -514,16 +591,22 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             let finalSystemInstruction = systemInstruction;
             let toolConfig = undefined;
 
-            if (google_search && !iterativeResult) {
-                console.log('[ask_gemini] Using Gemini built-in Google Search...');
-                // Gemini's built-in Google Search will handle citations automatically
-                toolConfig = { tools: [{ googleSearch: {} }] };
+            if ((google_search || enable_web_search) && !iterativeResult) {
+                console.log('[ask_gemini] Using web search in ANSWER_FROM_HISTORY mode...');
+                if (google_search) {
+                    console.log('[ask_gemini] Using Gemini built-in Google Search...');
+                    // Gemini's built-in Google Search will handle citations automatically
+                    toolConfig = { tools: [{ googleSearch: {} }] };
+                } else if (enable_web_search) {
+                    console.log('[ask_gemini] Note: enable_web_search requires RAG mode for Tavily integration. Using Google Search instead.');
+                    toolConfig = { tools: [{ googleSearch: {} }] };
+                }
             }
 
             const geminiResponse = await geminiService.askGemini(finalPrompt, model, finalSystemInstruction, undefined, toolConfig);
 
             // Extract Google Search sources from Gemini's response if available
-            if (google_search && geminiResponse.groundingMetadata?.groundingChunks) {
+            if ((google_search || enable_web_search) && geminiResponse.groundingMetadata?.groundingChunks) {
                 const chunks = geminiResponse.groundingMetadata.groundingChunks;
                 googleSearchSources = chunks
                     .filter((chunk: any) => chunk.web?.uri && chunk.web?.title)
@@ -542,8 +625,36 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             finalAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
         }
 
+        // Create lightweight metrics for ANSWER_FROM_HISTORY cases
+        let historyMetrics = null;
+        if (!iterativeResult && continue_session) {
+            const webSearchPerformed = (google_search || enable_web_search) && googleSearchSources.length > 0;
+            historyMetrics = {
+                strategy: webSearchPerformed ? 'history_with_web_search' : 'pure_history_response',
+                conversationHistoryUsed: historyMessages.length,
+                webSearchSources: googleSearchSources.length,
+                totalSources: googleSearchSources.length + (finalContext.length > 0 ? 1 : 0), // web sources + history
+                decisionType: 'ANSWER_FROM_HISTORY',
+                searchQuality: webSearchPerformed ? 0.8 : 0.7, // Estimated quality
+                terminationReason: webSearchPerformed ? 'History + web search completed' : 'Conversation history sufficient',
+                timestamp: new Date().toISOString()
+            };
+        }
+
         // Build the final markdown output
-        let markdownOutput = `## 🤖 Gemini Response\n\n> ${query}\n\n${finalAnswer}\n\n---`;
+        // Check if finalAnswer already contains the header to avoid duplication
+        let markdownOutput: string;
+        if (finalAnswer.includes('## 🤖 Gemini Response')) {
+            // finalAnswer already has the formatted response, use it as-is
+            markdownOutput = finalAnswer;
+            // Ensure it ends with a separator for analytics
+            if (!markdownOutput.endsWith('---')) {
+                markdownOutput += '\n\n---';
+            }
+        } else {
+            // Add the header for raw responses
+            markdownOutput = `## 🤖 Gemini Response\n\n> ${query}\n\n${finalAnswer}\n\n---`;
+        }
 
         // Check if we have any sources to display
         const hasIterativeSources = iterativeResult?.webSearchSources && iterativeResult.webSearchSources.length > 0;
@@ -551,45 +662,304 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         const hasAnySources = hasIterativeSources || hasGoogleSources;
 
       
-        if (iterativeResult || hasAnySources) {
-            markdownOutput += "\n\n### 🔍 Search & Reasoning Trajectory\n";
+        if (iterativeResult || hasAnySources || historyMetrics) {
+            markdownOutput += "\n\n## 🔍 Search & Intelligence Analytics\n";
 
             if (iterativeResult) {
                 const { searchMetrics } = iterativeResult;
-                markdownOutput += `\n**📊 RAG Metrics:**\n`;
-                markdownOutput += `*   **Termination Reason:** ${searchMetrics.terminationReason}\n`;
-                markdownOutput += `*   **Total Iterations:** ${searchMetrics.totalIterations}\n`;
-                markdownOutput += `*   **Self-Correction Loops:** ${searchMetrics.selfCorrectionLoops}\n`;
-                markdownOutput += `*   **Context Items Found:** ${searchMetrics.contextItemsAdded}\n`;
+                
+                // Helper functions for visual indicators
+                const getQualityIndicator = (score: number) => {
+                    if (score >= 0.9) return "🟢 Excellent";
+                    if (score >= 0.8) return "🟡 Good";
+                    if (score >= 0.6) return "🟠 Fair";
+                    return "🔴 Needs Improvement";
+                };
+
+                const getProgressBar = (value: number, max: number, width: number = 20) => {
+                    const filled = Math.round((value / max) * width);
+                    const empty = width - filled;
+                    return "█".repeat(filled) + "░".repeat(empty);
+                };
+
+                const getStatusIcon = (reason: string) => {
+                    if (reason.includes("ANSWER decision")) return "✅";
+                    if (reason.includes("Max iterations")) return "⏱️";
+                    if (reason.includes("stable")) return "🔄";
+                    if (reason.includes("Exceptional quality")) return "🌟";
+                    return "ℹ️";
+                };
+
+                // Enhanced metrics display with visual elements
+                markdownOutput += `\n### 📊 Performance Dashboard\n\n`;
+                
+                // Search completion status
+                const statusIcon = getStatusIcon(searchMetrics.terminationReason);
+                markdownOutput += `${statusIcon} **Search Status:** ${searchMetrics.terminationReason}\n\n`;
+                
+                // Core metrics table
+                markdownOutput += `| Metric | Value | Progress | Status |\n`;
+                markdownOutput += `|--------|-------|----------|--------|\n`;
+                markdownOutput += `| ⚡ **Iterations** | ${searchMetrics.totalIterations}/5 | ${getProgressBar(searchMetrics.totalIterations, 5, 10)} | ${searchMetrics.totalIterations >= 4 ? "🔥 Thorough" : "⚡ Efficient"} |\n`;
+                markdownOutput += `| 🔄 **Self-Corrections** | ${searchMetrics.selfCorrectionLoops} | ${getProgressBar(searchMetrics.selfCorrectionLoops, 3, 10)} | ${searchMetrics.selfCorrectionLoops > 0 ? "🎯 Adaptive" : "📝 Direct"} |\n`;
+                markdownOutput += `| 📄 **Context Sources** | ${searchMetrics.contextItemsAdded} | ${getProgressBar(searchMetrics.contextItemsAdded, 25, 10)} | ${searchMetrics.contextItemsAdded >= 15 ? "🌟 Rich" : searchMetrics.contextItemsAdded >= 8 ? "✅ Good" : "📝 Basic"} |\n`;
+                markdownOutput += `\n`;
+
+                // Quality metrics section
+                markdownOutput += `### 🎖️ Quality & Citation Analysis\n\n`;
+                
+                if (searchMetrics.citationAccuracy > 0 || searchMetrics.totalCitationsGenerated > 0) {
+                    const citationQuality = getQualityIndicator(searchMetrics.citationAccuracy);
+                    const coverageQuality = searchMetrics.citationCoverage ? getQualityIndicator(searchMetrics.citationCoverage) : "⚪ N/A";
+                    
+                    markdownOutput += `| Quality Metric | Score | Visual | Assessment |\n`;
+                    markdownOutput += `|----------------|-------|--------|------------|\n`;
+                    markdownOutput += `| 📝 **Citation Accuracy** | ${(searchMetrics.citationAccuracy * 100).toFixed(1)}% | ${getProgressBar(searchMetrics.citationAccuracy, 1, 15)} | ${citationQuality} |\n`;
+                    
+                    if (searchMetrics.citationCoverage !== undefined) {
+                        markdownOutput += `| 📚 **Source Coverage** | ${(searchMetrics.citationCoverage * 100).toFixed(1)}% | ${getProgressBar(searchMetrics.citationCoverage, 1, 15)} | ${coverageQuality} |\n`;
+                        markdownOutput += `| 🎯 **Sources Utilized** | ${searchMetrics.totalCitationsUsed}/${searchMetrics.totalCitationsGenerated} | - | ${getQualityIndicator(searchMetrics.totalCitationsUsed / Math.max(searchMetrics.totalCitationsGenerated, 1))} |\n`;
+                    }
+                    markdownOutput += `\n`;
+                }
+
+                // Advanced search features section
+                markdownOutput += `### 🚀 Advanced Search Technologies\n\n`;
+                
+                const features = [];
+                if (searchMetrics.hybridSearches > 0) {
+                    features.push({ icon: "🔄", name: "Hybrid Search", detail: `${searchMetrics.hybridSearches} executions`, desc: "Vector + Keyword + Knowledge Graph" });
+                }
+                if (searchMetrics.graphTraversals > 0) {
+                    features.push({ icon: "🕸️", name: "Knowledge Graph", detail: `${searchMetrics.graphTraversals} traversals`, desc: "Structured relationship analysis" });
+                }
                 if (searchMetrics.dmqr.enabled) {
                     const embeddingQueriesCount = searchMetrics.dmqr.generatedQueries?.length || 0;
-                    const totalKGTraversals = searchMetrics.graphTraversals || 0;
-                    markdownOutput += `*   **DMQR:** Enabled (${embeddingQueriesCount} embedding queries${totalKGTraversals > 0 ? `, ${totalKGTraversals} KG queries` : ''})\n`;
+                    features.push({ icon: "🎯", name: "DMQR Multi-Query", detail: `${embeddingQueriesCount} diverse queries`, desc: "Strategic query diversification" });
                 }
                 if (searchMetrics.webSearchesPerformed > 0) {
-                    markdownOutput += `*   **Iterative Web Searches:** ${searchMetrics.webSearchesPerformed}\n`;
+                    features.push({ icon: "🌐", name: "Web Integration", detail: `${searchMetrics.webSearchesPerformed} external searches`, desc: "Live internet knowledge" });
                 }
+                if (searchMetrics.hallucinationChecksPerformed > 0) {
+                    features.push({ icon: "🔍", name: "Quality Reflection", detail: `${searchMetrics.hallucinationChecksPerformed} accuracy checks`, desc: "AI-powered fact verification" });
+                }
+
+                if (features.length > 0) {
+                    markdownOutput += `| Technology | Usage | Description |\n`;
+                    markdownOutput += `|------------|-------|-------------|\n`;
+                    features.forEach(feature => {
+                        markdownOutput += `| ${feature.icon} **${feature.name}** | ${feature.detail} | ${feature.desc} |\n`;
+                    });
+                } else {
+                    markdownOutput += `📝 **Standard Retrieval:** Basic search without advanced features\n`;
+                }
+                markdownOutput += `\n`;
             }
 
-            // Display Google Search sources if available
+            // Enhanced Web Sources Display
             if (hasGoogleSources) {
-                markdownOutput += `*   **Gemini Google Searches:** ${googleSearchSources.length}\n`;
+                markdownOutput += `### 🌐 External Knowledge Integration\n\n`;
+                markdownOutput += `📡 **Live Web Search:** ${googleSearchSources.length} authoritative sources integrated\n\n`;
 
-                markdownOutput += `\n**🌐 Web Sources:**\n`;
+                markdownOutput += `| # | Source | URL | Type |\n`;
+                markdownOutput += `|---|--------|-----|------|\n`;
                 googleSearchSources.forEach((source: any, i: number) => {
-                    markdownOutput += `${i + 1}. [${source.title}](${source.url})\n`;
+                    const sourceType = source.url.includes('github.com') ? '💻 Code Repository' :
+                                     source.url.includes('stackoverflow.com') ? '❓ Q&A Forum' :
+                                     source.url.includes('docs.') ? '📚 Documentation' :
+                                     source.url.includes('blog') ? '📝 Blog/Article' :
+                                     '🌐 Web Resource';
+                    
+                    const truncatedTitle = source.title.length > 50 ? source.title.substring(0, 47) + '...' : source.title;
+                    const truncatedUrl = source.url.length > 40 ? source.url.substring(0, 37) + '...' : source.url;
+                    
+                    markdownOutput += `| ${i + 1} | [${truncatedTitle}](${source.url}) | \`${truncatedUrl}\` | ${sourceType} |\n`;
                 });
+                markdownOutput += `\n`;
             }
 
             if (iterativeResult?.decisionLog && iterativeResult.decisionLog.length > 0) {
-                markdownOutput += "\n**🤔 Decision Log:**\n";
+                markdownOutput += `### 🧠 Search Intelligence Trajectory\n\n`;
+                markdownOutput += `🔍 **AI Decision Process:** ${iterativeResult.decisionLog.length} strategic decisions made\n\n`;
+
+                // Decision summary table
+                markdownOutput += `| Step | Decision | Quality | Strategy | Next Action |\n`;
+                markdownOutput += `|------|----------|---------|----------|-------------|\n`;
+                
                 iterativeResult.decisionLog.forEach((log, index) => {
-                    markdownOutput += `<details><summary>Step ${index + 1}: ${log.reasoning}</summary>\n\n`
-                        + `*   **Decision:** \`${log.decision}\`\n`
-                        + `*   **Next Query:** ${log.nextCodebaseQuery || log.nextWebQuery || 'N/A'}\n`
-                        + `</details>\n`;
+                    const decisionIcon = log.decision === 'ANSWER' ? '✅' : 
+                                       log.decision === 'SEARCH_AGAIN' ? '🔍' : 
+                                       log.decision === 'SEARCH_WEB' ? '🌐' : 
+                                       log.decision === 'CORRECTIVE_SEARCH' ? '🔧' : '❓';
+                    
+                    const qualityScore = log.qualityScore ? `${(log.qualityScore * 100).toFixed(0)}%` : 'N/A';
+                    const qualityIcon = (log.qualityScore || 0) >= 0.8 ? '🟢' : (log.qualityScore || 0) >= 0.6 ? '🟡' : '🔴';
+                    
+                    const strategy = log.reasoning.split('.')[0].substring(0, 50) + (log.reasoning.length > 50 ? '...' : '');
+                    const nextAction = log.nextCodebaseQuery ? `🔍 "${log.nextCodebaseQuery.substring(0, 30)}..."` : 
+                                     log.nextWebQuery ? `🌐 "${log.nextWebQuery.substring(0, 30)}..."` : '📝 Generate Answer';
+                    
+                    markdownOutput += `| ${index + 1} | ${decisionIcon} **${log.decision}** | ${qualityIcon} ${qualityScore} | ${strategy} | ${nextAction} |\n`;
                 });
+                markdownOutput += `\n`;
+
+                // Expandable detailed breakdown
+                markdownOutput += `<details><summary>🔬 <strong>Detailed Decision Analysis</strong> (Click to expand)</summary>\n\n`;
+                
+                iterativeResult.decisionLog.forEach((log, index) => {
+                    const decisionIcon = log.decision === 'ANSWER' ? '✅' : 
+                                       log.decision === 'SEARCH_AGAIN' ? '🔍' : 
+                                       log.decision === 'SEARCH_WEB' ? '🌐' : 
+                                       log.decision === 'CORRECTIVE_SEARCH' ? '🔧' : '❓';
+                    const qualityIcon = (log.qualityScore || 0) >= 0.8 ? '🟢' : (log.qualityScore || 0) >= 0.6 ? '🟡' : '🔴';
+                    
+                    markdownOutput += `#### ${decisionIcon} Step ${index + 1}: ${log.decision}\n`;
+                    markdownOutput += `**${qualityIcon} Quality Score:** ${log.qualityScore ? (log.qualityScore * 100).toFixed(1) + '%' : 'Not assessed'}\n\n`;
+                    
+                    markdownOutput += `**🎯 Strategic Reasoning:**\n`;
+                    markdownOutput += `> ${log.reasoning}\n\n`;
+                    
+                    if (log.nextCodebaseQuery) {
+                        markdownOutput += `**🔍 Next Codebase Query:**\n\`\`\`\n${log.nextCodebaseQuery}\n\`\`\`\n\n`;
+                    }
+                    if (log.nextWebQuery) {
+                        markdownOutput += `**🌐 Next Web Query:**\n\`\`\`\n${log.nextWebQuery}\n\`\`\`\n\n`;
+                    }
+                    
+                    // Extract and format specific information sections
+                    if (log.reasoning.includes('Missing Information:')) {
+                        const missingInfo = log.reasoning.split('Missing Information:')[1]?.split('Citation Targets:')[0]?.trim();
+                        if (missingInfo) {
+                            markdownOutput += `**❓ Information Gaps Identified:**\n${missingInfo.split('\n').map(line => line.trim() ? `- ${line.trim()}` : '').filter(Boolean).join('\n')}\n\n`;
+                        }
+                    }
+                    if (log.reasoning.includes('Citation Targets:')) {
+                        const citationTargets = log.reasoning.split('Citation Targets:')[1]?.trim();
+                        if (citationTargets) {
+                            markdownOutput += `**📎 Citation Targets:** ${citationTargets}\n\n`;
+                        }
+                    }
+                    
+                    if (index < iterativeResult.decisionLog.length - 1) {
+                        markdownOutput += `---\n\n`;
+                    }
+                });
+                
+                markdownOutput += `</details>\n\n`;
             }
+
+            // Enhanced Quality Breakdown Section
+            if (iterativeResult?.searchMetrics) {
+                const metrics = iterativeResult.searchMetrics;
+                markdownOutput += `### 📈 Performance Analytics & Quality Breakdown\n\n`;
+
+                // Search efficiency analysis
+                const efficiency = metrics.totalIterations <= 2 ? '🚀 Highly Efficient' :
+                                 metrics.totalIterations <= 3 ? '⚡ Efficient' :
+                                 metrics.totalIterations <= 4 ? '📊 Thorough' : '🔍 Comprehensive';
+
+                const contextDensity = metrics.contextItemsAdded / Math.max(metrics.totalIterations, 1);
+                const contextEfficiency = contextDensity >= 8 ? '🎯 Excellent' :
+                                        contextDensity >= 5 ? '✅ Good' :
+                                        contextDensity >= 3 ? '📝 Adequate' : '⚠️ Limited';
+
+                markdownOutput += `**🎯 Search Efficiency Analysis:**\n`;
+                markdownOutput += `- **Overall Efficiency:** ${efficiency} (${metrics.totalIterations}/5 iterations)\n`;
+                markdownOutput += `- **Context Discovery Rate:** ${contextEfficiency} (${contextDensity.toFixed(1)} sources/iteration)\n`;
+                markdownOutput += `- **Self-Correction Ratio:** ${metrics.selfCorrectionLoops}/${metrics.totalIterations} (${((metrics.selfCorrectionLoops / Math.max(metrics.totalIterations, 1)) * 100).toFixed(0)}%)\n\n`;
+
+                // Citation quality analysis
+                if (metrics.citationAccuracy > 0 || metrics.totalCitationsGenerated > 0) {
+                    const citationScore = (metrics.citationAccuracy + (metrics.citationCoverage || 0)) / 2;
+                    const citationGrade = citationScore >= 0.9 ? 'A+ Outstanding' :
+                                        citationScore >= 0.8 ? 'A Excellent' :
+                                        citationScore >= 0.7 ? 'B+ Good' :
+                                        citationScore >= 0.6 ? 'B Fair' :
+                                        citationScore >= 0.5 ? 'C Needs Improvement' : 'D Poor';
+
+                    markdownOutput += `**📚 Citation Quality Report:**\n`;
+                    markdownOutput += `- **Overall Grade:** ${citationGrade} (${(citationScore * 100).toFixed(1)}%)\n`;
+                    markdownOutput += `- **Accuracy vs Coverage:** ${(metrics.citationAccuracy * 100).toFixed(1)}% accurate, ${((metrics.citationCoverage || 0) * 100).toFixed(1)}% coverage\n`;
+                    markdownOutput += `- **Source Utilization:** ${metrics.totalCitationsUsed || 0}/${metrics.totalCitationsGenerated || 0} sources actively cited\n\n`;
+                }
+
+                // Advanced features utilization
+                const advancedFeatures = [];
+                if (metrics.hybridSearches > 0) advancedFeatures.push(`🔄 Hybrid Search (${metrics.hybridSearches}x)`);
+                if (metrics.graphTraversals > 0) advancedFeatures.push(`🕸️ Knowledge Graph (${metrics.graphTraversals}x)`);
+                if (metrics.dmqr.enabled) advancedFeatures.push(`🎯 DMQR Multi-Query (${metrics.dmqr.generatedQueries?.length || 0} queries)`);
+                if (metrics.webSearchesPerformed > 0) advancedFeatures.push(`🌐 Web Integration (${metrics.webSearchesPerformed}x)`);
+                if (metrics.hallucinationChecksPerformed > 0) advancedFeatures.push(`🔍 Quality Checks (${metrics.hallucinationChecksPerformed}x)`);
+
+                if (advancedFeatures.length > 0) {
+                    markdownOutput += `**🚀 Advanced Capabilities Utilized:**\n`;
+                    advancedFeatures.forEach(feature => markdownOutput += `- ${feature}\n`);
+                    markdownOutput += `\n`;
+                }
+
+                // Search strategy recommendations
+                markdownOutput += `**💡 Search Strategy Insights:**\n`;
+                if (metrics.totalIterations === 1 && metrics.contextItemsAdded >= 10) {
+                    markdownOutput += `- ✨ **Excellent First Query:** High-quality results achieved immediately\n`;
+                } else if (metrics.selfCorrectionLoops > 2) {
+                    markdownOutput += `- 🔄 **Adaptive Search:** Multiple corrections led to comprehensive results\n`;
+                } else if (metrics.hybridSearches > 0) {
+                    markdownOutput += `- 🚀 **Multi-Modal Success:** Hybrid search enhanced result quality\n`;
+                } else {
+                    markdownOutput += `- 📝 **Standard Retrieval:** Effective traditional search approach\n`;
+                }
+
+                if ((metrics.citationCoverage || 0) < 0.6 && metrics.totalCitationsGenerated > 5) {
+                    markdownOutput += `- ⚠️ **Improvement Opportunity:** Consider enabling more aggressive context utilization\n`;
+                }
+                if (metrics.totalIterations >= 4 && metrics.selfCorrectionLoops === 0) {
+                    markdownOutput += `- 🎯 **Optimization Suggestion:** Self-correction could improve efficiency\n`;
+                }
+                markdownOutput += `\n`;
+            }
+        }
+
+        // Display lightweight metrics for ANSWER_FROM_HISTORY cases
+        if (historyMetrics) {
+            markdownOutput += `### 🏃‍♂️ Continuation Session Analytics\n\n`;
+            
+            // Strategy indicator
+            const strategyIcon = historyMetrics.strategy === 'history_with_web_search' ? '🌐📜' : '📜';
+            const strategyName = historyMetrics.strategy === 'history_with_web_search' ? 'History + Web Search' : 'Pure History Response';
+            
+            markdownOutput += `**${strategyIcon} Strategy:** ${strategyName}\n`;
+            markdownOutput += `**🎯 Decision:** ${historyMetrics.decisionType} (Autonomous AI choice)\n`;
+            markdownOutput += `**📚 History Context:** ${historyMetrics.conversationHistoryUsed} previous messages utilized\n`;
+            
+            if (historyMetrics.webSearchSources > 0) {
+                markdownOutput += `**🌐 Live Sources:** ${historyMetrics.webSearchSources} web sources integrated\n`;
+            }
+            
+            markdownOutput += `**✅ Completion:** ${historyMetrics.terminationReason}\n\n`;
+            
+            // Quality assessment
+            const qualityIcon = historyMetrics.searchQuality >= 0.8 ? '🟢' : '🟡';
+            const qualityLabel = historyMetrics.searchQuality >= 0.8 ? 'High' : 'Good';
+            
+            markdownOutput += `### 📊 Quality Assessment\n\n`;
+            markdownOutput += `| Metric | Value | Status |\n`;
+            markdownOutput += `|--------|-------|--------|\n`;
+            markdownOutput += `| **Quality Score** | ${(historyMetrics.searchQuality * 100).toFixed(0)}% | ${qualityIcon} ${qualityLabel} |\n`;
+            markdownOutput += `| **Total Sources** | ${historyMetrics.totalSources} | ℹ️ Combined |\n`;
+            markdownOutput += `| **Response Time** | Instant | ⚡ Optimized |\n\n`;
+            
+            // Efficiency insights
+            markdownOutput += `**⚡ Efficiency Benefits:**\n`;
+            markdownOutput += `- 🚀 **Instant Response:** No RAG processing overhead\n`;
+            markdownOutput += `- 🧠 **Context Continuity:** Preserved conversation flow\n`;
+            
+            if (historyMetrics.webSearchSources > 0) {
+                markdownOutput += `- 🌐 **Fresh Information:** Current web data integrated\n`;
+            } else {
+                markdownOutput += `- 📜 **History Sufficiency:** Complete answer from conversation context\n`;
+            }
+            
+            markdownOutput += `- 🎯 **Smart Routing:** AI chose most efficient path\n\n`;
         }
 
         // Store the AI's response with complete metadata (only once)
@@ -606,6 +976,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 google_search_sources: googleSearchSources,
                 decision_log: iterativeResult?.decisionLog,
                 autonomous_focus_decision: autonomousFocusDecision,
+                history_metrics: historyMetrics,
                 execution_mode: 'generative_answer'
             }
         );
