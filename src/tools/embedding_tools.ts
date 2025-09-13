@@ -181,12 +181,23 @@ ${formatChangeList(trulyDeleted)}
 
 `;
 
-    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for a pull request. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
+    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for code changes. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
 
-Synthesize all sections to understand the full picture. Pay close attention to the 'Refactored' section, which indicates code that was modified. Your summary should be brief, written in markdown, and focus on the overall impact of the changes.
+**Instructions:**
+1. **Identify the domain/technology**: Look at file paths, function names, and entity names to understand what type of system this is (e.g., web app, AI/ML system, API, database, etc.)
+2. **Analyze the scope of changes**: Distinguish between major architectural changes, feature additions, bug fixes, refactoring, and configuration updates
+3. **Focus on impact**: What are the most significant improvements or modifications?
+4. **Be specific**: Use technical terminology appropriate to the detected domain rather than generic terms
+5. **Pay attention to 'Refactored' sections**: These often indicate significant modifications to existing functionality
 
 **Changelog:**
 ${changelog}
+
+**Summary Requirements:**
+- Write 2-3 sentences maximum
+- Be domain-specific based on what you observe in the changes
+- Focus on the most impactful modifications
+- Use appropriate technical language for the detected technology stack
 `;
 
     let summaryText = `(AI summary could not be generated.)`;
