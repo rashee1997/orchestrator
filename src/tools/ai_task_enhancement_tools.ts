@@ -11,7 +11,7 @@ import {
     AI_TASK_COMPLEXITY_ANALYSIS_PROMPT,
     AI_SUGGEST_TASK_DETAILS_PROMPT,
     AI_ANALYZE_PLAN_PROMPT
-} from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+} from '../database/services/gemini-integration-modules/GeminiPlannerPrompts.js';
 import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 

@@ -12,6 +12,7 @@ import {
     formatTaskToMarkdown
 } from '../utils/formatters.js';
 import { InitialDetailedPlanAndTasks } from '../database/services/GeminiPlannerService.js';
+import { MultiStepPlanGenerationService } from '../database/services/MultiStepPlanGenerationService.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -32,7 +33,7 @@ interface Subtask {
 export const planManagementToolDefinitions = [
     {
         name: 'create_task_plan',
-        description: 'Creates a new task plan. Can either accept full plan and task data, or generate them using AI based on a goal description or refined prompt ID. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        description: 'Creates a new task plan. Can either accept full plan and task data, or generate them using AI based on a goal description or refined prompt ID. Supports multi-step generation to avoid token limits for large plans. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
         inputSchema: schemas.createTaskPlan,
     },
     {
@@ -153,6 +154,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             if (args.goal_description || args.refined_prompt_id) {
                 const identifier = args.refined_prompt_id || args.goal_description;
                 const isRefinedPromptId = !!args.refined_prompt_id;
+                const useMultiStep = args.use_multi_step_generation === true;
                 
                 // Read live files content if paths are provided
                 let liveFilesContent: Map<string, string> | undefined;
@@ -187,16 +189,53 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 }
                 
                 try {
-                    const aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
-                        agent_id, 
-                        identifier, 
-                        isRefinedPromptId,
-                        undefined, // directRefinedPromptDetails
-                        undefined, // codebaseContextSummary
-                        liveFilesContent // Pass live file content to the planner
-                    );
-                    planDataToStore = aiGeneratedPlan.planData;
-                    tasksDataToStore = aiGeneratedPlan.tasksData;
+                    if (useMultiStep) {
+                        console.log(`[Multi-Step Plan] Using multi-step generation for agent ${agent_id}`);
+                        
+                        // Convert liveFilesContent Map to Array format for multi-step service
+                        const liveFiles: Array<{ path: string; content: string }> = [];
+                        if (liveFilesContent) {
+                            for (const [path, content] of liveFilesContent.entries()) {
+                                liveFiles.push({ path, content });
+                            }
+                        }
+
+                        // Initialize multi-step service
+                        const geminiService = memoryManager.getGeminiIntegrationService();
+                        const multiStepService = new MultiStepPlanGenerationService(
+                            memoryManager,
+                            geminiService
+                        );
+
+                        // Generate complete plan using multi-step process
+                        const progress = await multiStepService.generateCompletePlan(
+                            agent_id,
+                            identifier,
+                            isRefinedPromptId,
+                            liveFiles
+                        );
+
+                        // Convert to database format
+                        const dbFormat = multiStepService.convertToDbFormat(progress, args.refined_prompt_id);
+                        planDataToStore = dbFormat.planData;
+                        tasksDataToStore = dbFormat.tasks;
+
+                        console.log(`[Multi-Step Plan] ✅ Successfully generated ${tasksDataToStore.length} tasks in ${progress.currentStep} steps`);
+                    } else {
+                        // Use existing single-step generation (original behavior)
+                        console.log(`[Single-Step Plan] Using traditional generation for agent ${agent_id}`);
+                        
+                        const aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
+                            agent_id, 
+                            identifier, 
+                            isRefinedPromptId,
+                            undefined, // directRefinedPromptDetails
+                            undefined, // codebaseContextSummary
+                            liveFilesContent // Pass live file content to the planner
+                        );
+                        planDataToStore = aiGeneratedPlan.planData;
+                        tasksDataToStore = aiGeneratedPlan.tasksData;
+                    }
 
                     if (args.refined_prompt_id) {
                         planDataToStore.refined_prompt_id_associated = args.refined_prompt_id;

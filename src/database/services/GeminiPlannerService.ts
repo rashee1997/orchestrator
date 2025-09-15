@@ -10,7 +10,7 @@ import {
     PLANNER_USER_QUERY_REFINED_PROMPT,
     PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
     PLANNER_USER_QUERY_GOAL_PROMPT
-} from './gemini-integration-modules/GeminiPromptTemplates.js';
+} from './gemini-integration-modules/GeminiPlannerPrompts.js';
 import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation

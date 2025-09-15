@@ -361,6 +361,11 @@ export const schemas = {
                 description: 'Optional: Array of full file paths for the AI to review live when generating the plan.',
                 nullable: true
             },
+            use_multi_step_generation: {
+                type: 'boolean',
+                description: 'Optional: Use multi-step generation to avoid token limits. Generates plan structure first, then tasks in batches.',
+                default: false
+            },
             planData: {
                 type: ['object', 'null'],
                 properties: {

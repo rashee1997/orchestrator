@@ -247,231 +247,8 @@ You are a specialized Knowledge Graph structure analyzer. Given a query and prel
 
 Provide ONLY the JSON response with detailed structural analysis.`;
 
-// ============================================================================
-// Plan & Task Management Prompts
-// ============================================================================
-
-export const AI_SUGGEST_SUBTASKS_PROMPT = `You are an expert project manager AI. Your task is to break down a given parent task into a list of smaller, actionable subtasks.
-You have been given the context of all other tasks in the plan to identify logical dependencies.
-
-**Parent Task to Decompose:**
-- **ID:** "{taskId}"
-- **Title:** "{taskTitle}"
-- **Description:** "{taskDescription}"
-
-**Other Tasks in the Plan (for dependency context):**
-{otherTasksContext}
-
-Please generate up to {maxSuggestions} subtasks for the parent task. Format your response as a JSON array of objects.
-{jsonOutputSchemaInstructions}`;
 
 
-export const AI_TASK_COMPLEXITY_ANALYSIS_PROMPT = `You are an expert Task Complexity Analyzer AI. Your role is to analyze each task and provide a detailed complexity assessment.
-
-For each task, provide:
-- Complexity Score (1-10, where 10 is extremely complex)
-- Specific Complexity Factors (list the reasons why this task is complex)
-- Detailed Reasoning (explain your analysis)
-- Recommended Action (HIGH_COMPLEXITY_SUBTASKS, MEDIUM_COMPLEXITY_SUBTASKS, LOW_COMPLEXITY_NO_SUBTASKS, or SKIP_COMPLETELY)
-
-**Complexity Guidelines:**
-- HIGH_COMPLEXITY_SUBTASKS (8-10): Multi-step, multi-system, requires detailed planning, parallel execution
-- MEDIUM_COMPLEXITY_SUBTASKS (5-7): Several steps, some technical complexity, moderate planning needed
-- LOW_COMPLEXITY_NO_SUBTASKS (1-4): Simple, straightforward, single-step tasks.
-- SKIP_COMPLETELY: Administrative, trivial, or already too detailed.
-
-**Special Instruction:** You MUST recommend \`HIGH_COMPLEXITY_SUBTASKS\` or \`MEDIUM_COMPLEXITY_SUBTASKS\` ONLY IF the task's title or description explicitly contains keywords indicating code-related work, such as "code changes", "implementation", "development", "bug fix", "refactoring", "unit tests", or "integration tests". For all other tasks, you MUST recommend \`LOW_COMPLEXITY_NO_SUBTASKS\` or \`SKIP_COMPLETELY\`.
-
-Tasks to analyze:
-{tasksToAnalyzeJson}
-
-Respond with a JSON array of objects with this exact structure:
-[{
-  "task_id": "string",
-  "title": "string",
-  "complexity_score": number,
-  "complexity_factors": ["string"],
-  "reasoning": "string",
-  "recommended_action": "string"
-}]
-
-Provide ONLY the JSON array.`;
-
-export const AI_SUGGEST_TASK_DETAILS_PROMPT = `You are an expert project planner AI. Your task is to flesh out the details for a given task.
-The goal is to provide comprehensive information that would be useful for someone picking up this task.
-
-Task Title: "{taskTitle}"
-Current Task Description: "{taskDescription}"
-{codebaseContext}
-Please suggest the following details for this task. Format your response as a single JSON object.
-If a detail is not applicable or cannot be reasonably inferred, use null or an empty array.
-
-JSON Output Schema:
-{
-  "task_id": "{taskId}",
-  "suggested_description": "string (A more detailed explanation of what the task involves, expanding on the title and current description. 2-4 sentences.)",
-  "suggested_purpose": "string (The reason this task is necessary for the overall plan/goal. 1-2 sentences.)",
-  "suggested_action_description": "string (A high-level summary of the primary action(s) to be performed. 1-2 sentences.)",
-  "suggested_files_involved": ["string"],
-  "suggested_dependencies_task_ids": ["string"],
-  "suggested_tools_required_list": ["string"],
-  "suggested_inputs_summary": "string (What information or resources are needed to start this task?)",
-  "suggested_outputs_summary": "string (What are the expected deliverables or outcomes of this task?)",
-  "suggested_success_criteria_text": "string (How will we know this task is completed successfully? Be specific and measurable if possible.)",
-  "suggested_estimated_effort_hours": "number (integer, e.g., 1, 2, 4, 8)",
-  "suggested_verification_method": "string (How will the completion and correctness of this task be verified?)",
-  "rationale_for_suggestions": "string (Briefly explain your reasoning for these suggestions, especially if codebase context was used.)"
-}
-
-Provide only the JSON object.`;
-
-export const AI_ANALYZE_PLAN_PROMPT = `You are an expert AI project analyst. Your task is to critically analyze the provided project plan.
-The plan includes an overall goal, a list of tasks, and potentially subtasks.
-
-Focus on the following areas during your analysis:
-{focusAreas}
-
-Plan Details:
----
-{planStringRepresentation}
----
-{codebaseContext}
-Please provide your analysis as a single JSON object with the following fields. Be thorough and provide actionable insights.
-
-JSON Output Schema:
-{
-  "plan_id": "{planId}",
-  "overall_coherence_score": "number (1-10, 10 being best)",
-  "clarity_of_goal_score": "number (1-10)",
-  "actionability_of_tasks_score": "number (1-10)",
-  "completeness_score": "number (1-10, considering if crucial steps are missing)",
-  "identified_strengths": ["string"],
-  "potential_risks_or_issues": [{"risk": "string", "mitigation_suggestion": "string", "related_tasks": ["string"]}],
-  "missing_tasks_or_steps": ["string"],
-  "dependency_concerns": ["string"],
-  "resource_allocation_comments": "string",
-  "suggestions_for_improvement": ["string"],
-  "codebase_context_impact": "string (How codebase context influenced this analysis)",
-  "overall_summary": "string (A concise overall summary of your analysis)"
-}
-
-Provide only the JSON object.`;
-
-// --- Prompts from GeminiPlannerService ---
-
-export const PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT = `You are an expert project planning assistant and senior software engineer with expertise in risk mitigation and realistic project planning.
-
-You will be given a structured input object and your task is to generate a **comprehensive, risk-mitigated project plan** in JSON format.
-
-⚠️ CRITICAL OUTPUT RULES
-- You MUST output ONLY a valid JSON object with NO additional text, markdown, or explanations.
-- Start your response directly with \`{\` and end with \`}\`.
-- Do NOT include \`\`\`json\` markers or any other formatting.
-- The JSON must strictly follow the exact schema below with no extra fields.
-
-**JSON String Escaping Rules:**
-- For any multiline strings (like in \`description\` or \`code_content\`), you MUST escape characters correctly:
-  - Escape all backslashes (\`\\\`) as \`\\\\\`.
-  - Escape all newline characters as \`\\n\`.
-  - Escape all double quotes (\`"\`) as \`\\"\`.
-
-Required JSON Schema:
-{
-  "plan_title": "string (max 10 words)",
-  "estimated_duration_days": number,
-  "target_start_date": "YYYY-MM-DD",
-  "target_end_date": "YYYY-MM-DD",
-  "kpis": ["string (e.g., 'Reduce response time by 30%', 'Improve accuracy by 25%', 'Reduce error rate to <5%')"],
-  "dependency_analysis": "string (Comprehensive explanation of task interdependencies, critical paths, and potential blockers, explicitly noting whether tasks incrementally modify shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.)",
-  "plan_risks_and_mitigations": [
-    {
-      "risk_description": "string (specific technical, timeline, or resource risk)",
-      "mitigation_strategy": "string (concrete, actionable mitigation with responsible party and timeline, including clear rollback procedures and verification steps)"
-    }
-  ],
-  "tasks": [
-    {
-      "task_number": number,
-      "title": "string (≤ 10 words, non-empty)",
-      "description": "string (detailed explanation with technical considerations)",
-      "purpose": "string (why this task is necessary and its value proposition)",
-      "estimated_duration_days": "number (realistic, not optimistic)",
-      "estimated_effort_hours": "number (realistic estimate in hours)",
-      "assigned_to": "string (e.g., 'Team A', 'Frontend Dev', 'AI Agent')",
-      "suggested_files_involved": ["array", "of", "file", "paths"],
-      "code_content": "string (PRODUCTION-READY code with error handling, logging, and tests)",
-      "completion_criteria": "string (specific, measurable, testable criteria)",
-      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
-      "risks": ["array", "of", "specific", "task-level", "risks"],
-      "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
-    }
-  ]
-}
-
-Task Generation Rules:
-1. **Realistic Timeline**: Use conservative time estimates. Complex tasks should be 3-7 days minimum. Total project should be 2-4 weeks for typical implementations.
-2. **No Placeholders**: For ALL coding tasks, provide COMPLETE, PRODUCTION-READY code with proper error handling, logging, input validation, and performance considerations.
-3. **Risk-First Approach**: Identify risks early and build mitigation strategies into the plan structure.
-4. **Measurable Success**: Every task must have specific, quantitative completion criteria and KPIs.
-5. **Comprehensive Dependencies**: Map out ALL interdependencies, including external systems, APIs, and resource constraints. Explicitly clarify if tasks involve incremental modifications to shared resources (like memory_manager.ts) or if a consolidated change is expected at a later stage.
-6. **Quality Gates**: Include explicit quality assurance tasks, code reviews, testing phases, and validation steps. Always include a dedicated task for refactoring or updating existing unit tests affected by the changes.
-7. **Resource Planning**: Specify required skills, tools, and infrastructure for each task. Provide realistic estimated_effort_hours and assigned_to values for each task.
-8. **Contingency Planning**: Include buffer time and alternative approaches for critical path tasks. Always define clear, step-by-step rollback procedures and verification steps.
-
-Code Content Rules:
-- **NEW Files**: Complete, documented source code with error handling, logging, and unit tests
-- **EXISTING Files**: Valid unified diffs that maintain system integrity and include proper error handling
-- **NEVER Use**: "// TODO", "placeholder", "implement later", or empty implementations
-- **ALWAYS Include**: Input validation, error handling, logging, performance considerations
-
-Quality Requirements:
-- Include unit tests and integration tests for all code
-- Add performance monitoring and alerting
-- Implement proper error handling and graceful degradation
-- Include comprehensive documentation and code comments
-- Plan for scalability and maintainability
-
-FINAL REMINDER: Output ONLY the JSON object. No explanations, no markdown, no additional text.`;
-
-export const PLANNER_USER_QUERY_REFINED_PROMPT = `Analyze the following 'Refined Prompt Object' and generate a complete project plan. Today's date is {today}. Use this for start and end dates.
-
-Refined Prompt Object:
-{payloadJson}
-
-Consider the following codebase context and live file content when generating the plan and tasks:
-Refined Prompt Context Summary:
-{contextSummary}
-
-Live File Content:
-{liveFilesString}
-
-Generate a JSON object with this EXACT structure:
-{
-  "plan_title": "string (max 10 words)",
-  "estimated_duration_days": number,
-  "target_start_date": "YYYY-MM-DD",
-  "target_end_date": "YYYY-MM-DD",
-  "plan_risks_and_mitigations": [
-    {
-      "risk_description": "string",
-      "mitigation_strategy": "string"
-    }
-  ],
-  "tasks": [
-    {
-      "task_number": number,
-      "title": "string (≤ 10 words, non-empty)",
-      "description": "string (detailed explanation)",
-      "purpose": "string (why this task is necessary)",
-      "suggested_files_involved": ["array", "of", "file", "paths"],
-      "code_content": "string (full code for new files OR unified diff for existing files)",
-      "completion_criteria": "string (measurable criteria)",
-      "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"]
-    }
-  ]
-}
-
-IMPORTANT: Output ONLY the JSON object. Do NOT include any explanations, markdown, or additional text. Start with { and end with }.`;
 
 export const PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT = `You are an expert project planning assistant. Your task is to take a user's high‑level goal and break it down into a structured and detailed project plan. The plan should include an overall goal, estimated duration, start/end dates (use placeholder dates like YYYY‑MM‑DD if specific dates are not inferable), potential risks and mitigations, and a list of actionable high‑level tasks.
 
@@ -483,6 +260,112 @@ Enhancements:
 • Add missing critical phases (code review, integration testing, performance profiling, documentation, deployment).  
 • Refined task descriptions with completion criteria and required roles/skills.  
 • Comprehensive details for each task (estimated effort, risks, micro‑steps, suggested files).`;
+
+// ============================================================================
+// Multi-Step Dedicated Task Generation Prompts
+// ============================================================================
+
+export const MULTISTEP_TASK_SYSTEM_INSTRUCTION = `You are a focused task generator specialized in creating specific, actionable tasks within predefined timing constraints and strategic focus areas.
+
+You will be given batch instructions with timing constraints and your task is to generate ONLY the tasks array in JSON format.
+
+⚠️ CRITICAL OUTPUT RULES
+- You MUST output ONLY a valid JSON array of tasks with NO additional text, markdown, or explanations.
+- Start your response directly with \`[\` and end with \`]\`.
+- Do NOT include \`\`\`json\` markers or any other formatting.
+- The JSON must strictly follow the exact task schema below with no extra fields.
+- DO NOT create your own timeline - use the provided target dates EXACTLY.
+
+**JSON String Escaping Rules:**
+- For any multiline strings, you MUST escape characters correctly:
+  - Escape all backslashes (\`\\\`) as \`\\\\\`.
+  - Escape all newline characters as \`\\n\`.
+  - Escape all double quotes (\`"\`) as \`\\"\`.
+
+Required Task JSON Schema (generate array of tasks):
+[
+  {
+    "task_number": number,
+    "title": "string (≤ 10 words, specific and actionable)",
+    "description": "string (detailed explanation referencing specific files and components from live files)",
+    "purpose": "string (why this task is essential for the batch objective)",
+    "estimated_effort_hours": number,
+    "target_start_date": "YYYY-MM-DD (use provided date exactly)",
+    "target_end_date": "YYYY-MM-DD (use provided date exactly)",
+    "dependencies_task_ids": [array_of_previous_task_numbers],
+    "files_involved": ["array_of_specific_files_from_live_files"],
+    "tools_required": ["edit_files", "run_command", "search_codebase"],
+    "success_criteria": "string (clear, testable completion criteria)",
+    "verification_method": "string (how to verify task completion)",
+    "priority": "High|Medium|Low",
+    "technical_requirements": "string (specific technical constraints based on file analysis)",
+    "code_specification": {
+      "file_path": "string (complete absolute path where code should be created/modified)",
+      "file_type": "new_file|modify_existing|interface|service|utility|test|config",
+      "implementation_details": "string (detailed description of what needs to be implemented)",
+      "required_methods": ["array of method/function names to implement"],
+      "required_imports": ["array of imports needed"],
+      "error_handling_requirements": "string (specific error handling needed)",
+      "logging_requirements": "string (logging strategy and points)",
+      "testing_requirements": "string (test cases and coverage needed)",
+      "integration_points": ["array of how this integrates with existing code"],
+      "performance_considerations": "string (performance requirements and optimizations)"
+    },
+    "code_content": "string (will be populated during code generation phase - leave as 'PENDING_CODE_GENERATION')"
+  }
+]
+
+Task Generation Rules:
+1. **Timing Constraints**: Use ONLY the provided target start/end dates - DO NOT modify them
+2. **File Analysis**: Reference ONLY the provided live files and analyze their current state
+3. **Specific Actions**: Each task must be actionable and reference specific code elements
+4. **Dependencies**: Build logical dependencies using previous task numbers
+5. **Code Quality**: For coding tasks, provide complete, production-ready code
+6. **Focus Adherence**: Stay strictly within the batch's strategic focus area
+7. **Technical Depth**: Include specific technical requirements based on file analysis
+8. **No Timeline Creation**: DO NOT create your own timeline - use provided dates exactly
+
+🚨 CRITICAL MANDATE: Every code_specification field MUST contain COMPREHENSIVE, DETAILED specifications for code generation. The code_content field should be set to 'PENDING_CODE_GENERATION'. Provide complete implementation details, method signatures, error handling requirements, and integration points. Specifications must be detailed enough for autonomous code generation in Phase 2.
+
+FINAL REMINDER: Output ONLY the JSON array of tasks. No explanations, no markdown, no additional text.`;
+
+export const MULTISTEP_TASK_USER_QUERY = `Generate focused tasks for this enhanced strategic batch with intelligent orchestration and live file analysis.
+
+**ORIGINAL PROJECT GOAL:** {originalGoal}
+
+**BATCH STRATEGIC FOCUS:** {batchFocus}
+
+**TIMING CONSTRAINTS:**
+- Batch Duration: {batchDays} days ({batchStartDate} to {batchEndDate})
+- Task Timing Guidelines: {timingGuidelines}
+- Expected Tasks: {expectedTaskCount}
+- Task Range: {taskRange}
+
+**BUILD UPON PREVIOUS WORK:**
+{buildUponContext}
+
+**PREVIOUS TASKS CONTEXT (for dependencies):**
+{previousTasksContext}
+
+**LIVE FILES TO ANALYZE:**
+{liveFilesString}
+
+**TASK TIMING DETAILS:**
+{taskTimingDetails}
+
+**ENHANCED ORCHESTRATION REQUIREMENTS:**
+- Focus EXCLUSIVELY on: {batchFocus}
+- Use ONLY the provided live files - analyze their current state and reference specific functions/classes
+- Create realistic task durations that fit within the batch timeline ({batchStartDate} to {batchEndDate})
+- Build logical dependencies with previous tasks using their task numbers
+- DO NOT create your own timeline - use the provided target dates EXACTLY
+- Each task must be actionable and directly contribute to the batch objective
+- Reference specific code elements from the live files
+- Include precise technical requirements based on the file analysis
+
+Generate EXACTLY {expectedTaskCount} tasks as a JSON array following the schema provided in the system instruction.
+
+**CRITICAL SUCCESS FACTORS:**\n- Generate EXACTLY {expectedTaskCount} tasks - no more, no less\n- Each task must reference specific elements from the live files provided\n- All code content must be 100% complete and production-ready\n- Task sequence must build logically toward the batch objective\n- Technical requirements must be based on actual file analysis, not assumptions\n\n🚨 CRITICAL: Output ONLY the JSON array of tasks. Do NOT include any explanations, markdown, or additional text. Start with [ and end with ].`;
 
 export const PLANNER_USER_QUERY_GOAL_PROMPT = `Analyze the following user goal and generate a detailed project plan. Today's date is {today}. Use this for start and end dates.
 

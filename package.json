@@ -24,6 +24,7 @@
     "@modelcontextprotocol/sdk": "^1.11.0",
     "@tavily/core": "^0.5.2",
     "@types/node-sql-parser": "^1.1.0",
+    "ai-json-fixer": "^0.2.0",
     "ai-validator": "^1.0.76",
     "ajv": "^8.17.1",
     "axios": "^1.11.0",
