@@ -9,7 +9,7 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, GEMINI_GOOGLE_SEARCH_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT, RAG_VERIFICATION_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
-import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
@@ -216,15 +216,15 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     topKKgResults: { type: 'number', nullable: true },
                     embeddingScoreThreshold: { type: 'number', nullable: true },
                     useHybridSearch: { type: 'boolean', nullable: true, description: 'Enable hybrid search combining vector and keyword search' },
-                    enableKeywordSearch: { type: 'boolean', nullable: true, description: 'Enable enhanced keyword search within hybrid search' },
-                    keywordWeight: { type: 'number', nullable: true, description: 'Weight for keyword search results (0.0-1.0)', minimum: 0, maximum: 1 },
-                    taskType: { 
-                        type: 'string', 
-                        nullable: true, 
-                        enum: ['RETRIEVAL_QUERY', 'RETRIEVAL_DOCUMENT', 'CODE_RETRIEVAL_QUERY', 'SEMANTIC_SIMILARITY', 'CLASSIFICATION'],
-                        description: 'Gemini task type for optimized search behavior' 
-                    },
-                    enableBatchProcessing: { type: 'boolean', nullable: true, description: 'Enable batch processing of contexts (3 files at a time)' },
+                    // enableKeywordSearch: { type: 'boolean', nullable: true, description: 'Enable enhanced keyword search within hybrid search' }, // COMMENTED OUT
+                    // keywordWeight: { type: 'number', nullable: true, description: 'Weight for keyword search results (0.0-1.0)', minimum: 0, maximum: 1 }, // COMMENTED OUT
+                    // taskType: { // COMMENTED OUT
+                    //     type: 'string',
+                    //     nullable: true,
+                    //     enum: ['RETRIEVAL_QUERY', 'RETRIEVAL_DOCUMENT', 'CODE_RETRIEVAL_QUERY', 'SEMANTIC_SIMILARITY', 'CLASSIFICATION'],
+                    //     description: 'Gemini task type for optimized search behavior'
+                    // },
+                    // enableBatchProcessing: { type: 'boolean', nullable: true, description: 'Enable batch processing of contexts (3 files at a time)' }, // COMMENTED OUT
                     enableReranking: { type: 'boolean', nullable: true, description: 'Enable AI-powered context reranking' },
                     maxContextLength: { type: 'number', nullable: true, description: 'Maximum context length for processing' }
                 },
@@ -243,7 +243,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             hallucination_check_threshold: { type: 'number', description: 'Optional: Threshold for hallucination detection (0-1).', nullable: true },
             google_search: { type: 'boolean', description: 'Optional: If true, enables Gemini\'s built-in Google Search grounding for the query.', default: false, nullable: true },
             enable_hybrid_search: { type: 'boolean', description: 'Enable advanced hybrid search combining vector, keyword, and KG search', default: false, nullable: true },
-            enable_agentic_planning: { type: 'boolean', description: 'Enable AI-driven search planning and strategy selection', default: true, nullable: true },
+            enable_agentic_planning: { type: 'boolean', description: 'Enable AI-driven search planning and strategy selection', default: false, nullable: true },
             enable_reflection: { type: 'boolean', description: 'Enable reflection-based quality control and self-correction', default: true, nullable: true },
             enable_long_rag: { type: 'boolean', description: 'Enable Long RAG for processing large contexts', default: true, nullable: true },
             enable_corrective_rag: { type: 'boolean', description: 'Enable corrective RAG for iterative improvement', default: true, nullable: true },
@@ -279,7 +279,28 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             citation_accuracy_threshold
         } = args;
 
-        let focus_area = args.focus_area; // Make focus_area mutable
+        // Validate and sanitize count parameters to prevent negative values
+        const sanitized_dmqr_query_count = Math.max(2, Math.min(5, dmqr_query_count || 3));
+        const sanitized_max_iterations = Math.max(1, Math.min(8, max_iterations || 5));
+        const sanitized_conversation_history_limit = Math.max(1, conversation_history_limit || 15);
+        const sanitized_reflection_frequency = Math.max(1, Math.min(5, reflection_frequency || 2));
+        const sanitized_long_rag_chunk_size = Math.max(500, Math.min(5000, long_rag_chunk_size || 2000));
+        const sanitized_citation_accuracy_threshold = Math.max(0, Math.min(1, citation_accuracy_threshold || 0.9));
+
+        console.log(`[ask_gemini] Parameter sanitization: dmqr_query_count=${dmqr_query_count} -> ${sanitized_dmqr_query_count}, max_iterations=${max_iterations} -> ${sanitized_max_iterations}`);
+
+        // Override the original parameters with sanitized values
+        const sanitized_args = {
+            ...args,
+            dmqr_query_count: sanitized_dmqr_query_count,
+            max_iterations: sanitized_max_iterations,
+            conversation_history_limit: sanitized_conversation_history_limit,
+            reflection_frequency: sanitized_reflection_frequency,
+            long_rag_chunk_size: sanitized_long_rag_chunk_size,
+            citation_accuracy_threshold: sanitized_citation_accuracy_threshold
+        };
+
+        let focus_area = sanitized_args.focus_area; // Make focus_area mutable
 
         const userExplicitlyEnabledRag = enable_rag;
         const userExplicitlyEnabledIterativeSearch = enable_iterative_search;
@@ -362,7 +383,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         await conversationHistoryManager.storeConversationMessage(currentSessionId, 'user', query);
 
-        const historyMessages = await conversationHistoryManager.getConversationMessages(currentSessionId, conversation_history_limit);
+        const historyMessages = await conversationHistoryManager.getConversationMessages(currentSessionId, sanitized_conversation_history_limit);
         const hasConversationHistory = historyMessages.length > 1; // More than just the current user query
         let ragQuery = query;
 
@@ -382,7 +403,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{continuation_mode}', `continue=${continue_session || false}`);
 
                 const decisionResult = await geminiService.askGemini(decisionPrompt, getCurrentModel());
-                const decisionResponse = parseGeminiJsonResponse(decisionResult.content[0].text ?? '');
+                const decisionResponse = parseGeminiJsonResponseSync(decisionResult.content[0].text ?? '');
 
                 // Store the autonomous decision in tool_info for transparency
                 const autonomousDecision = {
@@ -463,30 +484,33 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             if (mutable_enable_iterative_search) {
                 console.log('[ask_gemini] Calling enhanced _performIterativeRagSearch...');
                 
-                // Enhanced context options with new features
+                // Enhanced context options with new features - SIMPLIFIED
                 const enhancedContextOptions = {
                     ...context_options,
                     useHybridSearch: enable_hybrid_search || context_options?.useHybridSearch || false,
-                    enableKeywordSearch: context_options?.enableKeywordSearch ?? true,
-                    keywordWeight: context_options?.keywordWeight ?? 0.8,
-                    taskType: context_options?.taskType || 'CODE_RETRIEVAL_QUERY',
-                    enableBatchProcessing: context_options?.enableBatchProcessing ?? true,
+                    // enableKeywordSearch: context_options?.enableKeywordSearch ?? true, // COMMENTED OUT
+                    // keywordWeight: context_options?.keywordWeight ?? 0.8, // COMMENTED OUT
+                    // taskType: context_options?.taskType || 'CODE_RETRIEVAL_QUERY', // COMMENTED OUT
+                    // enableBatchProcessing: context_options?.enableBatchProcessing ?? true, // COMMENTED OUT
                     enableReranking: context_options?.enableReranking ?? true
                 };
 
-                // Enhanced RAG arguments
+                // Enhanced RAG arguments using sanitized parameters
                 const enhancedRagArgs: IterativeRagArgs = {
-                    ...args,
+                    ...sanitized_args,
                     query: ragQuery,
                     context_options: enhancedContextOptions,
                     enable_hybrid_search: enable_hybrid_search ?? true,
-                    enable_agentic_planning: enable_agentic_planning ?? true,
+                    enable_agentic_planning: enable_agentic_planning ?? false,
                     enable_reflection: enable_reflection ?? true,
                     enable_long_rag: enable_long_rag ?? true,
                     enable_corrective_rag: enable_corrective_rag ?? true,
-                    reflection_frequency: reflection_frequency ?? 2,
-                    long_rag_chunk_size: long_rag_chunk_size ?? 2000,
-                    citation_accuracy_threshold: citation_accuracy_threshold ?? 0.9,
+                    reflection_frequency: sanitized_reflection_frequency,
+                    long_rag_chunk_size: sanitized_long_rag_chunk_size,
+                    citation_accuracy_threshold: sanitized_citation_accuracy_threshold,
+                    dmqr_query_count: sanitized_dmqr_query_count,
+                    max_iterations: sanitized_max_iterations,
+                    conversation_history_limit: sanitized_conversation_history_limit,
                     google_search: google_search,
                     continue_session: continue_session
                 };
@@ -520,7 +544,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{agentId}', agent_id);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
-                const parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
+                const parsedResponse = parseGeminiJsonResponseSync(result.content[0].text ?? '');
 
                 parsedResponse.generation_metadata = {
                     rag_metrics: iterativeResult?.searchMetrics,
@@ -556,16 +580,76 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let webChunksToStore: any[] = [];
 
         if (!finalAnswer) {
+            // Enhanced context analysis
+            const ragAttemptedButFailed = (mutable_enable_rag || mutable_enable_iterative_search) && finalContext.length === 0;
+            const contextRetrievalSuccessful = finalContext.length > 0;
+            
+            console.log(`[ask_gemini] Context Analysis: RAG attempted: ${mutable_enable_rag || mutable_enable_iterative_search}, Context retrieved: ${contextRetrievalSuccessful}, Failed retrieval: ${ragAttemptedButFailed}`);
+            
             let conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
-            const contextForPrompt = formatRetrievedContextForPrompt(finalContext)[0]?.text || 'No context was provided.';
-
-            // If RAG was performed, prepend the context to the conversation history
-            if (finalContext.length > 0) {
-                const ragContextString = `\n\n--- Retrieved Context ---\n${contextForPrompt}\n--- End Context ---\n`;
-                conversationHistoryForPrompt = ragContextString + conversationHistoryForPrompt;
+            
+            // Smart context message based on actual situation
+            const contextForPrompt = (() => {
+                if (finalContext.length === 0) {
+                    if (mutable_enable_rag || mutable_enable_iterative_search) {
+                        return "RAG search was attempted but no relevant codebase context could be retrieved. Proceeding with general knowledge and reasoning capabilities.";
+                    } else {
+                        return "No codebase context search was performed for this query.";
+                    }
+                } else {
+                    return formatRetrievedContextForPrompt(finalContext)[0]?.text || 'Context formatting failed.';
+                }
+            })();
+            
+            // Always include context status in conversation history when RAG is involved
+            if (mutable_enable_rag || mutable_enable_iterative_search || finalContext.length > 0) {
+                const contextStatusString = finalContext.length > 0 
+                    ? `\n\n--- Retrieved Context ---\n${contextForPrompt}\n--- End Context ---\n`
+                    : `\n\n--- Context Search Status ---\n${contextForPrompt}\n--- End Status ---\n`;
+                conversationHistoryForPrompt = contextStatusString + conversationHistoryForPrompt;
             }
+            
+            // Smart template selection based on actual context availability and RAG attempts
+            const template = (() => {
+                if (ragAttemptedButFailed) {
+                    // RAG was attempted but failed - use general assistant template that doesn't expect context
+                    return `You are a helpful AI assistant. Please answer the user's question using your general knowledge and reasoning capabilities. 
 
-            const template = hasConversationHistory ? CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT : DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+If the question is about a specific codebase and you need additional context that isn't provided, acknowledge this limitation and:
+1. Provide general guidance based on common patterns and best practices
+2. Suggest what specific information would be needed for a more detailed answer
+3. Offer alternative approaches or resources that might help
+
+User Question: {query}
+
+Conversation History (if any):
+{conversation_history}`;
+                } else if (hasConversationHistory && contextRetrievalSuccessful) {
+                    return CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT;
+                } else if (contextRetrievalSuccessful) {
+                    return DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                } else {
+                    // No context and no RAG attempted - general mode
+                    return `You are a helpful AI assistant. Please answer the user's question using your knowledge and reasoning capabilities.
+
+User Question: {query}
+
+Conversation History (if any):
+{conversation_history}`;
+                }
+            })();
+            
+            // Log RAG failure for transparency
+            if (ragAttemptedButFailed) {
+                await conversationHistoryManager.storeConversationMessage(currentSessionId, 'system', 
+                    `⚠️ **Context Retrieval Status**: RAG search was attempted but no relevant codebase context could be retrieved. Proceeding with general assistance mode.`, 
+                    'thought', { 
+                        rag_attempted: true, 
+                        context_retrieved: false, 
+                        fallback_mode: 'general_assistant',
+                        context_items_found: finalContext.length 
+                    });
+            }
 
             let finalPrompt;
             if ((google_search || enable_web_search) && !iterativeResult) {
@@ -623,6 +707,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             }
 
             finalAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
+            
+            // Enhanced user communication when RAG failed but was expected
+            if (ragAttemptedButFailed && (userExplicitlyEnabledRag || userExplicitlyEnabledIterativeSearch)) {
+                const contextFailureNotice = `\n\n---\n**Note**: I attempted to retrieve specific codebase context for your question, but was unable to find relevant information in the current codebase. I've provided a general response instead. If you have specific code files or documentation you'd like me to reference, please provide them directly.\n---\n`;
+                finalAnswer = finalAnswer + contextFailureNotice;
+            }
         }
 
         // Create lightweight metrics for ANSWER_FROM_HISTORY cases
@@ -677,8 +767,14 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 };
 
                 const getProgressBar = (value: number, max: number, width: number = 20) => {
-                    const filled = Math.round((value / max) * width);
-                    const empty = width - filled;
+                    // Ensure all values are valid numbers and within bounds
+                    const safeValue = Math.max(0, isNaN(value) ? 0 : value);
+                    const safeMax = Math.max(1, isNaN(max) ? 1 : max);
+                    const safeWidth = Math.max(1, isNaN(width) ? 20 : width);
+                    
+                    const filled = Math.min(safeWidth, Math.max(0, Math.round((safeValue / safeMax) * safeWidth)));
+                    const empty = Math.max(0, safeWidth - filled);
+                    
                     return "█".repeat(filled) + "░".repeat(empty);
                 };
 

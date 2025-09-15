@@ -10,6 +10,7 @@ export class GeminiApiNotInitializedError extends Error {
 
 // Custom error for non-retryable API errors
 export class GeminiApiError extends Error {
+    public allKeysExhausted?: boolean;
     constructor(message: string, public status?: number) {
         super(message);
         this.name = "GeminiApiError";
@@ -21,6 +22,11 @@ export class GeminiApiClient {
     private _apiKeys: string[] | null = null;
     private currentApiKeyIndex: number = 0;
     private readonly requestTimeout = 90000; // 90 seconds timeout for API calls
+    private lastApiCallTime = 0;
+    private readonly minApiCallInterval = 6000; // 6 seconds between calls for 10 RPM free tier
+    private readonly maxRequestsPerMinute = 10; // Free tier limit
+    private requestTimestamps: number[] = []; // Track request timestamps for rate limiting
+    private keyRateLimits: Map<number, number[]> = new Map(); // Per-key rate limit tracking
 
     private safetySettings = [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -32,7 +38,7 @@ export class GeminiApiClient {
         temperature: 0.7,
         topK: 1,
         topP: 1,
-        maxOutputTokens: 32768,
+        maxOutputTokens: 65536,
     };
     constructor(genAIInstance?: GoogleGenAI) {
         if (genAIInstance) {
@@ -75,6 +81,64 @@ export class GeminiApiClient {
         return this.genAI;
     }
 
+    /**
+     * Check if a specific API key has available quota for requests
+     */
+    private canMakeRequestWithKey(keyIndex: number): boolean {
+        const now = Date.now();
+        const oneMinuteAgo = now - 60000;
+        
+        if (!this.keyRateLimits.has(keyIndex)) {
+            this.keyRateLimits.set(keyIndex, []);
+        }
+        
+        const keyTimestamps = this.keyRateLimits.get(keyIndex)!;
+        
+        // Remove timestamps older than 1 minute
+        const recentTimestamps = keyTimestamps.filter(timestamp => timestamp > oneMinuteAgo);
+        this.keyRateLimits.set(keyIndex, recentTimestamps);
+        
+        return recentTimestamps.length < this.maxRequestsPerMinute;
+    }
+    
+    /**
+     * Record a request for rate limiting tracking
+     */
+    private recordRequest(keyIndex: number): void {
+        const now = Date.now();
+        if (!this.keyRateLimits.has(keyIndex)) {
+            this.keyRateLimits.set(keyIndex, []);
+        }
+        this.keyRateLimits.get(keyIndex)!.push(now);
+        this.lastApiCallTime = now;
+    }
+    
+    /**
+     * Calculate wait time until next request can be made
+     */
+    private calculateWaitTime(keyIndex: number): number {
+        if (!this.keyRateLimits.has(keyIndex)) {
+            return 0;
+        }
+        
+        const keyTimestamps = this.keyRateLimits.get(keyIndex)!;
+        const now = Date.now();
+        const oneMinuteAgo = now - 60000;
+        
+        // Remove old timestamps
+        const recentTimestamps = keyTimestamps.filter(timestamp => timestamp > oneMinuteAgo);
+        
+        if (recentTimestamps.length < this.maxRequestsPerMinute) {
+            // Check minimum interval since last call
+            const timeSinceLastCall = now - this.lastApiCallTime;
+            return Math.max(0, this.minApiCallInterval - timeSinceLastCall);
+        }
+        
+        // If at limit, wait until oldest timestamp is > 1 minute old
+        const oldestTimestamp = Math.min(...recentTimestamps);
+        return Math.max(this.minApiCallInterval, (oldestTimestamp + 60000) - now);
+    }
+
     async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> {
         const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
@@ -82,6 +146,7 @@ export class GeminiApiClient {
         }
         throw new Error("Failed to get response from Gemini.");
     }
+
 
     public async batchAskGemini(queries: string[], modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
         if (queries.length === 0) return [];
@@ -106,6 +171,7 @@ export class GeminiApiClient {
         return allResults;
     }
 
+
     private async executeBatchWithRetries(
         batchQueries: string[],
         modelName: string,
@@ -115,16 +181,51 @@ export class GeminiApiClient {
         toolConfig?: any
     ): Promise<Array<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }>> {
         const availableApiKeys = this.apiKeys;
-        const maxRetries = availableApiKeys.length * 2; // Allow retrying on each key once
+        const maxRetries = availableApiKeys.length * 3; // Allow more retries for free tier
         let lastError: any = null;
+        let allKeysExhausted = false;
 
         for (let attempt = 0; attempt < maxRetries; attempt++) {
+            // Find the best available key
+            let selectedKeyIndex = -1;
+            let minWaitTime = Infinity;
+            
+            // Check all keys to find one that can make requests
+            for (let i = 0; i < availableApiKeys.length; i++) {
+                const waitTime = this.calculateWaitTime(i);
+                if (waitTime === 0) {
+                    selectedKeyIndex = i;
+                    break;
+                } else if (waitTime < minWaitTime) {
+                    minWaitTime = waitTime;
+                    selectedKeyIndex = i;
+                }
+            }
+            
+            if (selectedKeyIndex === -1) {
+                allKeysExhausted = true;
+                break;
+            }
+            
+            this.currentApiKeyIndex = selectedKeyIndex;
             const apiKey = availableApiKeys[this.currentApiKeyIndex];
+            
+            // Wait if necessary
+            const waitTime = this.calculateWaitTime(this.currentApiKeyIndex);
+            if (waitTime > 0) {
+                console.log(`[GeminiApiClient] Rate limit: waiting ${waitTime}ms for key index ${this.currentApiKeyIndex}`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+            
             try {
                 this.genAI = new GoogleGenAI({ apiKey });
                 const batchContents: Content[] = this.buildBatchContents(batchQueries, systemInstruction, contextContent);
 
                 const response = await this.performApiCall(batchContents, modelName, thinkingConfig, toolConfig);
+                
+                // Record successful request
+                this.recordRequest(this.currentApiKeyIndex);
+                
                 return response;
             } catch (error: any) {
                 lastError = error;
@@ -135,17 +236,40 @@ export class GeminiApiClient {
                     throw new GeminiApiError(error.message, error.status);
                 }
 
-                // On error, switch key and wait
-                this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % availableApiKeys.length;
-                const backoffTime = isRateLimit ? 5000 : 1000 * Math.pow(2, Math.floor(attempt / availableApiKeys.length));
-
-                console.warn(`[GeminiApiClient] API call failed (Attempt ${attempt + 1}/${maxRetries}). Error: ${error.message}. Switching to key index ${this.currentApiKeyIndex}. Retrying in ${backoffTime}ms...`);
-                await new Promise(resolve => setTimeout(resolve, backoffTime));
+                if (isRateLimit) {
+                    // For rate limits, mark this key as temporarily exhausted
+                    console.warn(`[GeminiApiClient] ⏱️ Rate limit hit on key index ${this.currentApiKeyIndex}. Error: ${error.message}`);
+                    
+                    // Add a penalty timestamp to this key
+                    const now = Date.now();
+                    if (!this.keyRateLimits.has(this.currentApiKeyIndex)) {
+                        this.keyRateLimits.set(this.currentApiKeyIndex, []);
+                    }
+                    // Add several timestamps to effectively block this key for a while
+                    const penalties = Array(this.maxRequestsPerMinute).fill(now);
+                    this.keyRateLimits.get(this.currentApiKeyIndex)!.push(...penalties);
+                }
+                
+                console.warn(`[GeminiApiClient] ❌ API call failed (Attempt ${attempt + 1}/${maxRetries}) on key ${this.currentApiKeyIndex}. Error: ${error.message}`);
             }
+        }
+        
+        // Handle exhausted keys scenario
+        if (allKeysExhausted) {
+            console.error(`[GeminiApiClient] 🚫 All API keys exhausted due to rate limits. Consider adding more keys or implementing fallback model.`);
+            
+            // Try fallback model if available (could be a different provider)
+            const fallbackError = new GeminiApiError(
+                "All Gemini API keys exhausted. Rate limit exceeded on free tier. Consider upgrading to paid tier or adding more API keys.",
+                429
+            );
+            fallbackError.allKeysExhausted = true;
+            throw fallbackError;
         }
 
         throw lastError || new Error("Unknown error occurred during batch processing after all retries.");
     }
+
 
     private async performApiCall(
         batchContents: Content[],
@@ -253,6 +377,7 @@ export class GeminiApiClient {
         }
         return batchResponses;
     }
+
 
     private buildBatchContents(queries: string[], systemInstruction?: string, contextContent?: Part[]): Content[] {
         return queries.map(query => {

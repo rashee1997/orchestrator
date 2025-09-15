@@ -3,7 +3,7 @@ import { MemoryManager } from '../../database/memory_manager.js';
 import { RetrievedCodeContext } from '../../database/services/CodebaseContextRetrieverService.js';
 import { RAG_DIVERSE_QUERIES_PROMPT } from '../../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
-import { parseGeminiJsonResponse } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
 import { KnowledgeGraphQueryProducer, KnowledgeGraphQuery, KGQueryResult } from './kg_query_producer.js';
 
@@ -80,7 +80,7 @@ export class DiverseQueryRewriterService {
             const responseText = llmResponse.content[0].text ?? '';
 
             // Parse the LLM response which should be a JSON object with strategic_queries array
-            const parsedResponse = parseGeminiJsonResponse(responseText);
+            const parsedResponse = parseGeminiJsonResponseSync(responseText);
 
             // Extract queries from the expected structure
             if (parsedResponse && parsedResponse.strategic_queries && Array.isArray(parsedResponse.strategic_queries)) {

@@ -3,7 +3,7 @@ import { RetrievedCodeContext } from "../CodebaseContextRetrieverService.js";
 
 export function formatRetrievedContextForPrompt(contexts: RetrievedCodeContext[]): Part[] {
     if (!contexts || contexts.length === 0) {
-        return [{ text: "No specific codebase context was retrieved for this prompt." }];
+        return [{ text: "No specific codebase context was retrieved for this prompt. The system searched for relevant code snippets, documentation, and knowledge graph entries but found no matches for the current query." }];
     }
     let formatted = "Relevant Codebase Context:\n";
     contexts.forEach((ctx, index) => {

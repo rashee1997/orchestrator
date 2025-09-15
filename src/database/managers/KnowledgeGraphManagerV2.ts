@@ -14,7 +14,8 @@ import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../types/query.js';
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
-import { parseGeminiJsonResponse as centralParseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse as centralParseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
+import { MemoryManager } from '../memory_manager.js';
 import { ENHANCED_KG_NL_TRANSLATION_PROMPT, KG_STRUCTURE_UNDERSTANDING_PROMPT } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { getCurrentModel } from '../services/gemini-integration-modules/GeminiConfig.js';
 
@@ -28,6 +29,7 @@ export class KnowledgeGraphManagerV2 {
     private entityResolver: EntityResolver;
     private nlpQueryProcessor: NLPQueryProcessor;
     private geminiService?: GeminiIntegrationService;
+    private memoryManager?: MemoryManager;
 
     private readonly MAX_PROMPT_GRAPH_LENGTH = 150000; // Max chars for graph representation in prompt
 
@@ -52,7 +54,7 @@ export class KnowledgeGraphManagerV2 {
         default: ['[', ']']
     };
 
-    constructor(rootPath?: string, geminiService?: GeminiIntegrationService) {
+    constructor(rootPath?: string, geminiService?: GeminiIntegrationService, memoryManager?: MemoryManager) {
         if (!rootPath) {
             const __filename = fileURLToPath(import.meta.url);
             const __dirname = path.dirname(__filename);
@@ -68,6 +70,7 @@ export class KnowledgeGraphManagerV2 {
         this.entityResolver = new EntityResolver();
         this.nlpQueryProcessor = new NLPQueryProcessor();
         this.geminiService = geminiService;
+        this.memoryManager = memoryManager;
         console.log(`[KGManagerV2] Initialized. Root path: ${rootPath}`);
     }
 
@@ -674,7 +677,12 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
             const response = await this.geminiService.askGemini(structurePrompt, getCurrentModel());
             const responseText = response.content[0]?.text?.trim() || '{}';
             
-            const structureAnalysis = centralParseGeminiJsonResponse(responseText);
+            const structureAnalysis = await centralParseGeminiJsonResponse(responseText, {
+                expectedStructure: 'confidence, improvement_suggestions with refined_queries array',
+                contextDescription: 'Structure analysis for knowledge graph query refinement',
+                memoryManager: this.memoryManager,
+                geminiService: this.geminiService
+            });
             
             // Log insights from structure analysis
             if (structureAnalysis?.improvement_suggestions?.refined_queries?.length > 0) {
@@ -774,7 +782,12 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
             const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "{}";
             
             try {
-                enhancedAnalysis = centralParseGeminiJsonResponse(geminiResponseText);
+                enhancedAnalysis = await centralParseGeminiJsonResponse(geminiResponseText, {
+                    expectedStructure: 'enhanced_query, query_intent, search_strategy, primary_entity_types, key_relation_types',
+                    contextDescription: 'Enhanced knowledge graph analysis for natural language query translation',
+                    memoryManager: this.memoryManager,
+                    geminiService: this.geminiService
+                });
                 console.log("[KGManagerV2] Enhanced KG Analysis:", JSON.stringify(enhancedAnalysis, null, 2));
                 
                 // Convert enhanced analysis to executable operations based on the analysis

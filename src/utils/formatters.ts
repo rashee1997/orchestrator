@@ -349,13 +349,79 @@ export function formatPlanGenerationResponseToMarkdown(response: any): string {
         return "> ❓ *No plan generation response provided.*\n";
     }
 
-    let md = `# 💡 AI-Generated Plan & Prompt Analysis\n\n`;
-    md += `**Refined Prompt ID:** ${formatValue(response.refined_prompt_id, { isCodeOrId: true })}\n\n`;
+    let md = `# 📋 ${formatValue(response.plan_title || response.overall_goal || 'Generated Plan')}\n\n`;
+    
+    // Executive Summary
+    if (response.executive_summary) {
+        md += `## 📊 Executive Summary\n\n${formatValue(response.executive_summary)}\n\n`;
+    }
+
+    // Overall Goal
     md += `> ### 🎯 **Overall Goal**\n> ${formatValue(response.overall_goal || response.plan_title || 'Not specified')}\n\n`;
+    
+    // Current Architecture Analysis
+    if (response.current_architecture_analysis) {
+        md += `## 🏗️ Current Architecture Analysis\n\n${formatValue(response.current_architecture_analysis)}\n\n`;
+    }
+    
+    // Performance Issues Identified
+    if (response.performance_issues_identified && response.performance_issues_identified.length > 0) {
+        md += `## ⚡ Performance Issues Identified\n\n`;
+        response.performance_issues_identified.forEach((issue: any) => {
+            md += `### ${formatValue(issue.issue_name)}\n`;
+            md += `**Impact Level:** ${formatValue(issue.impact)}\n\n`;
+            md += `**Current Metrics:** ${formatValue(issue.current_metrics)}\n\n`;
+            md += `**Description:** ${formatValue(issue.description)}\n\n`;
+        });
+    }
+    
+    // Refactoring Strategy Overview
+    if (response.refactoring_strategy_overview) {
+        md += `## 🔧 Refactoring Strategy Overview\n\n${formatValue(response.refactoring_strategy_overview)}\n\n`;
+    }
+    
+    // Success Metrics & KPIs
+    if (response.success_metrics && response.success_metrics.length > 0) {
+        md += `## 📈 Success Metrics & KPIs\n\n`;
+        response.success_metrics.forEach((metric: any) => {
+            md += `### ${formatValue(metric.metric_name)}\n`;
+            md += `- **Current Value:** ${formatValue(metric.current_value)}\n`;
+            md += `- **Target Value:** ${formatValue(metric.target_value)}\n`;
+            md += `- **Measurement Method:** ${formatValue(metric.measurement_method)}\n\n`;
+        });
+    }
+    
+    // Timeline Phases
+    if (response.timeline_phases && response.timeline_phases.length > 0) {
+        md += `## 📅 Timeline & Implementation Phases\n\n`;
+        response.timeline_phases.forEach((phase: any) => {
+            md += `### Phase ${phase.phase_number}: ${formatValue(phase.phase_name)}\n`;
+            md += `- **Duration:** ${formatValue(phase.duration_days)} days\n`;
+            md += `- **Start Date:** ${formatValue(phase.start_date)}\n`;
+            md += `- **End Date:** ${formatValue(phase.end_date)}\n`;
+            md += `- **Description:** ${formatValue(phase.description)}\n\n`;
+            
+            if (phase.key_deliverables && phase.key_deliverables.length > 0) {
+                md += `**Key Deliverables:**\n`;
+                phase.key_deliverables.forEach((deliverable: string) => {
+                    md += `- ${formatValue(deliverable)}\n`;
+                });
+                md += '\n';
+            }
+            
+            if (phase.success_criteria && phase.success_criteria.length > 0) {
+                md += `**Success Criteria:**\n`;
+                phase.success_criteria.forEach((criteria: string) => {
+                    md += `- ${formatValue(criteria)}\n`;
+                });
+                md += '\n';
+            }
+        });
+    }
 
     const metadata = response.generation_metadata_parsed || response.generation_metadata;
     if (metadata) {
-        md += `### 🔍 Context & Reasoning\n`;
+        md += `### 🔍 Context & Generation Details\n`;
         if (metadata.rag_metrics) {
             md += `- **RAG Analysis:** ${metadata.rag_metrics.totalIterations} iterations, ${metadata.rag_metrics.contextItemsAdded} context items found, ${metadata.rag_metrics.webSearchesPerformed} web searches.\n`;
         }
@@ -379,22 +445,35 @@ export function formatPlanGenerationResponseToMarkdown(response: any): string {
         md += `- **Refined Prompt ID:** ${formatValue(response.refined_prompt_id, { isCodeOrId: true })}\n`;
     }
     
+    // Risk Assessment
     const risks = response.plan_risks_and_mitigations || [];
     if (risks.length > 0) {
-        md += `\n#### ⚠️ Identified Risks\n`;
+        md += `\n## ⚠️ Risk Assessment & Mitigations\n\n`;
         risks.forEach((risk: any) => {
-            md += `- **Risk:** ${formatValue(risk.risk_description)}\n  - **Mitigation:** ${formatValue(risk.mitigation_strategy)}\n`;
+            md += `### ${formatValue(risk.risk_name || risk.risk_description)}\n`;
+            md += `**Probability:** ${formatValue(risk.probability)} | **Impact:** ${formatValue(risk.impact)}\n\n`;
+            md += `**Description:** ${formatValue(risk.description || risk.risk_description)}\n\n`;
+            md += `**Mitigation Strategy:** ${formatValue(risk.mitigation_strategy)}\n\n`;
+            if (risk.contingency_plan) {
+                md += `**Contingency Plan:** ${formatValue(risk.contingency_plan)}\n\n`;
+            }
         });
     }
 
     const tasks = response.decomposed_tasks_parsed || response.decomposed_tasks || [];
     if (tasks.length > 0) {
-        md += `\n### 🚀 Proposed Tasks\n`;
+        md += `\n### 🚀 Detailed Implementation Tasks\n`;
         tasks.forEach((task: any, index: number) => {
             const taskNumber = task.task_number || (index + 1);
-            md += `\n<details>\n<summary><strong>Task ${taskNumber}: ${formatValue(task.title)}</strong></summary>\n\n`;
+            const priorityEmoji = task.priority === 'HIGH' ? '🔴' : task.priority === 'MEDIUM' ? '🟡' : '🟢';
+            md += `\n<details>\n<summary><strong>${priorityEmoji} Task ${taskNumber}: ${formatValue(task.title)}</strong></summary>\n\n`;
+            
             md += `- **Description:** ${formatValue(task.description)}\n`;
             md += `- **Purpose:** ${formatValue(task.purpose)}\n`;
+            
+            if (task.phase) md += `- **Phase:** ${formatValue(task.phase)}\n`;
+            if (task.priority) md += `- **Priority:** ${formatValue(task.priority)}\n`;
+            if (task.estimated_effort_hours) md += `- **Estimated Effort:** ${formatValue(task.estimated_effort_hours)} hours\n`;
 
             const filesInvolved = getParsedArrayField(task.files_involved_json);
             if (filesInvolved.length > 0) md += `- **Files:** ${filesInvolved.map((f: string) => formatValue(f, { isCodeOrId: true })).join(', ')}\n`;
@@ -403,6 +482,20 @@ export function formatPlanGenerationResponseToMarkdown(response: any): string {
             if (dependencies.length > 0) md += `- **Dependencies:** ${dependencies.map((d: string) => `"${formatValue(d)}"`).join(', ')}\n`;
 
             if (task.success_criteria_text) md += `- **Completion Criteria:** ${formatValue(task.success_criteria_text)}\n`;
+            
+            if (task.validation_steps && task.validation_steps.length > 0) {
+                md += `- **Validation Steps:**\n`;
+                task.validation_steps.forEach((step: string) => {
+                    md += `  - ${formatValue(step)}\n`;
+                });
+            }
+            
+            if (task.acceptance_criteria && task.acceptance_criteria.length > 0) {
+                md += `- **Acceptance Criteria:**\n`;
+                task.acceptance_criteria.forEach((criteria: string) => {
+                    md += `  - ${formatValue(criteria)}\n`;
+                });
+            }
 
             if (task.code_content) {
                 const lang = filesInvolved.length > 0 ? (filesInvolved[0].split('.').pop() || 'text') : 'text';

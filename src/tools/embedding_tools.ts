@@ -202,11 +202,37 @@ ${changelog}
 
     let summaryText = `(AI summary could not be generated.)`;
     try {
+        // Try to use multi-model orchestrator first (prefers Mistral for simple analysis)
         const geminiService = memoryManager.getGeminiIntegrationService();
         if (geminiService) {
-            const response = await geminiService.askGemini(prompt, getCurrentModel());
-            if (response?.content?.[0]?.text) {
-                summaryText = response.content[0].text.trim();
+            try {
+                // Import MultiModelOrchestrator dynamically to avoid circular dependencies
+                const { MultiModelOrchestrator } = await import('../tools/rag/multi_model_orchestrator.js');
+                const orchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
+                
+                console.log('[Embedding Tools] Using multi-model orchestrator for AI summary generation');
+                const result = await orchestrator.executeTask(
+                    'simple_analysis', // Prefers Mistral for simple analysis tasks
+                    prompt,
+                    'You are a Senior Technical Lead analyzing code changes. Provide a concise, domain-specific summary in 2-3 sentences maximum.',
+                    {
+                        contextLength: prompt.length,
+                        timeout: 20000
+                    }
+                );
+                
+                if (result?.content) {
+                    summaryText = result.content.trim();
+                    console.log(`[Embedding Tools] AI summary generated using ${result.model}`);
+                }
+            } catch (orchestratorError) {
+                console.warn('[Embedding Tools] Multi-model orchestrator failed, falling back to Gemini:', orchestratorError);
+                
+                // Fallback to original Gemini method
+                const response = await geminiService.askGemini(prompt, getCurrentModel());
+                if (response?.content?.[0]?.text) {
+                    summaryText = response.content[0].text.trim();
+                }
             }
         }
     } catch (e) {

@@ -331,9 +331,17 @@ export class CodebaseEmbeddingRepository {
                     rerankScore += overlapBonus;
                 }
 
-                // Additional boost for code snippets to ensure they appear alongside summaries
+                // Enhanced prioritization for code explanation queries
+                const codeExplanationKeywords = ['how does', 'how is', 'explain', 'understand', 'work', 'implement', 'integrate'];
+                const isCodeExplanationQuery = codeExplanationKeywords.some(keyword => queryText.toLowerCase().includes(keyword));
+
+                // Strong boost for code chunks in code explanation queries
                 if (isCodeSnippet) {
-                    rerankScore += 0.05; // Small boost to favor code snippets
+                    if (isCodeExplanationQuery) {
+                        rerankScore += 0.20; // Strong boost for code explanation queries
+                    } else {
+                        rerankScore += 0.05; // Smaller boost for other queries
+                    }
                 }
 
                 // Boost for specific code-related keywords in the query
@@ -343,11 +351,11 @@ export class CodebaseEmbeddingRepository {
                     rerankScore += 0.08; // Additional boost when query contains code-related terms
                 }
 
-                // Boost for summaries when query seems to be asking for overview/high-level information
-                const overviewKeywords = ['overview', 'summary', 'architecture', 'structure', 'design', 'how does', 'what is'];
+                // Modified summary boosting - avoid boosting summaries for code explanation queries
+                const overviewKeywords = ['overview', 'summary', 'architecture', 'structure', 'design'];
                 const hasOverviewKeywords = overviewKeywords.some(keyword => queryText.toLowerCase().includes(keyword));
-                if (hasOverviewKeywords && isSummary) {
-                    rerankScore += 0.08; // Additional boost for summaries when query asks for overview
+                if (hasOverviewKeywords && isSummary && !isCodeExplanationQuery) {
+                    rerankScore += 0.08; // Only boost summaries for pure overview queries, not code explanations
                 }
 
                 // Update similarity to be the re-ranked score

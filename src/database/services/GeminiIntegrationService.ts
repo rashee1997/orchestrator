@@ -11,12 +11,13 @@ import {
     SUMMARIZE_CONVERSATION_PROMPT,
     GENERATE_CONVERSATION_TITLE_PROMPT
 } from './gemini-integration-modules/GeminiPromptTemplates.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from './gemini-integration-modules/GeminiResponseParsers.js';
 import { formatRetrievedContextForPrompt } from './gemini-integration-modules/GeminiContextFormatter.js';
 import { cosineSimilarity } from './gemini-integration-modules/GeminiUtilityFunctions.js';
 import { GeminiDbUtils } from './gemini-integration-modules/GeminiDbUtils.js';
 import { SUMMARIZATION_MODEL_NAME, ENTITY_EXTRACTION_MODEL_NAME, EMBEDDING_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, REFINEMENT_MODEL_NAME } from './gemini-integration-modules/GeminiConfig.js';
 import { GoogleGenAI, Part } from "@google/genai";
+import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 export { GeminiApiNotInitializedError } from './gemini-integration-modules/GeminiApiClient.js';
 
@@ -27,6 +28,7 @@ export class GeminiIntegrationService {
     private _codebaseContextRetrieverService?: CodebaseContextRetrieverService;
     private geminiApiClient: GeminiApiClient;
     private geminiDbUtils: GeminiDbUtils;
+    private multiModelOrchestrator?: MultiModelOrchestrator;
     private requestCache: Map<string, { data: any, timestamp: number }>;
     private cacheTTL: number;
     private maxCacheSize: number;
@@ -49,6 +51,13 @@ export class GeminiIntegrationService {
         this.maxCacheSize = 1000;
         this.rateLimiter = new Map();
         this.maxRequestsPerMinute = 60;
+
+        // Initialize Multi-Model Orchestrator for fallback support
+        try {
+            this.multiModelOrchestrator = new MultiModelOrchestrator(this.memoryManager, this);
+        } catch (error) {
+            console.warn('[GeminiIntegrationService] Failed to initialize Multi-Model Orchestrator:', error);
+        }
     }
 
     private get codebaseContextRetrieverService(): CodebaseContextRetrieverService {
@@ -147,6 +156,18 @@ export class GeminiIntegrationService {
             ));
     }
 
+    private _isApiOverloadError(error: any): boolean {
+        return error?.message?.includes('503') ||
+            error?.message?.includes('The model is overloaded') ||
+            error?.message?.includes('UNAVAILABLE') ||
+            error?.status === 503 ||
+            (error?.cause && error.cause.message && (
+                error.cause.message.includes('503') ||
+                error.cause.message.includes('The model is overloaded') ||
+                error.cause.message.includes('UNAVAILABLE')
+            ));
+    }
+
     public async generateStructuredQueryFromNaturalLanguage(naturalLanguageQuery: string): Promise<any> {
         const cacheKey = this._generateCacheKey('structuredQuery', naturalLanguageQuery);
         const cached = this.requestCache.get(cacheKey);
@@ -205,9 +226,43 @@ export class GeminiIntegrationService {
             throw new Error("Failed to get response from Gemini.");
         } catch (error) {
             console.error("Error in askGemini:", error);
+
+            // Try Multi-Model Orchestrator fallback if API is overloaded and orchestrator is available
+            if (this._isApiOverloadError(error) && this.multiModelOrchestrator) {
+                console.warn('[GeminiIntegrationService] Gemini API overloaded, attempting fallback to Multi-Model Orchestrator...');
+
+                try {
+                    const orchestratorResult = await this.multiModelOrchestrator.executeTask(
+                        'final_answer_generation', // Map to appropriate task type
+                        query,
+                        systemInstruction,
+                        { maxRetries: 2, tryAllModels: true }
+                    );
+
+                    console.log(`[GeminiIntegrationService] ✅ Fallback successful with model: ${orchestratorResult.model}`);
+
+                    // Convert orchestrator result to expected format
+                    const fallbackResult = {
+                        content: [{ text: orchestratorResult.content }] as Part[],
+                        confidenceScore: undefined,
+                        groundingMetadata: undefined
+                    };
+
+                    // Cache the successful fallback result
+                    this.requestCache.set(cacheKey, { data: fallbackResult, timestamp: Date.now() });
+                    this._cleanupCache();
+
+                    return fallbackResult;
+                } catch (fallbackError) {
+                    console.error('[GeminiIntegrationService] Fallback to Multi-Model Orchestrator also failed:', fallbackError);
+                    throw error; // Throw the original error
+                }
+            }
+
             throw error;
         }
     }
+
 
     public async batchAskGemini(
         queries: string[],
@@ -388,7 +443,7 @@ export class GeminiIntegrationService {
             );
 
             const textResponse = result.content[0].text ?? '';
-            const parsedResponse = parseGeminiJsonResponse(textResponse);
+            const parsedResponse = parseGeminiJsonResponseSync(textResponse);
 
             const finalResult = {
                 entities: parsedResponse.entities || [],

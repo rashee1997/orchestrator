@@ -44,7 +44,7 @@ export const shouldRetryWithFallback = (error: any): boolean => {
     const statusCode = error.status || error.code || 0;
     
     return statusCode === 429 || 
-           statusCode === 502 || 
+           statusCode === 503 || 
            errorMessage.includes('quota') || 
            errorMessage.includes('overload') ||
            errorMessage.includes('rate limit');

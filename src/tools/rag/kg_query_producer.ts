@@ -1,5 +1,5 @@
 import { GeminiIntegrationService } from '../../database/services/GeminiIntegrationService.js';
-import { parseGeminiJsonResponse } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
 
 export interface KnowledgeGraphQuery {
@@ -101,7 +101,7 @@ Example:
 
         try {
             const response = await this.geminiService.askGemini(analysisPrompt, getCurrentModel());
-            const analysis = parseGeminiJsonResponse(response.content[0].text ?? '{}');
+            const analysis = parseGeminiJsonResponseSync(response.content[0].text ?? '{}');
             
             return {
                 originalIntent: analysis.originalIntent || 'General codebase search',
@@ -169,7 +169,7 @@ Return JSON:
 
         try {
             const response = await this.geminiService.askGemini(structuralPrompt, getCurrentModel());
-            const result = parseGeminiJsonResponse(response.content[0].text ?? '{}');
+            const result = parseGeminiJsonResponseSync(response.content[0].text ?? '{}');
             
             return (result.queries || []).map((q: any) => ({
                 query: q.query || originalQuery,
@@ -233,7 +233,7 @@ Return JSON:
 
         try {
             const response = await this.geminiService.askGemini(semanticPrompt, getCurrentModel());
-            const result = parseGeminiJsonResponse(response.content[0].text ?? '{}');
+            const result = parseGeminiJsonResponseSync(response.content[0].text ?? '{}');
             
             return (result.queries || []).map((q: any) => ({
                 query: q.query || originalQuery,
@@ -296,7 +296,7 @@ Return JSON:
 
         try {
             const response = await this.geminiService.askGemini(hybridPrompt, getCurrentModel());
-            const result = parseGeminiJsonResponse(response.content[0].text ?? '{}');
+            const result = parseGeminiJsonResponseSync(response.content[0].text ?? '{}');
             
             return (result.queries || []).map((q: any) => ({
                 query: q.query || originalQuery,

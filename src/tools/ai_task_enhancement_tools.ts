@@ -12,7 +12,7 @@ import {
     AI_SUGGEST_TASK_DETAILS_PROMPT,
     AI_ANALYZE_PLAN_PROMPT
 } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
-import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 
 // #region Type Definitions

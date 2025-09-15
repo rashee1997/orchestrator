@@ -640,7 +640,7 @@ export const schemas = {
         type: 'object',
         properties: {
             query: { type: 'string', description: 'The query string to send to Gemini.' },
-            model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash").', default: 'gemini-2.5-flash' },
+            model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite").', default: 'gemini-2.5-flash' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
             focus_area: {

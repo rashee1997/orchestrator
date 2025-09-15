@@ -30,6 +30,8 @@ import { deduplicateContexts } from '../../utils/context_utils.js';
 import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
 import { globalPerformanceTracker } from '../../utils/performance_tracker.js';
 import { KnowledgeGraphManager } from '../../database/managers/KnowledgeGraphManager.js';
+import { MultiModelOrchestrator, RagTaskType } from './multi_model_orchestrator.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 export interface Citation {
     id: string;
@@ -65,10 +67,10 @@ export interface AgenticRagPlan {
     expectedOutcome: string;
     fallbackStrategy?: string;
 }
-
-/**
- * Result returned by the orchestrator after the whole iterative search finishes.
- */
+    
+    /**
+     * Result returned by the orchestrator after the whole iterative search finishes.
+     */
 export interface IterativeRagResult {
     /** All unique context items collected across every turn. */
     accumulatedContext: RetrievedCodeContext[];
@@ -167,6 +169,7 @@ export class IterativeRagOrchestrator {
     private geminiService: GeminiIntegrationService;
     private diverseQueryRewriterService: DiverseQueryRewriterService;
     private knowledgeGraphManager?: KnowledgeGraphManager;
+    private multiModelOrchestrator: MultiModelOrchestrator;
 
     // Performance optimization: Session-level context cache
     private sessionContextCache: Map<string, {
@@ -197,6 +200,7 @@ export class IterativeRagOrchestrator {
         this.geminiService = geminiService;
         this.diverseQueryRewriterService = diverseQueryRewriterService;
         this.knowledgeGraphManager = knowledgeGraphManager;
+        this.multiModelOrchestrator = new MultiModelOrchestrator(memoryManagerInstance, geminiService);
         this.sessionContextCache = new Map();
         this.hybridSearchCache = new Map();
     }
@@ -222,6 +226,84 @@ export class IterativeRagOrchestrator {
      */
     private _isSessionCacheValid(timestamp: number): boolean {
         return (Date.now() - timestamp) < this.CACHE_TTL;
+    }
+
+    /**
+     * Retrieve context using the query_codebase_embeddings tool directly.
+     * This bypasses the CodebaseContextRetrieverService and uses the proven embedding tool.
+     */
+    private async _retrieveContextViaEmbeddingTool(
+        agentId: string,
+        query: string,
+        options: ContextRetrievalOptions
+    ): Promise<RetrievedCodeContext[]> {
+        console.log(`[Iterative RAG] Using direct embedding tool for query: "${query}"`);
+
+        try {
+            // Import embedding tools to get the handler
+            const { getEmbeddingToolHandlers } = await import('../embedding_tools.js');
+            const embeddingHandlers = getEmbeddingToolHandlers(this.memoryManagerInstance);
+
+            // Prepare arguments for query_codebase_embeddings
+            const queryArgs = {
+                agent_id: agentId,
+                query_text: query,
+                top_k: options.topKEmbeddings || 8,
+                target_file_paths: options.targetFilePaths,
+                exclude_chunk_types: ['summary'], // Prioritize actual code chunks
+                enable_dmqr: false, // We'll handle query diversity at the orchestrator level
+                dmqr_query_count: 3
+            };
+
+            // Call the embedding tool directly
+            const result = await embeddingHandlers['query_codebase_embeddings'](queryArgs, agentId);
+
+            // Parse the markdown result to extract code chunks
+            // The result is markdown formatted, so we need to extract the actual data
+            console.log(`[Iterative RAG] Raw embedding tool result type:`, typeof result);
+
+            // The embedding tool returns structured data, let's access it directly
+            const embeddingService = this.memoryManagerInstance.getCodebaseEmbeddingService();
+            const codeChunks = await embeddingService.retrieveSimilarCodeChunks(
+                agentId,
+                query,
+                options.topKEmbeddings || 8,
+                options.targetFilePaths,
+                ['summary'] // Exclude summaries to get actual code
+            );
+
+            // Convert to RetrievedCodeContext format
+            const contexts: RetrievedCodeContext[] = codeChunks.map((chunk, index) => ({
+                type: 'generic_code_chunk',
+                sourcePath: chunk.file_path_relative,
+                entityName: chunk.entity_name || undefined,
+                content: chunk.chunk_text,
+                relevanceScore: chunk.score,
+                metadata: {
+                    ...chunk.metadata,
+                    searchType: 'direct_embedding',
+                    rank: index + 1,
+                    hasActualCode: true
+                }
+            }));
+
+            console.log(`[Iterative RAG] Retrieved ${contexts.length} code chunks via embedding tool`);
+
+            // Log sample of what was retrieved
+            if (contexts.length > 0) {
+                const sample = contexts[0];
+                console.log(`[Iterative RAG] Sample chunk: ${sample.entityName} from ${sample.sourcePath} (${sample.content.substring(0, 100)}...)`);
+            }
+
+            return contexts;
+
+        } catch (error) {
+            console.error('[Iterative RAG] Error using embedding tool, falling back to context retriever:', error);
+
+            // Fallback to original context retriever
+            const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
+            return await contextRetriever.retrieveContextForPrompt(agentId, query, options);
+        }
     }
 
     private _generateCitation(
@@ -267,9 +349,20 @@ export class IterativeRagOrchestrator {
             .replace('{informationGaps}', informationGaps.join(', '))
             .replace('{contextSummary}', contextSummary);
 
-        const result = await this.geminiService.askGemini(planningPrompt, model || getCurrentModel());
+        const result = await this.multiModelOrchestrator.executeTask(
+            'planning',
+            planningPrompt,
+            undefined,
+            { contextLength: planningPrompt.length }
+        );
         try {
-            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
+            const parsed = await parseGeminiJsonResponse(result.content?.trim() || '{}', {
+                expectedStructure: 'Agentic planning response with strategy and execution plan',
+                contextDescription: 'RAG agentic planning analysis',
+                memoryManager: this.memoryManagerInstance,
+                geminiService: this.geminiService,
+                enableAIRepair: true
+            });
             return {
                 strategy: parsed.recommended_strategy?.primary_modality || 'vector_search',
                 steps: parsed.execution_plan?.immediate_actions?.map((action: string, idx: number) => ({
@@ -282,7 +375,7 @@ export class IterativeRagOrchestrator {
                 fallbackStrategy: parsed.contingency_planning?.fallback_strategy || 'hybrid_search'
             };
         } catch (error) {
-            console.warn('[Agentic Planning] Failed to parse response, using fallback:', error);
+            console.warn('[Agentic Planning] Enhanced parsing failed, using fallback:', error);
             return {
                 strategy: 'vector_search',
                 steps: [{ action: 'search', target: currentQuery, priority: 3, reasoning: 'fallback plan' }],
@@ -311,9 +404,20 @@ export class IterativeRagOrchestrator {
             .replace('{searchStrategy}', searchStrategy)
             .replace('{iterationCount}', iterationCount.toString());
 
-        const result = await this.geminiService.askGemini(reflectionPrompt, model || getCurrentModel());
+        const result = await this.multiModelOrchestrator.executeTask(
+            'reflection',
+            reflectionPrompt,
+            undefined,
+            { contextLength: reflectionPrompt.length }
+        );
         try {
-            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
+            const parsed = await parseGeminiJsonResponse(result.content?.trim() || '{}', {
+                expectedStructure: 'Reflection analysis with hallucination detection and quality assessment',
+                contextDescription: 'RAG reflection and quality control analysis',
+                memoryManager: this.memoryManagerInstance,
+                geminiService: this.geminiService,
+                enableAIRepair: true
+            });
             return {
                 hasHallucinations: parsed.hallucination_analysis?.detected_hallucinations?.length > 0 || false,
                 missingInfo: parsed.completeness_analysis?.missing_aspects || [],
@@ -323,7 +427,7 @@ export class IterativeRagOrchestrator {
                 confidence: parsed.overall_assessment?.overall_confidence || 0.5
             };
         } catch (error) {
-            console.warn('[Reflection] Failed to parse response, using fallback:', error);
+            console.warn('[Reflection] Enhanced parsing failed, using fallback:', error);
             return {
                 hasHallucinations: false,
                 missingInfo: [],
@@ -347,17 +451,11 @@ export class IterativeRagOrchestrator {
         // Enhanced Hybrid Search with Task Types
         console.log(`[Enhanced Hybrid Search] Starting hybrid search with Gemini task types for query: "${query}"`);
 
-        // 1. Vector Search with RETRIEVAL_QUERY task type
-        const vectorSearchPromise = this._retrieveContextWithCache(agentId, [query], {
-            ...hybridOptions,
-            taskType: 'RETRIEVAL_QUERY'
-        });
+        // 1. Vector Search - simplified without task type
+        const vectorSearchPromise = this._retrieveContextWithCache(agentId, [query], hybridOptions);
 
-        // 2. Keyword-based Search with CODE_RETRIEVAL_QUERY task type
-        const keywordSearchPromise = this._performEnhancedKeywordSearch(agentId, query, {
-            ...hybridOptions,
-            taskType: 'CODE_RETRIEVAL_QUERY'
-        });
+        // 2. Keyword-based Search - simplified without task type
+        const keywordSearchPromise = this._performEnhancedKeywordSearch(agentId, query, hybridOptions);
 
         // 3. Knowledge Graph Search (if available)
         const kgSearchPromise = this.knowledgeGraphManager && plan?.strategy === 'hybrid_search'
@@ -438,16 +536,42 @@ export class IterativeRagOrchestrator {
             .replace('{qualityScore}', reflectionResult.qualityScore.toString());
         
         try {
-            const result = await this.geminiService.askGemini(correctionPrompt, model || getCurrentModel());
-            const parsed = JSON.parse(result.content[0].text?.trim() || '{}');
-            const correctedQueries = parsed.correctedQueries || [
-                `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim()
-            ];
+            const result = await this.multiModelOrchestrator.executeTask(
+                'simple_analysis',
+                correctionPrompt,
+                undefined,
+                { contextLength: correctionPrompt.length }
+            );
+            const parsed = JSON.parse(result.content?.trim() || '{}');
+            const firstImprovedQuery = parsed.improved_queries?.[0];
+
+            let correctedQueries: string[];
+            let targetFilePaths: string[] | undefined;
+            let targetEntityNames: string[] | undefined;
+
+            if (firstImprovedQuery && firstImprovedQuery.query) {
+                correctedQueries = [firstImprovedQuery.query];
+                targetFilePaths = firstImprovedQuery.target_file_paths;
+                targetEntityNames = firstImprovedQuery.target_entity_names;
+            } else {
+                // Fallback logic if parsing fails or improved_queries is not as expected
+                console.warn('[Corrective Search] No improved_queries found or parsed incorrectly. Using fallback query.');
+                correctedQueries = [`${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim()];
+            }
+
+            const updatedOptions: ContextRetrievalOptions = {
+                ...options,
+                targetFilePaths: targetFilePaths || options.targetFilePaths,
+                targetEntityNames: targetEntityNames || options.targetEntityNames
+            };
             
-            return await this._retrieveContextWithCache(agentId, correctedQueries, options);
+            return await this._retrieveContextWithCache(agentId, correctedQueries, updatedOptions);
         } catch (error) {
-            console.warn('[Corrective Search] Failed to use enhanced prompt, using fallback:', error);
+            console.warn('[Corrective Search] Failed to use enhanced prompt or parse response, using fallback:', error);
             const fallbackQuery = `${originalQuery} focusing on: ${reflectionResult.corrections.join(', ')} ${reflectionResult.missingInfo.join(', ')}`.trim();
+            
+            // For fallback, we don't have explicit target_file_paths or entity_names from Gemini,
+            // so we stick with the original options
             return await this._retrieveContextWithCache(agentId, [fallbackQuery], options);
         }
     }
@@ -468,15 +592,16 @@ Query: "${query}"
 Return a JSON object with "keywords" array containing the extracted terms.
 Example: {"keywords": ["getUserData", "UserService", "authentication", "api"]}`;
 
-            const keywordResult = await this.geminiService.askGemini(
+            const keywordResult = await this.multiModelOrchestrator.executeTask(
+                'json_extraction',
                 keywordExtractionPrompt,
-                getCurrentModel(),
-                'You are a code search expert. Extract precise technical keywords for effective code retrieval.'
+                undefined,
+                { contextLength: keywordExtractionPrompt.length }
             );
 
             let keywords: string[] = [];
             try {
-                const parsed = JSON.parse(keywordResult.content[0].text || '{}');
+                const parsed = JSON.parse(keywordResult.content || '{}');
                 keywords = parsed.keywords || [];
             } catch {
                 // Fallback keyword extraction
@@ -748,7 +873,7 @@ Example: {"keywords": ["getUserData", "UserService", "authentication", "api"]}`;
 
             const retrievalPromises = uncachedQueries.map(async (query) => {
                 try {
-                    const context = await contextRetriever.retrieveContextForPrompt(agentId, query, options);
+                    const context = await this._retrieveContextViaEmbeddingTool(agentId, query, options);
                     // Cache the result
                     const cacheKey = this._generateSessionCacheKey(query, options);
                     this.sessionContextCache.set(cacheKey, {
@@ -949,13 +1074,14 @@ ${focusString}
                 const batchAnalysisPrompt = `Analyze the following ${batch.length} code contexts for relevance to the query "${originalQuery}". \nFor each context, provide:\n1. Relevance score (0.0-1.0)\n2. Key insights\n3. How it relates to the query\n\nContexts:\n${batch.map((ctx, idx) => `Context ${idx + 1}:\nFile: ${ctx.sourcePath}\nEntity: ${ctx.entityName || 'N/A'}\nContent: ${ctx.content.substring(0, 300)}...\n`).join('\n')}\n\nReturn JSON: {"analyses": [{"contextIndex": 0, "relevanceScore": 0.0, "insights": "", "relationship": ""}, ...]}`;
 
                 try {
-                    const result = await this.geminiService.askGemini(
+                    const result = await this.multiModelOrchestrator.executeTask(
+                        'simple_analysis',
                         batchAnalysisPrompt,
-                        model || getCurrentModel(),
-                        'You are a code analysis expert. Analyze code contexts for query relevance with precision.'
+                        undefined,
+                        { contextLength: batchAnalysisPrompt.length }
                     );
 
-                    const analysisText = result.content[0].text || '{"analyses": []}';
+                    const analysisText = result.content || '{"analyses": []}';
                     batchAnalysis.push(`Batch ${batchIndex + 1}: ${analysisText}`);
 
                     // Parse analysis and update context relevance scores
@@ -1003,6 +1129,151 @@ ${focusString}
 
         console.log(`[Batch Processing] Successfully analyzed ${analyzedContexts.length} contexts`);
         return { analyzedContexts, batchAnalysis };
+    }
+
+    /**
+     * Consolidated batch analysis - process ALL context in one API call for free tier efficiency
+     */
+    private async _processConsolidatedBatchContextAnalysis(
+        contexts: RetrievedCodeContext[],
+        query: string,
+        model?: string,
+        turn?: number
+    ): Promise<{ analyzedContexts: RetrievedCodeContext[], batchAnalysis: string[] }> {
+        console.log(`[Consolidated Batch Analysis] Processing ALL ${contexts.length} contexts in single request for free tier efficiency`);
+        
+        // Create consolidated analysis prompt for ALL contexts at once
+        const contextSummaries = contexts.map((ctx, idx) => 
+            `Context ${idx + 1}:\n` +
+            `File: ${ctx.sourcePath}\n` +
+            `Entity: ${ctx.entityName || 'N/A'}\n` +
+            `Type: ${ctx.type}\n` +
+            `Content Preview: ${ctx.content.substring(0, 400)}...\n` +
+            `Current Score: ${ctx.relevanceScore || 0.5}\n`
+        ).join('\n---\n\n');
+        
+        const consolidatedPrompt = `
+Analyze ALL ${contexts.length} code contexts for relevance to query: "${query}"${turn ? ` (Search turn ${turn})` : ''}
+
+For EACH context, provide:
+1. Relevance score (0.0-1.0) - how well it matches the query
+2. Key insights - what important information it contains
+3. Query relationship - how it specifically relates to the query
+4. Confidence level - how confident you are in this assessment
+
+Contexts to analyze:
+${contextSummaries}
+
+Return JSON format:
+{
+  "overallAnalysis": "Brief summary of all contexts and their collective relevance",
+  "contextAnalyses": [
+    {
+      "contextIndex": 0,
+      "relevanceScore": 0.85,
+      "insights": "Key insights about this context",
+      "queryRelationship": "How this relates to the query",
+      "confidence": 0.9
+    },
+    // ... for each context
+  ]
+}`;
+        
+        try {
+            const result = await this.multiModelOrchestrator.executeTask(
+                'complex_analysis',
+                consolidatedPrompt,
+                undefined,
+                { contextLength: consolidatedPrompt.length }
+            );
+            
+            const responseText = result.content ?? '{}';
+            console.log(`[Consolidated Batch Analysis] Received response for ${contexts.length} contexts`);
+            
+            // Parse the consolidated response using enhanced parser
+            let analysisData: any = {};
+            try {
+                analysisData = await parseGeminiJsonResponse(responseText, {
+                    expectedStructure: 'Batch analysis response with contextAnalyses array and overallAnalysis',
+                    contextDescription: 'Consolidated batch context analysis',
+                    memoryManager: this.memoryManagerInstance,
+                    geminiService: this.geminiService,
+                    enableAIRepair: true
+                });
+            } catch (parseError) {
+                console.warn('[Consolidated Batch Analysis] Enhanced parsing failed, using fallback:', parseError);
+                analysisData = { contextAnalyses: [], overallAnalysis: 'Parsing failed - enhanced recovery exhausted' };
+            }
+            
+            const contextAnalyses = analysisData.contextAnalyses || [];
+            const overallAnalysis = analysisData.overallAnalysis || 'Analysis completed';
+            
+            // Update contexts with analysis results
+            const analyzedContexts = contexts.map((context, idx) => {
+                const analysis = contextAnalyses.find((a: any) => a.contextIndex === idx);
+                if (analysis && typeof analysis.relevanceScore === 'number') {
+                    return {
+                        ...context,
+                        relevanceScore: Math.max(
+                            context.relevanceScore || 0.5,
+                            Math.min(1.0, Math.max(0.0, analysis.relevanceScore))
+                        ),
+                        metadata: {
+                            ...context.metadata,
+                            consolidatedAnalysis: {
+                                insights: analysis.insights || 'No insights provided',
+                                queryRelationship: analysis.queryRelationship || 'Relationship unclear',
+                                confidence: analysis.confidence || 0.5,
+                                analyzedAt: new Date().toISOString(),
+                                turn: turn || 0
+                            }
+                        }
+                    };
+                }
+                // Return context with minor boost if no analysis found (assume some relevance)
+                return {
+                    ...context,
+                    relevanceScore: Math.max(context.relevanceScore || 0.5, 0.6),
+                    metadata: {
+                        ...context.metadata,
+                        consolidatedAnalysis: {
+                            insights: 'Analysis not available for this context',
+                            queryRelationship: 'Assumed relevant based on retrieval',
+                            confidence: 0.4,
+                            analyzedAt: new Date().toISOString(),
+                            turn: turn || 0
+                        }
+                    }
+                };
+            });
+            
+            console.log(`[Consolidated Batch Analysis] Successfully updated ${analyzedContexts.length} contexts with analysis results`);
+            
+            return {
+                analyzedContexts,
+                batchAnalysis: [
+                    `Consolidated Analysis (${contexts.length} contexts): ${overallAnalysis}`,
+                    `Successfully analyzed: ${contextAnalyses.length}/${contexts.length} contexts`,
+                    `Average relevance: ${analyzedContexts.reduce((sum, ctx) => sum + (ctx.relevanceScore || 0), 0) / analyzedContexts.length}`
+                ]
+            };
+            
+        } catch (error: any) {
+            console.error('[Consolidated Batch Analysis] Analysis failed:', error);
+            // Fallback: return contexts with slight relevance boost
+            const fallbackContexts = contexts.map(ctx => ({
+                ...ctx,
+                relevanceScore: Math.max(ctx.relevanceScore || 0.5, 0.6)
+            }));
+            
+            return {
+                analyzedContexts: fallbackContexts,
+                batchAnalysis: [
+                    `Consolidated analysis failed: ${error.message}`,
+                    `Fallback: Applied default relevance scores to ${contexts.length} contexts`
+                ]
+            };
+        }
     }
 
     /**
@@ -1068,14 +1339,14 @@ ${focusString}
                 thinkingConfig,
                 enable_dmqr,
                 dmqr_query_count,
-                enable_agentic_planning = true,
-                enable_reflection = true,
+                enable_agentic_planning = false,  // Default to false for better context retrieval
+                enable_reflection = true,  // More aggressive reflection
                 enable_hybrid_search = true,
                 enable_long_rag = true,
                 enable_corrective_rag = true,
                 citation_accuracy_threshold = 0.9,
                 long_rag_chunk_size = 2000,
-                reflection_frequency = 2
+                reflection_frequency = 1  // More frequent reflection for aggressive mode
             } = args;
 
             const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
@@ -1086,6 +1357,7 @@ ${focusString}
         const citations: Citation[] = [];
         const reflectionResults: ReflectionResult[] = [];
         const queryHistory = new Set<string>();
+        const sourceTracker = new Map<string, number>(); // Track source utilization
         let agenticPlan: AgenticRagPlan | undefined;
 
         const searchMetrics = {
@@ -1125,13 +1397,25 @@ ${focusString}
         const focusString = this._generateFocusString(focus_area, analysis_focus_points);
         console.log(`[Enhanced RAG] Starting enhanced search for query: "${query}"`);
 
+        // Enhanced Initial Context Gathering Strategy
         let baseQueries: string[] = [query];
+        
+        // Pre-analyze the query to determine optimal initial search strategy
+        const initialStrategy = await this._planInitialSearchStrategy(query, context_options, model);
+        console.log(`[Enhanced RAG] Initial search strategy: ${initialStrategy.strategy}, expected sources: ${initialStrategy.expectedSources}`);
+        
+        // Generate strategic initial queries based on analysis
+        if (!enable_dmqr && initialStrategy.additionalQueries.length > 0) {
+            baseQueries = [query, ...initialStrategy.additionalQueries.slice(0, 2)]; // Limit to prevent overwhelming
+            console.log(`[Enhanced RAG] Enhanced initial queries (${baseQueries.length}): ${baseQueries.map(q => `"${q.substring(0, 40)}..."`).join(', ')}`);
+        }
+        
         if (enable_dmqr) {
             console.log('[Enhanced RAG] DMQR enabled – generating diverse queries for both embeddings and KG...');
             try {
                 const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, { 
                     queryCount: dmqr_query_count,
-                    kgQueryCount: Math.max(2, Math.floor((dmqr_query_count || 3) / 2))
+                    kgQueryCount: Math.max(3, Math.floor((dmqr_query_count || 4) * 0.7))  // More aggressive KG query generation
                 });
                 
                 baseQueries = dmqrResult.generatedQueries;
@@ -1284,8 +1568,12 @@ ${focusString}
             const addedNow = accumulatedContext.length - contextBefore;
             searchMetrics.contextItemsAdded += addedNow;
 
-            // Generate citations for new context
+            // Track source utilization and apply diversification
             rawContext.forEach(context => {
+                const sourceKey = context.sourcePath;
+                const currentCount = sourceTracker.get(sourceKey) || 0;
+                sourceTracker.set(sourceKey, currentCount + 1);
+                
                 const citation = this._generateCitation(
                     context,
                     context.content.substring(0, 200),
@@ -1293,6 +1581,24 @@ ${focusString}
                 );
                 citations.push(citation);
             });
+            
+            // Apply source diversification if we have low source coverage
+            const uniqueSources = sourceTracker.size;
+            const totalContextItems = accumulatedContext.length;
+            const sourceCoverage = uniqueSources > 0 ? uniqueSources / Math.min(totalContextItems, 24) : 0; // Assume max 24 potential sources
+            
+            console.log(`[Source Diversification] Turn ${turn}: ${uniqueSources} unique sources, ${totalContextItems} context items, coverage: ${(sourceCoverage * 100).toFixed(1)}%`);
+            
+            // If source coverage is low, modify search strategy for next iteration
+            if (sourceCoverage < 0.4 && turn < max_iterations - 1) {
+                console.log(`[Source Diversification] Low source coverage (${(sourceCoverage * 100).toFixed(1)}%) - applying diversification strategy`);
+                
+                // Generate diversified queries to explore different parts of the codebase
+                const diversificationQueries = this._generateDiversificationQueries(query, sourceTracker, turn);
+                currentQueries.unshift(...diversificationQueries); // Add to front of queue for priority
+                
+                console.log(`[Source Diversification] Added ${diversificationQueries.length} diversification queries: ${diversificationQueries.map(q => `"${q.substring(0, 50)}..."`).join(', ')}`);
+            }
 
             // Continuation mode with web search: Automatically perform web search when enabled
             if (continue_session && (google_search || enable_web_search) && turn === 1) {
@@ -1365,23 +1671,30 @@ ${focusString}
                 long_rag_chunk_size
             );
 
-            // Apply batch processing for context analysis (process 3 files at a time)
+            // Enhanced batch processing - process ALL context in one go to minimize API calls
             let analyzedContextFlow = contextFlow;
             let batchAnalysisResults: string[] = [];
             
-            if (contextFlow.length > 3) {
-                console.log(`[Enhanced RAG] Applying batch context analysis to ${contextFlow.length} contexts`);
-                const batchResult = await this._processBatchContextAnalysis(
-                    contextFlow,
-                    query, // Use original query for consistency
-                    model
-                );
-                analyzedContextFlow = batchResult.analyzedContexts;
-                batchAnalysisResults = batchResult.batchAnalysis;
-                
-                // Sort by updated relevance scores
-                analyzedContextFlow.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
-                console.log(`[Enhanced RAG] Batch analysis completed, reordered ${analyzedContextFlow.length} contexts by relevance`);
+            // For free tier efficiency: batch ALL context at once instead of multiple calls
+            if (contextFlow.length > 1) {
+                console.log(`[Enhanced RAG] Applying consolidated batch context analysis to ALL ${contextFlow.length} contexts to minimize API usage`);
+                try {
+                    const batchResult = await this._processConsolidatedBatchContextAnalysis(
+                        contextFlow,
+                        query, // Use original query for consistency
+                        model,
+                        turn // Add turn context for better analysis
+                    );
+                    analyzedContextFlow = batchResult.analyzedContexts;
+                    batchAnalysisResults = batchResult.batchAnalysis;
+                    
+                    // Sort by updated relevance scores
+                    analyzedContextFlow.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+                    console.log(`[Enhanced RAG] Consolidated batch analysis completed, reordered ${analyzedContextFlow.length} contexts by relevance`);
+                } catch (batchError: any) {
+                    console.warn(`[Enhanced RAG] Batch analysis failed: ${batchError.message}. Using original context flow.`);
+                    analyzedContextFlow = contextFlow; // Fallback to original context
+                }
             }
 
             const formattedContext = formatContextForGemini(analyzedContextFlow)[0].text || '';
@@ -1394,22 +1707,54 @@ ${focusString}
 
             let analysisResult;
             try {
-                analysisResult = await this.geminiService.askGemini(analysisPrompt, model, RAG_ANALYSIS_SYSTEM_INSTRUCTION, thinkingConfig);
+                analysisResult = await this.multiModelOrchestrator.executeTask(
+                    'decision_making',
+                    analysisPrompt,
+                    RAG_ANALYSIS_SYSTEM_INSTRUCTION,
+                    { contextLength: analysisPrompt.length }
+                );
             } catch (e: any) {
                 searchMetrics.terminationReason = `Gemini analysis error: ${e.message}`;
                 break;
             }
 
-            const parsed = RagResponseParser.parseAnalysisResponse(analysisResult.content[0].text ?? '');
+            // Use enhanced parsing with AI repair capabilities
+            let parsed: any;
+            try {
+                parsed = await RagResponseParser.parseAnalysisResponse(
+                    analysisResult.content ?? '',
+                    formattedContext.substring(0, 500) + '...',  // Context used
+                    analysisPrompt.substring(0, 200) + '...',    // Prompt sent
+                    this.memoryManagerInstance,
+                    this.geminiService
+                );
+            } catch (enhancedParseError) {
+                console.warn('[Enhanced RAG] Enhanced parsing failed, falling back to sync parser:', enhancedParseError);
+                parsed = RagResponseParser.parseAnalysisResponseSync(
+                    analysisResult.content ?? '',
+                    formattedContext.substring(0, 500) + '...',
+                    analysisPrompt.substring(0, 200) + '...'
+                );
+            }
+            
             if (!parsed) {
-                searchMetrics.terminationReason = 'Parsing failure';
+                console.error('[Enhanced RAG] All parsing strategies failed - terminating search');
+                searchMetrics.terminationReason = 'Complete parsing failure - enhanced and fallback parsers both failed';
                 break;
+            }
+            
+            // Log parsing success/failure for monitoring
+            if (parsed._parsing_failed) {
+                console.warn(`[Enhanced RAG] Parser used fallback: ${parsed._error_message || 'Unknown error'}`);
+                searchMetrics.terminationReason += ' (Parser fallback used)';
+            } else {
+                console.log('[Enhanced RAG] Parsing successful');
             }
             decisionLog.push(parsed);
 
             // Reflection Phase (periodic)
             if (enable_reflection && turn % reflection_frequency === 0) {
-                const tempAnswer = analysisResult.content[0].text || '';
+                const tempAnswer = analysisResult.content || '';
                 const reflection = await this._performReflection(query, contextFlow, tempAnswer, model);
                 reflectionResults.push(reflection);
                 searchMetrics.hallucinationChecksPerformed++;
@@ -1456,7 +1801,18 @@ ${focusString}
 
             if (parsed.decision === 'ANSWER') {
                 // Quality Gate: Check if we meet minimum quality thresholds before allowing ANSWER
-                const estimatedQuality = parsed.qualityScore || 0.7;
+                let estimatedQuality = parsed.qualityScore;
+                
+                // If quality score is missing or undefined, calculate it based on context analysis
+                if (estimatedQuality === undefined || estimatedQuality === null || isNaN(estimatedQuality)) {
+                    console.warn(`[Enhanced RAG] Quality score missing from parsed response. Calculating fallback quality estimate...`);
+                    estimatedQuality = this._calculateContextQuality(accumulatedContext, query);
+                    console.log(`[Enhanced RAG] Calculated fallback quality score: ${estimatedQuality}`);
+                    
+                    // Update the parsed response with the calculated quality
+                    parsed.qualityScore = estimatedQuality;
+                }
+                
                 const contextSufficiency = Math.min(accumulatedContext.length / 10, 1.0); // Rough quality estimate
                 const iterationProgress = turn / max_iterations;
                 
@@ -1480,7 +1836,7 @@ ${focusString}
                         confidenceScore: 0.6,
                         contextUsed: formattedContext.substring(0, 500) + '...',
                         promptSent: analysisPrompt.substring(0, 200) + '...',
-                        rawGeminiResponse: analysisResult.content[0].text?.substring(0, 300) + '...'
+                        rawGeminiResponse: analysisResult.content?.substring(0, 300) + '...'
                     });
                     continue;
                 }
@@ -1501,14 +1857,15 @@ ${focusString}
                     .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`) +
                     `\n\nIMPORTANT: You have ${analyzedContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Strive to utilize multiple sources and provide comprehensive coverage. Each claim should be supported by specific source references.`;
                 
-                const answerResult = await this.geminiService.askGemini(
-                    enhancedAnswerPrompt, 
-                    model, 
-                    'You are a helpful AI assistant providing accurate answers with proper citations based on the given context.'
+                const answerResult = await this.multiModelOrchestrator.executeTask(
+                    'final_answer_generation',
+                    enhancedAnswerPrompt,
+                    'You are a helpful AI assistant providing accurate answers with proper citations based on the given context.',
+                    { contextLength: enhancedAnswerPrompt.length }
                 );
                 
                 // Calculate citation accuracy (actual usage vs availability)
-                const finalAnswer = answerResult.content[0].text ?? '';
+                const finalAnswer = answerResult.content ?? '';
                 const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
                 
                 // Calculate actual citation accuracy: unique citations used / total citations in answer
@@ -1604,13 +1961,14 @@ ${focusString}
             .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`) +
             `\n\nIMPORTANT: You have ${finalContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Utilize multiple sources when possible for comprehensive coverage.`;
         
-        const fallbackResult = await this.geminiService.askGemini(
-            fallbackPrompt, 
-            model, 
-            'You are a helpful AI assistant providing accurate answers with citations based on the given context.'
+        const fallbackResult = await this.multiModelOrchestrator.executeTask(
+            'final_answer_generation',
+            fallbackPrompt,
+            'You are a helpful AI assistant providing accurate answers with citations based on the given context.',
+            { contextLength: fallbackPrompt.length }
         );
 
-        const finalAnswer = fallbackResult.content[0].text ?? 'Unable to formulate an answer.';
+        const finalAnswer = fallbackResult.content ?? 'Unable to formulate an answer.';
         const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
         
         // Apply same citation accuracy calculation as in main flow
@@ -1629,6 +1987,14 @@ ${focusString}
             : 1.0;
         searchMetrics.totalCitationsGenerated = citations.length;
         searchMetrics.totalCitationsUsed = uniqueCitationNumbers.size;
+        
+        // Add source diversity metrics
+        const finalSourceCoverage = sourceTracker.size > 0 ? sourceTracker.size / Math.min(accumulatedContext.length, 24) : 0;
+        (searchMetrics as any).sourceCoverage = finalSourceCoverage;
+        (searchMetrics as any).uniqueSourcesUsed = sourceTracker.size;
+        (searchMetrics as any).totalContextSources = accumulatedContext.length;
+        
+        console.log(`[Final Metrics] Source coverage: ${(finalSourceCoverage * 100).toFixed(1)}%, unique sources: ${sourceTracker.size}, total contexts: ${accumulatedContext.length}`);
 
         return { 
             accumulatedContext, 
@@ -1658,5 +2024,247 @@ ${focusString}
      */
     clearPerformanceMetrics(): void {
         globalPerformanceTracker.clear();
+    }
+
+    /**
+     * Calculate quality score for accumulated context based on various metrics
+     */
+    private _calculateContextQuality(contexts: RetrievedCodeContext[], query: string): number {
+        if (contexts.length === 0) return 0.1;
+        
+        let totalScore = 0;
+        const queryLower = query.toLowerCase();
+        const queryTerms = this._extractQueryTerms(query);
+        
+        for (const context of contexts) {
+            let contextScore = 0;
+            const contentLower = context.content.toLowerCase();
+            
+            // 1. Relevance score weight (40%)
+            const relevanceScore = context.relevanceScore || 0.5;
+            contextScore += relevanceScore * 0.4;
+            
+            // 2. Query term matching (30%)
+            const matchingTerms = queryTerms.filter(term => 
+                contentLower.includes(term.toLowerCase()) ||
+                context.sourcePath.toLowerCase().includes(term.toLowerCase())
+            );
+            const termMatchScore = Math.min(matchingTerms.length / Math.max(queryTerms.length, 1), 1.0);
+            contextScore += termMatchScore * 0.3;
+            
+            // 3. Content quality indicators (20%)
+            let qualityIndicators = 0;
+            if (context.content.length > 200) qualityIndicators += 0.3;
+            if (context.content.includes('function') || context.content.includes('class')) qualityIndicators += 0.3;
+            if (context.content.includes('export') || context.content.includes('import')) qualityIndicators += 0.2;
+            if (context.entityName && context.entityName.length > 0) qualityIndicators += 0.2;
+            contextScore += Math.min(qualityIndicators, 1.0) * 0.2;
+            
+            // 4. Source diversity bonus (10%)
+            const sourceTypeBonus = context.type !== 'generic_code_chunk' ? 0.1 : 0.0;
+            contextScore += sourceTypeBonus;
+            
+            totalScore += Math.min(contextScore, 1.0);
+        }
+        
+        // Calculate average and apply context diversity bonus
+        const averageScore = totalScore / contexts.length;
+        const diversityBonus = Math.min(contexts.length / 10, 0.2); // Up to 20% bonus for more contexts
+        const finalScore = Math.min(averageScore + diversityBonus, 1.0);
+        
+        return Math.max(finalScore, 0.1); // Minimum score of 0.1
+    }
+    
+    /**
+     * Extract meaningful terms from query for quality assessment
+     */
+    private _extractQueryTerms(query: string): string[] {
+        // Remove common words and extract meaningful terms
+        const commonWords = new Set(['how', 'what', 'when', 'where', 'why', 'who', 'which', 'does', 'do', 'is', 'are', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from']);
+        return query.toLowerCase()
+            .split(/\W+/)
+            .filter(word => word.length > 2 && !commonWords.has(word))
+            .slice(0, 10); // Limit to top 10 terms
+    }
+    
+    /**
+     * Plan initial search strategy based on query analysis
+     */
+    private async _planInitialSearchStrategy(
+        query: string, 
+        contextOptions?: ContextRetrievalOptions,
+        model?: string
+    ): Promise<{
+        strategy: string;
+        expectedSources: number;
+        additionalQueries: string[];
+        confidence: number;
+    }> {
+        try {
+            const queryAnalysisPrompt = `Analyze this code-related query and recommend an optimal initial search strategy:
+
+Query: "${query}"
+
+**ANALYSIS FRAMEWORK:**
+1. **Query Classification**: Identify the type (explanation, debugging, implementation, configuration, etc.)
+2. **Expected Sources**: Estimate how many different code files/components should be involved
+3. **Search Breadth**: Determine if query needs broad exploration or focused search
+4. **Additional Queries**: Suggest 1-2 strategic follow-up queries to gather comprehensive context
+
+**RESPONSE FORMAT (JSON only):**
+{
+  "queryType": "explanation|debugging|implementation|configuration|general",
+  "strategy": "focused|broad|hybrid",
+  "expectedSources": 3-15,
+  "searchBreadth": "narrow|moderate|wide",
+  "additionalQueries": ["strategic query 1", "strategic query 2"],
+  "reasoning": "brief explanation of strategy",
+  "confidence": 0.0-1.0
+}
+
+Provide only the JSON response:`;
+            
+            const result = await this.multiModelOrchestrator.executeTask(
+                'planning',
+                queryAnalysisPrompt,
+                undefined,
+                { contextLength: queryAnalysisPrompt.length }
+            );
+            
+            const response = result.content?.trim() || '{}';
+            let analysis: any;
+            
+            try {
+                analysis = await parseGeminiJsonResponse(response, {
+                    expectedStructure: 'Initial search strategy with queryType, strategy, expectedSources, and additionalQueries',
+                    contextDescription: 'Initial RAG search strategy planning',
+                    memoryManager: this.memoryManagerInstance,
+                    geminiService: this.geminiService,
+                    enableAIRepair: true
+                });
+            } catch (parseError) {
+                console.warn('[Initial Strategy Planning] Enhanced parsing failed, using fallback strategy:', parseError);
+                return this._getFallbackInitialStrategy(query);
+            }
+            
+            return {
+                strategy: analysis.strategy || 'hybrid',
+                expectedSources: Math.min(Math.max(analysis.expectedSources || 5, 3), 15),
+                additionalQueries: Array.isArray(analysis.additionalQueries) ? analysis.additionalQueries.slice(0, 2) : [],
+                confidence: Math.min(Math.max(analysis.confidence || 0.7, 0.1), 1.0)
+            };
+            
+        } catch (error) {
+            console.warn('[Initial Strategy Planning] Analysis failed, using fallback:', error);
+            return this._getFallbackInitialStrategy(query);
+        }
+    }
+    
+    /**
+     * Fallback strategy when initial planning fails
+     */
+    private _getFallbackInitialStrategy(query: string): {
+        strategy: string;
+        expectedSources: number;
+        additionalQueries: string[];
+        confidence: number;
+    } {
+        const queryLower = query.toLowerCase();
+        const isExplanationQuery = /\b(how|explain|what|describe|tell|show)\b/.test(queryLower);
+        const isImplementationQuery = /\b(implement|create|build|develop|code|write)\b/.test(queryLower);
+        const isDebuggingQuery = /\b(error|bug|fix|issue|problem|fail|wrong)\b/.test(queryLower);
+        
+        // Extract main terms for additional query generation
+        const mainTerms = this._extractQueryTerms(query).slice(0, 2);
+        const additionalQueries: string[] = [];
+        
+        if (isExplanationQuery && mainTerms.length > 0) {
+            additionalQueries.push(`${mainTerms[0]} usage examples and integration patterns`);
+            if (mainTerms.length > 1) {
+                additionalQueries.push(`${mainTerms[1]} related components and dependencies`);
+            }
+        } else if (isImplementationQuery && mainTerms.length > 0) {
+            additionalQueries.push(`${mainTerms[0]} interfaces and base classes`);
+            additionalQueries.push(`${mainTerms[0]} configuration and setup requirements`);
+        } else if (isDebuggingQuery) {
+            additionalQueries.push(`Common errors and troubleshooting for ${mainTerms[0] || 'this functionality'}`);
+        }
+        
+        return {
+            strategy: isExplanationQuery ? 'broad' : isDebuggingQuery ? 'focused' : 'hybrid',
+            expectedSources: isExplanationQuery ? 8 : isDebuggingQuery ? 4 : 6,
+            additionalQueries,
+            confidence: 0.6
+        };
+    }
+    
+    /**
+     * Generate diversified queries to explore different sources and improve coverage
+     */
+    private _generateDiversificationQueries(
+        originalQuery: string, 
+        sourceTracker: Map<string, number>, 
+        currentTurn: number
+    ): string[] {
+        const queries: string[] = [];
+        const queryTerms = this._extractQueryTerms(originalQuery);
+        const mainTerm = queryTerms[0] || 'code';
+        
+        // Identify underrepresented source types
+        const sourceTypes = new Map<string, number>();
+        for (const [path] of sourceTracker) {
+            const ext = path.split('.').pop()?.toLowerCase() || 'unknown';
+            sourceTypes.set(ext, (sourceTypes.get(ext) || 0) + 1);
+        }
+        
+        // Strategy 1: Target different file types that might have been missed
+        const targetExtensions = ['ts', 'js', 'json', 'md', 'yaml', 'yml'];
+        const underrepresentedExts = targetExtensions.filter(ext => 
+            !sourceTypes.has(ext) || (sourceTypes.get(ext) || 0) < 2
+        );
+        
+        if (underrepresentedExts.length > 0) {
+            const ext = underrepresentedExts[0];
+            queries.push(`Find ${mainTerm} related code or configuration in ${ext} files`);
+        }
+        
+        // Strategy 2: Explore different architectural layers
+        const architecturalLayers = [
+            'services and business logic',
+            'data models and schemas', 
+            'utilities and helpers',
+            'configuration and setup',
+            'tests and examples',
+            'interfaces and types'
+        ];
+        
+        if (currentTurn <= 3) {
+            const layer = architecturalLayers[Math.min(currentTurn - 1, architecturalLayers.length - 1)];
+            queries.push(`${mainTerm} implementation in ${layer}`);
+        }
+        
+        // Strategy 3: Semantic expansion for better coverage
+        const semanticVariations = {
+            'orchestrator': ['coordinator', 'manager', 'handler', 'processor'],
+            'parse': ['decode', 'transform', 'convert', 'process'],
+            'distribution': ['allocation', 'assignment', 'routing', 'dispatch'],
+            'task': ['job', 'work', 'operation', 'process']
+        };
+        
+        for (const [term, variations] of Object.entries(semanticVariations)) {
+            if (originalQuery.toLowerCase().includes(term)) {
+                const variation = variations[currentTurn % variations.length];
+                queries.push(originalQuery.replace(new RegExp(term, 'gi'), variation));
+                break; // Only add one variation per turn
+            }
+        }
+        
+        // Strategy 4: If still low coverage, try broader exploration
+        if (sourceTracker.size < 5) {
+            queries.push(`Related patterns and implementations for ${mainTerm}`);
+        }
+        
+        // Limit to 2 diversification queries per turn to avoid overwhelming
+        return queries.slice(0, 2);
     }
 }

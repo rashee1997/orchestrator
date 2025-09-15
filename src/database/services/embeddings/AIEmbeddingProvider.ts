@@ -5,6 +5,8 @@ import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PRO
 import { ApiKeyManager } from './ApiKeyManager.js';
 import { RateLimiter } from './RateLimiter.js';
 import { BatchProcessor } from './BatchProcessor.js';
+import { MultiModelOrchestrator } from '../../../tools/rag/multi_model_orchestrator.js';
+import { MemoryManager } from '../../memory_manager.js';
 
 export type EmbeddingProviderType = 'gemini' | 'mistral';
 
@@ -27,6 +29,8 @@ export class AIEmbeddingProvider {
     private apiKeyManager: ApiKeyManager;
     private rateLimiter: RateLimiter;
     private batchProcessor: BatchProcessor;
+    private multiModelOrchestrator?: MultiModelOrchestrator;
+    private memoryManager?: MemoryManager;
 
     /**
      * Creates an instance of AIEmbeddingProvider.
@@ -45,7 +49,8 @@ export class AIEmbeddingProvider {
         baseDelay: number = 1000,
         maxBatchSize: number = 100,
         maxTokensPerBatch: number = 20000,
-        requestTimeout: number = 30000
+        requestTimeout: number = 30000,
+        memoryManager?: MemoryManager
     ) {
         this.geminiService = geminiService;
         this.providerType = providerType;
@@ -57,6 +62,13 @@ export class AIEmbeddingProvider {
         this.apiKeyManager = new ApiKeyManager();
         this.rateLimiter = new RateLimiter();
         this.batchProcessor = new BatchProcessor(maxBatchSize, maxTokensPerBatch);
+        
+        // Initialize multi-model orchestrator if memoryManager is provided
+        if (memoryManager) {
+            this.memoryManager = memoryManager;
+            this.multiModelOrchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
+            console.log('[AIEmbeddingProvider] Multi-model orchestrator enabled for summarization tasks');
+        }
 
         // Initialize Mistral service if needed
         if (providerType === 'mistral') {
@@ -112,7 +124,21 @@ export class AIEmbeddingProvider {
         chunks: Array<{ codeChunk: string; language: string | undefined }>
     ): Promise<string[]> {
         if (chunks.length === 0) return [];
+        
+        // Try using multi-model orchestrator for single chunks (efficient for small tasks)
+        if (this.multiModelOrchestrator && chunks.length <= 3) {
+            try {
+                const results = await Promise.all(
+                    chunks.map(chunk => this._generateNameWithOrchestrator(chunk.codeChunk, chunk.language))
+                );
+                return results;
+            } catch (error) {
+                console.warn('[AIEmbeddingProvider] Multi-model entity naming failed, falling back to batch Gemini:', error);
+                // Fall through to original batch method
+            }
+        }
 
+        // Original batch method for larger batches or when orchestrator fails
         const prompts = chunks.map(chunk =>
             GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT
                 .replace(/{language}/g, chunk.language || 'unknown')
@@ -134,6 +160,39 @@ export class AIEmbeddingProvider {
         } catch (error) {
             console.warn('Failed to generate meaningful entity names:', error);
             return new Array(chunks.length).fill('anonymous_chunk');
+        }
+    }
+    
+    /**
+     * Generate meaningful entity name using multi-model orchestrator
+     */
+    private async _generateNameWithOrchestrator(codeChunk: string, language: string | undefined): Promise<string> {
+        const prompt = GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT
+            .replace(/{language}/g, language || 'unknown')
+            .replace('{codeChunk}', codeChunk);
+            
+        try {
+            const result = await this.multiModelOrchestrator!.executeTask(
+                'simple_analysis', // Uses Mistral as preferred model for simple naming tasks
+                prompt,
+                'You are an expert code analyst. Generate a concise, meaningful name for the given code entity. Return only the name, no explanations.',
+                {
+                    contextLength: prompt.length,
+                    timeout: 10000
+                }
+            );
+            
+            console.log(`[AIEmbeddingProvider] Entity naming successful using ${result.model}`);
+            
+            let extractedName = result.content.trim();
+            extractedName = extractedName.replace(/[^a-zA-Z0-9\s_]/g, '').trim();
+            extractedName = extractedName.replace(/\s+/g, '_');
+            extractedName = extractedName.replace(/^_+|_+$/g, '');
+            
+            return extractedName.length > 0 ? extractedName : 'anonymous_chunk';
+        } catch (error) {
+            console.warn('[AIEmbeddingProvider] Multi-model entity naming failed:', error);
+            return 'anonymous_chunk';
         }
     }
 
@@ -314,11 +373,51 @@ export class AIEmbeddingProvider {
 
     public async summarizeCodeChunk(codeChunk: string, entityType: string, language: string): Promise<string> {
         try {
+            // Try using multi-model orchestrator first (prefers Mistral for simple tasks)
+            if (this.multiModelOrchestrator) {
+                return await this._summarizeWithOrchestrator(codeChunk, entityType, language);
+            }
+            
+            // Fallback to original batch method
             const results = await this.batchSummarizeCodeChunks([{ codeChunk, entityType, language }]);
             return results[0] || 'Could not generate summary.';
         } catch (error) {
             console.error('Error summarizing code chunk:', error);
             return 'Could not generate summary.';
+        }
+    }
+    
+    /**
+     * Summarize code chunk using multi-model orchestrator
+     */
+    private async _summarizeWithOrchestrator(codeChunk: string, entityType: string, language: string): Promise<string> {
+        const prompt = BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT
+            .replace(/{language}/g, language)
+            .replace('{entityType}', entityType)
+            .replace('{codeChunk}', codeChunk);
+            
+        try {
+            const result = await this.multiModelOrchestrator!.executeTask(
+                'context_summarization', // Uses Mistral as preferred model
+                prompt,
+                `You are an expert code analyst. Generate a concise, technical summary of the given ${entityType} in ${language}. Focus on functionality, purpose, and key implementation details. Keep the summary under 200 words.`,
+                {
+                    contextLength: prompt.length,
+                    timeout: 15000
+                }
+            );
+            
+            console.log(`[AIEmbeddingProvider] Code summarization successful using ${result.model}`);
+            
+            let summary = result.content.trim();
+            // Clean up the summary
+            summary = summary.replace(/[\r\n]+/g, ' ').replace(/`/g, '').trim();
+            summary = summary.replace(/\s+/g, ' ');
+            
+            return summary || 'Could not generate summary.';
+        } catch (error) {
+            console.warn('[AIEmbeddingProvider] Multi-model summarization failed, falling back to Gemini:', error);
+            throw error; // Will trigger fallback to original method
         }
     }
 

@@ -6,7 +6,7 @@ import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCo
 import { KnowledgeGraphQueryProducer } from './rag/kg_query_producer.js';
 import path from 'path';
 import fs from 'fs/promises';
-import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 // ============================================================================
 // Helper Functions
@@ -247,7 +247,7 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
                 query: { type: 'string', description: 'Natural language query about the codebase (e.g., "What modules does OrderController import?", "Find all test files for the auth module", "Which classes extend BaseService?")' },
-                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash"). Defaults to current model.', nullable: true },
+                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"). Defaults to current model.', nullable: true },
                 enable_dmqr: {
                     type: 'boolean',
                     description: 'Enable Diverse Multi-Query Rewriting (DMQR) for enhanced KG retrieval. Automatically generates multiple specialized graph queries (structural, semantic, hybrid) for comprehensive context discovery.',
@@ -871,7 +871,7 @@ ${formatJsonToMarkdownCodeBlock(resultData)}
                         try {
                             console.log(`[kg_nl_query] Executing KG query (${kgQuery.searchStrategy}): "${kgQuery.query}"`);
                             const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, kgQuery.query);
-                            const result = parseGeminiJsonResponse(resultJsonString);
+                            const result = parseGeminiJsonResponseSync(resultJsonString);
                             
                             // Add metadata about the query source
                             if (result.metadata) {
@@ -893,7 +893,7 @@ ${formatJsonToMarkdownCodeBlock(resultData)}
                 } else {
                     // Standard single query execution
                     const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, query);
-                    const result = parseGeminiJsonResponse(resultJsonString);
+                    const result = parseGeminiJsonResponseSync(resultJsonString);
                     allResults.push(result);
                 }
 

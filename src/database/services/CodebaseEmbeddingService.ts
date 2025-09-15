@@ -27,7 +27,7 @@ export class CodebaseEmbeddingService {
         geminiService: GeminiIntegrationService
     ) {
         this.repository = new CodebaseEmbeddingRepository(vectorDbConnection);
-        this.aiProvider = new AIEmbeddingProvider(geminiService);
+        this.aiProvider = new AIEmbeddingProvider(geminiService, 'gemini', 3, 1000, 100, 20000, 30000, memoryManager);
         this.introspectionService = new CodebaseIntrospectionService(memoryManager);
         this.chunkingService = new CodeChunkingService(
             this.introspectionService,
