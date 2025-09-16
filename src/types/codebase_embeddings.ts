@@ -20,6 +20,13 @@ export interface CodebaseEmbeddingRecord {
     ai_summary_text?: string | null;
     embedding_type: 'summary' | 'chunk'; // 'summary' for parent, 'chunk' for child
     parent_embedding_id?: string | null; // Link chunks to their parent summary
+    // New parallel embedding tracking columns
+    embedding_provider?: 'gemini' | 'mistral';
+    embedding_model_full_name?: string; // Full model name (e.g., 'models/gemini-embedding-001', 'codestral-embed')
+    embedding_generation_method?: 'single' | 'parallel' | 'fallback';
+    embedding_request_id?: string | null; // Track batched/parallel requests
+    embedding_quality_score?: number; // For quality tracking (default 1.0)
+    embedding_generation_timestamp?: number; // When embedding was generated
     similarity?: number;
     finalScore?: number;
 }

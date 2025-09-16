@@ -8,6 +8,22 @@ export type GeminiEmbeddingTaskType =
     | 'FACT_VERIFICATION'
     | 'CODE_RETRIEVAL_QUERY';
 
+export interface EmbeddingModelConfig {
+    model: string;
+    provider: 'gemini' | 'mistral';
+    enabled: boolean;
+    priority: number;
+    dimensions: number;
+}
+
+export interface ParallelEmbeddingConfig {
+    enabled: boolean;
+    targetDimension: number;
+    loadBalancing: 'concurrent' | 'round_robin' | 'failover' | 'intelligent';
+    maxConcurrentRequests: number;
+    models: EmbeddingModelConfig[];
+}
+
 export interface GeminiModelConfig {
     defaultModel: string;
     fallbackModel: string;
@@ -15,6 +31,7 @@ export interface GeminiModelConfig {
     fallbackEmbeddingModel: string;
     embeddingDimensions: number;
     fallbackEmbeddingDimensions: number;
+    parallelEmbedding: ParallelEmbeddingConfig;
 }
 
 export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
@@ -23,7 +40,29 @@ export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
     embeddingModel: "models/gemini-embedding-001",
     fallbackEmbeddingModel: "models/text-embedding-004",
     embeddingDimensions: 3072,
-    fallbackEmbeddingDimensions: 768
+    fallbackEmbeddingDimensions: 768,
+    parallelEmbedding: {
+        enabled: true,
+        targetDimension: 3072,
+        loadBalancing: 'intelligent', // Intelligent content-aware routing (was: 'round_robin')
+        maxConcurrentRequests: 2, // Both Gemini and Mistral
+        models: [
+            {
+                model: "models/gemini-embedding-001",
+                provider: 'gemini',
+                enabled: true,
+                priority: 1,
+                dimensions: 3072
+            },
+            {
+                model: "codestral-embed",
+                provider: 'mistral',
+                enabled: true,
+                priority: 2,
+                dimensions: 3072
+            }
+        ]
+    }
 };
 
 export const getCurrentModel = (useFallback: boolean = false): string => {

@@ -356,7 +356,14 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed', 'paths_to_embed', or 'resume_failed_files' must be provided.");
             }
 
+            // Get embedding configuration info
+            const embeddingInfo = embeddingService.getSharedEmbeddingInfo();
+
             let detailedOutput = `## 🧠 Codebase Ingestion Report\n\n> ${outputMessage}\n\n`;
+            detailedOutput += `### 🔬 Embedding Configuration\n${embeddingInfo.sharedProcessDescription}\n`
+                + `- **Target Dimensions:** ${embeddingInfo.targetDimension}D\n`
+                + `- **Active Models:** ${embeddingInfo.enabledModels.map(m => `${m.provider}:${m.model}`).join(', ')}\n`
+                + `- **Strategy:** ${embeddingInfo.loadBalancing}\n\n`;
             
             // Add batch status indicator
             const statusIcon = resultCounts.batchStatus === 'complete' ? '✅' : 

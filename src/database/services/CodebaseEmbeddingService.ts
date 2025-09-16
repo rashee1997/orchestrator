@@ -7,6 +7,7 @@ import { CodebaseIntrospectionService } from './CodebaseIntrospectionService.js'
 import { Database } from 'better-sqlite3';
 import { EmbeddingCache } from './embeddings/EmbeddingCache.js';
 import { AIEmbeddingProvider } from './embeddings/AIEmbeddingProvider.js';
+import { ParallelEmbeddingManager } from './embeddings/ParallelEmbeddingManager.js';
 import { CodeChunkingService } from './embeddings/CodeChunkingService.js';
 import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRepository.js';
 import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
@@ -17,6 +18,7 @@ import { RetrievedCodeContext } from './CodebaseContextRetrieverService.js';
 export class CodebaseEmbeddingService {
     public repository: CodebaseEmbeddingRepository;
     private aiProvider: AIEmbeddingProvider;
+    private parallelEmbeddingManager: ParallelEmbeddingManager;
     public chunkingService: CodeChunkingService;
     public embeddingCache: EmbeddingCache;
     public introspectionService: CodebaseIntrospectionService;
@@ -28,6 +30,7 @@ export class CodebaseEmbeddingService {
     ) {
         this.repository = new CodebaseEmbeddingRepository(vectorDbConnection);
         this.aiProvider = new AIEmbeddingProvider(geminiService, 'gemini', 3, 1000, 100, 20000, 30000, memoryManager);
+        this.parallelEmbeddingManager = new ParallelEmbeddingManager(geminiService);
         this.introspectionService = new CodebaseIntrospectionService(memoryManager);
         this.chunkingService = new CodeChunkingService(
             this.introspectionService,
@@ -35,6 +38,10 @@ export class CodebaseEmbeddingService {
             memoryManager
         );
         this.embeddingCache = new EmbeddingCache(vectorDbConnection);
+
+        // Log the shared embedding configuration
+        const embeddingInfo = this.parallelEmbeddingManager.getSharedEmbeddingInfo();
+        console.log(`[CodebaseEmbeddingService] ${embeddingInfo.sharedProcessDescription}`);
     }
 
     public async cleanUpEmbeddingsByFilePaths(agentId: string, filePaths: string[], projectRootPath: string, filterByAgentId?: boolean): Promise<{ deletedCount: number }> {
@@ -68,6 +75,13 @@ export class CodebaseEmbeddingService {
         }
 
         return { deletedCount };
+    }
+
+    /**
+     * Get information about the current shared embedding configuration
+     */
+    public getSharedEmbeddingInfo() {
+        return this.parallelEmbeddingManager.getSharedEmbeddingInfo();
     }
 
     private generateChunkHash(text: string): string {
@@ -301,12 +315,37 @@ export class CodebaseEmbeddingService {
             const textsToEmbed = chunksToEmbed.map(item => item.chunk.chunk_text);
             let embeddings;
             try {
-                const modelName = providerType === 'mistral' ? 'codestral-embed' : DEFAULT_EMBEDDING_MODEL;
-                this.aiProvider.setProvider(providerType as 'gemini' | 'mistral', modelName);
-                embeddings = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed, modelName);
+                console.log(`[CodebaseEmbeddingService] Using shared embedding process with both Codestral and Gemini for ${textsToEmbed.length} texts`);
+
+                // Use the parallel embedding manager for shared embedding process
+                const parallelResult = await this.parallelEmbeddingManager.generateEmbeddings(textsToEmbed);
+
+                // Convert parallel embedding result to the format expected by the rest of the code
+                embeddings = {
+                    embeddings: parallelResult.embeddings.map(embedding => ({
+                        vector: embedding?.vector || null,
+                        dimensions: embedding?.dimensions || 3072,
+                        model: embedding?.model || parallelResult.primaryModel,
+                        provider: embedding?.provider || 'gemini'
+                    })),
+                    requestCount: 1, // One request to parallel manager
+                    retryCount: 0, // Parallel manager handles retries internally
+                    totalTokensProcessed: parallelResult.totalTokensProcessed,
+                    model: parallelResult.primaryModel,
+                    actualDimensions: parallelResult.embeddings[0]?.dimensions || 3072,
+                    // Store parallel processing metadata for database insertion
+                    parallelMetadata: {
+                        requestId: parallelResult.requestId,
+                        modelDistribution: parallelResult.modelDistribution,
+                        fallbackUsed: parallelResult.fallbackUsed
+                    }
+                };
+
                 report.embeddingRequestCount = embeddings.requestCount;
                 report.embeddingRetryCount = embeddings.retryCount;
                 report.totalTokensProcessed = embeddings.totalTokensProcessed;
+
+                console.log(`[CodebaseEmbeddingService] Shared embedding complete: ${parallelResult.successfulRequests}/${textsToEmbed.length} successful, primary model: ${parallelResult.primaryModel}, distribution: ${JSON.stringify(parallelResult.modelDistribution)}`);
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 console.error(`Error generating embeddings:`, error);
@@ -355,8 +394,9 @@ export class CodebaseEmbeddingService {
             });
 
             // Second pass: build the final records with correct parent links
+            const generationTimestamp = Date.now();
             await Promise.all(embeddings.embeddings.map(async (embeddingResult, index) => {
-                if (embeddingResult) {
+                if (embeddingResult && embeddingResult.vector) {
                     const { chunk, fileInfo } = chunksToEmbed[index];
                     const vectorBuffer = Buffer.alloc(embeddingResult.vector.length * VECTOR_FLOAT_SIZE);
                     embeddingResult.vector.forEach((val, i) => vectorBuffer.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
@@ -387,7 +427,7 @@ export class CodebaseEmbeddingService {
                         entity_name_vector_dimensions: entityNameVectorDimensions,
                         vector_blob: vectorBuffer,
                         vector_dimensions: embeddingResult.dimensions,
-                        model_name: providerType === 'mistral' ? 'codestral-embed' : DEFAULT_EMBEDDING_MODEL,
+                        model_name: embeddingResult.model || embeddings.model,
                         chunk_hash: chunk.chunk_hash || this.generateChunkHash(chunk.chunk_text),
                         file_hash: fileInfo.fileHash,
                         metadata_json: JSON.stringify(chunk.metadata || {}),
@@ -398,6 +438,13 @@ export class CodebaseEmbeddingService {
                         parent_embedding_id: chunk.embedding_type === 'chunk' ?
                             parentIdMap.get(chunk.parent_embedding_id) :
                             chunk.final_embedding_id,
+                        // New parallel embedding metadata
+                        embedding_provider: embeddingResult.provider || 'gemini',
+                        embedding_model_full_name: embeddingResult.model || embeddings.model,
+                        embedding_generation_method: embeddings.parallelMetadata ? 'parallel' : 'single',
+                        embedding_request_id: embeddings.parallelMetadata?.requestId || null,
+                        embedding_quality_score: 1.0, // Default quality score
+                        embedding_generation_timestamp: generationTimestamp
                     });
 
                     report.newEmbeddings.push({

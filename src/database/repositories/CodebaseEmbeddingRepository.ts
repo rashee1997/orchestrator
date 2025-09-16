@@ -53,8 +53,10 @@ export class CodebaseEmbeddingRepository {
         const insertMetadataSql = `INSERT OR REPLACE INTO ${this.metadataTable} (
             embedding_id, agent_id, chunk_text, entity_name, entity_name_vector_blob, entity_name_vector_dimensions,
             model_name, chunk_hash, file_hash, metadata_json, created_timestamp_unix, file_path_relative,
-            full_file_path, ai_summary_text, vector_dimensions, embedding_type, parent_embedding_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            full_file_path, ai_summary_text, vector_dimensions, embedding_type, parent_embedding_id,
+            embedding_provider, embedding_model_full_name, embedding_generation_method,
+            embedding_request_id, embedding_quality_score, embedding_generation_timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const insertVecSql = `INSERT OR REPLACE INTO ${this.vectorTable} (embedding_id, embedding) VALUES (?, ?);`;
 
@@ -82,7 +84,14 @@ export class CodebaseEmbeddingRepository {
                             metadata.ai_summary_text,
                             metadata.vector_dimensions,
                             metadata.embedding_type,
-                            metadata.parent_embedding_id
+                            metadata.parent_embedding_id,
+                            // New parallel embedding columns
+                            metadata.embedding_provider || 'gemini',
+                            metadata.embedding_model_full_name || metadata.model_name,
+                            metadata.embedding_generation_method || 'single',
+                            metadata.embedding_request_id || null,
+                            metadata.embedding_quality_score || 1.0,
+                            metadata.embedding_generation_timestamp || Date.now()
                         );
 
                         if (metadata.vector_blob && metadata.vector_blob.length > 0) {
