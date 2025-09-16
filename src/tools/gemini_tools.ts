@@ -403,7 +403,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{continuation_mode}', `continue=${continue_session || false}`);
 
                 const decisionResult = await geminiService.askGemini(decisionPrompt, getCurrentModel());
-                const decisionResponse = parseGeminiJsonResponseSync(decisionResult.content[0].text ?? '');
+                const decisionResponse = await parseGeminiJsonResponse(decisionResult.content[0].text ?? '', {
+                    expectedStructure: '{"decision": "ANSWER_FROM_HISTORY or PERFORM_RAG", "reasoning": "string", "rag_query": "string or null"}',
+                    contextDescription: 'RAG decision response for conversation continuation',
+                    memoryManager: memoryManagerInstance,
+                    geminiService: geminiService,
+                    enableAIRepair: true
+                });
 
                 // Store the autonomous decision in tool_info for transparency
                 const autonomousDecision = {
@@ -544,7 +550,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{agentId}', agent_id);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
-                const parsedResponse = parseGeminiJsonResponseSync(result.content[0].text ?? '');
+                const parsedResponse = await parseGeminiJsonResponse(result.content[0].text ?? '', {
+                    expectedStructure: '{"plan_title": "string", "tasks": [{"task_number": "number", "title": "string", "description": "string"}], "estimated_duration_days": "number"}',
+                    contextDescription: 'Plan generation response with tasks and metadata',
+                    memoryManager: memoryManagerInstance,
+                    geminiService: geminiService,
+                    enableAIRepair: true
+                });
 
                 parsedResponse.generation_metadata = {
                     rag_metrics: iterativeResult?.searchMetrics,
@@ -882,7 +894,7 @@ Conversation History (if any):
                 markdownOutput += `| Step | Decision | Quality | Strategy | Next Action |\n`;
                 markdownOutput += `|------|----------|---------|----------|-------------|\n`;
                 
-                iterativeResult.decisionLog.forEach((log, index) => {
+                iterativeResult.decisionLog.forEach((log: any, index: number) => {
                     const decisionIcon = log.decision === 'ANSWER' ? '✅' : 
                                        log.decision === 'SEARCH_AGAIN' ? '🔍' : 
                                        log.decision === 'SEARCH_WEB' ? '🌐' : 
@@ -902,7 +914,7 @@ Conversation History (if any):
                 // Expandable detailed breakdown
                 markdownOutput += `<details><summary>🔬 <strong>Detailed Decision Analysis</strong> (Click to expand)</summary>\n\n`;
                 
-                iterativeResult.decisionLog.forEach((log, index) => {
+                iterativeResult.decisionLog.forEach((log: any, index: number) => {
                     const decisionIcon = log.decision === 'ANSWER' ? '✅' : 
                                        log.decision === 'SEARCH_AGAIN' ? '🔍' : 
                                        log.decision === 'SEARCH_WEB' ? '🌐' : 
@@ -926,7 +938,7 @@ Conversation History (if any):
                     if (log.reasoning.includes('Missing Information:')) {
                         const missingInfo = log.reasoning.split('Missing Information:')[1]?.split('Citation Targets:')[0]?.trim();
                         if (missingInfo) {
-                            markdownOutput += `**❓ Information Gaps Identified:**\n${missingInfo.split('\n').map(line => line.trim() ? `- ${line.trim()}` : '').filter(Boolean).join('\n')}\n\n`;
+                            markdownOutput += `**❓ Information Gaps Identified:**\n${missingInfo.split('\n').map((line: string) => line.trim() ? `- ${line.trim()}` : '').filter(Boolean).join('\n')}\n\n`;
                         }
                     }
                     if (log.reasoning.includes('Citation Targets:')) {

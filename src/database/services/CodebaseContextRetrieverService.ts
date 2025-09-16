@@ -217,7 +217,7 @@ export class CodebaseContextRetrieverService {
             // Parallelize independent API calls to save ~6 seconds
             const [intentResult, keywordResult] = await Promise.allSettled([
                 this.classifyQueryIntent(prompt),
-                this._extractKeywordsAndEntitiesWithGemini(prompt)
+                this.extractTechnicalTerms(agentId, prompt)
             ]);
 
             if (intentResult.status === 'fulfilled') {
@@ -229,6 +229,7 @@ export class CodebaseContextRetrieverService {
 
             if (keywordResult.status === 'fulfilled') {
                 keywords = keywordResult.value;
+                console.log(`[Dynamic Entity Extraction] Found ${keywords.length} relevant terms: ${keywords.slice(0, 5).join(', ')}`);
             } else {
                 console.warn('Failed to extract keywords, using fallback:', keywordResult.reason);
                 keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
@@ -594,12 +595,12 @@ Respond with only the category name.`;
      * Validates the relevance of retrieved context to the user's query
      * Implements multiple validation strategies to improve accuracy
      */
-    private validateContextRelevance(prompt: string, contexts: RetrievedCodeContext[]): { 
-        isRelevant: boolean; 
-        score: number; 
+    private async validateContextRelevance(prompt: string, contexts: RetrievedCodeContext[]): Promise<{
+        isRelevant: boolean;
+        score: number;
         validContexts: RetrievedCodeContext[];
         issues: string[];
-    } {
+    }> {
         if (contexts.length === 0) {
             return { isRelevant: false, score: 0, validContexts: [], issues: ['No contexts provided'] };
         }
@@ -608,23 +609,37 @@ Respond with only the category name.`;
         const validContexts: RetrievedCodeContext[] = [];
         
         // Extract key technical terms from the query
-        const queryTerms = this.extractTechnicalTerms(prompt);
+        const queryTerms = await this.extractTechnicalTerms('default-agent', prompt);
         const lowercasePrompt = prompt.toLowerCase();
-        
+
         // Relevance scoring
         let totalRelevanceScore = 0;
         let relevantContextCount = 0;
-        
+
         for (const context of contexts) {
             const contentLower = context.content.toLowerCase();
             let contextRelevanceScore = 0;
-            
-            // 1. Direct term matching (high weight)
-            const directMatches = queryTerms.filter(term => 
+
+            // 1. Direct term matching with source vs reference distinction
+            const directMatches = queryTerms.filter(term =>
                 contentLower.includes(term.toLowerCase()) ||
                 context.sourcePath.toLowerCase().includes(term.toLowerCase())
             );
-            contextRelevanceScore += directMatches.length * 0.4;
+
+            // CRITICAL FIX: Distinguish between source content and mere mentions
+            const isSourceContent = this.isSourceContent(context, queryTerms);
+            const isMereReference = this.isMereReference(context, queryTerms);
+
+            if (isSourceContent) {
+                // High score for actual implementation/definition
+                contextRelevanceScore += directMatches.length * 0.6;
+            } else if (isMereReference) {
+                // Heavily penalize mere mentions/references
+                contextRelevanceScore += directMatches.length * 0.1;
+            } else {
+                // Normal scoring for other matches
+                contextRelevanceScore += directMatches.length * 0.4;
+            }
             
             // 2. Semantic relevance through path analysis
             if (context.sourcePath && this.isPathRelevantToQuery(context.sourcePath, prompt)) {
@@ -678,42 +693,327 @@ Respond with only the category name.`;
         };
     }
     
-    private extractTechnicalTerms(prompt: string): string[] {
-        // Enhanced technical term extraction
+    private async extractTechnicalTerms(agentId: string, prompt: string): Promise<string[]> {
         const terms: string[] = [];
-        
-        // Class/interface names (PascalCase)
-        const classNames = prompt.match(/\b[A-Z][a-zA-Z0-9]*(?:Service|Manager|Controller|Orchestrator|Provider|Handler|Client|Factory|Builder|Config|Utils|Helper)?\b/g);
-        if (classNames) terms.push(...classNames);
-        
-        // Function/method names (camelCase)
-        const functionNames = prompt.match(/\b[a-z][a-zA-Z0-9]*(?:Method|Function|Handler|Process|Execute|Calculate|Generate|Parse|Create|Update|Delete|Get|Set|Handle|Manage)?\b/g);
-        if (functionNames) terms.push(...functionNames);
-        
-        // Technical keywords
-        const techKeywords = prompt.match(/\b(?:JSON|API|HTTP|REST|GraphQL|SQL|database|cache|config|auth|token|session|middleware|router|validation|serialization|async|await|Promise|Stream|Buffer|Event|Listener|Observer|Strategy|Factory|Singleton|Interface|Abstract|Generic|Template|Exception|Error|Log|Debug|Test|Mock|Stub|Service|Component|Module|Package|Library|Framework|Protocol|Algorithm|Data|Structure|Array|Object|Map|Set|List|Queue|Stack|Tree|Graph|Node|Edge|Link|Path|Route|Endpoint|Resource|Entity|Model|Schema|Migration|Seed|Query|Transaction|Connection|Pool|Session|Context|State|Store|Repository|DAO|DTO|VO|POJO|Bean|Annotation|Decorator|Attribute|Property|Field|Parameter|Argument|Variable|Constant|Enum|Flag|Option|Setting|Configuration|Environment|Profile|Build|Deploy|Test|Unit|Integration|End2End|Performance|Load|Stress|Security|Vulnerability|Authentication|Authorization|Permission|Role|User|Admin|Guest|Client|Server|Frontend|Backend|Fullstack|Mobile|Web|Desktop|Cloud|Container|Docker|Kubernetes|Microservice|Monolith|Distributed|Scalable|Resilient|Fault|Tolerant|High|Availability|Load|Balancer|Proxy|Gateway|Firewall|VPN|SSL|TLS|Certificate|Key|Hash|Encryption|Decryption|Signature|Verification|Validation|Sanitization|Normalization|Transformation|Mapping|Binding|Injection|Dependency|Inversion|Control|Aspect|Oriented|Programming|Functional|Reactive|Event|Driven|Message|Queue|Broker|Publisher|Subscriber|Producer|Consumer|Topic|Channel|Stream|Pipeline|Batch|Workflow|Job|Task|Scheduler|Timer|Timeout|Retry|Circuit|Breaker|Bulkhead|Rate|Limit|Throttle|Backoff|Exponential|Linear|Fibonacci|Random|Jitter|Health|Check|Monitor|Metric|Alert|Notification|Email|SMS|Push|Webhook|Callback|Trigger|Event|Handler|Listener|Observer|Watcher|Guard|Interceptor|Filter|Middleware|Plugin|Extension|Module|Component|Service|Provider|Factory|Builder|Adapter|Facade|Proxy|Decorator|Command|Query|Strategy|Template|Visitor|Iterator|Composite|Bridge|Flyweight|Prototype|Singleton|Multiton|Object|Pool|Registry|Locator|Broker|Mediator|Chain|Responsibility|State|Machine|Workflow|Engine|Rule|Engine|Decision|Tree|Neural|Network|Machine|Learning|Artificial|Intelligence|Data|Mining|Analytics|Business|Intelligence|Reporting|Dashboard|Visualization|Chart|Graph|Table|Grid|List|Form|Input|Output|Display|Render|Paint|Draw|Canvas|SVG|Image|Video|Audio|Media|File|Upload|Download|Import|Export|Backup|Restore|Sync|Async|Parallel|Concurrent|Thread|Process|Worker|Pool|Queue|Lock|Mutex|Semaphore|Barrier|Latch|Atomic|Volatile|Synchronized|Immutable|Mutable|Persistent|Transient|Serializable|Cloneable|Comparable|Iterable|Observable|Disposable|Resource|Leak|Memory|CPU|Disk|Network|Bandwidth|Latency|Throughput|Performance|Profiling|Debugging|Logging|Tracing|Monitoring|Alerting|Dashboard|Reporting|Analytics)?\b/gi);
-        if (techKeywords) terms.push(...techKeywords);
-        
-        // Remove duplicates and return unique terms
-        return [...new Set(terms)];
+
+        // 1. Basic pattern extraction (language-agnostic)
+        const pascalCaseTerms = prompt.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
+        const camelCaseTerms = prompt.match(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g) || [];
+        const quotedTerms = prompt.match(/"([^"]+)"|'([^']+)'|`([^`]+)`/g) || [];
+
+        terms.push(...pascalCaseTerms, ...camelCaseTerms);
+
+        // Extract quoted terms
+        quotedTerms.forEach(quoted => {
+            const cleanTerm = quoted.replace(/["`']/g, '');
+            terms.push(cleanTerm);
+        });
+
+        // 2. Dynamic entity expansion using codebase knowledge
+        const expandedTerms = await this.expandQueryWithCodebaseKnowledge(agentId, prompt);
+        terms.push(...expandedTerms);
+
+        // 3. Word-based fuzzy matching candidates
+        const words = prompt.toLowerCase().split(/\s+/)
+            .filter(word => word.length > 2)
+            .map(word => word.replace(/[^\w]/g, ''));
+        terms.push(...words);
+
+        // Remove duplicates and prioritize by relevance
+        return [...new Set(terms)]
+            .filter(term => term.length > 2)
+            .sort((a, b) => {
+                // Prioritize: exact case matches > partial case matches > word matches
+                const aScore = this.calculateTermRelevanceScore(a, prompt);
+                const bScore = this.calculateTermRelevanceScore(b, prompt);
+                return bScore - aScore;
+            });
+    }
+
+    /**
+     * DYNAMIC: Query the actual codebase to find relevant entities
+     */
+    private async expandQueryWithCodebaseKnowledge(agentId: string, prompt: string): Promise<string[]> {
+        const expansions: string[] = [];
+
+        try {
+            // 1. Get actual entity names from knowledge graph that partially match the query
+            const kgEntities = await this.findPartialEntityMatches(agentId, prompt);
+            expansions.push(...kgEntities);
+
+            // 2. Get file names that might be relevant
+            const relevantFiles = await this.findRelevantFileNames(agentId, prompt);
+            expansions.push(...relevantFiles);
+
+            // 3. Use fuzzy string matching for entity names
+            const fuzzyMatches = await this.findFuzzyEntityMatches(agentId, prompt);
+            expansions.push(...fuzzyMatches);
+
+        } catch (error) {
+            console.warn('[Dynamic Entity Expansion] Error:', error);
+        }
+
+        return [...new Set(expansions)];
+    }
+
+    /**
+     * Find entities in knowledge graph that partially match query terms
+     */
+    private async findPartialEntityMatches(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            // Extract meaningful words from prompt
+            const queryWords = prompt.toLowerCase()
+                .split(/\s+/)
+                .filter(word => word.length > 3)
+                .map(word => word.replace(/[^\w]/g, ''));
+
+            if (queryWords.length === 0) return [];
+
+            // Query knowledge graph for entities containing these words
+            const matchingEntities: string[] = [];
+            for (const word of queryWords) {
+                try {
+                    const nodes = await this.kgManager.openNodes(agentId, [word]);
+                    nodes.forEach((node: any) => {
+                        if (node.name && node.name.length > 1) {
+                            matchingEntities.push(node.name);
+                        }
+                    });
+                } catch (error) {
+                    // Continue with other words if one fails
+                    console.debug(`Failed to query KG for word: ${word}`);
+                }
+            }
+
+            return [...new Set(matchingEntities)];
+        } catch (error) {
+            console.warn('[Partial Entity Match] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Find file names that might be relevant to the query
+     */
+    private async findRelevantFileNames(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            const promptLower = prompt.toLowerCase();
+            const allFiles = await this.embeddingService.repository.getAllFilePathsForAgent(agentId);
+
+            const relevantFiles = allFiles.filter(filePath => {
+                const fileName = filePath.split('/').pop()?.replace(/\.[^.]*$/, '') || '';
+                const fileNameLower = fileName.toLowerCase();
+
+                // Check if any word in prompt matches file name
+                const promptWords = promptLower.split(/\s+/).filter(w => w.length > 2);
+                return promptWords.some(word =>
+                    fileNameLower.includes(word) ||
+                    this.calculateSimilarity(word, fileNameLower) > 0.7
+                );
+            });
+
+            // Extract meaningful parts from relevant file paths
+            const entityNames: string[] = [];
+            relevantFiles.forEach(filePath => {
+                const parts = filePath.split('/');
+                const fileName = parts.pop()?.replace(/\.[^.]*$/, '') || '';
+
+                // Convert snake_case and kebab-case to possible entity names
+                const camelCase = fileName.replace(/[_-]([a-z])/g, (_, letter) => letter.toUpperCase());
+                const pascalCase = camelCase.charAt(0).toUpperCase() + camelCase.slice(1);
+
+                entityNames.push(fileName, camelCase, pascalCase);
+            });
+
+            return [...new Set(entityNames)];
+        } catch (error) {
+            console.warn('[Relevant File Names] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Find entities using fuzzy string matching
+     */
+    private async findFuzzyEntityMatches(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            // Get all available entity names from embeddings
+            const allEntities = await this.getAllAvailableEntityNames(agentId);
+            const promptLower = prompt.toLowerCase();
+            const matches: string[] = [];
+
+            for (const entity of allEntities) {
+                const entityLower = entity.toLowerCase();
+
+                // Calculate similarity between prompt and entity name
+                const similarity = this.calculateSimilarity(promptLower, entityLower);
+
+                // Also check word-by-word similarity
+                const promptWords = promptLower.split(/\s+/);
+                const maxWordSimilarity = Math.max(...promptWords.map(word =>
+                    this.calculateSimilarity(word, entityLower)
+                ));
+
+                // Include if similarity is above threshold
+                if (similarity > 0.6 || maxWordSimilarity > 0.7) {
+                    matches.push(entity);
+                }
+            }
+
+            return matches.slice(0, 20); // Limit to prevent too many matches
+        } catch (error) {
+            console.warn('[Fuzzy Entity Match] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Get all unique entity names from the embeddings database
+     */
+    private async getAllAvailableEntityNames(agentId: string): Promise<string[]> {
+        try {
+            return await this.embeddingService.repository.getAllEntityNames(agentId);
+        } catch (error) {
+            console.warn('[Get Available Entities] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Calculate string similarity using Levenshtein distance
+     */
+    private calculateSimilarity(str1: string, str2: string): number {
+        const len1 = str1.length;
+        const len2 = str2.length;
+
+        if (len1 === 0) return len2 === 0 ? 1 : 0;
+        if (len2 === 0) return 0;
+
+        const matrix: number[][] = [];
+
+        for (let i = 0; i <= len1; i++) {
+            matrix[i] = [i];
+        }
+
+        for (let j = 0; j <= len2; j++) {
+            matrix[0][j] = j;
+        }
+
+        for (let i = 1; i <= len1; i++) {
+            for (let j = 1; j <= len2; j++) {
+                const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,      // deletion
+                    matrix[i][j - 1] + 1,      // insertion
+                    matrix[i - 1][j - 1] + cost // substitution
+                );
+            }
+        }
+
+        const maxLen = Math.max(len1, len2);
+        return 1 - (matrix[len1][len2] / maxLen);
+    }
+
+    /**
+     * Calculate term relevance score for sorting
+     */
+    private calculateTermRelevanceScore(term: string, prompt: string): number {
+        let score = 0;
+        const termLower = term.toLowerCase();
+        const promptLower = prompt.toLowerCase();
+
+        // Exact match gets highest score
+        if (promptLower.includes(termLower)) {
+            score += 100;
+        }
+
+        // Case-sensitive partial match
+        if (prompt.includes(term)) {
+            score += 50;
+        }
+
+        // Length preference (longer terms are often more specific)
+        score += term.length;
+
+        // PascalCase/camelCase preference
+        if (/^[A-Z][a-zA-Z0-9]*$/.test(term)) {
+            score += 20;
+        }
+
+        return score;
     }
     
     private isPathRelevantToQuery(path: string, prompt: string): boolean {
         const pathLower = path.toLowerCase();
         const promptLower = prompt.toLowerCase();
-        
+
         // Extract meaningful parts from path
         const pathParts = path.split(/[\/\\.]/).filter(part => part.length > 2);
-        
+
         // Check if any path part is mentioned in the query
         return pathParts.some(part => promptLower.includes(part.toLowerCase()));
+    }
+
+    /**
+     * CRITICAL: Detect if context contains actual source/implementation rather than just mentions
+     */
+    private isSourceContent(context: RetrievedCodeContext, queryTerms: string[]): boolean {
+        const content = context.content;
+        const sourcePath = context.sourcePath.toLowerCase();
+
+        // Check if this is the actual file being asked about
+        const isTargetFile = queryTerms.some(term =>
+            sourcePath.includes(term.toLowerCase().replace(/\s+/g, '_'))
+        );
+
+        if (!isTargetFile) return false;
+
+        // Look for implementation patterns (class/function definitions)
+        const implementationPatterns = [
+            /class\s+\w+/,                    // class definitions
+            /function\s+\w+/,                 // function definitions
+            /export\s+(class|function|const|interface)/, // exports
+            /constructor\s*\(/,               // constructors
+            /async\s+\w+\s*\(/,              // async methods
+            /private|public|protected\s+\w+/ // access modifiers
+        ];
+
+        return implementationPatterns.some(pattern => pattern.test(content));
+    }
+
+    /**
+     * CRITICAL: Detect if context is just a reference/mention rather than actual content
+     */
+    private isMereReference(context: RetrievedCodeContext, queryTerms: string[]): boolean {
+        const content = context.content;
+        const contentLower = content.toLowerCase();
+
+        // Reference/mention patterns that should be deprioritized
+        const referencePatterns = [
+            /will\s+(use|implement|work\s+on|need)/,     // planning references
+            /todo|fixme|note:/,                          // comment references
+            /import.*from/,                              // import statements
+            /see\s+also|refer\s+to|check\s+out/,        // documentation references
+            /in\s+our\s+plan|we\s+will|should\s+use/,   // planning language
+            /\brelevant\s+files?\b/,                     // file listing contexts
+        ];
+
+        // Check if content is primarily a reference
+        const hasReferencePattern = referencePatterns.some(pattern => pattern.test(contentLower));
+
+        // Also check if content is very short (likely just a mention)
+        const isShortMention = content.length < 200 && queryTerms.some(term =>
+            contentLower.includes(term.toLowerCase())
+        );
+
+        return hasReferencePattern || isShortMention;
     }
 
     private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (contexts.length === 0) return [];
 
         // First, validate context relevance
-        const relevanceValidation = this.validateContextRelevance(prompt, contexts);
+        const relevanceValidation = await this.validateContextRelevance(prompt, contexts);
         
         if (!relevanceValidation.isRelevant) {
             console.warn(`[CodebaseContextRetrieverService] Context relevance validation failed: ${relevanceValidation.issues.join(', ')}`); 

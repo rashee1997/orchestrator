@@ -122,11 +122,18 @@ You are a highly efficient intent classification AI. Your task is to analyze the
 -   code_modularization_orchestration
 -   codebase_analysis
 
+**Classification Priority Rules:**
+1. If the query asks for explanation, description, or understanding of code/functions (words like "explain", "what is", "how does", "functions of", "describe"), choose **code_explanation**
+2. If the query asks about architecture, patterns, or modularization design, choose **code_modularization_orchestration**
+3. If the query asks for improvements or suggestions, choose **enhancement_suggestions**
+4. If the query asks about bugs or issues, choose **bug_fixing**
+
 **Instructions:**
 1.  Read the user's query carefully.
-2.  Choose the single best category from the list above that matches the user's intent.
-3.  Your response MUST be ONLY the chosen category name (e.g., "bug_fixing").
-4.  Do NOT add any other words, explanations, or punctuation.
+2.  Apply the priority rules above to determine the primary intent.
+3.  Choose the single best category from the list above that matches the user's intent.
+4.  Your response MUST be ONLY the chosen category name (e.g., "bug_fixing").
+5.  Do NOT add any other words, explanations, or punctuation.
 
 **User Query:**
 "{query}"
@@ -556,10 +563,14 @@ Fallback Strategy: [Alternative approach if current strategy fails]
 **DECISION CRITERIA:**
 - **ANSWER:** Context is comprehensive, quality score >0.8, citation coverage >0.8, AND all query aspects covered
 - **SEARCH_AGAIN:** Need specific additional information, clear gap identified, OR quality/coverage thresholds not met
-- **SEARCH_WEB:** Information cannot exist in codebase (standards, best practices, external APIs)
+- **SEARCH_WEB:** Information DEFINITELY cannot exist in codebase (external standards, latest news, non-codebase concepts). NEVER use for code explanation, functions, or implementation details.
 - **HYBRID_SEARCH:** Complex query requiring both semantic and structural understanding
 - **CORRECTIVE_SEARCH:** Previous searches failed, need alternative approach based on reflection
 - **REFLECT:** Context quality unclear, need to assess completeness and accuracy
+
+**WEB SEARCH RESTRICTIONS:**
+- Do NOT use SEARCH_WEB for: code explanations, function definitions, implementation details, class descriptions, or any codebase-specific information
+- ONLY use SEARCH_WEB for: external standards, latest technology trends, concepts not in the codebase, general programming best practices
 
 **QUALITY GATES:**
 - Never choose ANSWER if context quality <0.8 or citation coverage <0.8

@@ -805,11 +805,15 @@ export async function parseGeminiJsonResponse(
               context.contextDescription
             );
 
-            if (repairResult.success) {
-              console.log(`[JSON Parser] ✅ AI repair successful using ${repairResult.model} (${repairResult.attempts} attempts)`);
+            if (repairResult.success && repairResult.confidence > 0.7) {
+              console.log(`[JSON Parser] ✅ AI repair successful using ${repairResult.model} with ${repairResult.repairStrategy} strategy (${repairResult.attempts} attempts, confidence: ${repairResult.confidence.toFixed(2)})`);
+              if (repairResult.warnings && repairResult.warnings.length > 0) {
+                console.log(`[JSON Parser] ⚠️ Repair warnings: ${repairResult.warnings.join(', ')}`);
+              }
               return repairResult.data;
             } else {
-              console.warn(`[JSON Parser] AI repair failed, falling back to manual extraction`);
+              const reason = repairResult.success ? `low confidence (${repairResult.confidence.toFixed(2)})` : `failed after ${repairResult.attempts} attempts`;
+              console.warn(`[JSON Parser] AI repair ${reason}, falling back to manual extraction`);
             }
           } catch (repairError: any) {
             console.warn('[JSON Parser] AI repair threw an error, falling back:', repairError.message);
@@ -865,11 +869,15 @@ export async function parseGeminiJsonResponse(
             context.contextDescription
           );
 
-          if (repairResult.success) {
-            console.log(`[JSON Parser] ✅ AI repair successful using ${repairResult.model} (${repairResult.attempts} attempts)`);
+          if (repairResult.success && repairResult.confidence > 0.7) {
+            console.log(`[JSON Parser] ✅ AI repair successful using ${repairResult.model} with ${repairResult.repairStrategy} strategy (${repairResult.attempts} attempts, confidence: ${repairResult.confidence.toFixed(2)})`);
+            if (repairResult.warnings && repairResult.warnings.length > 0) {
+              console.log(`[JSON Parser] ⚠️ Repair warnings: ${repairResult.warnings.join(', ')}`);
+            }
             return repairResult.data;
           } else {
-            console.error(`[JSON Parser] ❌ AI repair failed after ${repairResult.attempts} attempts`);
+            const reason = repairResult.success ? `low confidence (${repairResult.confidence.toFixed(2)})` : `failed after ${repairResult.attempts} attempts`;
+            console.error(`[JSON Parser] ❌ AI repair ${reason}`);
           }
         } catch (repairError: any) {
           console.error('[JSON Parser] AI repair threw an error:', repairError.message);

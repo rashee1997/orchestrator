@@ -80,7 +80,42 @@ export class DiverseQueryRewriterService {
             const responseText = llmResponse.content[0].text ?? '';
 
             // Parse the LLM response which should be a JSON object with strategic_queries array
-            const parsedResponse = parseGeminiJsonResponseSync(responseText);
+            // Use manual JSON extraction due to issues with parseGeminiJsonResponseSync for this specific use case
+            let parsedResponse: any = null;
+
+            try {
+                // First try: Look for JSON code block
+                const codeBlockMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/);
+                let jsonStr = '';
+
+                if (codeBlockMatch) {
+                    jsonStr = codeBlockMatch[1].trim();
+                    console.log('[DiverseQueryRewriter] Found JSON code block in response');
+                } else {
+                    // Fallback: Look for { ... } pattern
+                    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        jsonStr = jsonMatch[0];
+                        console.log('[DiverseQueryRewriter] Found JSON object pattern in response');
+                    } else {
+                        console.warn('[DiverseQueryRewriter] No JSON pattern found in response');
+                        throw new Error('No JSON pattern found');
+                    }
+                }
+
+                // Parse the extracted JSON
+                parsedResponse = JSON.parse(jsonStr);
+                console.log('[DiverseQueryRewriter] Manual JSON parsing successful');
+
+            } catch (manualParseError) {
+                console.warn('[DiverseQueryRewriter] Manual JSON parsing failed, falling back to parseGeminiJsonResponseSync:', manualParseError);
+                try {
+                    parsedResponse = parseGeminiJsonResponseSync(responseText);
+                } catch (geminiParseError) {
+                    console.error('[DiverseQueryRewriter] Both manual and Gemini JSON parsing failed:', geminiParseError);
+                    parsedResponse = null;
+                }
+            }
 
             // Extract queries from the expected structure
             if (parsedResponse && parsedResponse.strategic_queries && Array.isArray(parsedResponse.strategic_queries)) {
@@ -93,7 +128,11 @@ export class DiverseQueryRewriterService {
                 generatedQueries = parsedResponse.filter((q: any) => typeof q === 'string');
                 console.log(`[DiverseQueryRewriter] LLM returned direct array of ${generatedQueries.length} queries`);
             } else {
-                console.warn('LLM returned unexpected JSON structure for diverse queries. Expected strategic_queries array.');
+                console.warn('[DiverseQueryRewriter] LLM returned unexpected JSON structure for diverse queries. Expected strategic_queries array.');
+                console.warn('[DiverseQueryRewriter] Parsed response type:', typeof parsedResponse);
+                if (parsedResponse) {
+                    console.warn('[DiverseQueryRewriter] Available keys:', Object.keys(parsedResponse));
+                }
                 generatedQueries = [];
             }
 

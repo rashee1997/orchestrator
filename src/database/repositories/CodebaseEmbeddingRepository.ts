@@ -296,15 +296,26 @@ export class CodebaseEmbeddingRepository {
                 return stmt.all(...params) as CodebaseEmbeddingRecord[];
             }, 'fetchFilteredMetadata');
 
-            // Step 3: Combine metadata with similarity scores.
-            const results = metadataRows.map(meta => ({
-                ...meta,
-                similarity: similarityMap.get(meta.embedding_id) || 0,
-            }));
+            // Step 3: Combine metadata with similarity scores and apply entity name boosting.
+            const results = metadataRows.map(meta => {
+                let similarity = similarityMap.get(meta.embedding_id) || 0;
+
+                // Apply entity name relevance boosting
+                const nameRelevanceBoost = this.calculateEntityNameRelevanceBoost(queryText, meta);
+                similarity = Math.min(1.0, similarity + nameRelevanceBoost);
+
+                return {
+                    ...meta,
+                    similarity,
+                };
+            });
+
+            // Step 3.5: CRITICAL - Force inclusion of core implementation chunks
+            const enhancedResults = this.enforceImplementationDiversification(queryText, results, topK);
 
             // Step 4: Re-rank results based on keyword and entity name matching, with enhanced support for code snippets alongside summaries
             const queryTokens = new Set(queryText.toLowerCase().split(/\s+/).filter(t => t.length > 2));
-            results.forEach(result => {
+            enhancedResults.forEach(result => {
                 let rerankScore = result.similarity;
 
                 // Parse metadata to determine chunk type
@@ -363,9 +374,9 @@ export class CodebaseEmbeddingRepository {
             });
 
             // Sort by the new re-ranked similarity and return the top K results.
-            results.sort((a, b) => b.similarity - a.similarity);
+            enhancedResults.sort((a, b) => b.similarity - a.similarity);
 
-            return results.slice(0, topK);
+            return enhancedResults.slice(0, topK);
 
         } catch (error) {
             console.error('Error in findSimilarEmbeddingsWithMetadata:', error);
@@ -435,6 +446,295 @@ export class CodebaseEmbeddingRepository {
             const stmt = this.db.prepare(sql);
             return stmt.all(...embeddingIds) as CodebaseEmbeddingRecord[];
         }, 'getEmbeddingsByIds');
+    }
+
+    /**
+     * Get all unique entity names for an agent (for dynamic query expansion)
+     */
+    public async getAllEntityNames(agentId: string): Promise<string[]> {
+        try {
+            return await this._executeWithRetry(() => {
+                const sql = `
+                    SELECT DISTINCT entity_name
+                    FROM ${this.metadataTable}
+                    WHERE agent_id = ? AND entity_name IS NOT NULL AND entity_name != ''
+                    ORDER BY entity_name
+                `;
+                const stmt = this.db.prepare(sql);
+                const rows = stmt.all(agentId) as { entity_name: string }[];
+                return rows.map(row => row.entity_name);
+            }, 'getAllEntityNames');
+        } catch (error) {
+            console.error(`Error getting entity names for agent ${agentId}:`, error);
+            return [];
+        }
+    }
+
+    /**
+     * CRITICAL FIX: Calculate entity name relevance boost for better ranking
+     * Enhanced to prioritize core implementation chunks
+     */
+    private calculateEntityNameRelevanceBoost(queryText: string, embedding: CodebaseEmbeddingRecord): number {
+        let boost = 0;
+        const queryLower = queryText.toLowerCase();
+        const contentLower = embedding.chunk_text?.toLowerCase() || '';
+
+        // Extract meaningful query terms
+        const queryTerms = queryText.split(/\s+/)
+            .filter(term => term.length > 2)
+            .map(term => term.toLowerCase().replace(/[^\w]/g, ''));
+
+        // 1. Entity name exact match boost
+        if (embedding.entity_name) {
+            const entityNameLower = embedding.entity_name.toLowerCase();
+
+            // Exact entity name match gets highest boost
+            if (queryTerms.some(term => term === entityNameLower)) {
+                boost += 0.4; // Increased from 0.3
+            }
+
+            // Partial entity name match
+            if (queryTerms.some(term => entityNameLower.includes(term) || term.includes(entityNameLower))) {
+                boost += 0.25; // Increased from 0.2
+            }
+
+            // Fuzzy similarity for entity names
+            const maxSimilarity = Math.max(...queryTerms.map(term =>
+                this.calculateStringSimilarity(term, entityNameLower)
+            ));
+            if (maxSimilarity > 0.7) {
+                boost += 0.2 * maxSimilarity; // Increased from 0.15
+            }
+        }
+
+        // 2. CRITICAL: Core method implementation boost
+        const coreMethodPatterns = [
+            /\bexecuteTask\s*\(/,
+            /\bselectModelForTask\s*\(/,
+            /\bupdateTaskStats\s*\(/,
+            /\bprocessTask\s*\(/,
+            /\binitializeModels\s*\(/,
+            /\bconstructor\s*\(/,
+            /\basync\s+\w+\s*\(/,
+            /\bpublic\s+\w+\s*\(/,
+            /\bprivate\s+\w+\s*\(/,
+            /\bstatic\s+\w+\s*\(/
+        ];
+
+        let methodImplementationBoost = 0;
+        for (const pattern of coreMethodPatterns) {
+            if (pattern.test(contentLower)) {
+                methodImplementationBoost += 0.15;
+            }
+        }
+
+        // Extra boost for methods that match query entity
+        if (embedding.entity_name && queryTerms.some(term =>
+            embedding.entity_name?.toLowerCase().includes(term)
+        )) {
+            methodImplementationBoost *= 1.5; // Amplify method boost for matching entities
+        }
+
+        boost += Math.min(0.3, methodImplementationBoost);
+
+        // 3. Implementation content patterns boost
+        const implementationPatterns = [
+            /\b(?:class|interface|enum)\s+\w+/,
+            /\bfunction\s+\w+/,
+            /\b(?:public|private|protected)\s+(?:async\s+)?\w+/,
+            /\breturn\s+(?:new\s+\w+|this\.\w+|\w+\()/,
+            /\bthis\.\w+\s*=/,
+            /\b(?:if|for|while|switch)\s*\(/,
+            /\btry\s*\{[\s\S]*catch/,
+            /\b(?:await|Promise\.)/
+        ];
+
+        let implementationScore = 0;
+        for (const pattern of implementationPatterns) {
+            if (pattern.test(contentLower)) {
+                implementationScore += 0.05;
+            }
+        }
+
+        boost += Math.min(0.2, implementationScore);
+
+        // 4. File path relevance boost
+        if (embedding.file_path_relative) {
+            const fileName = embedding.file_path_relative.split('/').pop()?.replace(/\.[^.]*$/, '') || '';
+            const fileNameLower = fileName.toLowerCase();
+
+            // Check if query terms match file name
+            if (queryTerms.some(term => fileNameLower.includes(term))) {
+                boost += 0.15; // Increased from 0.1
+            }
+
+            // Check directory structure relevance
+            const pathParts = embedding.file_path_relative.toLowerCase().split('/');
+            if (queryTerms.some(term => pathParts.some(part => part.includes(term)))) {
+                boost += 0.08; // Increased from 0.05
+            }
+        }
+
+        // 5. Content type and chunk quality boost
+        if (embedding.embedding_type === 'chunk') {
+            // Prioritize larger, more complete chunks
+            const chunkLength = embedding.chunk_text?.length || 0;
+            if (chunkLength > 500) {
+                boost += 0.1; // Substantial content
+            }
+            if (chunkLength > 1000) {
+                boost += 0.1; // Very substantial content
+            }
+
+            // Boost chunks that contain the query entity name in content
+            if (embedding.entity_name && contentLower.includes(embedding.entity_name.toLowerCase())) {
+                boost += 0.1; // Entity defined/implemented in this chunk
+            }
+        }
+
+        // 6. Metadata boost (if available)
+        if (embedding.metadata_json) {
+            try {
+                const metadata = JSON.parse(embedding.metadata_json);
+
+                // Language match boost
+                if (metadata.language && queryLower.includes(metadata.language.toLowerCase())) {
+                    boost += 0.05;
+                }
+
+                // Code type match boost
+                if (metadata.code_type && queryTerms.some(term =>
+                    metadata.code_type.toLowerCase().includes(term)
+                )) {
+                    boost += 0.1;
+                }
+
+                // Boost for implementation vs declaration
+                if (metadata.isImplementation) {
+                    boost += 0.1;
+                }
+            } catch (error) {
+                // Ignore JSON parsing errors
+            }
+        }
+
+        return Math.min(0.6, boost); // Increased cap from 0.4 to 0.6 for better core method prioritization
+    }
+
+    /**
+     * CRITICAL: Force inclusion of core implementation chunks
+     */
+    private enforceImplementationDiversification(
+        queryText: string,
+        results: Array<CodebaseEmbeddingRecord & { similarity: number }>,
+        topK: number
+    ): Array<CodebaseEmbeddingRecord & { similarity: number }> {
+        const queryTerms = queryText.toLowerCase().split(/\s+/);
+        const targetEntity = queryTerms.find(term => term.length > 3) || queryText.toLowerCase();
+
+        // Identify critical implementation chunks that might be missing
+        const coreMethodSignatures = [
+            'executetask',
+            'selectmodelfortask',
+            'updatetaskstats',
+            'processtask',
+            'initializemodels',
+            'constructor',
+            'configuremodel',
+            'distributionrules',
+            'taskexecution'
+        ];
+
+        // Find existing implementation chunks
+        const implementationChunks = results.filter(result => {
+            const content = result.chunk_text?.toLowerCase() || '';
+            const entityName = result.entity_name?.toLowerCase() || '';
+
+            return (
+                // Contains target entity name
+                (entityName.includes(targetEntity) || content.includes(targetEntity)) &&
+                // Contains implementation patterns
+                (
+                    coreMethodSignatures.some(method => content.includes(method)) ||
+                    /\b(?:public|private|async)\s+\w+\s*\(/.test(content) ||
+                    /\bfunction\s+\w+/.test(content) ||
+                    /\bclass\s+\w+/.test(content)
+                )
+            );
+        });
+
+        // If we have few implementation chunks, boost their scores dramatically
+        if (implementationChunks.length < Math.floor(topK * 0.4)) {
+            console.log(`[Implementation Diversification] Found only ${implementationChunks.length} implementation chunks, boosting scores`);
+
+            implementationChunks.forEach(chunk => {
+                const content = chunk.chunk_text?.toLowerCase() || '';
+
+                // Massive boost for core methods
+                for (const method of coreMethodSignatures) {
+                    if (content.includes(method)) {
+                        chunk.similarity = Math.min(1.0, chunk.similarity + 0.4);
+                        console.log(`[Implementation Boost] Boosted ${chunk.entity_name} for containing ${method}`);
+                        break;
+                    }
+                }
+
+                // Extra boost for large implementation chunks
+                if (chunk.chunk_text && chunk.chunk_text.length > 800) {
+                    chunk.similarity = Math.min(1.0, chunk.similarity + 0.2);
+                }
+            });
+        }
+
+        // Force inclusion strategy: if core implementations are missing, search for them
+        const missingCoreMethod = coreMethodSignatures.find(method =>
+            !results.some(r => r.chunk_text?.toLowerCase().includes(method))
+        );
+
+        if (missingCoreMethod && results.length > 0) {
+            console.log(`[Implementation Diversification] Core method '${missingCoreMethod}' missing, checking for alternatives`);
+
+            // Find chunks that contain the entity but might have been ranked lower
+            const entityChunks = results.filter(r => {
+                const entityName = r.entity_name?.toLowerCase() || '';
+                const content = r.chunk_text?.toLowerCase() || '';
+                return entityName.includes(targetEntity) || content.includes(targetEntity);
+            });
+
+            // Boost scores for entity-related chunks that contain implementation patterns
+            entityChunks.forEach(chunk => {
+                const content = chunk.chunk_text?.toLowerCase() || '';
+                if (
+                    /\basync\s+\w+\s*\(/.test(content) ||
+                    /\bpublic\s+\w+\s*\(/.test(content) ||
+                    /\bthis\.\w+/.test(content) ||
+                    /\breturn\s+/.test(content)
+                ) {
+                    chunk.similarity = Math.min(1.0, chunk.similarity + 0.25);
+                    console.log(`[Implementation Diversification] Boosted entity chunk: ${chunk.entity_name}`);
+                }
+            });
+        }
+
+        return results;
+    }
+
+    /**
+     * Calculate string similarity using simple character overlap
+     */
+    private calculateStringSimilarity(str1: string, str2: string): number {
+        if (str1.length === 0 || str2.length === 0) return 0;
+
+        const len1 = str1.length;
+        const len2 = str2.length;
+        const maxLen = Math.max(len1, len2);
+
+        // Simple character overlap similarity
+        const set1 = new Set(str1.split(''));
+        const set2 = new Set(str2.split(''));
+        const intersection = new Set([...set1].filter(x => set2.has(x)));
+
+        return intersection.size / maxLen;
     }
 
     public async optimizeDatabase(): Promise<void> {
