@@ -53,6 +53,12 @@ export interface EmbeddingIngestionResult {
     processingErrors: Array<{ file_path_relative: string; error: string; stage: string; }>; // New: Track processing errors
     batchStatus: 'complete' | 'partial' | 'failed'; // New: Overall batch status
     resumeInfo?: { failedFiles: string[]; lastSuccessfulFile?: string; }; // New: Resume information
+    batchMetadata?: { // New: Batch processing metadata for AI summary context
+        totalBatches: number;
+        batchSize: number;
+        totalFilesProcessed: number;
+        batchDelayMs: number;
+    };
 }
 
 export interface CachedChunk {

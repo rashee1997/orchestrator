@@ -84,6 +84,14 @@ export class CodebaseEmbeddingService {
         return this.parallelEmbeddingManager.getSharedEmbeddingInfo();
     }
 
+    /**
+     * Clear all caches to force fresh scanning and parsing for ingestion
+     */
+    public clearAllCaches(): void {
+        this.introspectionService.clearAllCaches();
+        console.log('[CodebaseEmbeddingService] All introspection caches cleared');
+    }
+
     private generateChunkHash(text: string): string {
         return crypto.createHash('sha256').update(text).digest('hex');
     }
@@ -488,6 +496,291 @@ export class CodebaseEmbeddingService {
         return report;
     }
 
+    /**
+     * Process files in smaller batches to avoid API rate limiting
+     */
+    private async _processBatchedFiles(
+        agentId: string,
+        filesToProcess: Array<{ absolutePath: string, relativePath: string }>,
+        projectRootPath: string,
+        strategy: ChunkingStrategy,
+        providerType: string,
+        storeEntitySummaries: boolean,
+        existingFileHashes: Map<string, string>,
+        batchSize: number = 3,
+        batchDelayMs: number = 2000
+    ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
+
+        // Initialize combined report
+        const combinedReport: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'> = {
+            newEmbeddingsCount: 0,
+            reusedEmbeddingsCount: 0,
+            reusedFilesCount: 0,
+            newEmbeddings: [],
+            reusedEmbeddings: [],
+            reusedFiles: [],
+            deletedEmbeddings: [],
+            scannedFiles: [],
+            embeddingRequestCount: 0,
+            embeddingRetryCount: 0,
+            totalTokensProcessed: 0 as number,
+            namingApiCallCount: 0,
+            summarizationApiCallCount: 0,
+            dbCallCount: 0,
+            dbCallLatencyMs: 0,
+            processingErrors: [],
+            batchStatus: 'complete',
+            resumeInfo: { failedFiles: [] }
+        };
+
+        // Split files into batches
+        const batches: Array<Array<{ absolutePath: string, relativePath: string }>> = [];
+        for (let i = 0; i < filesToProcess.length; i += batchSize) {
+            batches.push(filesToProcess.slice(i, i + batchSize));
+        }
+
+        console.log(`[_processBatchedFiles] Processing ${filesToProcess.length} files in ${batches.length} batches of ${batchSize} files each`);
+
+        // Process each batch with delays
+        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+            const batch = batches[batchIndex];
+            console.log(`[_processBatchedFiles] Processing batch ${batchIndex + 1}/${batches.length}: [${batch.map(f => f.relativePath).join(', ')}]`);
+
+            try {
+                const batchResult = await this._processBatchOfFiles(
+                    agentId,
+                    batch,
+                    projectRootPath,
+                    strategy,
+                    providerType,
+                    storeEntitySummaries,
+                    existingFileHashes
+                );
+
+                // Merge batch results into combined report
+                combinedReport.newEmbeddingsCount += batchResult.newEmbeddingsCount;
+                combinedReport.reusedEmbeddingsCount += batchResult.reusedEmbeddingsCount;
+                combinedReport.reusedFilesCount += batchResult.reusedFilesCount;
+                combinedReport.newEmbeddings.push(...batchResult.newEmbeddings);
+                combinedReport.reusedEmbeddings.push(...batchResult.reusedEmbeddings);
+                combinedReport.reusedFiles.push(...batchResult.reusedFiles);
+                combinedReport.deletedEmbeddings.push(...batchResult.deletedEmbeddings);
+                combinedReport.scannedFiles.push(...batchResult.scannedFiles);
+                combinedReport.embeddingRequestCount += batchResult.embeddingRequestCount;
+                combinedReport.embeddingRetryCount += batchResult.embeddingRetryCount;
+                combinedReport.totalTokensProcessed = (combinedReport.totalTokensProcessed || 0) + (batchResult.totalTokensProcessed || 0);
+                combinedReport.namingApiCallCount += batchResult.namingApiCallCount;
+                combinedReport.summarizationApiCallCount += batchResult.summarizationApiCallCount;
+                combinedReport.dbCallCount += batchResult.dbCallCount;
+                combinedReport.dbCallLatencyMs += batchResult.dbCallLatencyMs;
+                combinedReport.processingErrors.push(...batchResult.processingErrors);
+
+                // Merge failed files
+                if (batchResult.resumeInfo?.failedFiles) {
+                    combinedReport.resumeInfo!.failedFiles.push(...batchResult.resumeInfo.failedFiles);
+                }
+
+                // Update batch status if any batch had issues
+                if (batchResult.batchStatus === 'failed') {
+                    combinedReport.batchStatus = 'failed';
+                } else if (batchResult.batchStatus === 'partial' && combinedReport.batchStatus === 'complete') {
+                    combinedReport.batchStatus = 'partial';
+                }
+
+                console.log(`[_processBatchedFiles] Batch ${batchIndex + 1} completed: ${batchResult.newEmbeddingsCount} new, ${batchResult.reusedEmbeddingsCount} reused, ${batchResult.reusedFilesCount} files reused`);
+
+                // Add delay between batches (except for the last batch)
+                if (batchIndex < batches.length - 1) {
+                    console.log(`[_processBatchedFiles] Waiting ${batchDelayMs}ms before next batch...`);
+                    await new Promise(resolve => setTimeout(resolve, batchDelayMs));
+                }
+
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                console.error(`[_processBatchedFiles] Batch ${batchIndex + 1} failed:`, errorMessage);
+
+                // Add failed files to resume info
+                for (const file of batch) {
+                    combinedReport.resumeInfo!.failedFiles.push(file.relativePath);
+                    combinedReport.processingErrors.push({
+                        file_path_relative: file.relativePath,
+                        error: errorMessage,
+                        stage: 'batch_processing'
+                    });
+                }
+
+                combinedReport.batchStatus = 'partial';
+
+                // Continue with next batch even if this one failed
+                continue;
+            }
+        }
+
+        console.log(`[_processBatchedFiles] All batches completed. Total: ${combinedReport.newEmbeddingsCount} new, ${combinedReport.reusedEmbeddingsCount} reused, ${combinedReport.reusedFilesCount} files reused`);
+
+        // Add metadata to help AI summary understand this was a batched operation
+        combinedReport.batchMetadata = {
+            totalBatches: batches.length,
+            batchSize: batchSize,
+            totalFilesProcessed: filesToProcess.length,
+            batchDelayMs: batchDelayMs
+        };
+
+        return combinedReport;
+    }
+
+    /**
+     * Pre-filter files to identify only those that have changed or are new
+     */
+    private async _identifyChangedFiles(
+        filesToProcess: Array<{ absolutePath: string, relativePath: string }>,
+        existingFileHashes: Map<string, string>
+    ): Promise<Array<{ absolutePath: string, relativePath: string }>> {
+        const changedFiles: Array<{ absolutePath: string, relativePath: string }> = [];
+
+        await Promise.all(filesToProcess.map(async (fileInfo) => {
+            try {
+                const fileContent = await fs.readFile(fileInfo.absolutePath, 'utf-8');
+                if (!fileContent.trim()) {
+                    return; // Skip empty files
+                }
+
+                const currentFileHash = this.generateFileHash(fileContent);
+                const existingHash = existingFileHashes.get(fileInfo.relativePath);
+
+                if (existingHash !== currentFileHash) {
+                    // File is new or changed
+                    changedFiles.push(fileInfo);
+                }
+                // If hashes match, file is unchanged and will be skipped
+            } catch (error) {
+                // If we can't read the file, consider it changed to be safe
+                console.warn(`Could not read file ${fileInfo.relativePath}, considering it changed:`, error);
+                changedFiles.push(fileInfo);
+            }
+        }));
+
+        return changedFiles;
+    }
+
+    /**
+     * Calculate optimal batch size based on number of changed files
+     */
+    private _calculateOptimalBatchSize(changedFileCount: number): number {
+        if (changedFileCount <= 3) return changedFileCount; // Single batch
+        if (changedFileCount <= 6) return Math.ceil(changedFileCount / 2); // 2 batches
+        if (changedFileCount <= 12) return 3; // 3-4 batches
+        if (changedFileCount <= 20) return 4; // 5 batches max
+        return 5; // Larger batches for many files
+    }
+
+    /**
+     * Calculate optimal delay based on number of changed files
+     */
+    private _calculateOptimalDelay(changedFileCount: number): number {
+        if (changedFileCount <= 3) return 0; // No delay for single batch
+        if (changedFileCount <= 6) return 1000; // 1 second for 2 batches
+        if (changedFileCount <= 12) return 1500; // 1.5 seconds
+        return 2000; // 2 seconds for larger operations
+    }
+
+    /**
+     * Create result for when no files need processing (all unchanged)
+     */
+    private async _createUnchangedFilesResult(
+        agentId: string,
+        unchangedFiles: Array<{ absolutePath: string, relativePath: string }>
+    ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
+        const result: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'> = {
+            newEmbeddingsCount: 0,
+            reusedEmbeddingsCount: 0,
+            reusedFilesCount: unchangedFiles.length,
+            newEmbeddings: [],
+            reusedEmbeddings: [],
+            reusedFiles: [],
+            deletedEmbeddings: [],
+            scannedFiles: [],
+            embeddingRequestCount: 0,
+            embeddingRetryCount: 0,
+            totalTokensProcessed: 0,
+            namingApiCallCount: 0,
+            summarizationApiCallCount: 0,
+            dbCallCount: 0,
+            dbCallLatencyMs: 0,
+            processingErrors: [],
+            batchStatus: 'complete',
+            resumeInfo: { failedFiles: [] }
+        };
+
+        // Add unchanged files to the result
+        for (const fileInfo of unchangedFiles) {
+            const existingEmbeddingsForFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+            const existingChunkCount = existingEmbeddingsForFile.length;
+
+            result.reusedFilesCount++;
+            result.reusedFiles.push({
+                file_path_relative: fileInfo.relativePath,
+                reason: 'file_unchanged',
+                chunk_count: existingChunkCount
+            });
+
+            result.reusedEmbeddingsCount += existingChunkCount;
+
+            for (const existingEmbedding of existingEmbeddingsForFile) {
+                result.reusedEmbeddings.push({
+                    file_path_relative: fileInfo.relativePath,
+                    chunk_text: existingEmbedding.chunk_text.substring(0, 100) + '...',
+                    entity_name: existingEmbedding.entity_name
+                });
+            }
+
+            result.scannedFiles.push({
+                file_path_relative: fileInfo.relativePath,
+                status: 'skipped',
+                skipReason: 'file_unchanged'
+            });
+        }
+
+        return result;
+    }
+
+    /**
+     * Add unchanged files to an existing result
+     */
+    private async _addUnchangedFilesToResult(
+        result: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>,
+        agentId: string,
+        unchangedFiles: Array<{ absolutePath: string, relativePath: string }>
+    ): Promise<void> {
+        for (const fileInfo of unchangedFiles) {
+            const existingEmbeddingsForFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+            const existingChunkCount = existingEmbeddingsForFile.length;
+
+            result.reusedFilesCount++;
+            result.reusedFiles.push({
+                file_path_relative: fileInfo.relativePath,
+                reason: 'file_unchanged',
+                chunk_count: existingChunkCount
+            });
+
+            result.reusedEmbeddingsCount += existingChunkCount;
+
+            for (const existingEmbedding of existingEmbeddingsForFile) {
+                result.reusedEmbeddings.push({
+                    file_path_relative: fileInfo.relativePath,
+                    chunk_text: existingEmbedding.chunk_text.substring(0, 100) + '...',
+                    entity_name: existingEmbedding.entity_name
+                });
+            }
+
+            result.scannedFiles.push({
+                file_path_relative: fileInfo.relativePath,
+                status: 'skipped',
+                skipReason: 'file_unchanged'
+            });
+        }
+    }
+
     public async generateAndStoreEmbeddingsForMultipleFiles(
         agentId: string,
         filePaths: string[],
@@ -628,15 +921,52 @@ export class CodebaseEmbeddingService {
                 relativePath: item.name
             }));
 
-        const result = await this._processBatchOfFiles(
-            agentId,
-            filesToProcess,
-            absoluteProjectRootPath,
-            strategy,
-            providerType,
-            storeEntitySummaries,
-            existingFileHashes
+        console.log(`[generateAndStoreEmbeddingsForDirectory] Filtered ${filesToProcess.length} out of ${scannedItems.filter(item => item.type === 'file').length} files for processing`);
+        console.log(`[generateAndStoreEmbeddingsForDirectory] Files that would be processed:`, filesToProcess.map(f => f.relativePath));
+        console.log(`[generateAndStoreEmbeddingsForDirectory] Files excluded (no language match):`, scannedItems.filter(item => item.type === 'file').filter(item => !(item.language && [
+            'typescript', 'javascript', 'python', 'markdown', 'json',
+            'html', 'css', 'java', 'csharp', 'go', 'ruby', 'php',
+            'sql'
+        ].includes(item.language)) && !(item.language && item.stats.size > 0 && item.stats.size < 1024 * 1024) && (item.language || !(item.stats.size > 0 && item.stats.size < 1024 * 1024))).map(item => ({ path: item.name, language: item.language, size: item.stats.size })));
+
+        // Pre-filter to identify only files that actually need processing (changed or new)
+        console.log(`[generateAndStoreEmbeddingsForDirectory] Pre-filtering ${filesToProcess.length} files to identify changes...`);
+
+        const changedFiles = await this._identifyChangedFiles(filesToProcess, existingFileHashes);
+        const unchangedFiles = filesToProcess.filter(file =>
+            !changedFiles.find(changed => changed.relativePath === file.relativePath)
         );
+
+        console.log(`[generateAndStoreEmbeddingsForDirectory] Found ${changedFiles.length} changed/new files, ${unchangedFiles.length} unchanged files`);
+
+        let result: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>;
+
+        if (changedFiles.length === 0) {
+            // No files to process, return empty result with unchanged file stats
+            console.log(`[generateAndStoreEmbeddingsForDirectory] No files need processing - all are unchanged`);
+            result = await this._createUnchangedFilesResult(agentId, unchangedFiles);
+        } else {
+            // Dynamic batch sizing based on number of changed files
+            const dynamicBatchSize = this._calculateOptimalBatchSize(changedFiles.length);
+            const dynamicDelay = this._calculateOptimalDelay(changedFiles.length);
+
+            console.log(`[generateAndStoreEmbeddingsForDirectory] Processing ${changedFiles.length} changed files with dynamic batch size: ${dynamicBatchSize}, delay: ${dynamicDelay}ms`);
+
+            result = await this._processBatchedFiles(
+                agentId,
+                changedFiles,
+                absoluteProjectRootPath,
+                strategy,
+                providerType,
+                storeEntitySummaries,
+                existingFileHashes,
+                dynamicBatchSize,
+                dynamicDelay
+            );
+
+            // Add unchanged files to the result for complete reporting
+            await this._addUnchangedFilesToResult(result, agentId, unchangedFiles);
+        }
 
         const processedFilePaths = new Set(filesToProcess.map(f => f.relativePath));
         const staleFiles: string[] = Array.from(allDbFilePaths).filter(dbPath => {

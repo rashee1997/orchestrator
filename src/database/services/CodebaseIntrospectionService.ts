@@ -393,4 +393,84 @@ export class CodebaseIntrospectionService {
             return []; // Return empty on error
         }
     }
+
+    /**
+     * Clear the scan cache to force fresh directory scanning
+     */
+    public clearScanCache(): void {
+        this.scanCache.clear();
+        console.log('[CodebaseIntrospectionService] Scan cache cleared');
+    }
+
+    /**
+     * Clear the parser cache to force fresh file parsing
+     */
+    public clearParserCache(): void {
+        this.parserCache.clear();
+        console.log('[CodebaseIntrospectionService] Parser cache cleared');
+    }
+
+    /**
+     * Clear all caches to force fresh scanning and parsing
+     */
+    public clearAllCaches(): void {
+        this.clearScanCache();
+        this.clearParserCache();
+        console.log('[CodebaseIntrospectionService] All caches cleared');
+    }
+
+    /**
+     * Bypass cache for a single directory scan
+     */
+    public async scanDirectoryRecursiveBypassCache(
+        agentId: string,
+        directoryPath: string,
+        rootPathToMakeRelative?: string
+    ): Promise<ScannedItem[]> {
+        console.log(`[BYPASS CACHE] Scanning directory: ${directoryPath}`);
+        const results: ScannedItem[] = [];
+        const effectiveRootPath = rootPathToMakeRelative || directoryPath;
+
+        try {
+            const items = await fs.readdir(directoryPath, { withFileTypes: true });
+
+            for (const item of items) {
+                const fullPath = path.join(directoryPath, item.name);
+
+                if (CodebaseIntrospectionService.shouldIgnore(fullPath, item.isDirectory())) {
+                    continue;
+                }
+
+                if (item.isDirectory()) {
+                    try {
+                        const subItems = await this.scanDirectoryRecursiveBypassCache(agentId, fullPath, effectiveRootPath);
+                        results.push(...subItems);
+                    } catch (error) {
+                        console.warn(`Warning: Could not scan subdirectory ${fullPath}:`, error);
+                    }
+                } else if (item.isFile()) {
+                    try {
+                        const stats = await fs.stat(fullPath);
+                        const language = await this.detectLanguage(agentId, fullPath, item.name);
+                        const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
+
+                        results.push({
+                            type: 'file',
+                            name: relativePath,
+                            path: fullPath,
+                            language: language,
+                            stats: stats
+                        });
+                    } catch (error) {
+                        console.warn(`Warning: Could not process file ${fullPath}:`, error);
+                    }
+                }
+            }
+
+            return results;
+        } catch (error) {
+            console.error(`Error scanning directory ${directoryPath}:`, error);
+            throw new Error(`Failed to scan directory ${directoryPath}: ${(error as Error).message}`);
+        }
+    }
 }
