@@ -4,13 +4,14 @@ import { MemoryManager } from '../memory_manager.js';
 import { randomUUID } from 'crypto';
 import { KnowledgeGraphManager } from '../managers/KnowledgeGraphManager.js';
 import { GeminiPlannerResponseSchema } from './gemini-integration-modules/GeminiSchema.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from './gemini-integration-modules/GeminiResponseParsers.js';
 import {
     PLANNER_SYSTEM_INSTRUCTION_REFINED_PROMPT,
     PLANNER_USER_QUERY_REFINED_PROMPT,
     PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
     PLANNER_USER_QUERY_GOAL_PROMPT
-} from './gemini-integration-modules/GeminiPromptTemplates.js';
+} from './gemini-integration-modules/GeminiPlannerPrompts.js';
+import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 // Interface for the expected structure from Gemini for detailed plan generation
 interface GeminiDetailedPlanGenerationResponse {
@@ -99,7 +100,7 @@ export interface InitialDetailedPlanAndTasks {
 // -------------------------------------------------------------------------
 const PLAN_STATUS_DRAFT = 'DRAFT';
 const TASK_STATUS_PLANNED = 'PLANNED';
-const GEMINI_MODEL_PLANNER = 'gemini-2.5-flash-preview-05-20';
+const GEMINI_MODEL_PLANNER = getCurrentModel();
 
 export class GeminiPlannerService {
     private geminiIntegrationService: GeminiIntegrationService;
@@ -137,18 +138,28 @@ export class GeminiPlannerService {
             await this.buildPromptPayload(agentId, identifier, isRefinedPromptId, directRefinedPromptDetails, codebaseContextSummary, liveFilesContent);
 
         // -----------------------------------------------------------------
-        // 2️⃣ Call Gemini
+        // 2️⃣ Call Gemini and parse response with AI repair
         // -----------------------------------------------------------------
         const geminiResponseText = await this.callGemini(systemInstruction, userQuery);
-
-        // -----------------------------------------------------------------
-        // 3️⃣ Parse Gemini JSON response
-        // -----------------------------------------------------------------
-        const parsedResponse = parseGeminiJsonResponse(geminiResponseText);
+        const parsedResponse: GeminiDetailedPlanGenerationResponse = await parseGeminiJsonResponse(geminiResponseText, {
+            expectedStructure: 'GeminiDetailedPlanGenerationResponse with plan_title, executive_summary, tasks array, etc.',
+            contextDescription: 'Structured project plan with traditional planning sections and detailed tasks',
+            memoryManager: this.memoryManager,
+            geminiService: this.geminiIntegrationService,
+            enableAIRepair: true
+        });
 
         // -----------------------------------------------------------------
         // 4️⃣ Transform to domain objects
         // -----------------------------------------------------------------
+        console.log('🔍 [DEBUG] Parsed response keys:', Object.keys(parsedResponse));
+        console.log('🔍 [DEBUG] Tasks array exists:', !!parsedResponse.tasks);
+        console.log('🔍 [DEBUG] Tasks array length:', parsedResponse.tasks?.length || 0);
+        if (parsedResponse.tasks?.length > 0) {
+            console.log('🔍 [DEBUG] First task keys:', Object.keys(parsedResponse.tasks[0]));
+            console.log('🔍 [DEBUG] First task title:', parsedResponse.tasks[0].title);
+        }
+
         const planData = this.buildPlanData(parsedResponse, refinedPromptDetails, refinedPromptIdForPlan);
         const tasksData = this.buildTasksData(parsedResponse);
         const suggestedNextSteps = this.buildSuggestedNextSteps(tasksData);
@@ -275,17 +286,40 @@ export class GeminiPlannerService {
     private async callGemini(systemInstruction: string, userQuery: string): Promise<string> {
         try {
             const prompt = `${systemInstruction}\n\n${userQuery}`;
+            console.log('🔍 [DEBUG] System Instruction Length:', systemInstruction.length);
+            console.log('🔍 [DEBUG] User Query Length:', userQuery.length);
+            console.log('🔍 [DEBUG] Total Prompt Length:', prompt.length);
+
+            // Try using MultiModelOrchestrator first for better model selection and limits
+            try {
+                const orchestrator = new (await import('../../tools/rag/multi_model_orchestrator.js')).MultiModelOrchestrator(this.memoryManager, this.geminiIntegrationService);
+                const result = await orchestrator.executeTask('planning', prompt, undefined, { maxRetries: 1, tryAllModels: false });
+                console.log(`[GeminiPlannerService] ✅ Used MultiModelOrchestrator for planning, model: ${result.model}`);
+                return result.content;
+            } catch (orchestratorError: any) {
+                console.warn('[GeminiPlannerService] MultiModelOrchestrator failed, falling back to direct askGemini:', orchestratorError.message);
+            }
+
+            // Fallback to direct askGemini
             const result = await this.geminiIntegrationService.askGemini(prompt, this.geminiModel);
             const text = result?.content?.[0]?.text;
             if (!text) {
                 throw new Error('Gemini returned empty content.');
             }
+
+            console.log('🔍 [DEBUG] Raw Gemini Response Length:', text.length);
+            console.log('🔍 [DEBUG] Raw Gemini Response Preview (first 1000 chars):');
+            console.log(text.slice(0, 1000));
+            console.log('🔍 [DEBUG] Raw Gemini Response End (last 500 chars):');
+            console.log(text.slice(-500));
+
             return text;
         } catch (err) {
             if (err instanceof GeminiApiNotInitializedError) throw err;
             throw new Error(`Failed to generate plan via Gemini: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
+
 
     // -----------------------------------------------------------------
     // Helper: Robust JSON extraction & parsing

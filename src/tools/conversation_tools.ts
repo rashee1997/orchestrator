@@ -205,7 +205,7 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Created collaborative session: \`${sessionId}\``, "Session Created")
+                    text: formatSimpleMessage(`New collaborative session created with ID: \`${sessionId}\``, "💬 Session Started")
                 }]
             };
         },
@@ -216,7 +216,7 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Session \`${session_id}\` ended.`, "Session Ended")
+                    text: formatSimpleMessage(`Session \`${session_id}\` has been successfully closed.`, "💬 Session Ended")
                 }]
             };
         },
@@ -229,7 +229,7 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Stored ${messageIds.length} message(s) in session \`${session_id}\`.`, "Messages Stored")
+                    text: formatSimpleMessage(`Successfully stored ${messageIds.length} message(s) in session \`${session_id}\`.`, "📨 Messages Stored")
                 }]
             };
         },
@@ -242,14 +242,22 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
                 return { content: [{ type: 'text', text: formatSimpleMessage(`Session not found: \`${session_id}\`.`, "Not Found") }] };
             }
 
-            let md = `## Session: \`${session_id}\`\n\n` +
-                `**Title:** ${session.title || 'N/A'}\n` +
-                `**Created by Agent:** \`${session.agent_id}\`\n` +
-                `**Start Time:** ${new Date(session.start_timestamp).toLocaleString()}\n` +
-                `**End Time:** ${session.end_timestamp ? new Date(session.end_timestamp).toLocaleString() : 'Ongoing'}\n` +
-                `**Participants (${session.participants.length}):**\n` +
-                session.participants.map(p => `  - \`${p.participant_id}\` (Role: ${p.role})`).join('\n') + `\n` +
-                `**Metadata:** ${session.metadata ? formatJsonToMarkdownCodeBlock(session.metadata) : 'N/A'}`;
+            let md = `## 💬 Session: ${session.title || `\`${session_id}\``}\n\n`;
+            md += `**ID:** \`${session.session_id}\`\n`;
+            md += `**Status:** ${session.end_timestamp ? '🔴 Ended' : '🟢 Active'}\n`;
+            md += `**Created by:** \`${session.agent_id}\`\n`;
+            md += `**Started:** *${new Date(session.start_timestamp).toLocaleString()}*\n`;
+            if (session.end_timestamp) {
+                md += `**Ended:** *${new Date(session.end_timestamp).toLocaleString()}*\n`;
+            }
+
+            md += `\n### 👥 Participants (${session.participants.length})\n`;
+            md += session.participants.map(p => `- **${p.participant_id}** (Role: \`${p.role}\`)`).join('\n') + `\n`;
+            
+            if (session.metadata) {
+                md += `\n### 📦 Metadata\n`;
+                md += formatJsonToMarkdownCodeBlock(session.metadata);
+            }
 
             return { content: [{ type: 'text', text: md }] };
         },
@@ -259,15 +267,15 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             const sessions = await memoryManager.getConversationSessions(agent_id, participant_id, limit, offset);
 
             if (!sessions || sessions.length === 0) {
-                return { content: [{ type: 'text', text: formatSimpleMessage("No sessions found.", "No Sessions") }] };
+                return { content: [{ type: 'text', text: formatSimpleMessage("No conversation sessions found.", "No Sessions") }] };
             }
 
-            let md = `## Conversation Sessions\n\n`;
+            let md = `## 📋 Conversation Sessions\n\n`;
+            md += "| Status | Title | Session ID | Participants | Started |\n";
+            md += "|:------:|-------|------------|:------------:|---------|\n";
             sessions.forEach(session => {
-                md += `### Session: \`${session.session_id}\`\n` +
-                    `**Title:** ${session.title || 'N/A'}\n` +
-                    `**Started:** ${new Date(session.start_timestamp).toLocaleString()}\n` +
-                    `**Participants:** ${session.participants.length}\n\n`;
+                const status = session.end_timestamp ? '🔴' : '🟢';
+                md += `| ${status} | ${session.title || '*Untitled*'} | \`${session.session_id}\` | ${session.participants.length} | *${new Date(session.start_timestamp).toLocaleDateString()}* |\n`;
             });
 
             return { content: [{ type: 'text', text: md }] };
@@ -281,14 +289,15 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
                 return { content: [{ type: 'text', text: formatSimpleMessage("No messages found in this session.", "No Messages") }] };
             }
 
-            let md = `## Messages in Session: \`${session_id}\`\n\n`;
+            let md = `## 📨 Messages in Session: \`${session_id}\`\n\n`;
             messages.forEach(msg => {
-                md += `**[${new Date(msg.timestamp).toLocaleString()}] ${msg.sender}:**\n`;
-                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n\n`;
+                const senderEmoji = msg.sender === 'user' ? '👤' : (msg.sender === 'ai' ? '🤖' : '⚙️');
+                md += `**${senderEmoji} ${msg.sender}** (*${new Date(msg.timestamp).toLocaleString()}*):\n`;
+                md += `> ${msg.message_content.replace(/\n/g, '\n> ')}\n`;
                 if (msg.parent_message_id) {
-                    md += `  - *Reply to:* \`${msg.parent_message_id}\`\n`;
+                    md += `  - *Reply to: \`${msg.parent_message_id}\`*\n`;
                 }
-                md += "\n---\n\n";
+                md += "\n---\n";
             });
 
             return { content: [{ type: 'text', text: md }] };
@@ -300,7 +309,7 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(`Added \`${participant_id}\` to session \`${session_id}\`.`, "Participant Added")
+                    text: formatSimpleMessage(`Added \`${participant_id}\` to session \`${session_id}\` with role \`${role || 'member'}\`.`, "👥 Participant Added")
                 }]
             };
         },
@@ -313,11 +322,11 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
                 return { content: [{ type: 'text', text: formatSimpleMessage("No participants found in this session.", "No Participants") }] };
             }
 
-            let md = `## Participants in Session: \`${session_id}\`\n\n`;
+            let md = `## 👥 Participants in Session: \`${session_id}\`\n\n`;
             participants.forEach(p => {
                 md += `- **ID:** \`${p.participant_id}\`\n` +
-                    `  - **Role:** ${p.role}\n` +
-                    `  - **Joined:** ${new Date(p.join_timestamp).toLocaleString()}\n`;
+                    `  - **Role:** \`${p.role}\`\n` +
+                    `  - **Joined:** *${new Date(p.join_timestamp).toLocaleString()}*\n`;
             });
             return { content: [{ type: 'text', text: md }] };
         },
@@ -327,7 +336,7 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(summary, "Conversation Summary")
+                    text: formatSimpleMessage(summary, "📜 Conversation Summary")
                 }]
             };
         },

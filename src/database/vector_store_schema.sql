@@ -18,10 +18,18 @@ CREATE TABLE IF NOT EXISTS codebase_embeddings (
     created_timestamp_unix INTEGER NOT NULL,
     metadata_json TEXT,
     full_file_path TEXT,
-    
+
     -- MODIFICATION: Added columns for the Parent Document Retriever model
     embedding_type TEXT NOT NULL CHECK(embedding_type IN ('summary', 'chunk')),
-    parent_embedding_id TEXT -- This will be the embedding_id of the parent 'summary'
+    parent_embedding_id TEXT, -- This will be the embedding_id of the parent 'summary'
+
+    -- ENHANCEMENT: Added columns for parallel embedding model tracking
+    embedding_provider TEXT DEFAULT 'gemini' CHECK(embedding_provider IN ('gemini', 'mistral')),
+    embedding_model_full_name TEXT, -- Full model name (e.g., 'models/gemini-embedding-001', 'codestral-embed')
+    embedding_generation_method TEXT DEFAULT 'single' CHECK(embedding_generation_method IN ('single', 'parallel', 'fallback')),
+    embedding_request_id TEXT, -- Track batched/parallel requests
+    embedding_quality_score REAL DEFAULT 1.0, -- For future quality tracking
+    embedding_generation_timestamp INTEGER -- Track when embedding was generated (different from record creation)
 );
 
 -- Indexes for efficient querying
@@ -33,3 +41,10 @@ CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_file_hash ON codebase_embe
 -- MODIFICATION: Added indexes for the new structural columns
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_embedding_type ON codebase_embeddings (embedding_type);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_parent_id ON codebase_embeddings (parent_embedding_id);
+
+-- ENHANCEMENT: Added indexes for parallel embedding tracking
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_provider ON codebase_embeddings (embedding_provider);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_model_full_name ON codebase_embeddings (embedding_model_full_name);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_request_id ON codebase_embeddings (embedding_request_id);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_generation_method ON codebase_embeddings (embedding_generation_method);
+CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_generation_timestamp ON codebase_embeddings (embedding_generation_timestamp);

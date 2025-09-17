@@ -3,26 +3,32 @@ import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { PlanTaskManager } from '../managers/PlanTaskManager.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 export interface ContextRetrievalOptions {
     topKEmbeddings?: number;
     kgQueryDepth?: number;
     includeFileContent?: boolean;
     targetFilePaths?: string[];
+    targetEntityNames?: string[];
     topKKgResults?: number;
     embeddingScoreThreshold?: number;
     useHybridSearch?: boolean;
     enableReranking?: boolean;
     maxContextLength?: number;
+    // taskType?: 'RETRIEVAL_QUERY' | 'RETRIEVAL_DOCUMENT' | 'CODE_RETRIEVAL_QUERY' | 'SEMANTIC_SIMILARITY' | 'CLASSIFICATION'; // COMMENTED OUT
+    // enableKeywordSearch?: boolean; // COMMENTED OUT
+    // keywordWeight?: number; // COMMENTED OUT
+    // enableBatchProcessing?: boolean; // COMMENTED OUT
 }
 
 export interface RetrievedCodeContext {
     type: 'file_snippet' | 'function_definition' | 'class_definition' | 'interface_definition' | 'enum_definition' | 'type_alias_definition' | 'variable_definition' | 'kg_node_info' | 'directory_structure' | 'import_statement' | 'generic_code_chunk' | 'documentation' | 'task_log';
     sourcePath: string;
-    entityName?: string;
+    entityName: string | undefined;
     content: string;
-    relevanceScore?: number;
+    relevanceScore: number | undefined;
     metadata?: {
         startLine?: number;
         endLine?: number;
@@ -63,7 +69,7 @@ export class CodebaseContextRetrieverService {
         this.contextCache = new Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>();
         this.cacheTTL = 5 * 60 * 1000; // 5 minutes
         this.maxCacheSize = 1000;
-        this.retrievalTimeout = 100000; // 100 seconds
+        this.retrievalTimeout = 120000; // 120 seconds - increased from 100s
     }
 
     private _generateCacheKey(agentId: string, prompt: string, options: ContextRetrievalOptions): string {
@@ -94,6 +100,25 @@ export class CodebaseContextRetrieverService {
         }
     }
 
+    /**
+     * Calculate adaptive timeout based on request complexity
+     */
+    private _calculateAdaptiveTimeout(options: ContextRetrievalOptions): number {
+        const baseTimeout = 120000; // 120 seconds base (2 minutes for DMQR processing)
+        const perApiCallTime = 15000; // 15 seconds per API call (account for DMQR complexity)
+
+        let estimatedCalls = 10; // Increased for DMQR + full processing pipeline
+
+        if (options.useHybridSearch) estimatedCalls += 4;
+        if (options.topKKgResults && options.topKKgResults > 0) estimatedCalls += 3;
+        if (options.enableReranking) estimatedCalls += 3;
+
+        // For DMQR-enabled operations, add substantial time allowance
+        const adaptiveTimeout = Math.min(baseTimeout + (estimatedCalls * perApiCallTime), 600000); // Max 10 minutes for DMQR + comprehensive processing
+        console.log(`[Context Retrieval] Adaptive timeout: ${adaptiveTimeout}ms (estimated ${estimatedCalls} API calls)`);
+        return adaptiveTimeout;
+    }
+
     public async retrieveContextForPrompt(
         agentId: string,
         prompt: string,
@@ -111,11 +136,14 @@ export class CodebaseContextRetrieverService {
         console.log(`Retrieving context for prompt (agent: ${agentId}): "${prompt.substring(0, 100)}..."`);
 
         try {
+            // Use adaptive timeout based on request complexity
+            const adaptiveTimeout = this._calculateAdaptiveTimeout(options);
+            
             // Set up timeout for the entire retrieval process
             const result = await Promise.race([
                 this._performContextRetrieval(agentId, prompt, options),
                 new Promise<RetrievedCodeContext[]>((_, reject) =>
-                    setTimeout(() => reject(new Error('Context retrieval timeout')), this.retrievalTimeout)
+                    setTimeout(() => reject(new Error(`Context retrieval timeout after ${adaptiveTimeout}ms`)), adaptiveTimeout)
                 )
             ]);
 
@@ -130,8 +158,13 @@ export class CodebaseContextRetrieverService {
                     type: 'documentation',
                     sourcePath: 'System Note',
                     entityName: 'No Context Found',
-                    content: `The system could not find any relevant code snippets, knowledge graph entries, or documentation for the query: "${prompt}". This may be because the query is about a topic not present in the current codebase.`,
-                    relevanceScore: 0.1
+                    content: `The system performed a comprehensive search for relevant code snippets, knowledge graph entries, and documentation related to the query: "${prompt}", but found no matching content in the current codebase. This could indicate that the query references functionality not present in the indexed codebase, or uses terminology not found in the code.`,
+                    relevanceScore: 0.1,
+                    metadata: { 
+                        search_attempted: true,
+                        search_comprehensive: true,
+                        timeout_used: adaptiveTimeout
+                    }
                 }];
             }
 
@@ -145,8 +178,23 @@ export class CodebaseContextRetrieverService {
                 return cached.data;
             }
 
-            // Return empty array if no cache available
-            return [];
+            // Return structured failure info instead of empty array
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorName = error instanceof Error ? error.name : 'Unknown';
+            
+            return [{
+                type: 'documentation',
+                sourcePath: 'System Note',
+                entityName: 'Context Retrieval Failed',
+                content: `Context retrieval failed: ${errorMessage}. The system attempted to find relevant code snippets and documentation but encountered an error. This may be due to rate limiting, network issues, or database problems.`,
+                relevanceScore: 0.0,
+                metadata: { 
+                    error_type: errorName,
+                    error_message: errorMessage,
+                    retrieval_failure: true,
+                    attempted_timeout: this._calculateAdaptiveTimeout(options)
+                }
+            }];
         }
     }
 
@@ -155,21 +203,39 @@ export class CodebaseContextRetrieverService {
         prompt: string,
         options: ContextRetrievalOptions
     ): Promise<RetrievedCodeContext[]> {
-        // Step 1: Intent Analysis & Keyword Extraction
+        const startTime = Date.now();
+        const adaptiveTimeout = this._calculateAdaptiveTimeout(options);
+        const remainingTime = () => adaptiveTimeout - (Date.now() - startTime);
+        
+        // Step 1: Fast Mode Detection & Parallel Analysis (Performance Optimization)
         let queryIntent: QueryIntent = 'general_query';
         let keywords: string[] = [];
-
+        
+        // Always perform full AI analysis (removed fast mode logic)
+        console.log(`[Context Retrieval] Starting parallel analysis phase...`);
         try {
-            queryIntent = await this.classifyQueryIntent(prompt);
-            console.log(`Query Intent Classified as: ${queryIntent}`);
-        } catch (error) {
-            console.warn('Failed to classify query intent, using default:', error);
-        }
+            // Parallelize independent API calls to save ~6 seconds
+            const [intentResult, keywordResult] = await Promise.allSettled([
+                this.classifyQueryIntent(prompt),
+                this.extractTechnicalTerms(agentId, prompt)
+            ]);
 
-        try {
-            keywords = await this._extractKeywordsAndEntitiesWithGemini(prompt);
+            if (intentResult.status === 'fulfilled') {
+                queryIntent = intentResult.value;
+                console.log(`Query Intent Classified as: ${queryIntent}`);
+            } else {
+                console.warn('Failed to classify query intent, using default:', intentResult.reason);
+            }
+
+            if (keywordResult.status === 'fulfilled') {
+                keywords = keywordResult.value;
+                console.log(`[Dynamic Entity Extraction] Found ${keywords.length} relevant terms: ${keywords.slice(0, 5).join(', ')}`);
+            } else {
+                console.warn('Failed to extract keywords, using fallback:', keywordResult.reason);
+                keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
+            }
         } catch (error) {
-            console.warn('Failed to extract keywords, using fallback:', error);
+            console.warn('Parallel analysis failed, proceeding with defaults:', error);
             keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
         }
 
@@ -208,17 +274,22 @@ export class CodebaseContextRetrieverService {
         // Step 3: Reciprocal Rank Fusion to combine results robustly
         console.log(`[Context Retrieval] Fusing results: ${directEntityResults.length} direct, ${semanticResults.length} semantic, ${kgResults.length} KG, ${docResults.length} docs, ${taskLogResults.length} logs.`);
         const fusedResults = this.reciprocalRankFusion([directEntityResults, semanticResults, kgResults, docResults, taskLogResults]);
+        
+        // Continue with all processing steps (removed early termination logic)
+        const targetResultCount = (options.topKEmbeddings ?? 10) + (options.topKKgResults ?? 5);
 
-        // Step 4: AI-powered Filtering for relevance
+        // Step 4: AI-powered Filtering for relevance (always perform)
         let filteredResults: RetrievedCodeContext[] = [];
         try {
             filteredResults = await this.filterWithAI(prompt, fusedResults, options);
         } catch (error) {
             console.error('Error during AI filtering:', error);
-            filteredResults = fusedResults.slice(0, (options.topKEmbeddings ?? 10) + (options.topKKgResults ?? 5));
+            filteredResults = fusedResults
+                .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
+                .slice(0, targetResultCount);
         }
 
-        // Step 5: Self-Correction: Identify and fill context gaps
+        // Step 5: Self-Correction: Identify and fill context gaps (always perform)
         let gapFilledResults: RetrievedCodeContext[] = [];
         try {
             gapFilledResults = await this._identifyAndFillContextGaps(agentId, prompt, filteredResults, options);
@@ -227,7 +298,7 @@ export class CodebaseContextRetrieverService {
             gapFilledResults = filteredResults;
         }
 
-        // Step 6: Proactive Context Expansion to fill gaps
+        // Step 6: Proactive Context Expansion (always perform)
         let finalContext: RetrievedCodeContext[] = [];
         try {
             finalContext = await this._proactiveExpansion(agentId, prompt, gapFilledResults, options);
@@ -291,7 +362,7 @@ User prompt: "${prompt}"
 Respond with only the category name.`;
 
         try {
-            const response = await this.geminiService.askGemini(intentPrompt, 'gemini-2.5-flash');
+            const response = await this.geminiService.askGemini(intentPrompt, getCurrentModel());
             const classification = response.content[0].text?.trim().toLowerCase() as QueryIntent;
 
             if (['find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code'].includes(classification)) {
@@ -351,25 +422,138 @@ Respond with only the category name.`;
         if (topK === 0) return [];
 
         try {
+            console.log(`[Semantic Search] Performing direct semantic search`);
+
+            // // Apply task-specific query enhancement - COMMENTED OUT FOR PERFORMANCE
+            // let enhancedPrompt = prompt;
+            // if (options.taskType === 'CODE_RETRIEVAL_QUERY') {
+            //     enhancedPrompt = `Find code implementations and definitions related to: ${prompt}`;
+            // } else if (options.taskType === 'SEMANTIC_SIMILARITY') {
+            //     enhancedPrompt = `Find semantically similar code patterns and concepts for: ${prompt}`;
+            // }
+
             const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(
                 agentId,
-                prompt,
+                prompt, // Use original prompt directly
                 topK,
                 options.targetFilePaths
             );
 
-            return embeddingResults.map(res => ({
+            const results: RetrievedCodeContext[] = embeddingResults.map(res => ({
                 type: (res.metadata?.type as any) || 'generic_code_chunk',
                 sourcePath: res.file_path_relative,
                 entityName: res.entity_name || undefined,
                 content: res.chunk_text,
-                relevanceScore: res.score,
-                metadata: res.metadata || {},
+                relevanceScore: res.score || 0.0,
+                metadata: res.metadata || {}
             }));
+
+            // // Apply hybrid search if enabled - COMMENTED OUT FOR SIMPLICITY
+            // if (options.useHybridSearch && options.enableKeywordSearch) {
+            //     console.log('[Enhanced Semantic Search] Applying hybrid keyword enhancement');
+            //     const keywordResults = await this.performEnhancedKeywordSearch(agentId, prompt, options);
+            //
+            //     // Combine and apply hybrid ranking
+            //     results = this.applyHybridRanking([results, keywordResults], options.keywordWeight || 0.7);
+            // }
+
+            console.log(`[Semantic Search] Found ${results.length} results using direct search`);
+            return results;
         } catch (error) {
             console.error("Error during semantic search:", error);
             throw error;
         }
+    }
+
+    private async performEnhancedKeywordSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        try {
+            // Extract keywords using Gemini for better precision
+            const keywordPrompt = `Extract the most important technical keywords, function names, class names, and code identifiers from: "${prompt}". Focus on terms that would appear in code. Return JSON: {"keywords": ["term1", "term2", ...]}`;
+            
+            const keywordResult = await this.geminiService.askGemini(
+                keywordPrompt,
+                getCurrentModel(),
+                'You are a code search expert. Extract precise technical keywords for code retrieval.'
+            );
+
+            let keywords: string[] = [];
+            try {
+                const parsed = JSON.parse(keywordResult.content[0].text || '{}');
+                keywords = parsed.keywords || [];
+            } catch {
+                // Fallback keyword extraction
+                keywords = prompt.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+            }
+
+            if (keywords.length === 0) return [];
+
+            console.log(`[Enhanced Keyword Search] Using keywords: ${keywords.slice(0, 5).join(', ')}`);
+
+            // Search for each keyword and combine results
+            const keywordSearches = keywords.slice(0, 5).map(keyword => 
+                this.embeddingService.retrieveSimilarCodeChunks(
+                    agentId,
+                    `Code containing ${keyword}`,
+                    Math.max(3, Math.floor((options.topKEmbeddings || 10) / keywords.length)),
+                    options.targetFilePaths
+                )
+            );
+
+            const keywordResults = await Promise.allSettled(keywordSearches);
+            const allKeywordContexts: RetrievedCodeContext[] = [];
+
+            keywordResults.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    const contexts = result.value.map(res => ({
+                        type: (res.metadata?.type as any) || 'generic_code_chunk',
+                        sourcePath: res.file_path_relative,
+                        entityName: res.entity_name || undefined,
+                        content: res.chunk_text,
+                        relevanceScore: (res.score || 0.0) * 0.7, // Fixed weight since keywordWeight was commented out
+                        metadata: {
+                            ...res.metadata,
+                            searchType: 'keyword',
+                            searchKeyword: keywords[index],
+                            // taskType removed for simplification
+                        }
+                    }));
+                    allKeywordContexts.push(...contexts);
+                }
+            });
+
+            return allKeywordContexts;
+        } catch (error) {
+            console.error('[Enhanced Keyword Search] Error:', error);
+            return [];
+        }
+    }
+
+    private applyHybridRanking(resultSets: RetrievedCodeContext[][], keywordWeight: number = 0.7): RetrievedCodeContext[] {
+        const combinedScores = new Map<string, { context: RetrievedCodeContext; score: number }>();
+        const k = 60; // RRF constant
+
+        resultSets.forEach((results, setIndex) => {
+            const weight = setIndex === 0 ? 1.0 : keywordWeight; // First set (semantic) gets full weight
+            
+            results.forEach((context, rank) => {
+                const key = `${context.sourcePath}:${context.entityName || 'default'}`;
+                const rrfScore = weight * (1 / (k + rank + 1));
+                
+                if (combinedScores.has(key)) {
+                    const existing = combinedScores.get(key)!;
+                    existing.score += rrfScore;
+                } else {
+                    combinedScores.set(key, {
+                        context: { ...context, relevanceScore: context.relevanceScore || rrfScore },
+                        score: rrfScore
+                    });
+                }
+            });
+        });
+
+        return Array.from(combinedScores.values())
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.context);
     }
 
     private async performKgSearch(agentId: string, prompt: string, options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
@@ -407,15 +591,477 @@ Respond with only the category name.`;
         return [];
     }
 
+    /**
+     * Validates the relevance of retrieved context to the user's query
+     * Implements multiple validation strategies to improve accuracy
+     */
+    private async validateContextRelevance(prompt: string, contexts: RetrievedCodeContext[]): Promise<{
+        isRelevant: boolean;
+        score: number;
+        validContexts: RetrievedCodeContext[];
+        issues: string[];
+    }> {
+        if (contexts.length === 0) {
+            return { isRelevant: false, score: 0, validContexts: [], issues: ['No contexts provided'] };
+        }
+
+        const issues: string[] = [];
+        const validContexts: RetrievedCodeContext[] = [];
+        
+        // Extract key technical terms from the query
+        const queryTerms = await this.extractTechnicalTerms('default-agent', prompt);
+        const lowercasePrompt = prompt.toLowerCase();
+
+        // Relevance scoring
+        let totalRelevanceScore = 0;
+        let relevantContextCount = 0;
+
+        for (const context of contexts) {
+            const contentLower = context.content.toLowerCase();
+            let contextRelevanceScore = 0;
+
+            // 1. Direct term matching with source vs reference distinction
+            const directMatches = queryTerms.filter(term =>
+                contentLower.includes(term.toLowerCase()) ||
+                context.sourcePath.toLowerCase().includes(term.toLowerCase())
+            );
+
+            // CRITICAL FIX: Distinguish between source content and mere mentions
+            const isSourceContent = this.isSourceContent(context, queryTerms);
+            const isMereReference = this.isMereReference(context, queryTerms);
+
+            if (isSourceContent) {
+                // High score for actual implementation/definition
+                contextRelevanceScore += directMatches.length * 0.6;
+            } else if (isMereReference) {
+                // Heavily penalize mere mentions/references
+                contextRelevanceScore += directMatches.length * 0.1;
+            } else {
+                // Normal scoring for other matches
+                contextRelevanceScore += directMatches.length * 0.4;
+            }
+            
+            // 2. Semantic relevance through path analysis
+            if (context.sourcePath && this.isPathRelevantToQuery(context.sourcePath, prompt)) {
+                contextRelevanceScore += 0.3;
+            }
+            
+            // 3. Entity name relevance
+            if (context.entityName && queryTerms.some(term => 
+                context.entityName!.toLowerCase().includes(term.toLowerCase())
+            )) {
+                contextRelevanceScore += 0.3;
+            }
+            
+            // 4. Content depth and quality
+            if (context.content.length > 100 && context.content.includes('function') || 
+                context.content.includes('class') || context.content.includes('interface')) {
+                contextRelevanceScore += 0.2;
+            }
+            
+            // Consider context relevant if it meets minimum threshold
+            if (contextRelevanceScore >= 0.5) {
+                validContexts.push(context);
+                totalRelevanceScore += contextRelevanceScore;
+                relevantContextCount++;
+            }
+        }
+        
+        // Calculate overall relevance
+        const averageRelevance = relevantContextCount > 0 ? totalRelevanceScore / relevantContextCount : 0;
+        const coverageRatio = relevantContextCount / contexts.length;
+        const finalScore = (averageRelevance * 0.7) + (coverageRatio * 0.3);
+        
+        // Validation checks
+        if (validContexts.length === 0) {
+            issues.push('No contextually relevant content found for the query');
+        }
+        
+        if (finalScore < 0.4) {
+            issues.push('Retrieved context has low relevance to the query');
+        }
+        
+        if (coverageRatio < 0.3) {
+            issues.push('Most retrieved contexts are not relevant to the query');
+        }
+        
+        return {
+            isRelevant: finalScore >= 0.4 && validContexts.length > 0,
+            score: finalScore,
+            validContexts,
+            issues
+        };
+    }
+    
+    private async extractTechnicalTerms(agentId: string, prompt: string): Promise<string[]> {
+        const terms: string[] = [];
+
+        // 1. Basic pattern extraction (language-agnostic)
+        const pascalCaseTerms = prompt.match(/\b[A-Z][a-zA-Z0-9]*\b/g) || [];
+        const camelCaseTerms = prompt.match(/\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g) || [];
+        const quotedTerms = prompt.match(/"([^"]+)"|'([^']+)'|`([^`]+)`/g) || [];
+
+        terms.push(...pascalCaseTerms, ...camelCaseTerms);
+
+        // Extract quoted terms
+        quotedTerms.forEach(quoted => {
+            const cleanTerm = quoted.replace(/["`']/g, '');
+            terms.push(cleanTerm);
+        });
+
+        // 2. Dynamic entity expansion using codebase knowledge
+        const expandedTerms = await this.expandQueryWithCodebaseKnowledge(agentId, prompt);
+        terms.push(...expandedTerms);
+
+        // 3. Word-based fuzzy matching candidates
+        const words = prompt.toLowerCase().split(/\s+/)
+            .filter(word => word.length > 2)
+            .map(word => word.replace(/[^\w]/g, ''));
+        terms.push(...words);
+
+        // Remove duplicates and prioritize by relevance
+        return [...new Set(terms)]
+            .filter(term => term.length > 2)
+            .sort((a, b) => {
+                // Prioritize: exact case matches > partial case matches > word matches
+                const aScore = this.calculateTermRelevanceScore(a, prompt);
+                const bScore = this.calculateTermRelevanceScore(b, prompt);
+                return bScore - aScore;
+            });
+    }
+
+    /**
+     * DYNAMIC: Query the actual codebase to find relevant entities
+     */
+    private async expandQueryWithCodebaseKnowledge(agentId: string, prompt: string): Promise<string[]> {
+        const expansions: string[] = [];
+
+        try {
+            // 1. Get actual entity names from knowledge graph that partially match the query
+            const kgEntities = await this.findPartialEntityMatches(agentId, prompt);
+            expansions.push(...kgEntities);
+
+            // 2. Get file names that might be relevant
+            const relevantFiles = await this.findRelevantFileNames(agentId, prompt);
+            expansions.push(...relevantFiles);
+
+            // 3. Use fuzzy string matching for entity names
+            const fuzzyMatches = await this.findFuzzyEntityMatches(agentId, prompt);
+            expansions.push(...fuzzyMatches);
+
+        } catch (error) {
+            console.warn('[Dynamic Entity Expansion] Error:', error);
+        }
+
+        return [...new Set(expansions)];
+    }
+
+    /**
+     * Find entities in knowledge graph that partially match query terms
+     */
+    private async findPartialEntityMatches(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            // Extract meaningful words from prompt
+            const queryWords = prompt.toLowerCase()
+                .split(/\s+/)
+                .filter(word => word.length > 3)
+                .map(word => word.replace(/[^\w]/g, ''));
+
+            if (queryWords.length === 0) return [];
+
+            // Query knowledge graph for entities containing these words
+            const matchingEntities: string[] = [];
+            for (const word of queryWords) {
+                try {
+                    const nodes = await this.kgManager.openNodes(agentId, [word]);
+                    nodes.forEach((node: any) => {
+                        if (node.name && node.name.length > 1) {
+                            matchingEntities.push(node.name);
+                        }
+                    });
+                } catch (error) {
+                    // Continue with other words if one fails
+                    console.debug(`Failed to query KG for word: ${word}`);
+                }
+            }
+
+            return [...new Set(matchingEntities)];
+        } catch (error) {
+            console.warn('[Partial Entity Match] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Find file names that might be relevant to the query
+     */
+    private async findRelevantFileNames(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            const promptLower = prompt.toLowerCase();
+            const allFiles = await this.embeddingService.repository.getAllFilePathsForAgent(agentId);
+
+            const relevantFiles = allFiles.filter(filePath => {
+                const fileName = filePath.split('/').pop()?.replace(/\.[^.]*$/, '') || '';
+                const fileNameLower = fileName.toLowerCase();
+
+                // Check if any word in prompt matches file name
+                const promptWords = promptLower.split(/\s+/).filter(w => w.length > 2);
+                return promptWords.some(word =>
+                    fileNameLower.includes(word) ||
+                    this.calculateSimilarity(word, fileNameLower) > 0.7
+                );
+            });
+
+            // Extract meaningful parts from relevant file paths
+            const entityNames: string[] = [];
+            relevantFiles.forEach(filePath => {
+                const parts = filePath.split('/');
+                const fileName = parts.pop()?.replace(/\.[^.]*$/, '') || '';
+
+                // Convert snake_case and kebab-case to possible entity names
+                const camelCase = fileName.replace(/[_-]([a-z])/g, (_, letter) => letter.toUpperCase());
+                const pascalCase = camelCase.charAt(0).toUpperCase() + camelCase.slice(1);
+
+                entityNames.push(fileName, camelCase, pascalCase);
+            });
+
+            return [...new Set(entityNames)];
+        } catch (error) {
+            console.warn('[Relevant File Names] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Find entities using fuzzy string matching
+     */
+    private async findFuzzyEntityMatches(agentId: string, prompt: string): Promise<string[]> {
+        try {
+            // Get all available entity names from embeddings
+            const allEntities = await this.getAllAvailableEntityNames(agentId);
+            const promptLower = prompt.toLowerCase();
+            const matches: string[] = [];
+
+            for (const entity of allEntities) {
+                const entityLower = entity.toLowerCase();
+
+                // Calculate similarity between prompt and entity name
+                const similarity = this.calculateSimilarity(promptLower, entityLower);
+
+                // Also check word-by-word similarity
+                const promptWords = promptLower.split(/\s+/);
+                const maxWordSimilarity = Math.max(...promptWords.map(word =>
+                    this.calculateSimilarity(word, entityLower)
+                ));
+
+                // Include if similarity is above threshold
+                if (similarity > 0.6 || maxWordSimilarity > 0.7) {
+                    matches.push(entity);
+                }
+            }
+
+            return matches.slice(0, 20); // Limit to prevent too many matches
+        } catch (error) {
+            console.warn('[Fuzzy Entity Match] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Get all unique entity names from the embeddings database
+     */
+    private async getAllAvailableEntityNames(agentId: string): Promise<string[]> {
+        try {
+            return await this.embeddingService.repository.getAllEntityNames(agentId);
+        } catch (error) {
+            console.warn('[Get Available Entities] Error:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Calculate string similarity using Levenshtein distance
+     */
+    private calculateSimilarity(str1: string, str2: string): number {
+        const len1 = str1.length;
+        const len2 = str2.length;
+
+        if (len1 === 0) return len2 === 0 ? 1 : 0;
+        if (len2 === 0) return 0;
+
+        const matrix: number[][] = [];
+
+        for (let i = 0; i <= len1; i++) {
+            matrix[i] = [i];
+        }
+
+        for (let j = 0; j <= len2; j++) {
+            matrix[0][j] = j;
+        }
+
+        for (let i = 1; i <= len1; i++) {
+            for (let j = 1; j <= len2; j++) {
+                const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,      // deletion
+                    matrix[i][j - 1] + 1,      // insertion
+                    matrix[i - 1][j - 1] + cost // substitution
+                );
+            }
+        }
+
+        const maxLen = Math.max(len1, len2);
+        return 1 - (matrix[len1][len2] / maxLen);
+    }
+
+    /**
+     * Calculate term relevance score for sorting
+     */
+    private calculateTermRelevanceScore(term: string, prompt: string): number {
+        let score = 0;
+        const termLower = term.toLowerCase();
+        const promptLower = prompt.toLowerCase();
+
+        // Exact match gets highest score
+        if (promptLower.includes(termLower)) {
+            score += 100;
+        }
+
+        // Case-sensitive partial match
+        if (prompt.includes(term)) {
+            score += 50;
+        }
+
+        // Length preference (longer terms are often more specific)
+        score += term.length;
+
+        // PascalCase/camelCase preference
+        if (/^[A-Z][a-zA-Z0-9]*$/.test(term)) {
+            score += 20;
+        }
+
+        return score;
+    }
+    
+    private isPathRelevantToQuery(path: string, prompt: string): boolean {
+        const pathLower = path.toLowerCase();
+        const promptLower = prompt.toLowerCase();
+
+        // Extract meaningful parts from path
+        const pathParts = path.split(/[\/\\.]/).filter(part => part.length > 2);
+
+        // Check if any path part is mentioned in the query
+        return pathParts.some(part => promptLower.includes(part.toLowerCase()));
+    }
+
+    /**
+     * CRITICAL: Detect if context contains actual source/implementation rather than just mentions
+     */
+    private isSourceContent(context: RetrievedCodeContext, queryTerms: string[]): boolean {
+        const content = context.content;
+        const sourcePath = context.sourcePath.toLowerCase();
+
+        // Check if this is the actual file being asked about
+        const isTargetFile = queryTerms.some(term =>
+            sourcePath.includes(term.toLowerCase().replace(/\s+/g, '_'))
+        );
+
+        if (!isTargetFile) return false;
+
+        // Look for implementation patterns (class/function definitions)
+        const implementationPatterns = [
+            /class\s+\w+/,                    // class definitions
+            /function\s+\w+/,                 // function definitions
+            /export\s+(class|function|const|interface)/, // exports
+            /constructor\s*\(/,               // constructors
+            /async\s+\w+\s*\(/,              // async methods
+            /private|public|protected\s+\w+/ // access modifiers
+        ];
+
+        return implementationPatterns.some(pattern => pattern.test(content));
+    }
+
+    /**
+     * CRITICAL: Detect if context is just a reference/mention rather than actual content
+     */
+    private isMereReference(context: RetrievedCodeContext, queryTerms: string[]): boolean {
+        const content = context.content;
+        const contentLower = content.toLowerCase();
+
+        // Reference/mention patterns that should be deprioritized
+        const referencePatterns = [
+            /will\s+(use|implement|work\s+on|need)/,     // planning references
+            /todo|fixme|note:/,                          // comment references
+            /import.*from/,                              // import statements
+            /see\s+also|refer\s+to|check\s+out/,        // documentation references
+            /in\s+our\s+plan|we\s+will|should\s+use/,   // planning language
+            /\brelevant\s+files?\b/,                     // file listing contexts
+        ];
+
+        // Check if content is primarily a reference
+        const hasReferencePattern = referencePatterns.some(pattern => pattern.test(contentLower));
+
+        // Also check if content is very short (likely just a mention)
+        const isShortMention = content.length < 200 && queryTerms.some(term =>
+            contentLower.includes(term.toLowerCase())
+        );
+
+        return hasReferencePattern || isShortMention;
+    }
+
     private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (contexts.length === 0) return [];
 
+        // First, validate context relevance
+        const relevanceValidation = await this.validateContextRelevance(prompt, contexts);
+        
+        if (!relevanceValidation.isRelevant) {
+            console.warn(`[CodebaseContextRetrieverService] Context relevance validation failed: ${relevanceValidation.issues.join(', ')}`); 
+            console.warn(`[CodebaseContextRetrieverService] Relevance score: ${relevanceValidation.score.toFixed(3)}, Valid contexts: ${relevanceValidation.validContexts.length}/${contexts.length}`);
+            
+            // Return only the valid contexts if any, otherwise use a fallback
+            if (relevanceValidation.validContexts.length > 0) {
+                contexts = relevanceValidation.validContexts;
+            } else {
+                // Fallback: return top contexts based on relevance scores
+                return contexts.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)).slice(0, 3);
+            }
+        } else {
+            console.log(`[CodebaseContextRetrieverService] Context relevance validation passed: score=${relevanceValidation.score.toFixed(3)}, valid=${relevanceValidation.validContexts.length}/${contexts.length}`);
+        }
+
         const targetPaths = options.targetFilePaths || [];
 
-        let filterPrompt = `Given the user prompt "${prompt}", identify which of the following context items are most relevant.
-Return a JSON object with a single key "relevant_indices" containing an array of the indices of the relevant items.
-Example: {"relevant_indices": [0, 2, 5]}
-ONLY respond with the JSON object, and nothing else.`;
+        // Detect if this is a code explanation/understanding query
+        const isCodeExplanationQuery = /\b(how does|how is|explain|understand|work|implement|integrate)\b/i.test(prompt);
+        const expectedRetentionRate = isCodeExplanationQuery ? "80-95%" : "60-80%";
+
+        let filterPrompt = `You are an expert code analyst specializing in context relevance assessment for RAG systems. Your task is to identify the most relevant code contexts for a given query with high precision.
+
+**QUERY:** "${prompt}"
+
+**QUERY TYPE:** ${isCodeExplanationQuery ? 'CODE EXPLANATION - Be inclusive of related code' : 'GENERAL QUERY - Be selective'}
+
+**ANALYSIS INSTRUCTIONS:**
+1. **Primary Relevance**: Look for contexts that directly contain, implement, or define what the user is asking about
+2. **Secondary Relevance**: Include contexts that show how the primary entities are used, imported, or integrated
+3. **Supporting Context**: Include related patterns, interfaces, or dependencies that help understand the complete picture
+4. **Quality Focus**: Prioritize contexts with actual code implementations over documentation or comments alone
+
+**SCORING CRITERIA:**
+- Direct match (class/function name appears): High relevance
+- Implementation details of requested functionality: High relevance
+- Usage examples or integrations: Medium-high relevance
+- Related but not directly applicable: ${isCodeExplanationQuery ? 'Medium relevance (include for context)' : 'Low relevance'}
+- Unrelated or generic code: Exclude
+
+${isCodeExplanationQuery ?
+'**SPECIAL INSTRUCTION FOR CODE EXPLANATION:** When explaining how code works, include ALL relevant code chunks that show different aspects, methods, properties, and usage patterns. Be inclusive rather than selective.' :
+'**STANDARD FILTERING:** Focus on the most directly relevant contexts.'}
+
+Return a JSON object with a single key "relevant_indices" containing an array of the indices of the most relevant items (typically ${expectedRetentionRate} of provided contexts).
+Example: {"relevant_indices": [0, 2, 5, 7, 9]}
+ONLY respond with the JSON object, nothing else.`;
 
         if (targetPaths.length > 0) {
             filterPrompt += `\n\n**Special Instruction:** Prioritize items from the following target file paths: ${targetPaths.join(', ')}. Ensure that relevant content from these paths is included if it directly addresses the prompt.`;
@@ -424,8 +1070,8 @@ ONLY respond with the JSON object, and nothing else.`;
         filterPrompt += `\n\nContext Items:\n${contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 150)}...`).join('\n')}`;
 
         try {
-            const response = await this.geminiService.askGemini(filterPrompt, 'gemini-2.5-flash');
-            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
+            const response = await this.geminiService.askGemini(filterPrompt, getCurrentModel());
+            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
 
             if (!parsedResponse || !Array.isArray(parsedResponse.relevant_indices)) {
                 console.warn("[CodebaseContextRetrieverService] AI filtering returned malformed response. Returning top results instead.");
@@ -434,6 +1080,16 @@ ONLY respond with the JSON object, and nothing else.`;
 
             const relevantIndices: number[] = parsedResponse.relevant_indices;
             let filtered = contexts.filter((_, idx) => relevantIndices.includes(idx));
+
+            // Safeguard: For code explanation queries, ensure we don't filter too aggressively
+            const minExpectedItems = isCodeExplanationQuery ? Math.ceil(contexts.length * 0.7) : Math.ceil(contexts.length * 0.5);
+            if (filtered.length < minExpectedItems) {
+                console.warn(`[CodebaseContextRetrieverService] AI filtering returned only ${filtered.length}/${contexts.length} items (expected at least ${minExpectedItems}). Adding more relevant contexts.`);
+                // Add the top-scored contexts that weren't included
+                const remainingContexts = contexts.filter((_, idx) => !relevantIndices.includes(idx));
+                const additionalNeeded = minExpectedItems - filtered.length;
+                filtered = [...filtered, ...remainingContexts.slice(0, additionalNeeded)];
+            }
 
             // Resilience check: If user specified target files and AI filtered them all out, add them back in.
             if (targetPaths.length > 0) {
@@ -476,8 +1132,8 @@ If no critical information is missing, respond with {"missing_entities": []}.
 ONLY respond with the JSON object.`;
 
         try {
-            const response = await this.geminiService.askGemini(gapAnalysisPrompt, 'gemini-2.5-flash');
-            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
+            const response = await this.geminiService.askGemini(gapAnalysisPrompt, getCurrentModel());
+            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
 
             if (!parsedResponse || !Array.isArray(parsedResponse.missing_entities) || parsedResponse.missing_entities.length === 0) {
                 console.log("[Context Self-Correction] No context gaps identified.");
@@ -514,8 +1170,8 @@ Example: {"suggested_entities": ["DatabaseConnection", "OrderRepository"]}
 ONLY respond with the JSON object.`;
 
         try {
-            const response = await this.geminiService.askGemini(expansionPrompt, 'gemini-2.5-flash');
-            const parsedResponse = parseGeminiJsonResponse(response.content[0].text ?? '');
+            const response = await this.geminiService.askGemini(expansionPrompt, getCurrentModel());
+            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
 
             if (parsedResponse && Array.isArray(parsedResponse.suggested_entities) && parsedResponse.suggested_entities.length > 0) {
                 const suggestions: string[] = parsedResponse.suggested_entities;
@@ -563,8 +1219,8 @@ Example: {"entities": ["src/services/api.ts", "getUserProfile", "UserProfile"]}
 Prompt: "${prompt}"`;
 
         try {
-            const result = await this.geminiService.askGemini(extractionPrompt, "gemini-2.5-flash");
-            const parsedResponse = parseGeminiJsonResponse(result.content[0].text ?? '');
+            const result = await this.geminiService.askGemini(extractionPrompt, getCurrentModel());
+            const parsedResponse = parseGeminiJsonResponseSync(result.content[0].text ?? '');
 
             if (parsedResponse && Array.isArray(parsedResponse.entities)) {
                 return parsedResponse.entities;

@@ -7,6 +7,7 @@ import { CodebaseIntrospectionService } from './CodebaseIntrospectionService.js'
 import { Database } from 'better-sqlite3';
 import { EmbeddingCache } from './embeddings/EmbeddingCache.js';
 import { AIEmbeddingProvider } from './embeddings/AIEmbeddingProvider.js';
+import { ParallelEmbeddingManager } from './embeddings/ParallelEmbeddingManager.js';
 import { CodeChunkingService } from './embeddings/CodeChunkingService.js';
 import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRepository.js';
 import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
@@ -17,6 +18,7 @@ import { RetrievedCodeContext } from './CodebaseContextRetrieverService.js';
 export class CodebaseEmbeddingService {
     public repository: CodebaseEmbeddingRepository;
     private aiProvider: AIEmbeddingProvider;
+    private parallelEmbeddingManager: ParallelEmbeddingManager;
     public chunkingService: CodeChunkingService;
     public embeddingCache: EmbeddingCache;
     public introspectionService: CodebaseIntrospectionService;
@@ -27,7 +29,8 @@ export class CodebaseEmbeddingService {
         geminiService: GeminiIntegrationService
     ) {
         this.repository = new CodebaseEmbeddingRepository(vectorDbConnection);
-        this.aiProvider = new AIEmbeddingProvider(geminiService);
+        this.aiProvider = new AIEmbeddingProvider(geminiService, 'gemini', 3, 1000, 100, 20000, 30000, memoryManager);
+        this.parallelEmbeddingManager = new ParallelEmbeddingManager(geminiService);
         this.introspectionService = new CodebaseIntrospectionService(memoryManager);
         this.chunkingService = new CodeChunkingService(
             this.introspectionService,
@@ -35,6 +38,10 @@ export class CodebaseEmbeddingService {
             memoryManager
         );
         this.embeddingCache = new EmbeddingCache(vectorDbConnection);
+
+        // Log the shared embedding configuration
+        const embeddingInfo = this.parallelEmbeddingManager.getSharedEmbeddingInfo();
+        console.log(`[CodebaseEmbeddingService] ${embeddingInfo.sharedProcessDescription}`);
     }
 
     public async cleanUpEmbeddingsByFilePaths(agentId: string, filePaths: string[], projectRootPath: string, filterByAgentId?: boolean): Promise<{ deletedCount: number }> {
@@ -70,6 +77,13 @@ export class CodebaseEmbeddingService {
         return { deletedCount };
     }
 
+    /**
+     * Get information about the current shared embedding configuration
+     */
+    public getSharedEmbeddingInfo() {
+        return this.parallelEmbeddingManager.getSharedEmbeddingInfo();
+    }
+
     private generateChunkHash(text: string): string {
         return crypto.createHash('sha256').update(text).digest('hex');
     }
@@ -83,6 +97,7 @@ export class CodebaseEmbeddingService {
         filePath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -92,6 +107,7 @@ export class CodebaseEmbeddingService {
             [filePath],
             projectRootPath,
             strategy,
+            providerType,
             includeSummaryPatterns,
             excludeSummaryPatterns,
             storeEntitySummaries
@@ -103,6 +119,7 @@ export class CodebaseEmbeddingService {
         filesToProcess: Array<{ absolutePath: string, relativePath: string }>,
         projectRootPath: string,
         strategy: ChunkingStrategy,
+        providerType: string,
         storeEntitySummaries: boolean,
         existingFileHashes: Map<string, string>
     ): Promise<Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'>> {
@@ -110,8 +127,10 @@ export class CodebaseEmbeddingService {
         const report: Omit<EmbeddingIngestionResult, 'totalTimeMs' | 'deletedEmbeddingsCount'> = {
             newEmbeddingsCount: 0,
             reusedEmbeddingsCount: 0,
+            reusedFilesCount: 0,
             newEmbeddings: [],
             reusedEmbeddings: [],
+            reusedFiles: [],
             deletedEmbeddings: [],
             scannedFiles: [],
             embeddingRequestCount: 0,
@@ -120,7 +139,10 @@ export class CodebaseEmbeddingService {
             namingApiCallCount: 0,
             summarizationApiCallCount: 0,
             dbCallCount: 0,
-            dbCallLatencyMs: 0
+            dbCallLatencyMs: 0,
+            processingErrors: [],
+            batchStatus: 'complete',
+            resumeInfo: { failedFiles: [] }
         };
 
         // Process files in parallel with error isolation
@@ -135,7 +157,36 @@ export class CodebaseEmbeddingService {
                 const currentFileHash = this.generateFileHash(fileContent);
                 if (existingFileHashes.get(fileInfo.relativePath) === currentFileHash) {
                     console.log(`[Idempotency Skip] File has not changed: ${fileInfo.relativePath}`);
-                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'skipped' });
+                    
+                    // Get existing embeddings count for this file to report reuse accurately
+                    const existingEmbeddingsForUnchangedFile = await this.repository.getEmbeddingsForFile(fileInfo.relativePath, agentId);
+                    const existingChunkCount = existingEmbeddingsForUnchangedFile.length;
+                    
+                    // Update metrics to reflect file-level reuse
+                    report.reusedFilesCount++;
+                    report.reusedFiles.push({
+                        file_path_relative: fileInfo.relativePath,
+                        reason: 'file_unchanged',
+                        chunk_count: existingChunkCount
+                    });
+                    
+                    // Add to reused embeddings count (these embeddings are effectively reused)
+                    report.reusedEmbeddingsCount += existingChunkCount;
+                    
+                    // Add existing embeddings to reused embeddings list for reporting
+                    for (const existingEmbedding of existingEmbeddingsForUnchangedFile) {
+                        report.reusedEmbeddings.push({
+                            file_path_relative: fileInfo.relativePath,
+                            chunk_text: existingEmbedding.chunk_text.substring(0, 100) + '...', // Truncate for display
+                            entity_name: existingEmbedding.entity_name
+                        });
+                    }
+                    
+                    report.scannedFiles.push({ 
+                        file_path_relative: fileInfo.relativePath, 
+                        status: 'skipped',
+                        skipReason: 'file_unchanged' 
+                    });
                     return;
                 }
 
@@ -158,8 +209,23 @@ export class CodebaseEmbeddingService {
                     multiVectorChunks = result.chunks;
                     summarizationApiCallCount = result.summarizationApiCallCount;
                 } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
                     console.error(`Error chunking file ${fileInfo.relativePath}:`, error);
-                    report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'error' });
+                    
+                    report.processingErrors.push({
+                        file_path_relative: fileInfo.relativePath,
+                        error: errorMessage,
+                        stage: 'chunking'
+                    });
+                    
+                    report.resumeInfo!.failedFiles.push(fileInfo.relativePath);
+                    report.batchStatus = 'partial';
+                    
+                    report.scannedFiles.push({ 
+                        file_path_relative: fileInfo.relativePath, 
+                        status: 'error',
+                        skipReason: `chunking_failed: ${errorMessage}` 
+                    });
                     return;
                 }
 
@@ -224,8 +290,23 @@ export class CodebaseEmbeddingService {
 
                 report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'processed' });
             } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : String(err);
                 console.error(`Error processing file ${fileInfo.absolutePath}:`, err);
-                report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'error' });
+                
+                report.processingErrors.push({
+                    file_path_relative: fileInfo.relativePath,
+                    error: errorMessage,
+                    stage: 'file_processing'
+                });
+                
+                report.resumeInfo!.failedFiles.push(fileInfo.relativePath);
+                report.batchStatus = 'partial';
+                
+                report.scannedFiles.push({ 
+                    file_path_relative: fileInfo.relativePath, 
+                    status: 'error',
+                    skipReason: `processing_failed: ${errorMessage}` 
+                });
             }
         }));
 
@@ -234,13 +315,66 @@ export class CodebaseEmbeddingService {
             const textsToEmbed = chunksToEmbed.map(item => item.chunk.chunk_text);
             let embeddings;
             try {
-                embeddings = await this.aiProvider.getEmbeddingsForChunks(textsToEmbed);
+                console.log(`[CodebaseEmbeddingService] Using shared embedding process with both Codestral and Gemini for ${textsToEmbed.length} texts`);
+
+                // Use the parallel embedding manager for shared embedding process
+                const parallelResult = await this.parallelEmbeddingManager.generateEmbeddings(textsToEmbed);
+
+                // Convert parallel embedding result to the format expected by the rest of the code
+                embeddings = {
+                    embeddings: parallelResult.embeddings.map(embedding => ({
+                        vector: embedding?.vector || null,
+                        dimensions: embedding?.dimensions || 3072,
+                        model: embedding?.model || parallelResult.primaryModel,
+                        provider: embedding?.provider || 'gemini'
+                    })),
+                    requestCount: 1, // One request to parallel manager
+                    retryCount: 0, // Parallel manager handles retries internally
+                    totalTokensProcessed: parallelResult.totalTokensProcessed,
+                    model: parallelResult.primaryModel,
+                    actualDimensions: parallelResult.embeddings[0]?.dimensions || 3072,
+                    // Store parallel processing metadata for database insertion
+                    parallelMetadata: {
+                        requestId: parallelResult.requestId,
+                        modelDistribution: parallelResult.modelDistribution,
+                        fallbackUsed: parallelResult.fallbackUsed
+                    }
+                };
+
                 report.embeddingRequestCount = embeddings.requestCount;
                 report.embeddingRetryCount = embeddings.retryCount;
                 report.totalTokensProcessed = embeddings.totalTokensProcessed;
+
+                console.log(`[CodebaseEmbeddingService] Shared embedding complete: ${parallelResult.successfulRequests}/${textsToEmbed.length} successful, primary model: ${parallelResult.primaryModel}, distribution: ${JSON.stringify(parallelResult.modelDistribution)}`);
             } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : String(error);
                 console.error(`Error generating embeddings:`, error);
-                // Return partial results
+                
+                // Mark all files with chunks to embed as failed for this batch
+                const affectedFiles = new Set(chunksToEmbed.map(item => item.fileInfo.relativePath));
+                for (const filePath of affectedFiles) {
+                    report.processingErrors.push({
+                        file_path_relative: filePath,
+                        error: errorMessage,
+                        stage: 'embedding_generation'
+                    });
+                    
+                    if (!report.resumeInfo!.failedFiles.includes(filePath)) {
+                        report.resumeInfo!.failedFiles.push(filePath);
+                    }
+                    
+                    // Update scan status for affected files
+                    const scanEntry = report.scannedFiles.find(f => f.file_path_relative === filePath);
+                    if (scanEntry && scanEntry.status === 'processed') {
+                        scanEntry.status = 'partial';
+                        scanEntry.skipReason = `embedding_failed: ${errorMessage}`;
+                    }
+                }
+                
+                report.batchStatus = 'partial';
+                console.warn(`Embedding generation failed for ${affectedFiles.size} files. These files will need to be reprocessed.`);
+                
+                // Return partial results with detailed error information
                 return report;
             }
 
@@ -260,8 +394,9 @@ export class CodebaseEmbeddingService {
             });
 
             // Second pass: build the final records with correct parent links
+            const generationTimestamp = Date.now();
             await Promise.all(embeddings.embeddings.map(async (embeddingResult, index) => {
-                if (embeddingResult) {
+                if (embeddingResult && embeddingResult.vector) {
                     const { chunk, fileInfo } = chunksToEmbed[index];
                     const vectorBuffer = Buffer.alloc(embeddingResult.vector.length * VECTOR_FLOAT_SIZE);
                     embeddingResult.vector.forEach((val, i) => vectorBuffer.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
@@ -292,7 +427,7 @@ export class CodebaseEmbeddingService {
                         entity_name_vector_dimensions: entityNameVectorDimensions,
                         vector_blob: vectorBuffer,
                         vector_dimensions: embeddingResult.dimensions,
-                        model_name: DEFAULT_EMBEDDING_MODEL,
+                        model_name: embeddingResult.model || embeddings.model,
                         chunk_hash: chunk.chunk_hash || this.generateChunkHash(chunk.chunk_text),
                         file_hash: fileInfo.fileHash,
                         metadata_json: JSON.stringify(chunk.metadata || {}),
@@ -303,6 +438,13 @@ export class CodebaseEmbeddingService {
                         parent_embedding_id: chunk.embedding_type === 'chunk' ?
                             parentIdMap.get(chunk.parent_embedding_id) :
                             chunk.final_embedding_id,
+                        // New parallel embedding metadata
+                        embedding_provider: embeddingResult.provider || 'gemini',
+                        embedding_model_full_name: embeddingResult.model || embeddings.model,
+                        embedding_generation_method: embeddings.parallelMetadata ? 'parallel' : 'single',
+                        embedding_request_id: embeddings.parallelMetadata?.requestId || null,
+                        embedding_quality_score: 1.0, // Default quality score
+                        embedding_generation_timestamp: generationTimestamp
                     });
 
                     report.newEmbeddings.push({
@@ -320,8 +462,25 @@ export class CodebaseEmbeddingService {
                 try {
                     await this.repository.bulkInsertEmbeddings(newEmbeddingsToStore);
                 } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
                     console.error(`Error bulk inserting embeddings:`, error);
-                    // Return partial results
+                    
+                    // Mark files as having database insertion failures
+                    const affectedFiles = new Set(newEmbeddingsToStore.map(embedding => embedding.file_path_relative));
+                    for (const filePath of affectedFiles) {
+                        report.processingErrors.push({
+                            file_path_relative: filePath,
+                            error: errorMessage,
+                            stage: 'database_insertion'
+                        });
+                        
+                        if (!report.resumeInfo!.failedFiles.includes(filePath)) {
+                            report.resumeInfo!.failedFiles.push(filePath);
+                        }
+                    }
+                    
+                    report.batchStatus = 'partial';
+                    console.warn(`Database insertion failed for ${affectedFiles.size} files. Embeddings were generated but not stored.`);
                 }
             }
         }
@@ -334,6 +493,7 @@ export class CodebaseEmbeddingService {
         filePaths: string[],
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -353,6 +513,7 @@ export class CodebaseEmbeddingService {
             filesToProcess,
             absoluteProjectRootPath,
             strategy,
+            providerType,
             storeEntitySummaries,
             existingFileHashes
         );
@@ -365,11 +526,78 @@ export class CodebaseEmbeddingService {
         };
     }
 
+    public async resumeFailedEmbeddingBatch(
+        agentId: string,
+        failedFiles: string[],
+        projectRootPath: string,
+        strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
+        includeSummaryPatterns?: string[],
+        excludeSummaryPatterns?: string[],
+        storeEntitySummaries: boolean = true
+    ): Promise<EmbeddingIngestionResult> {
+        console.log(`[CodebaseEmbeddingService] Resuming failed batch for ${failedFiles.length} files...`);
+        
+        // Filter out files that don't exist or are no longer eligible
+        const validFailedFiles: string[] = [];
+        for (const filePath of failedFiles) {
+            try {
+                const absolutePath = path.resolve(projectRootPath, filePath);
+                await fs.access(absolutePath); // Check if file exists
+                validFailedFiles.push(filePath);
+            } catch (error) {
+                console.warn(`Skipping failed file that no longer exists: ${filePath}`);
+            }
+        }
+        
+        if (validFailedFiles.length === 0) {
+            console.log(`[CodebaseEmbeddingService] No valid failed files to resume.`);
+            return {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                reusedFilesCount: 0,
+                deletedEmbeddingsCount: 0,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                reusedFiles: [],
+                deletedEmbeddings: [],
+                scannedFiles: [],
+                embeddingRequestCount: 0,
+                embeddingRetryCount: 0,
+                totalTokensProcessed: 0,
+                namingApiCallCount: 0,
+                summarizationApiCallCount: 0,
+                dbCallCount: 0,
+                dbCallLatencyMs: 0,
+                processingErrors: [],
+                batchStatus: 'complete',
+                resumeInfo: { failedFiles: [] },
+                aiSummary: 'No files to resume',
+                totalTimeMs: 0
+            };
+        }
+        
+        console.log(`[CodebaseEmbeddingService] Resuming processing for ${validFailedFiles.length} failed files`);
+        
+        // Process only the failed files
+        return this.generateAndStoreEmbeddingsForMultipleFiles(
+            agentId,
+            validFailedFiles,
+            projectRootPath,
+            strategy,
+            providerType,
+            includeSummaryPatterns,
+            excludeSummaryPatterns,
+            storeEntitySummaries
+        );
+    }
+    
     public async generateAndStoreEmbeddingsForDirectory(
         agentId: string,
         directoryPath: string,
         projectRootPath: string,
         strategy: ChunkingStrategy = 'auto',
+        providerType: string = 'gemini',
         includeSummaryPatterns?: string[],
         excludeSummaryPatterns?: string[],
         storeEntitySummaries: boolean = true
@@ -405,6 +633,7 @@ export class CodebaseEmbeddingService {
             filesToProcess,
             absoluteProjectRootPath,
             strategy,
+            providerType,
             storeEntitySummaries,
             existingFileHashes
         );
@@ -431,6 +660,27 @@ export class CodebaseEmbeddingService {
             }
         }
 
+        // Set final batch status based on overall processing
+        if (result.batchStatus === 'partial' || result.processingErrors.length > 0) {
+            result.batchStatus = 'partial';
+        } else if (result.processingErrors.length === 0 && result.resumeInfo!.failedFiles.length === 0) {
+            result.batchStatus = 'complete';
+        }
+        
+        // Log summary of processing results
+        console.log(`[CodebaseEmbeddingService] Directory processing complete:`);
+        console.log(`  - Status: ${result.batchStatus}`);
+        console.log(`  - Files processed: ${result.scannedFiles.filter(f => f.status === 'processed').length}`);
+        console.log(`  - Files skipped: ${result.scannedFiles.filter(f => f.status === 'skipped').length}`);
+        console.log(`  - Files with errors: ${result.processingErrors.length}`);
+        console.log(`  - New embeddings: ${result.newEmbeddingsCount}`);
+        console.log(`  - Reused embeddings: ${result.reusedEmbeddingsCount}`);
+        console.log(`  - Reused files: ${result.reusedFilesCount}`);
+        
+        if (result.resumeInfo!.failedFiles.length > 0) {
+            console.warn(`  - Files requiring retry: ${result.resumeInfo!.failedFiles.join(', ')}`);
+        }
+        
         return {
             ...result,
             deletedEmbeddingsCount,
@@ -453,37 +703,98 @@ export class CodebaseEmbeddingService {
         score: number;
         metadata?: Record<string, any> | null
     }>> {
-        let queryEmbedding;
+        const availableModels = await this.repository.getAvailableEmbeddingModels(agentId);
+        const embeddingsMap = new Map<string, any>();
+
+        // Use ParallelEmbeddingManager for intelligent embedding generation
         try {
-            const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText]);
-            queryEmbedding = embeddings[0];
+            console.log(`[CodebaseEmbeddingService] Using ParallelEmbeddingManager for query embedding generation`);
+            const result = await this.parallelEmbeddingManager.generateEmbeddings([queryText], `query_${Date.now()}`);
+
+            if (result.successfulRequests > 0 && result.embeddings[0]) {
+                const embedding = result.embeddings[0];
+                // Use the primary model that was used for this embedding
+                embeddingsMap.set(result.primaryModel, {
+                    vector: embedding.vector,
+                    dimensions: embedding.dimensions
+                });
+                console.log(`[CodebaseEmbeddingService] Generated embedding using ${result.primaryModel} (${embedding.dimensions}D)`);
+            } else {
+                console.warn(`[CodebaseEmbeddingService] ParallelEmbeddingManager failed, falling back to single provider`);
+                // Fallback to original logic if parallel manager fails
+                for (const model of availableModels) {
+                    try {
+                        const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
+                        this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
+                        const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
+                        if (embeddings && embeddings[0]) {
+                            embeddingsMap.set(model, embeddings[0]);
+                            break; // Only need one successful embedding
+                        }
+                    } catch (error) {
+                        console.error(`Error generating query embedding for model ${model}:`, error);
+                    }
+                }
+            }
         } catch (error) {
-            console.error(`Error generating query embedding:`, error);
-            throw new Error(`Failed to generate embedding for query text: ${error instanceof Error ? error.message : String(error)}`);
+            console.error(`[CodebaseEmbeddingService] ParallelEmbeddingManager failed:`, error);
+            // Fallback to original logic
+            for (const model of availableModels) {
+                try {
+                    const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
+                    this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
+                    const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
+                    if (embeddings && embeddings[0]) {
+                        embeddingsMap.set(model, embeddings[0]);
+                        break; // Only need one successful embedding
+                    }
+                } catch (error) {
+                    console.error(`Error generating query embedding for model ${model}:`, error);
+                }
+            }
         }
 
-        if (!queryEmbedding || !queryEmbedding.vector) {
-            throw new Error("Failed to generate embedding for query text.");
+        if (embeddingsMap.size === 0) {
+            throw new Error("Failed to generate embedding for query text with any available model.");
         }
 
         try {
-            // Step 1: Retrieve initial set of relevant chunks
-            const initialChunks = await this.repository.findSimilarEmbeddingsWithMetadata(
-                queryEmbedding.vector,
-                queryText, // Pass query text for potential hybrid search in repo
-                topK * 2, // Retrieve more initial chunks to find unique parents
-                agentId,
-                targetFilePaths,
-                exclude_chunk_types
-            );
+            const allChunks: CodebaseEmbeddingRecord[] = [];
+            for (const [model, embedding] of embeddingsMap.entries()) {
+                if (embedding) {
+                    const chunks = await this.repository.findSimilarEmbeddingsWithMetadata(
+                        embedding.vector,
+                        queryText,
+                        topK * 2, // Fetch more to allow for diverse results
+                        agentId,
+                        targetFilePaths,
+                        exclude_chunk_types,
+                        model // Filter by model
+                    );
+                    allChunks.push(...chunks);
+                }
+            }
 
-            if (initialChunks.length === 0) {
+            const combinedInitialChunks = deduplicateContexts(allChunks.map(c => ({
+                sourcePath: c.file_path_relative,
+                entityName: c.entity_name,
+                type: (c.embedding_type === 'chunk' ? 'generic_code_chunk' : 'documentation'), // Map to compatible type
+                content: c.chunk_text,
+                relevanceScore: c.similarity, // Use 'similarity' from CodebaseEmbeddingRecord
+                metadata: c.metadata_json ? JSON.parse(c.metadata_json) : undefined
+            } as RetrievedCodeContext))).map(rc => {
+                const original = allChunks.find(ic => ic.file_path_relative === rc.sourcePath && ic.entity_name === rc.entityName);
+                return { ...original, score: rc.relevanceScore };
+            }) as CodebaseEmbeddingRecord[];
+
+
+            if (combinedInitialChunks.length === 0) {
                 return [];
             }
 
-            // Step 2: Implement Parent Document Retrieval logic
+            // Step 3: Implement Parent Document Retrieval logic
             const parentIds = new Set<string>();
-            initialChunks.forEach(chunk => {
+            combinedInitialChunks.forEach(chunk => {
                 if (chunk.parent_embedding_id) {
                     parentIds.add(chunk.parent_embedding_id);
                 }
@@ -494,11 +805,11 @@ export class CodebaseEmbeddingService {
                 parentChunks = await this.repository.getEmbeddingsByIds(Array.from(parentIds));
             }
 
-            // Step 3: Combine and deduplicate results
+            // Step 4: Combine and deduplicate results
             // Give parent chunks a slight score boost to prioritize them
             const combinedResults = [
-                ...initialChunks,
-                ...parentChunks.map(p => ({ ...p, similarity: 0.9 })) // Assign high similarity
+                ...combinedInitialChunks,
+                ...parentChunks.map(p => ({ ...p, similarity: 0.9 }))
             ];
 
             const uniqueResults = Array.from(new Map(combinedResults.map(item => [item.embedding_id, item])).values());
@@ -513,7 +824,7 @@ export class CodebaseEmbeddingService {
                 ai_summary_text: chunk.ai_summary_text,
                 file_path_relative: chunk.file_path_relative,
                 entity_name: chunk.entity_name,
-                score: chunk.similarity,
+                score: chunk.similarity ?? 0,
                 metadata: chunk.metadata_json ? JSON.parse(chunk.metadata_json) : null
             }));
 

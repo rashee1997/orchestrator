@@ -8,6 +8,7 @@ import { EmbeddingIngestionResult, ChunkingStrategy } from '../types/codebase_em
 import { formatJsonToMarkdownCodeBlock, formatSimpleMessage } from '../utils/formatters.js';
 import { schemas, validate } from '../utils/validation.js';
 import { DiverseQueryRewriterService } from './rag/diverse_query_rewriter_service.js';
+import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 
 // Define the interface for the chunk result, including the new original_code_snippet
 interface CodeChunkResult {
@@ -180,28 +181,65 @@ ${formatChangeList(trulyDeleted)}
 
 `;
 
-    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for a pull request. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
+    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for code changes. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
 
-Synthesize all sections to understand the full picture. Pay close attention to the 'Refactored' section, which indicates code that was modified. Your summary should be brief, written in markdown, and focus on the overall impact of the changes.
+**Instructions:**
+1. **Identify the domain/technology**: Look at file paths, function names, and entity names to understand what type of system this is (e.g., web app, AI/ML system, API, database, etc.)
+2. **Analyze the scope of changes**: Distinguish between major architectural changes, feature additions, bug fixes, refactoring, and configuration updates
+3. **Focus on impact**: What are the most significant improvements or modifications?
+4. **Be specific**: Use technical terminology appropriate to the detected domain rather than generic terms
+5. **Pay attention to 'Refactored' sections**: These often indicate significant modifications to existing functionality
 
 **Changelog:**
 ${changelog}
+
+**Summary Requirements:**
+- Write 2-3 sentences maximum
+- Be domain-specific based on what you observe in the changes
+- Focus on the most impactful modifications
+- Use appropriate technical language for the detected technology stack
 `;
 
     let summaryText = `(AI summary could not be generated.)`;
     try {
+        // Try to use multi-model orchestrator first (prefers Mistral for simple analysis)
         const geminiService = memoryManager.getGeminiIntegrationService();
         if (geminiService) {
-            const response = await geminiService.askGemini(prompt, 'gemini-2.5-flash');
-            if (response?.content?.[0]?.text) {
-                summaryText = response.content[0].text.trim();
+            try {
+                // Import MultiModelOrchestrator dynamically to avoid circular dependencies
+                const { MultiModelOrchestrator } = await import('../tools/rag/multi_model_orchestrator.js');
+                const orchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
+                
+                console.log('[Embedding Tools] Using multi-model orchestrator for AI summary generation');
+                const result = await orchestrator.executeTask(
+                    'simple_analysis', // Prefers Mistral for simple analysis tasks
+                    prompt,
+                    'You are a Senior Technical Lead analyzing code changes. Provide a concise, domain-specific summary in 2-3 sentences maximum.',
+                    {
+                        contextLength: prompt.length,
+                        timeout: 20000
+                    }
+                );
+                
+                if (result?.content) {
+                    summaryText = result.content.trim();
+                    console.log(`[Embedding Tools] AI summary generated using ${result.model}`);
+                }
+            } catch (orchestratorError) {
+                console.warn('[Embedding Tools] Multi-model orchestrator failed, falling back to Gemini:', orchestratorError);
+                
+                // Fallback to original Gemini method
+                const response = await geminiService.askGemini(prompt, getCurrentModel());
+                if (response?.content?.[0]?.text) {
+                    summaryText = response.content[0].text.trim();
+                }
             }
         }
     } catch (e) {
         console.warn(`Unified AI summarizer failed:`, e);
     }
 
-    return `\n### AI Change Summary:\n${summaryText}\n`;
+    return `\n### 🤖 AI Change Summary\n> ${summaryText.replace(/\n/g, '\n> ')}\n`;
 }
 
 
@@ -219,13 +257,56 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 throw new McpError(ErrorCode.InvalidParams, `Validation failed for ingest_codebase_embeddings: ${errorDetails}`);
             }
 
-            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries } = args;
+            const { path_to_embed, paths_to_embed, project_root_path, is_directory, chunking_strategy, provider_type, disable_ai_output_summary, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries, resume_failed_files } = args;
             const embeddingService = memoryManager.getCodebaseEmbeddingService();
             const absoluteProjectRootPath = path.resolve(project_root_path);
-            let resultCounts: EmbeddingIngestionResult;
-            let outputMessage: string;
+            let resultCounts: EmbeddingIngestionResult = {
+                newEmbeddingsCount: 0,
+                reusedEmbeddingsCount: 0,
+                reusedFilesCount: 0,
+                deletedEmbeddingsCount: 0,
+                newEmbeddings: [],
+                reusedEmbeddings: [],
+                reusedFiles: [],
+                deletedEmbeddings: [],
+                scannedFiles: [],
+                embeddingRequestCount: 0,
+                embeddingRetryCount: 0,
+                totalTokensProcessed: 0,
+                namingApiCallCount: 0,
+                summarizationApiCallCount: 0,
+                dbCallCount: 0,
+                dbCallLatencyMs: 0,
+                processingErrors: [],
+                batchStatus: 'complete',
+                resumeInfo: { failedFiles: [] },
+                aiSummary: '',
+                totalTimeMs: 0
+            };
+            let outputMessage: string = '';
+            
+            // Handle resume functionality
+            if (resume_failed_files && Array.isArray(resume_failed_files) && resume_failed_files.length > 0) {
+                console.log(`[ingest_codebase_embeddings] Resuming ${resume_failed_files.length} failed files...`);
+                
+                resultCounts = await embeddingService.resumeFailedEmbeddingBatch(
+                    agent_id,
+                    resume_failed_files,
+                    absoluteProjectRootPath,
+                    chunking_strategy as ChunkingStrategy || 'auto',
+                    provider_type || 'gemini',
+                    include_summary_patterns,
+                    exclude_summary_patterns,
+                    storeEntitySummaries
+                );
+                
+                outputMessage = `🔄 Resumed processing of ${resume_failed_files.length} previously failed files.`;
+            }
 
-            if (paths_to_embed && paths_to_embed.length > 0) {
+            // If we've already handled resume_failed_files, skip other conditions
+            if (resume_failed_files && Array.isArray(resume_failed_files) && resume_failed_files.length > 0) {
+                // Already processed in the section above
+            } else if (paths_to_embed && paths_to_embed.length > 0) {
                 const normalizedPaths = paths_to_embed.map((fp: string) => {
                     const absoluteFilePath = path.isAbsolute(fp)
                         ? fp
@@ -245,6 +326,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     normalizedPaths,
                     absoluteProjectRootPath,
                     chunking_strategy as ChunkingStrategy,
+                    provider_type,
                     include_summary_patterns,
                     exclude_summary_patterns,
                     storeEntitySummaries
@@ -264,21 +346,68 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                 }
 
                 if (is_directory) {
-                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForDirectory(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, provider_type, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
                 } else {
-                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
+                    resultCounts = await embeddingService.generateAndStoreEmbeddingsForFile(agent_id, absolutePathToEmbed, absoluteProjectRootPath, chunking_strategy as ChunkingStrategy, provider_type, include_summary_patterns, exclude_summary_patterns, storeEntitySummaries);
                 }
                 const relativePathToEmbed = path.relative(absoluteProjectRootPath, absolutePathToEmbed).replace(/\\/g, '/');
                 outputMessage = `Codebase embedding ingestion for "${path_to_embed}" (relative to project root: "${relativePathToEmbed}") complete.`;
             } else {
-                throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed' or 'paths_to_embed' must be provided.");
+                throw new McpError(ErrorCode.InvalidParams, "Either 'path_to_embed', 'paths_to_embed', or 'resume_failed_files' must be provided.");
             }
 
+            // Get embedding configuration info
+            const embeddingInfo = embeddingService.getSharedEmbeddingInfo();
 
-            let detailedOutput = `## Ingestion Summary\n${outputMessage}\n\n### Overall Statistics:\n`
-                + `- **New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
-                + `- **Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
-                + `- **Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
+            let detailedOutput = `## 🧠 Codebase Ingestion Report\n\n> ${outputMessage}\n\n`;
+            detailedOutput += `### 🔬 Embedding Configuration\n${embeddingInfo.sharedProcessDescription}\n`
+                + `- **Target Dimensions:** ${embeddingInfo.targetDimension}D\n`
+                + `- **Active Models:** ${embeddingInfo.enabledModels.map(m => `${m.provider}:${m.model}`).join(', ')}\n`
+                + `- **Strategy:** ${embeddingInfo.loadBalancing}\n\n`;
+            
+            // Add batch status indicator
+            const statusIcon = resultCounts.batchStatus === 'complete' ? '✅' : 
+                              resultCounts.batchStatus === 'partial' ? '⚠️' : '❌';
+            detailedOutput += `### ${statusIcon} Batch Status: ${resultCounts.batchStatus.toUpperCase()}\n\n`;
+
+            detailedOutput += `### 📊 Overall Statistics\n`
+                + `- **✨ New Embeddings Created:** ${resultCounts.newEmbeddingsCount}\n`
+                + `- **♻️ Reused Existing Embeddings:** ${resultCounts.reusedEmbeddingsCount}\n`
+                + `- **📁 Reused Files (Unchanged):** ${resultCounts.reusedFilesCount || 0}\n`
+                + `- **🗑️ Deleted Stale Embeddings:** ${resultCounts.deletedEmbeddingsCount}\n`;
+            
+            // Add error reporting if there are issues
+            if (resultCounts.processingErrors && resultCounts.processingErrors.length > 0) {
+                detailedOutput += `\n### ❌ Processing Errors (${resultCounts.processingErrors.length})\n`;
+                const errorsByStage = new Map<string, any[]>();
+                resultCounts.processingErrors.forEach(error => {
+                    if (!errorsByStage.has(error.stage)) {
+                        errorsByStage.set(error.stage, []);
+                    }
+                    errorsByStage.get(error.stage)!.push(error);
+                });
+                
+                for (const [stage, errors] of errorsByStage.entries()) {
+                    detailedOutput += `\n**${stage.replace('_', ' ').toUpperCase()} Failures (${errors.length}):**\n`;
+                    errors.forEach(error => {
+                        detailedOutput += `- \`${error.file_path_relative}\`: ${error.error}\n`;
+                    });
+                }
+                
+                // Add resumption guidance
+                if (resultCounts.resumeInfo && resultCounts.resumeInfo.failedFiles.length > 0) {
+                    detailedOutput += `\n### 🔄 Resumption Available\n`;
+                    detailedOutput += `**${resultCounts.resumeInfo.failedFiles.length} files** failed processing and can be resumed.\n\n`;
+                    detailedOutput += `**To resume failed files, you can:**\n`;
+                    detailedOutput += `1. Re-run the ingestion for the same directory (failed files will be automatically retried)\n`;
+                    detailedOutput += `2. Or target specific failed files: \`${resultCounts.resumeInfo.failedFiles.slice(0, 3).join(', ')}${resultCounts.resumeInfo.failedFiles.length > 3 ? '...' : ''}\`\n\n`;
+                }
+            }
+
+            if (!disable_ai_output_summary) {
+                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
+                detailedOutput += unifiedSummary;
+            }
 
             const fileStats = new Map<string, { new: number; reused: number; deleted: number }>();
             const aggregate = (list: typeof resultCounts.newEmbeddings, type: 'new' | 'reused' | 'deleted') => {
@@ -295,59 +424,16 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             aggregate(resultCounts.deletedEmbeddings, 'deleted');
 
             if (fileStats.size > 0) {
-                detailedOutput += `\n### File-by-File Ingestion Report (${fileStats.size} files processed):\n`;
+                detailedOutput += `\n### 📁 File-by-File Ingestion Report (${fileStats.size} files processed)\n`;
                 const sortedFiles = Array.from(fileStats.keys()).sort();
 
                 sortedFiles.forEach(filePath => {
                     const counts = fileStats.get(filePath)!;
-                    detailedOutput += `- \`${filePath}\` (New: ${counts.new}, Reused: ${counts.reused}, Deleted: ${counts.deleted})\n`;
+                    detailedOutput += `- \`${filePath}\` (✨ ${counts.new}, ♻️ ${counts.reused}, 🗑️ ${counts.deleted})\n`;
                 });
             }
 
-            // New section: Detailed Chunk Changes
-            const addedChunksByFile = new Map<string, typeof resultCounts.newEmbeddings>();
-            resultCounts.newEmbeddings.forEach(chunk => {
-                const list = addedChunksByFile.get(chunk.file_path_relative) || [];
-                list.push(chunk);
-                addedChunksByFile.set(chunk.file_path_relative, list);
-            });
-
-            const deletedChunksByFile = new Map<string, typeof resultCounts.deletedEmbeddings>();
-            resultCounts.deletedEmbeddings.forEach(chunk => {
-                const list = deletedChunksByFile.get(chunk.file_path_relative) || [];
-                list.push(chunk);
-                deletedChunksByFile.set(chunk.file_path_relative, list);
-            });
-
-            if (addedChunksByFile.size > 0 || deletedChunksByFile.size > 0) {
-                detailedOutput += `\n### Detailed Chunk Changes:\n`;
-                const allAffectedFiles = new Set([...Array.from(addedChunksByFile.keys()), ...Array.from(deletedChunksByFile.keys())]);
-                const sortedAffectedFiles = Array.from(allAffectedFiles).sort();
-
-                sortedAffectedFiles.forEach(filePath => {
-                    detailedOutput += `\n#### File: \`${filePath}\`\n`;
-
-                    const added = addedChunksByFile.get(filePath);
-                    if (added && added.length > 0) {
-                        detailedOutput += `##### Added Chunks:\n`;
-                        added.forEach((chunk, index) => {
-                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
-                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
-                        });
-                    }
-
-                    const deleted = deletedChunksByFile.get(filePath);
-                    if (deleted && deleted.length > 0) {
-                        detailedOutput += `##### Deleted Chunks:\n`;
-                        deleted.forEach((chunk, index) => {
-                            detailedOutput += `**Chunk ${index + 1}** (Entity: \`${chunk.entity_name || 'N/A'}\`):\n`;
-                            detailedOutput += `${formatJsonToMarkdownCodeBlock(chunk.chunk_text.substring(0, 500) + (chunk.chunk_text.length > 500 ? '...' : ''), 'text')}\n`;
-                        });
-                    }
-                });
-            }
-
-            detailedOutput += `\n### Performance Metrics:\n`;
+            detailedOutput += `\n### ⚙️ Performance Metrics\n`;
             if (resultCounts.embeddingRequestCount !== undefined) detailedOutput += `- **Embedding API Requests:** ${resultCounts.embeddingRequestCount}\n`;
             if (resultCounts.embeddingRetryCount !== undefined) detailedOutput += `- **Embedding API Retries:** ${resultCounts.embeddingRetryCount}\n`;
             if (resultCounts.namingApiCallCount !== undefined) detailedOutput += `- **Naming API Calls:** ${resultCounts.namingApiCallCount}\n`;
@@ -363,11 +449,6 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             if (resultCounts.totalTimeMs !== undefined) {
                 const totalTimeSeconds = (resultCounts.totalTimeMs / 1000).toFixed(2);
                 detailedOutput += `- **Total Time Taken:** ${totalTimeSeconds} seconds\n`;
-            }
-
-            if (!disable_ai_output_summary) {
-                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
-                detailedOutput += unifiedSummary;
             }
 
             return { content: [{ type: 'text', text: detailedOutput }] };
@@ -449,31 +530,32 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
 
                 const resultMarkdown = finalResults.map((res, index) => {
                     const metadataLines = [
-                        `- **File:** \`${res.file_path_relative}\``,
-                        res.entity_name && `- **Entity:** \`${res.entity_name}\``,
-                        res.metadata?.full_file_path && `- **Full Path:** \`${res.metadata.full_file_path}\``,
-                        (res.metadata?.startLine && res.metadata?.endLine) && `- **Lines:** ${res.metadata.startLine}-${res.metadata.endLine}`,
-                        res.metadata?.type && `- **Chunk Type:** ${res.metadata.type}`,
-                        enable_dmqr && res.metadata?.dmqr_source_query && res.metadata.dmqr_source_query !== query_text && `- **DMQR Source:** "${res.metadata.dmqr_source_query}"`
-                    ].filter(Boolean).join('\n');
+                        `📁 **File:** \`${res.file_path_relative}\``,
+                        res.entity_name && `🧩 **Entity:** \`${res.entity_name}\``,
+                        (res.metadata?.startLine && res.metadata?.endLine) && `🔢 **Lines:** ${res.metadata.startLine}-${res.metadata.endLine}`,
+                        res.metadata?.type && `🏷️ **Type:** ${res.metadata.type}`,
+                        enable_dmqr && res.metadata?.dmqr_source_query && res.metadata.dmqr_source_query !== query_text && `🎯 **DMQR Source:** "${res.metadata.dmqr_source_query}"`
+                    ].filter(Boolean).join(' | ');
 
                     let contentBlock;
+                    const lang = res.file_path_relative.split('.').pop() || 'text';
+
                     if (res.metadata?.type?.endsWith('_summary')) {
-                        const originalCode = `**Original Code Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'typescript')}`;
-                        const aiSummary = res.ai_summary_text ? `\n**AI Summary:**\n${formatJsonToMarkdownCodeBlock(res.ai_summary_text, 'text')}` : '';
+                        const originalCode = `#### Original Code Snippet\n${formatJsonToMarkdownCodeBlock(res.chunk_text, lang)}`;
+                        const aiSummary = res.ai_summary_text ? `\n#### 🤖 AI Summary\n> ${res.ai_summary_text.replace(/\n/g, '\n> ')}\n` : '';
                         contentBlock = `${originalCode}${aiSummary}\n`;
                     } else {
-                        contentBlock = `**Content Snippet:**\n${formatJsonToMarkdownCodeBlock(res.chunk_text, 'text')}\n`;
+                        contentBlock = `#### Content Snippet\n${formatJsonToMarkdownCodeBlock(res.chunk_text, lang)}\n`;
                     }
 
-                    return `### Result ${index + 1} (Score: ${res.score.toFixed(4)})\n${metadataLines}\n${contentBlock}`;
+                    return `### ✨ Result ${index + 1} (Score: ${res.score.toFixed(4)})\n${metadataLines}\n\n${contentBlock}`;
                 }).join('---\n');
 
                 const queryInfo = enable_dmqr
                     ? ` (DMQR enabled: searched with ${generatedQueries.length} queries)`
                     : '';
 
-                const finalMarkdown = `## Similar Code Chunks for Query: "${query_text}"${queryInfo} (Top ${finalResults.length})\n\n${resultMarkdown}`;
+                const finalMarkdown = `## 🔍 Similar Code Chunks for Query\n> "${query_text}"${queryInfo}\n\n${resultMarkdown}`;
                 return { content: [{ type: 'text', text: finalMarkdown }] };
 
             } catch (error: any) {
@@ -517,7 +599,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     project_root_path,
                     filter_by_agent
                 );
-                const message = formatSimpleMessage(`Successfully deleted ${result.deletedCount} embeddings for the specified file paths.`, "Clean Up Embeddings Result");
+                const message = formatSimpleMessage(`Successfully deleted ${result.deletedCount} embeddings for the specified file paths.`, "🗑️ Clean Up Embeddings");
                 return { content: [{ type: 'text', text: message }] };
             } catch (error: any) {
                 console.error(`Error cleaning up embeddings for agent ${agent_id}:`, error);

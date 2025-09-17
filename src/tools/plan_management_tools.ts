@@ -12,6 +12,7 @@ import {
     formatTaskToMarkdown
 } from '../utils/formatters.js';
 import { InitialDetailedPlanAndTasks } from '../database/services/GeminiPlannerService.js';
+import { MultiStepPlanGenerationService } from '../database/services/MultiStepPlanGenerationService.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -32,7 +33,7 @@ interface Subtask {
 export const planManagementToolDefinitions = [
     {
         name: 'create_task_plan',
-        description: 'Creates a new task plan. Can either accept full plan and task data, or generate them using AI based on a goal description or refined prompt ID. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
+        description: 'Creates a new task plan. Can either accept full plan and task data, or generate them using AI based on a goal description or refined prompt ID. Supports multi-step generation to avoid token limits for large plans. This tool strictly requires the agent_id parameter. Output is Markdown formatted.',
         inputSchema: schemas.createTaskPlan,
     },
     {
@@ -153,6 +154,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             if (args.goal_description || args.refined_prompt_id) {
                 const identifier = args.refined_prompt_id || args.goal_description;
                 const isRefinedPromptId = !!args.refined_prompt_id;
+                const useMultiStep = args.use_multi_step_generation === true;
                 
                 // Read live files content if paths are provided
                 let liveFilesContent: Map<string, string> | undefined;
@@ -187,16 +189,53 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 }
                 
                 try {
-                    const aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
-                        agent_id, 
-                        identifier, 
-                        isRefinedPromptId,
-                        undefined, // directRefinedPromptDetails
-                        undefined, // codebaseContextSummary
-                        liveFilesContent // Pass live file content to the planner
-                    );
-                    planDataToStore = aiGeneratedPlan.planData;
-                    tasksDataToStore = aiGeneratedPlan.tasksData;
+                    if (useMultiStep) {
+                        console.log(`[Multi-Step Plan] Using multi-step generation for agent ${agent_id}`);
+                        
+                        // Convert liveFilesContent Map to Array format for multi-step service
+                        const liveFiles: Array<{ path: string; content: string }> = [];
+                        if (liveFilesContent) {
+                            for (const [path, content] of liveFilesContent.entries()) {
+                                liveFiles.push({ path, content });
+                            }
+                        }
+
+                        // Initialize multi-step service
+                        const geminiService = memoryManager.getGeminiIntegrationService();
+                        const multiStepService = new MultiStepPlanGenerationService(
+                            memoryManager,
+                            geminiService
+                        );
+
+                        // Generate complete plan using multi-step process
+                        const progress = await multiStepService.generateCompletePlan(
+                            agent_id,
+                            identifier,
+                            isRefinedPromptId,
+                            liveFiles
+                        );
+
+                        // Convert to database format
+                        const dbFormat = multiStepService.convertToDbFormat(progress, args.refined_prompt_id);
+                        planDataToStore = dbFormat.planData;
+                        tasksDataToStore = dbFormat.tasks;
+
+                        console.log(`[Multi-Step Plan] ✅ Successfully generated ${tasksDataToStore.length} tasks in ${progress.currentStep} steps`);
+                    } else {
+                        // Use existing single-step generation (original behavior)
+                        console.log(`[Single-Step Plan] Using traditional generation for agent ${agent_id}`);
+                        
+                        const aiGeneratedPlan = await memoryManager.getGeminiPlannerService().generateInitialDetailedPlanAndTasks(
+                            agent_id, 
+                            identifier, 
+                            isRefinedPromptId,
+                            undefined, // directRefinedPromptDetails
+                            undefined, // codebaseContextSummary
+                            liveFilesContent // Pass live file content to the planner
+                        );
+                        planDataToStore = aiGeneratedPlan.planData;
+                        tasksDataToStore = aiGeneratedPlan.tasksData;
+                    }
 
                     if (args.refined_prompt_id) {
                         planDataToStore.refined_prompt_id_associated = args.refined_prompt_id;
@@ -267,7 +306,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             const plans = await memoryManager.getPlans(agent_id, args.status_filter, args.limit, args.offset);
             plans.sort((a: any, b: any) => (b.creation_timestamp_unix || 0) - (a.creation_timestamp_unix || 0));
 
-            let title = `Task Plans for Agent: \`${agent_id}\``;
+            let title = `📋 Task Plans for Agent: \`${agent_id}\``;
             if (args.status_filter) title += ` (Status: ${args.status_filter})`;
 
             return createToolResponse(`## ${title}\n\n${formatPlansListToMarkdownTable(plans)}`);
@@ -286,7 +325,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 }))
             );
 
-            let title = `Tasks for Plan: \`${args.plan_id}\` (Agent: \`${agent_id}\`)`;
+            let title = `🚀 Tasks for Plan: \`${args.plan_id}\``;
             if (args.status_filter) title += ` (Status: ${args.status_filter})`;
 
             return createToolResponse(`## ${title}\n\n${formatTasksListToMarkdownTable(tasksWithSubtasks, true)}`);
@@ -302,7 +341,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 ? `Plan \`${args.plan_id}\` status updated to \`${args.new_status}\`.`
                 : `Failed to update status for plan \`${args.plan_id}\`.`;
 
-            return createToolResponse(formatSimpleMessage(message, "Update Plan Status"));
+            return createToolResponse(formatSimpleMessage(message, "🔄 Update Plan Status"));
         },
 
         'update_task_details': async (args: any, agent_id_from_server: string) => {
@@ -317,7 +356,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 ? createUpdateSuccessMessage('Task', task_id, args)
                 : `Failed to update details for task \`${task_id}\`.`;
 
-            return createToolResponse(formatSimpleMessage(message, "Update Task Details"));
+            return createToolResponse(formatSimpleMessage(message, "🔄 Update Task Details"));
         },
 
         'delete_task_plans': async (args: any, agent_id_from_server: string) => {
@@ -330,7 +369,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 ? `Plans \`${args.plan_ids.join(', ')}\` and their associated tasks/subtasks deleted.`
                 : `Failed to delete plans \`${args.plan_ids.join(', ')}\`.`;
 
-            return createToolResponse(formatSimpleMessage(message, "Delete Plans"));
+            return createToolResponse(formatSimpleMessage(message, "🗑️ Delete Plans"));
         },
 
         'delete_tasks': async (args: any, agent_id_from_server: string) => {
@@ -343,7 +382,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
                 ? `Tasks \`${args.task_ids.join(', ')}\` and their associated subtasks deleted.`
                 : `Failed to delete tasks \`${args.task_ids.join(', ')}\`.`;
 
-            return createToolResponse(formatSimpleMessage(message, "Delete Tasks"));
+            return createToolResponse(formatSimpleMessage(message, "🗑️ Delete Tasks"));
         },
 
         'add_task_to_plan': async (args: any, agent_id_from_server: string) => {
@@ -354,7 +393,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
             const task_id = await memoryManager.addTaskToPlan(agent_id, args.plan_id, args.taskData);
             const message = `Task added to plan \`${args.plan_id}\` with ID: \`${task_id}\``;
 
-            return createToolResponse(formatSimpleMessage(message, "Task Added"));
+            return createToolResponse(formatSimpleMessage(message, "➕ Task Added"));
         },
 
         'add_subtask_to_plan': async (args: any, agent_id_from_server: string) => {
@@ -380,7 +419,7 @@ export function getPlanManagementToolHandlers(memoryManager: MemoryManager) {
 
             if (parent_task_id) message += ` Parent task ID: \`${parent_task_id}\`.`;
 
-            return createToolResponse(formatSimpleMessage(message, "Subtasks Added"));
+            return createToolResponse(formatSimpleMessage(message, "➕ Subtasks Added"));
         },
 
         'get_subtasks': async (args: any, agent_id_from_server: string) => {

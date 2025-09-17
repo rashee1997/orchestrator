@@ -54,7 +54,7 @@ export function getDatabaseManagementToolHandlers(memoryManager: MemoryManager) 
                 args.tableName as string,
                 args.filePath as string
             );
-            return { content: [{ type: 'text', text: formatSimpleMessage(exportResult, "CSV Export") }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(exportResult, "📄 CSV Export") }] };
         },
         'backup_database': async (args: any) => { // agent_id is not required for this tool
             const validationResult = validate('backupDatabase', args);
@@ -67,7 +67,7 @@ export function getDatabaseManagementToolHandlers(memoryManager: MemoryManager) 
             const backupResult = await memoryManager.backupDatabase(
                 args.backupFilePath as string
             );
-            return { content: [{ type: 'text', text: formatSimpleMessage(backupResult, "Database Backup") }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(backupResult, "💽 Database Backup") }] };
         },
         'restore_database': async (args: any) => { // agent_id is not required for this tool
             const validationResult = validate('restoreDatabase', args);
@@ -80,7 +80,7 @@ export function getDatabaseManagementToolHandlers(memoryManager: MemoryManager) 
             const restoreResult = await memoryManager.restoreDatabase(
                 args.backupFilePath as string
             );
-            return { content: [{ type: 'text', text: formatSimpleMessage(restoreResult, "Database Restore") }] };
+            return { content: [{ type: 'text', text: formatSimpleMessage(restoreResult, "🔄 Database Restore") }] };
         },
     };
 }

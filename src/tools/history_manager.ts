@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
+import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 
 // Define the structure of our session and index
 export interface ChatMessage {
@@ -134,7 +135,7 @@ export class HistoryManager {
         const prompt = `Based on the following conversation, generate a very concise, 4-6 word filename in lowercase snake_case. Example: 'refactoring_the_user_service'.\n\nConversation:\n${conversationForSummary}`;
 
         try {
-            const result = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const result = await this.geminiService.askGemini(prompt, getCurrentModel());
             let name = result.content[0].text ?? 'untitled_session';
             // Clean up the name
             name = name.trim().toLowerCase();

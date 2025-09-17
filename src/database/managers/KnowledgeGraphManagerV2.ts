@@ -14,8 +14,10 @@ import { NLPQueryProcessor } from '../ai/NLPQueryProcessor.js';
 import { GeminiIntegrationService } from '../services/GeminiIntegrationService.js';
 import type { QueryAST, NlpStructuredQuery, ParsedComplexQuery } from '../../types/query.js';
 import { createCanonicalAbsPathKey } from '../../tools/knowledge_graph_tools.js';
-import { parseGeminiJsonResponse as centralParseGeminiJsonResponse } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
-import { NLP_QUERY_PROMPT_TEMPLATE } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { parseGeminiJsonResponse as centralParseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../services/gemini-integration-modules/GeminiResponseParsers.js';
+import { MemoryManager } from '../memory_manager.js';
+import { ENHANCED_KG_NL_TRANSLATION_PROMPT, KG_STRUCTURE_UNDERSTANDING_PROMPT } from '../services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { getCurrentModel } from '../services/gemini-integration-modules/GeminiConfig.js';
 
 export class KnowledgeGraphManagerV2 {
     private jsonlStorage: JsonlStorageManager;
@@ -27,6 +29,7 @@ export class KnowledgeGraphManagerV2 {
     private entityResolver: EntityResolver;
     private nlpQueryProcessor: NLPQueryProcessor;
     private geminiService?: GeminiIntegrationService;
+    private memoryManager?: MemoryManager;
 
     private readonly MAX_PROMPT_GRAPH_LENGTH = 150000; // Max chars for graph representation in prompt
 
@@ -51,7 +54,7 @@ export class KnowledgeGraphManagerV2 {
         default: ['[', ']']
     };
 
-    constructor(rootPath?: string, geminiService?: GeminiIntegrationService) {
+    constructor(rootPath?: string, geminiService?: GeminiIntegrationService, memoryManager?: MemoryManager) {
         if (!rootPath) {
             const __filename = fileURLToPath(import.meta.url);
             const __dirname = path.dirname(__filename);
@@ -67,6 +70,7 @@ export class KnowledgeGraphManagerV2 {
         this.entityResolver = new EntityResolver();
         this.nlpQueryProcessor = new NLPQueryProcessor();
         this.geminiService = geminiService;
+        this.memoryManager = memoryManager;
         console.log(`[KGManagerV2] Initialized. Root path: ${rootPath}`);
     }
 
@@ -539,6 +543,162 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
     }
 
     /**
+     * Converts enhanced KG analysis to executable operations
+     */
+    private _convertEnhancedAnalysisToOperations(analysis: any, originalQuery: string): any[] {
+        if (!analysis || typeof analysis !== 'object') {
+            return this._generateFallbackOperations(originalQuery);
+        }
+
+        const operations: any[] = [];
+        
+        try {
+            // Extract semantic keywords and entity types from enhanced analysis
+            const semanticKeywords = analysis.semantic_keywords || [];
+            const primaryEntityTypes = analysis.primary_entity_types || [];
+            const searchStrategy = analysis.search_strategy || 'hybrid';
+            
+            // Generate operations based on the enhanced analysis
+            if (searchStrategy === 'semantic' || searchStrategy === 'hybrid') {
+                // Create semantic search operations
+                if (semanticKeywords.length > 0 && primaryEntityTypes.length > 0) {
+                    for (const entityType of primaryEntityTypes) {
+                        const searchQuery = `entityType:${entityType} obs:${semanticKeywords.join(' ')}`;
+                        operations.push({
+                            operation: 'search_nodes',
+                            args: { query: searchQuery }
+                        });
+                    }
+                }
+            }
+            
+            if (searchStrategy === 'structural' || searchStrategy === 'hybrid') {
+                // Create structural search operations based on traversal rules
+                const traversalRules = analysis.graph_traversal_rules || {};
+                const relationTypes = analysis.key_relation_types || [];
+                
+                if (relationTypes.length > 0) {
+                    // Look for entities that might be start nodes
+                    if (semanticKeywords.length > 0) {
+                        operations.push({
+                            operation: 'search_nodes',
+                            args: { query: `obs:${semanticKeywords[0]}` }
+                        });
+                    }
+                }
+            }
+            
+            // If no specific operations generated, create a general search
+            if (operations.length === 0) {
+                return this._generateFallbackOperations(originalQuery);
+            }
+            
+            return operations;
+            
+        } catch (error) {
+            console.warn('[KGManagerV2] Error converting enhanced analysis to operations:', error);
+            return this._generateFallbackOperations(originalQuery);
+        }
+    }
+
+    /**
+     * Generates fallback operations when enhanced analysis fails
+     */
+    private _generateFallbackOperations(query: string): any[] {
+        const lowerQuery = query.toLowerCase();
+        const operations: any[] = [];
+        
+        // Simple keyword-based operation generation
+        if (lowerQuery.includes('function') || lowerQuery.includes('method')) {
+            operations.push({ operation: 'search_nodes', args: { query: 'entityType:function' } });
+        } else if (lowerQuery.includes('class')) {
+            operations.push({ operation: 'search_nodes', args: { query: 'entityType:class' } });
+        } else if (lowerQuery.includes('file')) {
+            operations.push({ operation: 'search_nodes', args: { query: 'entityType:file' } });
+        } else if (lowerQuery.includes('all') || lowerQuery.includes('show') || lowerQuery.includes('list')) {
+            operations.push({ operation: 'read_graph', args: {} });
+        } else {
+            // General search based on query terms
+            const searchTerms = query.split(/\s+/).filter(term => term.length > 2);
+            if (searchTerms.length > 0) {
+                operations.push({ 
+                    operation: 'search_nodes', 
+                    args: { query: `obs:${searchTerms.join(' ')}` } 
+                });
+            } else {
+                operations.push({ operation: 'read_graph', args: {} });
+            }
+        }
+        
+        return operations;
+    }
+
+    /**
+     * Determines if structure analysis should be performed based on results and analysis
+     */
+    private _shouldPerformStructureAnalysis(results: any[], enhancedAnalysis: any): boolean {
+        // Perform structure analysis if:
+        // 1. Results are sparse (less than expected)
+        // 2. Enhanced analysis suggests structural patterns
+        // 3. Query had low confidence in the enhanced analysis
+        
+        const expectedResultCount = enhancedAnalysis?.search_optimization?.expected_result_count;
+        const confidence = enhancedAnalysis?.search_optimization?.confidence || 0;
+        const hasStructuralPatterns = enhancedAnalysis?.structural_patterns?.length > 0;
+        
+        // Check if results are significantly fewer than expected
+        const resultsSparse = expectedResultCount && 
+            (typeof expectedResultCount === 'string' && expectedResultCount.includes('-')) ?
+            results.length < parseInt(expectedResultCount.split('-')[0]) :
+            results.length < 5; // Default threshold
+            
+        const lowConfidence = confidence < 0.7;
+        
+        return resultsSparse || hasStructuralPatterns || lowConfidence;
+    }
+
+    /**
+     * Performs structure analysis on query results using KG_STRUCTURE_UNDERSTANDING_PROMPT
+     */
+    private async _performStructureAnalysis(agentId: string, originalQuery: string, currentResults: any[], enhancedAnalysis: any): Promise<any | null> {
+        if (!this.geminiService) {
+            return null;
+        }
+
+        try {
+            const searchStrategy = enhancedAnalysis?.search_strategy || 'unknown';
+            const resultsString = JSON.stringify(currentResults.slice(0, 10), null, 2); // Limit to first 10 for analysis
+            
+            const structurePrompt = KG_STRUCTURE_UNDERSTANDING_PROMPT
+                .replace('{originalQuery}', originalQuery)
+                .replace('{currentResults}', resultsString)
+                .replace('{searchStrategy}', searchStrategy);
+            
+            const response = await this.geminiService.askGemini(structurePrompt, getCurrentModel());
+            const responseText = response.content[0]?.text?.trim() || '{}';
+            
+            const structureAnalysis = await centralParseGeminiJsonResponse(responseText, {
+                expectedStructure: 'confidence, improvement_suggestions with refined_queries array',
+                contextDescription: 'Structure analysis for knowledge graph query refinement',
+                memoryManager: this.memoryManager,
+                geminiService: this.geminiService
+            });
+            
+            // Log insights from structure analysis
+            if (structureAnalysis?.improvement_suggestions?.refined_queries?.length > 0) {
+                console.log('[KGManagerV2] Structure analysis suggests refined queries:', 
+                    structureAnalysis.improvement_suggestions.refined_queries);
+            }
+            
+            return structureAnalysis;
+            
+        } catch (error: any) {
+            console.error('[KGManagerV2] Error performing structure analysis:', error.message);
+            return null;
+        }
+    }
+
+    /**
      * Executes a structured query object against the knowledge graph.
      */
     private async _executeAiQuery(agentId: string, query: { operation?: string, type?: string, args?: any }): Promise<any> {
@@ -611,17 +771,33 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
 
         let structuredQueriesFromAI: any[];
         let usedGemini = false;
+        let enhancedAnalysis: any = null;
         try {
-            const graphContext = await this._prepareGraphContextForPrompt(agentId);
-            const prompt = NLP_QUERY_PROMPT_TEMPLATE
-                .replace('${graphRepresentation}', graphContext)
-                .replace('${naturalLanguageQuery}', naturalLanguageQuery);
+            // Use the enhanced KG NL translation prompt for sophisticated analysis
+            const enhancedPrompt = ENHANCED_KG_NL_TRANSLATION_PROMPT
+                .replace('{naturalLanguageQuery}', naturalLanguageQuery);
 
-            const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
+            const geminiResponse = await this.geminiService.askGemini(enhancedPrompt, getCurrentModel());
             usedGemini = true;
-            const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "[]";
-            structuredQueriesFromAI = this._parseGeminiJsonResponse(geminiResponseText);
-            console.log("[KGManagerV2] Gemini Parsed Structured Queries:", JSON.stringify(structuredQueriesFromAI));
+            const geminiResponseText = geminiResponse.content[0]?.text?.trim() || "{}";
+            
+            try {
+                enhancedAnalysis = await centralParseGeminiJsonResponse(geminiResponseText, {
+                    expectedStructure: 'enhanced_query, query_intent, search_strategy, primary_entity_types, key_relation_types',
+                    contextDescription: 'Enhanced knowledge graph analysis for natural language query translation',
+                    memoryManager: this.memoryManager,
+                    geminiService: this.geminiService
+                });
+                console.log("[KGManagerV2] Enhanced KG Analysis:", JSON.stringify(enhancedAnalysis, null, 2));
+                
+                // Convert enhanced analysis to executable operations based on the analysis
+                structuredQueriesFromAI = this._convertEnhancedAnalysisToOperations(enhancedAnalysis, naturalLanguageQuery);
+                console.log("[KGManagerV2] Converted to Operations:", JSON.stringify(structuredQueriesFromAI));
+            } catch (parseError: any) {
+                console.warn("[KGManagerV2] Failed to parse enhanced analysis, falling back to simple approach:", parseError.message);
+                // Fallback to simple operations based on query keywords
+                structuredQueriesFromAI = this._generateFallbackOperations(naturalLanguageQuery);
+            }
 
         } catch (e: any) {
             console.error(`[KGManagerV2] Gemini call or parsing failed:`, e);
@@ -676,11 +852,28 @@ Total Nodes: ${graphData?.nodes.length || 0}, Total Relations: ${graphData?.rela
 
         console.log(`[KGManagerV2.queryNaturalLanguage] Final unique query result count: ${uniqueResults.length}`);
 
+        // Perform structure analysis if results seem sparse or if enhanced analysis is available
+        let structureAnalysis: any = null;
+        if (usedGemini && enhancedAnalysis && this._shouldPerformStructureAnalysis(uniqueResults, enhancedAnalysis)) {
+            try {
+                structureAnalysis = await this._performStructureAnalysis(agentId, naturalLanguageQuery, uniqueResults, enhancedAnalysis);
+                console.log("[KGManagerV2] Structure Analysis completed:", structureAnalysis?.confidence_score || 'N/A');
+            } catch (error: any) {
+                console.warn('[KGManagerV2] Structure analysis failed:', error.message);
+            }
+        }
+
         return JSON.stringify({
             metadata: {
                 originalQuery: naturalLanguageQuery,
                 translatedOperations: allTranslatedOps,
-                usedGemini
+                usedGemini,
+                enhancedAnalysis: enhancedAnalysis ? {
+                    queryIntent: enhancedAnalysis.query_intent,
+                    searchStrategy: enhancedAnalysis.search_strategy,
+                    confidence: enhancedAnalysis.search_optimization?.confidence
+                } : null,
+                structureAnalysis: structureAnalysis
             },
             results: uniqueResults
         }, null, 2);
@@ -734,7 +927,7 @@ If no new relations can be confidently inferred, return an empty array [].`;
         let proposedByAI: Array<{ from: string; to: string; relationType: string; confidence: number; evidence: string }> = [];
         if (this.geminiService) {
             try {
-                const geminiResponse = await this.geminiService.askGemini(prompt, "gemini-2.5-flash");
+                const geminiResponse = await this.geminiService.askGemini(prompt, getCurrentModel());
                 const parsedResponse = this._parseGeminiJsonResponse(geminiResponse.content[0]?.text?.trim() || "[]");
                 proposedByAI = Array.isArray(parsedResponse) ? parsedResponse : [];
                 console.log(`[KGManagerV2.inferRelations] Gemini proposed ${proposedByAI.length} relations.`);

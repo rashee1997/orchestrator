@@ -1,92 +1,113 @@
 import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
+import { MistralEmbeddingService } from '../gemini-integration-modules/MistralEmbeddingService.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.js';
 import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
+import { ApiKeyManager } from './ApiKeyManager.js';
+import { RateLimiter } from './RateLimiter.js';
+import { BatchProcessor } from './BatchProcessor.js';
+import { MultiModelOrchestrator } from '../../../tools/rag/multi_model_orchestrator.js';
+import { MemoryManager } from '../../memory_manager.js';
 
+export type EmbeddingProviderType = 'gemini' | 'mistral';
+
+/**
+ * AI Embedding Provider handles generating embeddings for text chunks using various AI providers.
+ * Supports batch processing, rate limiting, API key rotation, and fallback providers.
+ */
 export class AIEmbeddingProvider {
+    // Public services
     public geminiService: GeminiIntegrationService;
+
+    // Private services and configuration
+    private mistralService?: MistralEmbeddingService;
+    private providerType: EmbeddingProviderType;
     private maxRetries: number;
     private baseDelay: number;
-    private maxBatchSize: number;
-    private maxTokensPerBatch: number;
-    private apiKeys: string[];
-    private currentApiKeyIndex: number;
     private requestTimeout: number;
-    private rateLimiter: Map<string, { count: number; resetTime: number }>;
-    private maxRequestsPerMinute: number;
 
+    // Injected services for better separation of concerns
+    private apiKeyManager: ApiKeyManager;
+    private rateLimiter: RateLimiter;
+    private batchProcessor: BatchProcessor;
+    private multiModelOrchestrator?: MultiModelOrchestrator;
+    private memoryManager?: MemoryManager;
+
+    /**
+     * Creates an instance of AIEmbeddingProvider.
+     * @param geminiService The Gemini integration service
+     * @param providerType The embedding provider type ('gemini' or 'mistral')
+     * @param maxRetries Maximum number of retry attempts for failed requests
+     * @param baseDelay Base delay in milliseconds for exponential backoff
+     * @param maxBatchSize Maximum number of texts per batch
+     * @param maxTokensPerBatch Maximum tokens per batch
+     * @param requestTimeout Request timeout in milliseconds
+     */
     constructor(
         geminiService: GeminiIntegrationService,
+        providerType: EmbeddingProviderType = 'gemini',
         maxRetries: number = 3,
         baseDelay: number = 1000,
         maxBatchSize: number = 100,
         maxTokensPerBatch: number = 20000,
-        requestTimeout: number = 30000
+        requestTimeout: number = 30000,
+        memoryManager?: MemoryManager
     ) {
         this.geminiService = geminiService;
+        this.providerType = providerType;
         this.maxRetries = maxRetries;
         this.baseDelay = baseDelay;
-        this.maxBatchSize = maxBatchSize;
-        this.maxTokensPerBatch = maxTokensPerBatch;
         this.requestTimeout = requestTimeout;
-        this.apiKeys = this._loadApiKeys();
-        this.currentApiKeyIndex = 0;
-        this.rateLimiter = new Map();
-        this.maxRequestsPerMinute = 60;
-    }
 
-    private _loadApiKeys(): string[] {
-        const keys: string[] = [];
-        let i = 1;
-
-        while (true) {
-            const geminiKeyName = `GEMINI_API_KEY${i > 1 ? i : ''}`;
-            const googleKeyName = `GOOGLE_API_KEY${i > 1 ? i : ''}`;
-            const geminiKey = process.env[geminiKeyName];
-            const googleKey = process.env[googleKeyName];
-
-            if (geminiKey) keys.push(geminiKey);
-            if (googleKey) keys.push(googleKey);
-
-            if (!geminiKey && !googleKey) break;
-            i++;
+        // Initialize supporting services
+        this.apiKeyManager = new ApiKeyManager();
+        this.rateLimiter = new RateLimiter();
+        this.batchProcessor = new BatchProcessor(maxBatchSize, maxTokensPerBatch);
+        
+        // Initialize multi-model orchestrator if memoryManager is provided
+        if (memoryManager) {
+            this.memoryManager = memoryManager;
+            this.multiModelOrchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
+            console.log('[AIEmbeddingProvider] Multi-model orchestrator enabled for summarization tasks');
         }
 
-        if (keys.length === 0) {
-            console.warn('No Gemini API keys found. Embedding provider will not be functional.');
+        // Initialize Mistral service if needed
+        if (providerType === 'mistral') {
+            try {
+                this.mistralService = new MistralEmbeddingService();
+            } catch (error) {
+                console.warn('Failed to initialize Mistral embedding service:', error);
+                console.warn('Falling back to Gemini provider');
+                this.providerType = 'gemini';
+            }
         }
-
-        return keys;
     }
+
+
+
+    public setProvider(providerType: EmbeddingProviderType, modelName?: string): void {
+        this.providerType = providerType;
+        if (providerType === 'mistral') {
+            try {
+                this.mistralService = new MistralEmbeddingService(modelName);
+            } catch (error) {
+                console.warn('Failed to initialize Mistral embedding service during setProvider:', error);
+                console.warn('Falling back to Gemini provider');
+                this.providerType = 'gemini';
+            }
+        }
+    }
+
 
     private _rotateApiKey(): void {
-        if (this.apiKeys.length > 1) {
-            this.currentApiKeyIndex = (this.currentApiKeyIndex + 1) % this.apiKeys.length;
-        }
+        this.apiKeyManager.rotateKey();
     }
 
     private _getCurrentApiKey(): string {
-        if (this.apiKeys.length === 0) {
-            throw new Error('No API keys available');
-        }
-        return this.apiKeys[this.currentApiKeyIndex];
+        return this.apiKeyManager.getCurrentKey();
     }
 
     private async _checkRateLimit(identifier: string): Promise<void> {
-        const now = Date.now();
-        const limit = this.rateLimiter.get(identifier);
-
-        if (!limit || now > limit.resetTime) {
-            // Reset the rate limit
-            this.rateLimiter.set(identifier, { count: 1, resetTime: now + 60 * 1000 });
-            return;
-        }
-
-        if (limit.count >= this.maxRequestsPerMinute) {
-            const waitTime = limit.resetTime - now;
-            throw new Error(`Rate limit exceeded for ${identifier}. Please wait ${Math.ceil(waitTime / 1000)} seconds.`);
-        }
-
-        limit.count++;
+        await this.rateLimiter.checkRateLimit(identifier);
     }
 
     public async generateMeaningfulEntityName(codeChunk: string, language: string | undefined): Promise<string> {
@@ -103,7 +124,21 @@ export class AIEmbeddingProvider {
         chunks: Array<{ codeChunk: string; language: string | undefined }>
     ): Promise<string[]> {
         if (chunks.length === 0) return [];
+        
+        // Try using multi-model orchestrator for single chunks (efficient for small tasks)
+        if (this.multiModelOrchestrator && chunks.length <= 3) {
+            try {
+                const results = await Promise.all(
+                    chunks.map(chunk => this._generateNameWithOrchestrator(chunk.codeChunk, chunk.language))
+                );
+                return results;
+            } catch (error) {
+                console.warn('[AIEmbeddingProvider] Multi-model entity naming failed, falling back to batch Gemini:', error);
+                // Fall through to original batch method
+            }
+        }
 
+        // Original batch method for larger batches or when orchestrator fails
         const prompts = chunks.map(chunk =>
             GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT
                 .replace(/{language}/g, chunk.language || 'unknown')
@@ -127,6 +162,39 @@ export class AIEmbeddingProvider {
             return new Array(chunks.length).fill('anonymous_chunk');
         }
     }
+    
+    /**
+     * Generate meaningful entity name using multi-model orchestrator
+     */
+    private async _generateNameWithOrchestrator(codeChunk: string, language: string | undefined): Promise<string> {
+        const prompt = GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT
+            .replace(/{language}/g, language || 'unknown')
+            .replace('{codeChunk}', codeChunk);
+            
+        try {
+            const result = await this.multiModelOrchestrator!.executeTask(
+                'simple_analysis', // Uses Mistral as preferred model for simple naming tasks
+                prompt,
+                'You are an expert code analyst. Generate a concise, meaningful name for the given code entity. Return only the name, no explanations.',
+                {
+                    contextLength: prompt.length,
+                    timeout: 10000
+                }
+            );
+            
+            console.log(`[AIEmbeddingProvider] Entity naming successful using ${result.model}`);
+            
+            let extractedName = result.content.trim();
+            extractedName = extractedName.replace(/[^a-zA-Z0-9\s_]/g, '').trim();
+            extractedName = extractedName.replace(/\s+/g, '_');
+            extractedName = extractedName.replace(/^_+|_+$/g, '');
+            
+            return extractedName.length > 0 ? extractedName : 'anonymous_chunk';
+        } catch (error) {
+            console.warn('[AIEmbeddingProvider] Multi-model entity naming failed:', error);
+            return 'anonymous_chunk';
+        }
+    }
 
     public async getEmbeddingsForChunks(texts: string[], modelName: string = DEFAULT_EMBEDDING_MODEL): Promise<{
         embeddings: Array<{ vector: number[], dimensions: number } | null>;
@@ -139,11 +207,11 @@ export class AIEmbeddingProvider {
             return { embeddings: [], requestCount: 0, retryCount: 0, totalTokensProcessed: 0, failedRequests: 0 };
         }
 
-        if (this.apiKeys.length === 0) {
+        if (!this.apiKeyManager.hasKeys()) {
             throw new Error('No API keys available for embedding generation');
         }
 
-        const batches = this._createOptimizedBatches(texts);
+        const batches = this.batchProcessor.createOptimizedBatches(texts);
         const finalResults: Array<{ vector: number[], dimensions: number } | null> = new Array(texts.length).fill(null);
         let totalRequests = 0;
         let totalRetries = 0;
@@ -253,6 +321,16 @@ export class AIEmbeddingProvider {
         embeddings: Array<{ vector: number[], dimensions: number } | null>;
         totalTokensProcessed: number;
     }> {
+        if (this.providerType === 'mistral' && this.mistralService) {
+            try {
+                const result = await this.mistralService.getEmbeddings(texts);
+                return result;
+            } catch (error) {
+                console.error('Mistral embedding failed:', error);
+                throw error;
+            }
+        }
+
         const genAIInstance = this.geminiService.getGenAIInstance();
         if (!genAIInstance) {
             throw new Error('Gemini API not initialized');
@@ -291,49 +369,55 @@ export class AIEmbeddingProvider {
             ));
     }
 
-    private _createOptimizedBatches(texts: string[]): Array<{
-        texts: string[];
-        originalIndices: number[];
-    }> {
-        const batches: Array<{ texts: string[], originalIndices: number[] }> = [];
-        let currentBatch: string[] = [];
-        let currentIndices: number[] = [];
-        let currentTokenCount = 0;
 
-        texts.forEach((text, index) => {
-            const tokenCount = this._estimateTokens(text);
-
-            if (currentBatch.length >= this.maxBatchSize ||
-                (currentTokenCount + tokenCount > this.maxTokensPerBatch && currentBatch.length > 0)) {
-                batches.push({ texts: [...currentBatch], originalIndices: [...currentIndices] });
-                currentBatch = [];
-                currentIndices = [];
-                currentTokenCount = 0;
-            }
-
-            currentBatch.push(text);
-            currentIndices.push(index);
-            currentTokenCount += tokenCount;
-        });
-
-        if (currentBatch.length > 0) {
-            batches.push({ texts: currentBatch, originalIndices: currentIndices });
-        }
-
-        return batches;
-    }
-
-    private _estimateTokens(text: string): number {
-        return Math.ceil(text.length / 4);
-    }
 
     public async summarizeCodeChunk(codeChunk: string, entityType: string, language: string): Promise<string> {
         try {
+            // Try using multi-model orchestrator first (prefers Mistral for simple tasks)
+            if (this.multiModelOrchestrator) {
+                return await this._summarizeWithOrchestrator(codeChunk, entityType, language);
+            }
+            
+            // Fallback to original batch method
             const results = await this.batchSummarizeCodeChunks([{ codeChunk, entityType, language }]);
             return results[0] || 'Could not generate summary.';
         } catch (error) {
             console.error('Error summarizing code chunk:', error);
             return 'Could not generate summary.';
+        }
+    }
+    
+    /**
+     * Summarize code chunk using multi-model orchestrator
+     */
+    private async _summarizeWithOrchestrator(codeChunk: string, entityType: string, language: string): Promise<string> {
+        const prompt = BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT
+            .replace(/{language}/g, language)
+            .replace('{entityType}', entityType)
+            .replace('{codeChunk}', codeChunk);
+            
+        try {
+            const result = await this.multiModelOrchestrator!.executeTask(
+                'context_summarization', // Uses Mistral as preferred model
+                prompt,
+                `You are an expert code analyst. Generate a concise, technical summary of the given ${entityType} in ${language}. Focus on functionality, purpose, and key implementation details. Keep the summary under 200 words.`,
+                {
+                    contextLength: prompt.length,
+                    timeout: 15000
+                }
+            );
+            
+            console.log(`[AIEmbeddingProvider] Code summarization successful using ${result.model}`);
+            
+            let summary = result.content.trim();
+            // Clean up the summary
+            summary = summary.replace(/[\r\n]+/g, ' ').replace(/`/g, '').trim();
+            summary = summary.replace(/\s+/g, ' ');
+            
+            return summary || 'Could not generate summary.';
+        } catch (error) {
+            console.warn('[AIEmbeddingProvider] Multi-model summarization failed, falling back to Gemini:', error);
+            throw error; // Will trigger fallback to original method
         }
     }
 

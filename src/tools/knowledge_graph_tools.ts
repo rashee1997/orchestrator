@@ -3,9 +3,10 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { validate, schemas } from '../utils/validation.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatObjectToMarkdown } from '../utils/formatters.js';
 import { CodebaseIntrospectionService, ScannedItem, ExtractedImport, ExtractedCodeEntity } from '../database/services/CodebaseIntrospectionService.js';
+import { KnowledgeGraphQueryProducer } from './rag/kg_query_producer.js';
 import path from 'path';
 import fs from 'fs/promises';
-import { parseGeminiJsonResponse } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 
 // ============================================================================
 // Helper Functions
@@ -240,13 +241,25 @@ It may also create 'has_method' relationships for classes. Output is Markdown fo
     },
     {
         name: 'kg_nl_query',
-        description: `An intelligent natural language interface for querying the code knowledge graph. Translates questions like "Which functions in auth_service.ts call database.query?" or "Show all classes implementing IPaymentProcessor" into structured graph queries. Features contextual scoping for large graphs, ambiguity handling, and transparent query translation. Returns both the interpreted query and results with helpful metadata.`,
+        description: `An intelligent natural language interface for querying the code knowledge graph. Translates questions like "Which functions in auth_service.ts call database.query?" or "Show all classes implementing IPaymentProcessor" into structured graph queries. Features contextual scoping for large graphs, ambiguity handling, and transparent query translation. Supports DMQR (Diverse Multi-Query Rewriting) for enhanced context discovery through multiple specialized KG queries. Returns both the interpreted query and results with helpful metadata.`,
         inputSchema: {
             type: 'object',
             properties: {
                 agent_id: { type: 'string', description: 'Identifier of the AI agent.' },
                 query: { type: 'string', description: 'Natural language query about the codebase (e.g., "What modules does OrderController import?", "Find all test files for the auth module", "Which classes extend BaseService?")' },
-                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash"). Defaults to "gemini-2.5-flash".', nullable: true },
+                model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"). Defaults to current model.', nullable: true },
+                enable_dmqr: {
+                    type: 'boolean',
+                    description: 'Enable Diverse Multi-Query Rewriting (DMQR) for enhanced KG retrieval. Automatically generates multiple specialized graph queries (structural, semantic, hybrid) for comprehensive context discovery.',
+                    default: false
+                },
+                dmqr_query_count: {
+                    type: 'number',
+                    description: 'The number of diverse KG queries to generate when DMQR is enabled. Generates different types of specialized graph queries for comprehensive results.',
+                    default: 3,
+                    minimum: 2,
+                    maximum: 5
+                },
             },
             required: ['agent_id', 'query'],
         },
@@ -817,26 +830,142 @@ ${formatJsonToMarkdownCodeBlock(resultData)}
                 throw new McpError(ErrorCode.InvalidParams, "agent_id is required for kg_nl_query.");
             }
 
-            try {
-                const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, args.query);
-                const result = parseGeminiJsonResponse(resultJsonString);
+            const { query, model, enable_dmqr, dmqr_query_count } = args;
 
+            try {
+                let allResults: any[] = [];
+                let queryMetrics = {
+                    totalQueries: 1,
+                    dmqrEnabled: !!enable_dmqr,
+                    processingTimeMs: 0
+                };
+
+                const startTime = Date.now();
+
+                if (enable_dmqr) {
+                    console.log(`[kg_nl_query] DMQR enabled. Generating ${dmqr_query_count || 3} diverse KG queries for: "${query}"`);
+                    
+                    const geminiService = memoryManager.getGeminiIntegrationService();
+                    if (!geminiService) {
+                        throw new McpError(ErrorCode.InternalError, "GeminiIntegrationService not available for DMQR.");
+                    }
+
+                    // Generate diverse KG queries
+                    const kgQueryProducer = new KnowledgeGraphQueryProducer(geminiService);
+                    const kgQueryResult = await kgQueryProducer.generateKGQueries(query, {
+                        queryCount: dmqr_query_count || 3
+                    });
+
+                    // Combine all types of KG queries
+                    const allKGQueries = [
+                        ...kgQueryResult.structuralQueries,
+                        ...kgQueryResult.semanticQueries,
+                        ...kgQueryResult.hybridQueries
+                    ];
+
+                    queryMetrics.totalQueries = allKGQueries.length;
+                    console.log(`[kg_nl_query] Generated ${allKGQueries.length} diverse KG queries:`, allKGQueries.map(q => q.query));
+
+                    // Execute each diverse query
+                    for (const kgQuery of allKGQueries) {
+                        try {
+                            console.log(`[kg_nl_query] Executing KG query (${kgQuery.searchStrategy}): "${kgQuery.query}"`);
+                            const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, kgQuery.query);
+                            const result = parseGeminiJsonResponseSync(resultJsonString);
+                            
+                            // Add metadata about the query source
+                            if (result.metadata) {
+                                result.metadata.dmqrSource = {
+                                    originalQuery: query,
+                                    diverseQuery: kgQuery.query,
+                                    searchStrategy: kgQuery.searchStrategy,
+                                    confidence: kgQuery.confidence,
+                                    focusAreas: kgQuery.focusAreas
+                                };
+                            }
+                            
+                            allResults.push(result);
+                        } catch (queryError: any) {
+                            console.warn(`[kg_nl_query] DMQR query failed for "${kgQuery.query}":`, queryError);
+                            // Continue with other queries
+                        }
+                    }
+                } else {
+                    // Standard single query execution
+                    const resultJsonString = await memoryManager.knowledgeGraphManager.queryNaturalLanguage(agent_id, query);
+                    const result = parseGeminiJsonResponseSync(resultJsonString);
+                    allResults.push(result);
+                }
+
+                queryMetrics.processingTimeMs = Date.now() - startTime;
+
+                // Process and format results
                 let md = `## Natural Language Query Result for Agent: \`${agent_id}\`
 `;
-                md += `**Query:** "${args.query}"
+                md += `**Query:** "${query}"${enable_dmqr ? ` (DMQR enabled: ${queryMetrics.totalQueries} queries)` : ''}
 `;
 
-                if (result.metadata) {
+                if (enable_dmqr) {
+                    md += `### DMQR Metrics
+`;
+                    md += `- **Total Queries Generated:** ${queryMetrics.totalQueries}
+`;
+                    md += `- **Processing Time:** ${queryMetrics.processingTimeMs}ms
+`;
+                    md += `- **Results Found:** ${allResults.filter(r => r.results && !r.results.error).length}
+`;
+                }
+
+                // Combine and deduplicate results
+                const combinedResults = {
+                    nodes: new Map(),
+                    relations: new Map(),
+                    metadata: allResults.length > 0 ? allResults[0].metadata : null
+                };
+
+                let hasResults = false;
+                allResults.forEach((result, index) => {
+                    if (result.results && !result.results.error) {
+                        hasResults = true;
+                        if (result.results.nodes) {
+                            result.results.nodes.forEach((node: any) => {
+                                const nodeKey = `${node.name}::${node.entityType}`;
+                                if (!combinedResults.nodes.has(nodeKey)) {
+                                    combinedResults.nodes.set(nodeKey, { ...node, dmqr_sources: [] });
+                                }
+                                if (enable_dmqr && result.metadata?.dmqrSource) {
+                                    combinedResults.nodes.get(nodeKey).dmqr_sources.push(result.metadata.dmqrSource);
+                                }
+                            });
+                        }
+                        if (result.results.relations) {
+                            result.results.relations.forEach((rel: any) => {
+                                const relKey = `${rel.from}->${rel.to}::${rel.relationType}`;
+                                if (!combinedResults.relations.has(relKey)) {
+                                    combinedResults.relations.set(relKey, { ...rel, dmqr_sources: [] });
+                                }
+                                if (enable_dmqr && result.metadata?.dmqrSource) {
+                                    combinedResults.relations.get(relKey).dmqr_sources.push(result.metadata.dmqrSource);
+                                }
+                            });
+                        }
+                    }
+                });
+
+                // Format metadata section
+                if (combinedResults.metadata) {
                     md += `### Query Translation
 `;
-                    md += `- **Operation:** \`${result.metadata.translatedOperation}\`
+                    md += `- **Operation:** \`${combinedResults.metadata.translatedOperation || 'N/A'}\`
 `;
-                    md += `- **Arguments:**
-${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}
+                    if (combinedResults.metadata.translatedArgs) {
+                        md += `- **Arguments:**
+${formatJsonToMarkdownCodeBlock(combinedResults.metadata.translatedArgs)}
 `;
-                    if (result.metadata.assumptions) md += `- **Assumptions:** ${result.metadata.assumptions}
+                    }
+                    if (combinedResults.metadata.assumptions) md += `- **Assumptions:** ${combinedResults.metadata.assumptions}
 `;
-                    md += `- **Used Gemini for Translation:** ${result.metadata.usedGemini ? 'Yes' : 'No'}
+                    md += `- **Used Gemini for Translation:** ${combinedResults.metadata.usedGemini ? 'Yes' : 'No'}
 `;
                 } else {
                     md += `*Query translation metadata not available.*
@@ -846,20 +975,21 @@ ${formatJsonToMarkdownCodeBlock(result.metadata.translatedArgs)}
                 md += `### Results
 `;
 
-                if (result.results) {
-                    if (result.results.error) {
-                        md += `**Error from Query Execution:** ${result.results.error}
+                if (!hasResults) {
+                    md += `*No results found matching the query.*
 `;
-                    } else if ((Array.isArray(result.results) && result.results.length === 0) ||
-                        (typeof result.results === 'object' && result.results.nodes && Array.isArray(result.results.nodes) && result.results.nodes.length === 0 && (!result.results.relations || result.results.relations.length === 0))) {
-                        md += `*No results found matching the query.*
-`;
-                    } else {
-                        md += formatJsonToMarkdownCodeBlock(result.results);
-                    }
                 } else {
-                    md += `*No results data in the response.*
+                    const finalResults = {
+                        nodes: Array.from(combinedResults.nodes.values()),
+                        relations: Array.from(combinedResults.relations.values())
+                    };
+                    
+                    if (enable_dmqr) {
+                        md += `**Combined Results from ${queryMetrics.totalQueries} DMQR queries:**
 `;
+                    }
+                    
+                    md += formatJsonToMarkdownCodeBlock(finalResults);
                 }
 
                 return { content: [{ type: 'text', text: md }] };

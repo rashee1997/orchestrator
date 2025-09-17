@@ -165,6 +165,12 @@ export const schemas = {
                 default: 'auto',
                 description: "Strategy for chunking code before embedding ('file', 'function', 'class', or 'auto')."
             },
+            provider_type: {
+                type: 'string',
+                enum: ['gemini', 'mistral'],
+                default: 'gemini',
+                description: "The embedding provider to use ('gemini' or 'mistral'). Mistral will fallback to Gemini if unavailable."
+            },
             disable_ai_output_summary: { type: 'boolean', default: false, description: "If true, disables the AI-generated summary of the embedding process results." },
             include_summary_patterns: {
                 type: 'array',
@@ -178,13 +184,20 @@ export const schemas = {
                 nullable: true,
                 description: "Optional: Array of glob patterns to exclude specific files from AI summary generation. Files matching these patterns will not have summaries generated."
             },
-            storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." }
+            storeEntitySummaries: { type: 'boolean', default: true, description: "Whether to store AI-generated summaries for code entities (classes, functions, methods) as embeddings." },
+            resume_failed_files: {
+                type: 'array',
+                items: { type: 'string' },
+                nullable: true,
+                description: "Optional: Array of relative file paths that previously failed processing and should be resumed. When provided, other path options are ignored."
+            }
         },
         required: ['agent_id', 'project_root_path'],
         additionalProperties: false,
         oneOf: [
             { required: ["path_to_embed"] },
-            { required: ["paths_to_embed"] }
+            { required: ["paths_to_embed"] },
+            { required: ["resume_failed_files"] }
         ]
     },
     ingestFileCodeEntities: {
@@ -347,6 +360,11 @@ export const schemas = {
                 items: { type: 'string' },
                 description: 'Optional: Array of full file paths for the AI to review live when generating the plan.',
                 nullable: true
+            },
+            use_multi_step_generation: {
+                type: 'boolean',
+                description: 'Optional: Use multi-step generation to avoid token limits. Generates plan structure first, then tasks in batches.',
+                default: false
             },
             planData: {
                 type: ['object', 'null'],
@@ -627,7 +645,7 @@ export const schemas = {
         type: 'object',
         properties: {
             query: { type: 'string', description: 'The query string to send to Gemini.' },
-            model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-pro", "gemini-2.5-flash to "gemini-2.5-flash-preview-05-20".', default: 'gemini-2.5-flash-preview-05-20' },
+            model: { type: 'string', description: 'Optional: The Gemini model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite").', default: 'gemini-2.5-flash' },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Optional: Enable retrieval-augmented generation (RAG) with codebase context.', default: false, nullable: true },
             focus_area: {

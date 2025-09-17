@@ -94,7 +94,7 @@ export class CodeChunkingService {
         return chunks;
     }
 
-    private semanticChunking(entities: ExtractedCodeEntity[], fileContent: string): MultiVectorChunk[] {
+private semanticChunking(entities: ExtractedCodeEntity[], fileContent: string, fileLanguage: string | undefined): MultiVectorChunk[] {
         const chunks: MultiVectorChunk[] = [];
 
         // Sort entities by their start line to process in order
@@ -116,7 +116,7 @@ export class CodeChunkingService {
                     type: entity.type,
                     startLine: entity.startLine,
                     endLine: entity.endLine,
-                    language: entity.filePath ? this.introspectionService.detectLanguage('', entity.filePath, '') : undefined,
+                    language: fileLanguage,
                     accessibility: entity.accessibility,
                     isExported: entity.isExported,
                     isAsync: entity.isAsync,
@@ -235,7 +235,7 @@ export class CodeChunkingService {
 
             // Step 3: Create semantic chunks from code entities
             if (codeEntities.length > 0) {
-                const semanticChunks = this.semanticChunking(codeEntities, fileContent);
+                const semanticChunks = this.semanticChunking(codeEntities, fileContent, language);
 
                 // Link chunks to parent summary
                 for (const chunk of semanticChunks) {
