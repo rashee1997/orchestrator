@@ -1,11 +1,31 @@
-# 🧠 Memory MCP Server — Orchestrator
+<div align="center">
 
-![Memory MCP Server](https://img.shields.io/badge/Memory%20MCP%20Server-Orchestrator-blue?style=for-the-badge&logo=brain&logoColor=white)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green?style=for-the-badge&logo=node.js)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+# Memory MCP Server — Orchestrator
 
-**🚀 Your AI Agent's Persistent Brain: A vivid backend for memory, task planning, and codebase intelligence.**
+<img src="assets/orchestrator-logo.png" alt="Memory MCP Server Orchestrator" width="200" />
+
+### 🚀 Your AI Agent's Persistent Brain
+**Advanced memory, intelligent orchestration, and semantic codebase understanding for next-generation AI agents**
+
+<div>
+
+[![Memory MCP Server](https://img.shields.io/badge/Memory%20MCP%20Server-Orchestrator-6b46c1?style=for-the-badge&logo=brain&logoColor=white)](https://github.com/rashee1997/orchestrator)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f59e0b?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-10b981?style=for-the-badge&logo=node.js)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-3b82f6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+
+</div>
+
+<div>
+
+![AI Tools](https://img.shields.io/badge/AI%20Tools-54-ec4899?style=flat-square)
+![Embedding Models](https://img.shields.io/badge/Models-Gemini%20%7C%20Codestral-8b5cf6?style=flat-square)
+![Vector Dimensions](https://img.shields.io/badge/Vectors-3072D-06b6d4?style=flat-square)
+![Languages](https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Python%20%7C%20PHP-f97316?style=flat-square)
+
+</div>
+
+</div>
 
 ---
 
@@ -32,33 +52,142 @@ Memory MCP Server (Orchestrator) is a state-of-the-art backend that transforms A
 
 ## ✨ Features
 
-- **Persistent Memory:** Multi-user conversation sessions, versioned context, and reference keys.
-- **Project & Task Planning:** Manage plans, tasks, and subtasks; boost with AI-powered plan/task generation and analysis.
-- **Knowledge Graph:** Portable, human-readable codebase graph (JSONL); store and query entities & relationships.
-- **Semantic Code Search:** Embed and search code for conceptual matches, not just keywords.
-- **Integrated AI Services:** Google Gemini for planning, summarization, and code analysis; Tavily for grounded web search.
-- **Data Validation & Utilities:** Input schema validation, robust error handling, and database backup/restore tools.
+<div align="center">
+
+### 🎯 **Core Capabilities**
+
+</div>
+
+<table>
+<tr>
+<td width="50%">
+
+### 🧠 **Advanced Memory & Intelligence**
+- 💬 **Persistent Conversations** - Multi-user sessions with threading
+- 📋 **Intelligent Task Planning** - AI-powered project decomposition
+- 🔍 **Multi-Language Analysis** - TS, JS, Python, PHP entity extraction
+- 🎯 **Semantic Understanding** - 3072D vector embeddings
+
+</td>
+<td width="50%">
+
+### 🔍 **Sophisticated Search & Retrieval**
+- 🔗 **Hybrid RAG System** - Vector + keyword + graph search
+- 🔄 **Iterative Search** - Multi-round quality reflection
+- 🎭 **DMQR Technology** - Diverse Multi-Query Rewriting
+- 🕸️ **Knowledge Graph** - Entity-relationship mapping
+
+</td>
+</tr>
+<tr>
+<td>
+
+### 🤖 **Enterprise-Grade AI Integration**
+- 🎼 **Multi-Model Orchestration** - Gemini, Codestral, Mistral
+- 🧭 **Intelligent Routing** - Code → Codestral, Text → Gemini
+- 📦 **Batch Processing** - Dynamic sizing with rate limiting
+- ⚙️ **50+ AI Parameters** - Specialized execution modes
+
+</td>
+<td>
+
+### 🛠️ **Production-Ready Operations**
+- 🔄 **Incremental Updates** - File hash-based change detection
+- 🗄️ **Database Management** - Backup/restore, CSV export
+- 🛡️ **Error Resilience** - Comprehensive error handling
+- 🌐 **Web Integration** - Tavily search with source tracking
+
+</td>
+</tr>
+</table>
+
+<div align="center">
+
+### 📊 **At a Glance**
+
+| Feature | Details |
+|---------|---------|
+| 🔧 **Total Tools** | 54 sophisticated MCP tools across 8 categories |
+| 🧠 **AI Models** | Gemini (3072D) + Codestral (3072D scaled) |
+| 🗃️ **Storage** | Dual SQLite: Memory + Vector databases |
+| 🌍 **Languages** | TypeScript, JavaScript, Python, PHP |
+| 🔍 **Search Types** | Vector similarity, keyword, knowledge graph |
+| 📈 **Scaling** | Dynamic batch processing with intelligent routing |
+
+</div>
 
 ---
 
 ## 🚀 Installation
 
-### Prerequisites
+<div align="center">
 
-| Requirement    | Version        |
-| -------------- | -------------- |
-| **Node.js**    | 18.x or higher |
-| **npm**        | Latest         |
-| **Git**        | Any            |
+### ⚡ Quick Start
 
-### Installation Steps
+</div>
+
+<table>
+<tr>
+<td width="33%">
+
+#### 📋 **Prerequisites**
+| Requirement | Version |
+|-------------|---------|
+| **Node.js** | 18.x+ |
+| **npm** | Latest |
+| **Git** | Any |
+
+</td>
+<td width="33%">
+
+#### 🔑 **Required APIs**
+| Service | Purpose |
+|---------|---------|
+| **Gemini** | AI orchestration & natural language |
+| **Mistral** | Simple analysis & fallback support |
+| **Codestral** | Code embeddings & technical analysis |
+| **Tavily** | Web search & external knowledge |
+
+</td>
+<td width="33%">
+
+#### 📊 **System Resources**
+| Component | Requirement |
+|-----------|-------------|
+| **RAM** | 2GB+ recommended |
+| **Storage** | 1GB+ for databases |
+| **CPU** | Multi-core preferred |
+
+</td>
+</tr>
+</table>
+
+### 📦 **Installation Steps**
+
+<div align="center">
 
 ```bash
+# 1️⃣ Clone the repository
 git clone https://github.com/rashee1997/orchestrator.git
 cd orchestrator
+
+# 2️⃣ Install dependencies
 npm install
+
+# 3️⃣ Build the project
 npm run build
+
+# 4️⃣ Verify installation
+npm test
 ```
+
+</div>
+
+<div align="center">
+
+🎉 **Ready to orchestrate!** Your Memory MCP Server is now built and ready for configuration.
+
+</div>
 
 ---
 
@@ -74,6 +203,8 @@ The server requires API keys for external services. These are best configured in
 |                 | `GEMINI_API_KEY_2`, etc.   | 🔀 (Optional) |                                                    |
 |                 | `GOOGLE_API_KEY`           | ➡️ (Alias) |                                                    |
 |                 | `GOOGLE_API_KEY_2`, etc.   | 🔀 (Optional) |                                                    |
+| Mistral AI      | `MISTRAL_API_KEY`          | ✅       | [Get Key](https://console.mistral.ai/)              |
+|                 | `MISTRAL_API_KEY_2`, etc.  | 🔀 (Optional) |                                                    |
 | Tavily Search   | `TAVILY_API_KEY`           | ✅       | [Get Key](https://tavily.com/)                      |
 
 ### MCP Client Configuration (VS Code Client Example)
@@ -100,6 +231,8 @@ The server requires API keys for external services. These are best configured in
       "GEMINI_API_KEY": "your-primary-gemini-api-key",
       "GEMINI_API_KEY_2": "your-secondary-gemini-api-key",
       "GOOGLE_API_KEY": "another-gemini-key-alias",
+      "MISTRAL_API_KEY": "your-mistral-api-key-here",
+      "MISTRAL_API_KEY_2": "your-secondary-mistral-key",
       "TAVILY_API_KEY": "your-tavily-api-key-here"
     }
   }
@@ -112,22 +245,48 @@ The server requires API keys for external services. These are best configured in
 
 ## 🛠️ Available Tools
 
-- **Conversation Management:** Create, manage, and retrieve conversation sessions and messages for persistent, multi-user dialogue.
-    - _Examples: `create_conversation_session`, `get_conversation_messages`_
-- **Plan & Task Management:** Organize and update project plans, tasks, and subtasks, assign tasks, and track progress.
-    - _Examples: `create_task_plan`, `list_tasks`, `assign_task`_
-- **Subtask Management:** Break tasks into subtasks for finer granularity and progress tracking.
-    - _Examples: `create_subtask`, `list_subtasks`_
-- **Knowledge Graph Tools:** Parse your codebase, build a knowledge graph, and query or update code entities and relationships.
-    - _Examples: `ingest_codebase_structure`, `query_knowledge_graph`_
-- **Embeddings & Semantic Search:** Generate and query vector embeddings for conceptual code search.
-    - _Examples: `ingest_codebase_embeddings`, `query_codebase_embeddings`_
-- **AI-Enhanced Planning/Tasks:** Use AI to decompose tasks, suggest details, or analyze plans for coherence and completeness.
-    - _Examples: `ai_suggest_subtasks`, `ai_analyze_plan`_
-- **Prompt Refinement & AI:** Refine natural language prompts and generate answers with Gemini.
-    - _Examples: `get_refined_prompt`, `ask_gemini`_
-- **Web Search & Database Utilities:** Integrate grounded results via Tavily, export data, and manage DB backups.
-    - _Examples: `tavily_web_search`, `backup_database`, `list_tools`_
+<div align="center">
+
+### 🎯 **54 Sophisticated Tools Across 8 Categories**
+
+*Transform your AI agents with comprehensive memory, intelligence, and orchestration capabilities*
+
+</div>
+
+<div align="center">
+
+| Category | Tools | Purpose |
+|----------|-------|---------|
+| 📞 **Conversations** | 9 | Multi-user session management |
+| 🎯 **Plans & Tasks** | 15 | AI-powered project planning |
+| 🕸️ **Knowledge Graph** | 6 | Codebase analysis & mapping |
+| 🧠 **Embeddings** | 3 | Semantic search & retrieval |
+| 🤖 **AI Enhancement** | 3 | Intelligent task optimization |
+| 🔍 **AI Integration** | 1 | Advanced multi-model orchestration |
+| 🗄️ **Database** | 3 | Data management & backup |
+| 🌐 **Web Search** | 1 | External knowledge integration |
+
+**[→ Complete tool reference and documentation](docs/TOOLS.md)**
+
+</div>
+
+## 📚 Documentation
+
+### **Detailed Guides**
+- 🏗️ **[Architecture & Flow Diagrams](docs/ARCHITECTURE.md)** - System design, technical specs, and tool flow diagrams
+- 🛠️ **[Tools Reference](docs/TOOLS.md)** - Complete reference for all 54 tools
+- ⚙️ **[Configuration Guide](docs/CONFIGURATION.md)** - Advanced setup and environment options
+- 🚀 **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment and scaling
+
+### 🎯 **Tool Highlights**
+
+**🧠 Semantic Intelligence**: Multi-model AI orchestration with Gemini, Codestral, and Mistral for specialized tasks.
+
+**🔍 Advanced Search**: Hybrid RAG system combining vector embeddings, keyword search, and knowledge graph traversal.
+
+**📝 Persistent Memory**: Multi-user conversation sessions with threading and comprehensive project planning.
+
+**🕸️ Code Understanding**: Multi-language analysis (TypeScript, JavaScript, Python, PHP) with entity extraction and dependency mapping.
 
 ---
 
@@ -147,65 +306,109 @@ Here’s how you might orchestrate a multi-step AI workflow with these tools:
 
 ---
 
-## 🏗️ Architecture
-
-### Project Structure
-
-```
-memory-mcp-server/
-├── src/
-│   ├── database/        # Database schemas, services, and managers
-│   │   ├── managers/    # Logic for managing specific data models
-│   │   ├── parsers/     # Language parsers for codebase introspection
-│   │   ├── services/    # Business logic (Gemini, Embeddings, etc.)
-│   │   └── storage/     # Low-level storage (JSONL, Indexing)
-│   ├── tools/           # MCP tool definitions and handlers
-│   ├── types/           # Core TypeScript type definitions
-│   └── index.ts         # Main server entry point
-├── knowledge_graphs/    # JSONL for code graph
-├── memory.db            # SQLite main db
-├── vector_store.db      # SQLite for embeddings
-└── README.md
-```
-
-### Data Flow
-
-```mermaid
-flowchart TD
-  Agent[AI Agent] -->|MCP Request| Server[Memory MCP Server]
-  Server -->|Structured Data| SQLite[(SQLite memory.db)]
-  Server -->|KG Operations| KG[(JSONL Knowledge Graph)]
-  Server -->|Semantic Search| VecDB[(Vector Store)]
-  Server -->|AI/Web Tasks| Ext{External Services}
-  Ext --> Gemini[(Google Gemini)]
-  Ext --> Tavily[(Tavily Search)]
-```
+For detailed architecture, technical specifications, and colorful tool flow diagrams, see **[Architecture Documentation](docs/ARCHITECTURE.md)**.
 
 ---
 
 ## 💻 Development
 
+<div align="center">
+
+### 🛠️ **Development Workflow**
+
+</div>
+
+<table>
+<tr>
+<td width="50%">
+
+#### 🚀 **Quick Commands**
 ```bash
-npm install
-npm run build    # Compile TypeScript
-npm run watch    # Auto-rebuild on changes
-npm test         # Run tests
+npm install          # Install dependencies
+npm run build        # Compile TypeScript
+npm run watch        # Auto-rebuild on changes
+npm test             # Run test suite
+npm run inspector    # Web debugging UI
 ```
 
-- Use `npm run inspector` for a web-based debugging UI.
+</td>
+<td width="50%">
+
+#### 🎯 **Development Tips**
+- 🔍 Use **inspector** for debugging
+- 🔄 **Watch mode** for continuous development
+- ✅ **Tests** ensure quality and stability
+- 📝 **TypeScript** provides type safety
+- 🔧 **ESLint** maintains code standards
+
+</td>
+</tr>
+</table>
 
 ---
+
+<div align="center">
 
 ## 🤝 Contributing
 
-We love contributions! Fork, PR, and let’s build the future of intelligent agents together. Ensure you cover new features with tests and keep all existing tests green.
+### 🌟 **Join the Future of AI Orchestration**
+
+We welcome contributions from developers passionate about AI and intelligent systems!
+
+<table>
+<tr>
+<td width="33%" align="center">
+
+#### 🔨 **Code**
+Submit PRs for features, fixes, and optimizations
+
+</td>
+<td width="33%" align="center">
+
+#### 📚 **Documentation**
+Improve guides, examples, and API docs
+
+</td>
+<td width="33%" align="center">
+
+#### 🐛 **Testing**
+Add tests and report issues
+
+</td>
+</tr>
+</table>
+
+**Guidelines:** Ensure new features include tests and maintain compatibility
+
+</div>
 
 ---
+
+<div align="center">
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE.md) for details.
+**MIT License** — Open source and free to use
+
+See [LICENSE](LICENSE.md) for complete details
 
 ---
 
-_Built with creativity and care for next-gen AI agents._
+### 🚀 **Built for the Future**
+
+<img src="assets/orchestrator-logo.png" alt="Orchestrator Logo" width="80" />
+
+*Memory MCP Server — Orchestrator*
+**Empowering AI agents with persistent memory, intelligent planning, and semantic understanding**
+
+**🧠 Think • 🔍 Search • 🎼 Orchestrate • 🚀 Scale**
+
+---
+
+[![GitHub](https://img.shields.io/badge/GitHub-Orchestrator-6b46c1?style=flat-square&logo=github)](https://github.com/rashee1997/orchestrator)
+[![Contributors](https://img.shields.io/badge/Contributors-Welcome-ec4899?style=flat-square)](https://github.com/rashee1997/orchestrator/contribute)
+[![AI Powered](https://img.shields.io/badge/AI-Powered-8b5cf6?style=flat-square)](https://github.com/rashee1997/orchestrator)
+
+*Built with creativity and care for next-generation AI agents*
+
+</div>

@@ -145,22 +145,33 @@ async function _generateUnifiedAiSummary(
     // Helper to format a list of changes for the prompt
     const formatChangeList = (chunks: typeof newEmbeddings) => {
         if (!chunks || chunks.length === 0) return "  - None\n";
-        const MAX_ITEMS_PER_SECTION = 50;
+        const MAX_ITEMS_PER_SECTION = 20; // Reduced to show chunk content
+        const MAX_CHUNK_PREVIEW = 150; // Characters to show from each chunk
 
         const groupedByFile = chunks.slice(0, MAX_ITEMS_PER_SECTION).reduce((acc, chunk) => {
             const key = chunk.file_path_relative;
             if (!acc[key]) acc[key] = [];
-            if (chunk.entity_name) acc[key].push(chunk.entity_name);
-            return acc;
-        }, {} as Record<string, string[]>);
 
-        let list = Object.entries(groupedByFile).map(([filePath, entities]) => {
-            let fileEntry = `  - File: \`${filePath}\``;
-            if (entities.length > 0) {
-                fileEntry += ` (Entities: ${entities.map(e => `\`${e}\``).join(', ')})`;
-            }
+            // Include chunk content preview for better AI understanding
+            const chunkPreview = chunk.chunk_text.length > MAX_CHUNK_PREVIEW
+                ? chunk.chunk_text.substring(0, MAX_CHUNK_PREVIEW) + '...'
+                : chunk.chunk_text;
+
+            acc[key].push({
+                entity_name: chunk.entity_name || null,
+                chunk_preview: chunkPreview.replace(/\n/g, ' ').trim()
+            });
+            return acc;
+        }, {} as Record<string, Array<{entity_name: string | null, chunk_preview: string}>>);
+
+        let list = Object.entries(groupedByFile).map(([filePath, chunks]) => {
+            let fileEntry = `  - File: \`${filePath}\`\n`;
+            chunks.forEach(chunk => {
+                const entityInfo = chunk.entity_name ? `\`${chunk.entity_name}\`` : 'code block';
+                fileEntry += `    * ${entityInfo}: ${chunk.chunk_preview}\n`;
+            });
             return fileEntry;
-        }).join('\n');
+        }).join('');
 
         if (chunks.length > MAX_ITEMS_PER_SECTION) {
             list += `\n  - ...and ${chunks.length - MAX_ITEMS_PER_SECTION} more items.`;
@@ -169,7 +180,10 @@ async function _generateUnifiedAiSummary(
     };
 
     // Create the final, structured changelog for the AI
-    const changelog = `
+    const batchInfo = resultCounts.batchMetadata ?
+        `\n**Processing Context:**\n- Processed ${resultCounts.batchMetadata.totalFilesProcessed} files in ${resultCounts.batchMetadata.totalBatches} batches of ${resultCounts.batchMetadata.batchSize} files each\n- Used automatic batching to prevent API rate limiting\n` : '';
+
+    const changelog = `${batchInfo}
 **Refactored Entities (Modified or Replaced):**
 ${formatChangeList(refactored)}
 
@@ -181,23 +195,23 @@ ${formatChangeList(trulyDeleted)}
 
 `;
 
-    const prompt = `You are a Senior Technical Lead writing a concise, high-level summary for code changes. Your task is to analyze the following structured changelog which details changes to a codebase's semantic index.
+    const prompt = `You are a Senior Developer writing a clear, specific summary of code changes. Your task is to analyze the following changelog and describe WHAT was actually changed in concrete terms${resultCounts.batchMetadata ? ', processed through automatic batching' : ''}.
 
 **Instructions:**
-1. **Identify the domain/technology**: Look at file paths, function names, and entity names to understand what type of system this is (e.g., web app, AI/ML system, API, database, etc.)
-2. **Analyze the scope of changes**: Distinguish between major architectural changes, feature additions, bug fixes, refactoring, and configuration updates
-3. **Focus on impact**: What are the most significant improvements or modifications?
-4. **Be specific**: Use technical terminology appropriate to the detected domain rather than generic terms
-5. **Pay attention to 'Refactored' sections**: These often indicate significant modifications to existing functionality
+1. **Focus on specific functionality**: Describe what new features, functions, or capabilities were added/modified/removed
+2. **Mention key files and functions**: Reference the most important files or functions that changed
+3. **Describe the purpose**: Explain WHY these changes were made (performance, new feature, bug fix, etc.)
+4. **Be concrete**: Instead of "refactored the pipeline", say "added batch processing to prevent API rate limits"
+5. **Highlight user-visible changes**: What would a user or developer notice is different?${resultCounts.batchMetadata ? '\n6. **Batched processing context**: These changes were processed in multiple batches for efficiency' : ''}
 
 **Changelog:**
 ${changelog}
 
 **Summary Requirements:**
 - Write 2-3 sentences maximum
-- Be domain-specific based on what you observe in the changes
-- Focus on the most impactful modifications
-- Use appropriate technical language for the detected technology stack
+- Be specific about what functionality changed
+- Mention key file names or function names when relevant
+- Focus on practical impact over technical architecture
 `;
 
     let summaryText = `(AI summary could not be generated.)`;

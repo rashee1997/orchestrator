@@ -7,6 +7,7 @@ import { ILanguageParser } from '../parsers/ParserFactory.js';
 import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 import { ParserFactory } from '../parsers/ParserFactory.js';
 import { DETECT_LANGUAGE_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
+import { PathValidator } from '../../utils/pathValidator.js';
 
 export interface ScannedItem {
     path: string;
@@ -178,7 +179,8 @@ export class CodebaseIntrospectionService {
         const effectiveRootPath = rootPathToMakeRelative || directoryPath;
 
         try {
-            const items = await fs.readdir(directoryPath, { withFileTypes: true });
+            // Secure directory reading with path validation
+            const items = await PathValidator.safeReaddir(directoryPath, { withFileTypes: true });
 
             const scanPromises = items.map(async (item) => {
                 try {
@@ -189,7 +191,8 @@ export class CodebaseIntrospectionService {
                         return; // Skip ignored items
                     }
 
-                    const stats = await fs.stat(fullPath);
+                    // Secure file stats with path validation
+                    const stats = await PathValidator.safeStats(fullPath);
 
                     if (item.isDirectory()) {
                         results.push({
@@ -391,6 +394,89 @@ export class CodebaseIntrospectionService {
             // Resilience: If a file fails to parse (e.g., syntax error), log it and continue
             console.error(`Resilient Parsing: Error parsing code entities for ${filePath}, continuing. Error:`, error);
             return []; // Return empty on error
+        }
+    }
+
+    /**
+     * Clear the scan cache to force fresh directory scanning
+     */
+    public clearScanCache(): void {
+        this.scanCache.clear();
+        console.log('[CodebaseIntrospectionService] Scan cache cleared');
+    }
+
+    /**
+     * Clear the parser cache to force fresh file parsing
+     */
+    public clearParserCache(): void {
+        this.parserCache.clear();
+        console.log('[CodebaseIntrospectionService] Parser cache cleared');
+    }
+
+    /**
+     * Clear all caches to force fresh scanning and parsing
+     */
+    public clearAllCaches(): void {
+        this.clearScanCache();
+        this.clearParserCache();
+        console.log('[CodebaseIntrospectionService] All caches cleared');
+    }
+
+    /**
+     * Bypass cache for a single directory scan
+     */
+    public async scanDirectoryRecursiveBypassCache(
+        agentId: string,
+        directoryPath: string,
+        rootPathToMakeRelative?: string
+    ): Promise<ScannedItem[]> {
+        console.log(`[BYPASS CACHE] Scanning directory: ${directoryPath}`);
+        const results: ScannedItem[] = [];
+        const effectiveRootPath = rootPathToMakeRelative || directoryPath;
+
+        try {
+            // Secure directory reading with path validation
+            const items = await PathValidator.safeReaddir(directoryPath, { withFileTypes: true });
+
+            for (const item of items) {
+                // Secure path joining with validation
+                const fullPath = await PathValidator.safePath(directoryPath, item.name);
+
+                if (CodebaseIntrospectionService.shouldIgnore(fullPath, item.isDirectory())) {
+                    continue;
+                }
+
+                if (item.isDirectory()) {
+                    try {
+                        const subItems = await this.scanDirectoryRecursiveBypassCache(agentId, fullPath, effectiveRootPath);
+                        results.push(...subItems);
+                    } catch (error) {
+                        console.warn(`Warning: Could not scan subdirectory ${fullPath}:`, error);
+                    }
+                } else if (item.isFile()) {
+                    try {
+                        // Secure file stats with path validation
+                        const stats = await PathValidator.safeStats(fullPath);
+                        const language = await this.detectLanguage(agentId, fullPath, item.name);
+                        const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
+
+                        results.push({
+                            type: 'file',
+                            name: relativePath,
+                            path: fullPath,
+                            language: language,
+                            stats: stats
+                        });
+                    } catch (error) {
+                        console.warn(`Warning: Could not process file ${fullPath}:`, error);
+                    }
+                }
+            }
+
+            return results;
+        } catch (error) {
+            console.error(`Error scanning directory ${directoryPath}:`, error);
+            throw new Error(`Failed to scan directory ${directoryPath}: ${(error as Error).message}`);
         }
     }
 }
