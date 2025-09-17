@@ -706,16 +706,51 @@ export class CodebaseEmbeddingService {
         const availableModels = await this.repository.getAvailableEmbeddingModels(agentId);
         const embeddingsMap = new Map<string, any>();
 
-        for (const model of availableModels) {
-            try {
-                const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
-                this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
-                const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
-                if (embeddings && embeddings[0]) {
-                    embeddingsMap.set(model, embeddings[0]);
+        // Use ParallelEmbeddingManager for intelligent embedding generation
+        try {
+            console.log(`[CodebaseEmbeddingService] Using ParallelEmbeddingManager for query embedding generation`);
+            const result = await this.parallelEmbeddingManager.generateEmbeddings([queryText], `query_${Date.now()}`);
+
+            if (result.successfulRequests > 0 && result.embeddings[0]) {
+                const embedding = result.embeddings[0];
+                // Use the primary model that was used for this embedding
+                embeddingsMap.set(result.primaryModel, {
+                    vector: embedding.vector,
+                    dimensions: embedding.dimensions
+                });
+                console.log(`[CodebaseEmbeddingService] Generated embedding using ${result.primaryModel} (${embedding.dimensions}D)`);
+            } else {
+                console.warn(`[CodebaseEmbeddingService] ParallelEmbeddingManager failed, falling back to single provider`);
+                // Fallback to original logic if parallel manager fails
+                for (const model of availableModels) {
+                    try {
+                        const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
+                        this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
+                        const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
+                        if (embeddings && embeddings[0]) {
+                            embeddingsMap.set(model, embeddings[0]);
+                            break; // Only need one successful embedding
+                        }
+                    } catch (error) {
+                        console.error(`Error generating query embedding for model ${model}:`, error);
+                    }
                 }
-            } catch (error) {
-                console.error(`Error generating query embedding for model ${model}:`, error);
+            }
+        } catch (error) {
+            console.error(`[CodebaseEmbeddingService] ParallelEmbeddingManager failed:`, error);
+            // Fallback to original logic
+            for (const model of availableModels) {
+                try {
+                    const provider = model.includes('mistral') || model.includes('codestral') ? 'mistral' : 'gemini';
+                    this.aiProvider.setProvider(provider as 'gemini' | 'mistral', model);
+                    const { embeddings } = await this.aiProvider.getEmbeddingsForChunks([queryText], model);
+                    if (embeddings && embeddings[0]) {
+                        embeddingsMap.set(model, embeddings[0]);
+                        break; // Only need one successful embedding
+                    }
+                } catch (error) {
+                    console.error(`Error generating query embedding for model ${model}:`, error);
+                }
             }
         }
 
