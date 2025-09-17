@@ -10,8 +10,7 @@ export class PathValidator {
         /\.\./,           // Parent directory traversal
         /\/\//,           // Double slashes
         /\\{2,}/,         // Multiple backslashes
-        /[<>:"|?*]/,      // Invalid filename characters
-        /^[A-Z]:/,        // Windows drive letters (if not expected)
+        /[<>"|?*]/,       // Invalid filename characters (removed : to allow Windows drive letters)
     ];
 
     private static readonly MAX_PATH_LENGTH = 260; // Windows MAX_PATH limit
@@ -32,9 +31,12 @@ export class PathValidator {
             throw new Error(`Path length exceeds maximum allowed (${this.MAX_PATH_LENGTH} characters)`);
         }
 
+        // Normalize backslashes to forward slashes for consistent validation
+        const consistentPath = inputPath.replace(/\\/g, '/');
+
         // Check for dangerous patterns
         for (const pattern of this.DANGEROUS_PATTERNS) {
-            if (pattern.test(inputPath)) {
+            if (pattern.test(consistentPath)) {
                 throw new Error(`Path contains potentially dangerous pattern: ${inputPath}`);
             }
         }
