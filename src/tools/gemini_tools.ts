@@ -249,7 +249,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             enable_corrective_rag: { type: 'boolean', description: 'Enable corrective RAG for iterative improvement', default: true, nullable: true },
             reflection_frequency: { type: 'number', description: 'Frequency of reflection checks (every N iterations)', default: 2, minimum: 1, maximum: 5, nullable: true },
             long_rag_chunk_size: { type: 'number', description: 'Chunk size for Long RAG processing', default: 2000, minimum: 500, maximum: 5000, nullable: true },
-            citation_accuracy_threshold: { type: 'number', description: 'Minimum accuracy threshold for citations (0.0-1.0)', default: 0.9, minimum: 0, maximum: 1, nullable: true },
+            citation_accuracy_threshold: { type: 'number', description: 'Minimum accuracy threshold for citations (0.0-1.0)', default: 0.6, minimum: 0, maximum: 1, nullable: true },
         },
         required: ['agent_id', 'query']
     },
@@ -285,7 +285,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         const sanitized_conversation_history_limit = Math.max(1, conversation_history_limit || 15);
         const sanitized_reflection_frequency = Math.max(1, Math.min(5, reflection_frequency || 2));
         const sanitized_long_rag_chunk_size = Math.max(500, Math.min(5000, long_rag_chunk_size || 2000));
-        const sanitized_citation_accuracy_threshold = Math.max(0, Math.min(1, citation_accuracy_threshold || 0.9));
+        const sanitized_citation_accuracy_threshold = Math.max(0, Math.min(1, citation_accuracy_threshold || 0.6));
 
         console.log(`[ask_gemini] Parameter sanitization: dmqr_query_count=${dmqr_query_count} -> ${sanitized_dmqr_query_count}, max_iterations=${max_iterations} -> ${sanitized_max_iterations}`);
 

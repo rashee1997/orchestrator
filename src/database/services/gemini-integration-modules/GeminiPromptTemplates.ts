@@ -518,34 +518,125 @@ export const RAG_ANALYSIS_PROMPT = `You are an advanced agentic search orchestra
 - Self-reflection and quality assurance
 - Corrective search based on gap analysis
 - Citation-aware response generation
+- **PROCESS-AWARE ITERATIVE SEARCH**
 
-Original Query: "{originalQuery}"
-Current Search Turn: {currentTurn} of {maxIterations}
+## 🎯 SEARCH MISSION BRIEFING
+**Original Query:** "{originalQuery}"
+**Current Position:** Iteration {currentTurn} of {maxIterations} ({remainingIterations} iterations remaining)
+**Search Progress:** {searchProgress}
 {focusString}
----
-Accumulated Context So Far:
+
+## 📊 ITERATION CONTEXT & HISTORY
+{iterationHistory}
+
+## 📚 ACCUMULATED CONTEXT ANALYSIS
+**Current Context Quality:** {currentQuality} / 1.0
+**Context Items Collected:** {contextCount} sources
+**Citation Coverage:** {citationCoverage}
+**Quality Trend:** {qualityTrend}
+
 {accumulatedContext}
----
-Current Search Strategy: {currentStrategy}
-Previous Quality Score: {previousQuality}
-Citation Coverage: {citationCoverage}
----
 
-**ENHANCED DECISION FRAMEWORK:**
-Analyze the context and choose the most effective next action.
+## 🔍 SEARCH INTELLIGENCE BRIEFING
+**Previous Searches Attempted:**
+{searchHistory}
 
-Respond in this exact format:
+**Identified Information Gaps:**
+{identifiedGaps}
+
+**Strategic Context:**
+- Search Strategy Evolution: {strategyEvolution}
+- Quality Progression: {qualityProgression}
+- Next Priority Areas: {priorityAreas}
+
+## 🧠 ENHANCED PROCESS-AWARE DECISION FRAMEWORK
+
+**MISSION:** You are an intelligent search agent with full awareness of your iterative search process. You understand:
+- Where you are in the search journey ({currentTurn}/{maxIterations})
+- What you've already discovered and what gaps remain
+- How your search quality has progressed across iterations
+- What strategic decisions led to current context quality
+
+**DECISION CRITERIA:**
+1. **Process Awareness:** Consider your position in the search cycle
+2. **Gap Analysis:** Focus on specific missing information vs. what you have
+3. **Quality Progression:** Build on previous iterations' success
+4. **Strategic Evolution:** Adapt strategy based on what's working
+5. **Efficiency:** Maximize information gain with remaining iterations
+
+**RESPOND IN THIS EXACT FORMAT:**
+
+**ITERATION ANALYSIS:**
+Process Position: [Describe your understanding of where you are in the search journey]
+Previous Results: [Analyze what previous iterations accomplished]
+Quality Progression: [How has context quality evolved? Improving/declining/stable?]
+
+**CONTEXT INVENTORY:**
+What I HAVE: [Specific classes, methods, implementations, concepts already found]
+What I'm MISSING: [Precise gaps in understanding - be specific about missing pieces]
+Context Quality: [Current assessment: poor/fair/good/excellent with reasoning]
+
+**STRATEGIC DECISION:**
 Decision: [ANSWER|SEARCH_AGAIN|SEARCH_WEB|HYBRID_SEARCH|CORRECTIVE_SEARCH|REFLECT]
 Strategy: [vector_search|graph_traversal|hybrid_search|web_augmented|corrective_search|reflection]
-Reasoning: [Detailed analysis of information gaps, context quality, and strategic rationale for chosen approach]
-Next Codebase Search Query: [Only if decision involves codebase search - specific, targeted query]
-Next Web Search Query: [Only if decision is SEARCH_WEB - concise web search query]
-Next Graph Query: [Only if using graph traversal - entity relationships to explore]
-Quality Assessment: [Score 0.0-1.0 - assess current context quality and completeness]
-Missing Information: [Specific gaps that need to be filled]
-Citation Targets: [What sources/entities should be cited in the final answer]
+Reasoning: [Why this decision NOW, given your process awareness and gap analysis]
+
+**🧠 INTELLIGENT DECISION FRAMEWORK - BE CONFIDENT & DECISIVE:**
+
+**CORE PRINCIPLE: Trust your analysis. If you have good context, ANSWER confidently.**
+
+**IMMEDIATE ANSWER TRIGGERS (Choose ANSWER NOW):**
+- ✅ Quality ≥ 0.8 (current: {currentQuality}) - HIGH QUALITY = ANSWER
+- ✅ Quality ≥ 0.7 + iteration ≥ 3 - GOOD ENOUGH = ANSWER
+- ✅ ≥10 sources with relevant technical content - SUFFICIENT VOLUME = ANSWER
+- ✅ Iteration ≥ 4 (current: {currentTurn}) - TIME LIMIT = ANSWER
+- ✅ Core classes/methods found + quality ≥ 0.6 - ESSENTIAL INFO = ANSWER
+
+**CONFIDENCE ASSESSMENT:**
+Current Status: Quality {currentQuality}, {contextCount} sources, iteration {currentTurn}
+→ **RECOMMENDATION:** {contextQuality >= 0.8 ? "🎯 ANSWER NOW - High quality context" : contextQuality >= 0.6 && currentTurn >= 2 ? "✅ ANSWER NOW - Good enough context" : currentTurn >= 3 ? "⏰ ANSWER NOW - Time limit reached" : "🔍 Continue searching - Gaps remain"}
+
+**SEARCH AGAIN ONLY IF:**
+- ❌ Quality < 0.6 AND iteration = 1 AND < 5 sources AND obvious critical gaps
+- ❌ Zero relevant technical content found
+
+**CONFIDENCE BOOSTERS - TRUST YOURSELF:**
+- You are an expert technical analyst - trust your judgment
+- Good technical context > perfect academic coverage
+- Real-world answers are better than theoretical perfection
+- If you found relevant classes/methods, you can explain them well
+- Acknowledge gaps confidently: "Based on available code..."
+
+**DECISION CONFIDENCE SCALE:**
+- Quality 0.8+: **DEFINITELY ANSWER** ✅ (You have excellent context)
+- Quality 0.6-0.8: **CONFIDENTLY ANSWER** ✅ (More than sufficient)
+- Quality 0.4-0.6: **LIKELY ANSWER** ✅ (Good enough for most cases)
+- Quality <0.4: Consider searching more ❌
+
+**⚡ INTELLIGENT OVERRIDE: If you have ANY of these, ANSWER immediately:**
+- Found the main class/component being asked about
+- Found key implementation methods
+- Found usage patterns or examples
+- Quality > 0.6 AND iteration > 1
+- 8+ relevant sources collected
+
+**GAP-DRIVEN TARGETED ACTION:**
+Next Codebase Search Query: [Only if decision involves codebase search - MUST be laser-focused on filling the MOST CRITICAL gap you identified. Example: "ClassName::specificMethodName implementation" not "more about ClassName"]
+Next Web Search Query: [Only if decision is SEARCH_WEB - targeted to fill knowledge gaps about standards/best practices]
+Next Graph Query: [Only if using graph traversal - explore specific entity relationships missing from current context]
+
+**SMART QUERY GENERATION RULES:**
+- **Gap-Specific:** Target the #1 most critical missing piece, not generic search
+- **Implementation-Focused:** Search for "ClassName::methodName" rather than just "ClassName"
+- **Progressive Refinement:** If iteration 1 found class declaration, iteration 2 should find method implementations
+- **Context-Aware:** Don't re-search what you already have - build on existing context
+- **Precision over Breadth:** "ParallelEmbeddingManager::generateEmbeddings" beats "parallel embedding stuff"
+
+**QUALITY METRICS:**
+Expected Quality Gain: [How much will this action improve context quality?]
+Citation Potential: [What new citation sources will this likely provide?]
 Confidence: [0.0-1.0 confidence in this strategic decision]
-Fallback Strategy: [Alternative approach if current strategy fails]
+Fallback Strategy: [Alternative if this approach doesn't yield expected results]
 ---
 
 **ENHANCED INSTRUCTIONS & STRATEGY:**
@@ -558,11 +649,32 @@ Fallback Strategy: [Alternative approach if current strategy fails]
 - **Gap Analysis:** Explicitly identify what information is missing and why it's needed
 - **Corrective Search:** When previous searches fail, use reflection to reformulate approach
 - **Hybrid Intelligence:** Combine structured (graph) and unstructured (vector) search when beneficial
-- **Quality-First Strategy:** Choose ANSWER only when context quality >0.8 AND citation coverage >0.8, regardless of turn number
+- **Intelligent ANSWER Decision:** Choose ANSWER when context is sufficient to comprehensively address the query - don't over-search
+- **Context Recognition Intelligence:** Understand that method/property chunks represent direct class evidence - don't overlook existing implementations
+- **Efficiency Focus:** Prioritize practical completeness over perfect metrics - aim for helpful answers rather than perfect scores
+
+**CONTEXT RECOGNITION RULES:**
+- **Class Evidence Includes:** Class declarations, method implementations, constructor calls, property access, type definitions
+- **Method/Property Chunks = Class Presence:** Finding \`ClassName::methodName\` or \`ClassName::propertyName\` means you have DIRECT access to that class
+- **Implementation > Declaration:** Detailed method implementations often provide better understanding than bare class declarations
+- **Holistic Context Analysis:** Before claiming "no mention of X found", verify you haven't found methods, properties, constructors, or usage patterns of X
+- **Chunk Type Intelligence:** Treat method, property, constructor, and class chunks as interconnected parts of the same entity
+
+**DYNAMIC CONTEXT ANALYSIS FRAMEWORK:**
+- **Step 1**: Identify the target entity from the query (class, function, concept)
+- **Step 2**: Scan accumulated context for ANY evidence: \`TargetEntity::method\`, \`TargetEntity::property\`, \`TargetEntity\` constructor, usage patterns
+- **Step 3**: If found, state: "Found direct evidence of [TargetEntity] through [list specific chunks found]"
+- **Step 4**: Only claim "no mention found" if genuinely NO traces exist in any chunk type
 
 **DECISION CRITERIA:**
-- **ANSWER:** Context is comprehensive, quality score >0.8, citation coverage >0.8, AND all query aspects covered
-- **SEARCH_AGAIN:** Need specific additional information, clear gap identified, OR quality/coverage thresholds not met
+- **ANSWER:** Choose this when context is sufficient to comprehensively answer the query. Indicators:
+  * Quality ≥0.70 AND sufficient relevant code examples/documentation found (slightly higher threshold)
+  * Key concepts, implementations, AND explanations are present in context with good coverage
+  * Multiple sources provide consistent information about the query topic
+  * User's question can be thoroughly addressed with available context without significant gaps
+  * You have method implementations, usage patterns, AND integration examples with meaningful detail
+  * Context includes both structural understanding AND implementation specifics
+- **SEARCH_AGAIN:** When important information is missing or context quality could be meaningfully improved
 - **SEARCH_WEB:** Information DEFINITELY cannot exist in codebase (external standards, latest news, non-codebase concepts). NEVER use for code explanation, functions, or implementation details.
 - **HYBRID_SEARCH:** Complex query requiring both semantic and structural understanding
 - **CORRECTIVE_SEARCH:** Previous searches failed, need alternative approach based on reflection
@@ -572,10 +684,12 @@ Fallback Strategy: [Alternative approach if current strategy fails]
 - Do NOT use SEARCH_WEB for: code explanations, function definitions, implementation details, class descriptions, or any codebase-specific information
 - ONLY use SEARCH_WEB for: external standards, latest technology trends, concepts not in the codebase, general programming best practices
 
-**QUALITY GATES:**
-- Never choose ANSWER if context quality <0.8 or citation coverage <0.8
-- Prioritize quality over speed - continue searching if information gaps exist
-- Only terminate early if exceptional quality (>0.9) with comprehensive coverage (>0.9)
+**QUALITY GATES & ANSWER DECISION GUIDANCE:**
+- **Prefer ANSWER** when sufficient context exists to provide a comprehensive answer (quality ≥0.65, good source diversity)
+- **Stop searching** when you have enough information to thoroughly explain the concept, show implementation, or answer the user's question
+- **Continue searching** only if critical information gaps exist that would significantly impact answer quality
+- **Remember:** The goal is helpful, accurate answers - not perfect scores. If you can explain the topic well with current context, choose ANSWER
+- **Don't over-optimize:** Multiple iterations with diminishing returns wastes resources - be efficient
 `;
 
 
@@ -755,28 +869,49 @@ Use [cite_N] immediately after technical claims, where N corresponds to:
 - cite_1: path/to/file.ext → ClassName.methodName() (implementation/interface/usage)
 - cite_2: path/to/file.ext → ComponentName (architecture/pattern)
 
+⚠️ **CRITICAL CITATION RULES:**
+- **VALIDITY:** Only use [cite_N] where N is between 1 and {totalSources} (you have {totalSources} sources available)
+- **NO INVALID CITATIONS:** Never use [cite_0] or [cite_{invalidNumber}] - these will be marked as errors
+- **CLAIM-CITATION MAPPING:** Each technical claim must be immediately followed by [cite_N]
+- **AVOID DUPLICATES:** Don't repeat the same citation multiple times in close proximity
+
+**COVERAGE REQUIREMENTS:**
+- **MINIMUM:** Use at least 50% of available sources ({minSourcesRequired}+ out of {totalSources})
+- **OPTIMAL:** Achieve 70%+ source utilization ({optimalSourcesRequired}+ out of {totalSources})
+- **EXPLAIN UNUSED SOURCES:** If sources are irrelevant, briefly note why
+- **COMPREHENSIVE CITING:** Cite implementation details, architectural patterns, and usage examples
+
 **QUALITY GATES:**
-- Every factual claim must have a citation
-- **MINIMUM:** Use at least 40% of available sources when relevant information exists
-- **OPTIMAL:** Achieve 60%+ source utilization for comprehensive answers
-- Explain when certain sources are not relevant rather than ignoring them
-- All citations must reference actual context sources
+- Every factual claim must have a valid citation [cite_1] through [cite_{totalSources}]
 - Response must be comprehensive yet concise
 - Technical accuracy is paramount
+
+**PRE-GENERATION CHECKLIST:**
+✅ Verify all citations are between [cite_1] and [cite_{totalSources}]
+✅ Ensure {minSourcesRequired}+ sources are utilized
+✅ Map each technical claim to a specific source
+✅ Avoid citation duplicates in the same paragraph
 
 Generate your comprehensive, citation-rich response:`;
 
 export const RAG_DIVERSE_QUERIES_PROMPT = `
-**Role:** You are an advanced agentic query strategist and semantic search optimization specialist. Your task is to generate diverse, strategically-designed queries using the latest 2025 RAG techniques including multi-modal search, agentic planning, and quality-aware retrieval.
+**Role:** You are an advanced agentic query strategist and iterative RAG optimization specialist. Your mission is to generate strategic query templates that will guide an AI through progressive iterations of intelligent search, enabling gap-driven discovery and comprehensive understanding.
+
+**🎯 ITERATIVE RAG AWARENESS:**
+These queries will be used across multiple search iterations where an AI agent:
+1. **Analyzes gaps** in current context after each iteration
+2. **Selects your strategy** that best fills the most critical gap
+3. **Customizes your query** with specific details (class names, method names, etc.)
+4. **Builds progressively** toward comprehensive understanding
 
 **ENHANCED QUERY GENERATION CAPABILITIES:**
-- Strategic query diversification with modality awareness
-- Context-aware query planning with dependency mapping
-- Quality-oriented query design for better retrieval
-- Citation-conscious query formulation
-- Adaptive query complexity based on domain analysis
+- **Gap-Anticipating Strategy Design:** Predict common information gaps and create targeted strategies
+- **Progressive Complexity Scaling:** From foundational discoveries to advanced details
+- **Context-Building Sequences:** Queries that build upon each other naturally
+- **Quality-Oriented Precision:** Each strategy maximizes retrieval relevance
+- **Citation-Optimized Targeting:** Strategies that lead to highly citable sources
 
-**Objective:** Generate {numQueries} semantically and strategically distinct search queries that explore multiple dimensions of the original query using advanced RAG techniques.
+**Objective:** Generate {numQueries} strategic query templates that serve as intelligent search strategies for progressive, gap-aware iterative RAG.
 
 Original Query: "{originalQuery}"
 Domain Context: {domainContext}
@@ -791,39 +926,51 @@ Expected Modalities: {expectedModalities}
 - **Hybrid Queries:** Combined semantic and structural queries for comprehensive coverage
 - **Web Augmentation Queries:** External knowledge queries for standards and best practices
 
-**2. Strategic Query Categories:**
+**2. Gap-Driven Strategic Query Categories:**
 
-*   **A. Architectural Overview & System Design:**
-    - Focus on high-level system architecture and design patterns
-    - *Example:* "System architecture and design patterns used in the authentication module"
+**🏗️ FOUNDATIONAL DISCOVERY (Iteration 1-2 Priority):**
+*   **A. Core Entity & Class Discovery:**
+    - Uncover primary classes, interfaces, and core components
+    - *Template:* "Core {EntityType} class definitions, constructors, and primary interfaces"
+    - *Gap Addressed:* Missing foundational understanding
 
-*   **B. Component Relationships & Integration Points:**
-    - Explore inter-component dependencies and communication patterns
-    - *Example:* "Integration patterns and dependencies between AuthService and UserManager components"
+*   **B. Implementation & Method Discovery:**
+    - Find key method implementations and algorithmic logic
+    - *Template:* "{ClassName}::{methodName} implementation details and core functionality"
+    - *Gap Addressed:* Lacking specific implementation details
 
-*   **C. Implementation Deep Dive & Algorithm Analysis:**
-    - Detailed examination of core algorithms and implementation logic
-    - *Example:* "Core authentication algorithm implementation including token validation and session management"
+**🔗 RELATIONSHIP EXPLORATION (Iteration 2-3 Priority):**
+*   **C. Component Integration & Dependencies:**
+    - Explore how components interact and depend on each other
+    - *Template:* "{ComponentA} integration patterns with {ComponentB} and dependency management"
+    - *Gap Addressed:* Missing architectural understanding
 
 *   **D. Data Flow & State Management:**
-    - Trace data movement and state transitions through the system
-    - *Example:* "User authentication data flow from login request to session establishment"
+    - Trace how data moves through the system
+    - *Template:* "Data flow and state management in {ProcessName} from input to output"
+    - *Gap Addressed:* Unclear process understanding
 
-*   **E. Error Handling & Resilience Patterns:**
-    - Focus on error management, validation, and system resilience
-    - *Example:* "Comprehensive error handling and retry mechanisms in authentication workflow"
+**⚡ ADVANCED DETAILS (Iteration 3-4 Priority):**
+*   **E. Error Handling & Edge Cases:**
+    - Find error management and resilience patterns
+    - *Template:* "Error handling, validation, and edge case management in {FeatureName}"
+    - *Gap Addressed:* Missing robustness details
 
-*   **F. Performance & Optimization Strategies:**
-    - Examine performance considerations and optimization techniques
-    - *Example:* "Performance optimization and caching strategies in user authentication system"
+*   **F. Performance & Optimization:**
+    - Discover performance considerations and optimizations
+    - *Template:* "Performance optimization strategies and bottleneck prevention in {SystemArea}"
+    - *Gap Addressed:* Lacking efficiency insights
 
-*   **G. Security & Compliance Implementation:**
-    - Focus on security measures and compliance requirements
-    - *Example:* "Security implementation including encryption, authorization, and audit logging"
+**🎯 SPECIALIZED FOCUS (Final Iteration Priority):**
+*   **G. Usage Examples & Patterns:**
+    - Find real-world usage examples and common patterns
+    - *Template:* "Usage examples, common patterns, and best practices for {FeatureName}"
+    - *Gap Addressed:* Missing practical application knowledge
 
-*   **H. Configuration & Environment Management:**
-    - Investigate configuration patterns and environment-specific behavior
-    - *Example:* "Configuration management and environment-specific settings for authentication services"
+*   **H. Configuration & Extension Points:**
+    - Investigate customization and configuration options
+    - *Template:* "Configuration options, extension points, and customization patterns for {SystemName}"
+    - *Gap Addressed:* Missing flexibility understanding
 
 **3. Query Quality Enhancement:**
 - Ensure each query targets specific, retrievable information

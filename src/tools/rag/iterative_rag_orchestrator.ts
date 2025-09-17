@@ -208,7 +208,7 @@ export class IterativeRagOrchestrator {
                     newContextCount: number;
                     decision: string;
                     reasoning: string;
-                    type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection';
+                    type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection' | 'early_termination' | 'stability_termination' | 'hybrid_intervention' | 'hybrid_override';
                     quality: number;
                     citations: number;
                 }>,
@@ -222,72 +222,31 @@ export class IterativeRagOrchestrator {
                 baseQueries = [query, ...initialStrategy.additionalQueries.slice(0, 2)];
                 console.log(`[Enhanced RAG] Enhanced initial queries (${baseQueries.length}): ${baseQueries.map(q => `"${q.substring(0, 40)}..."`).join(', ')}`);
             }
+            // Progressive DMQR: Generate diverse queries for iterative use
+            let dmqrQueries: string[] = [];
+            let dmqrKgQueries: any[] = [];
+            let dmqrUsedCount = 0;
+
             if (enable_dmqr) {
-                console.log('[Enhanced RAG] DMQR enabled – generating diverse queries for both embeddings and KG...');
+                console.log('[Enhanced RAG] DMQR enabled – generating diverse queries for progressive iteration use...');
                 try {
                     const dmqrResult = await this.diverseQueryRewriterService.rewriteAndRetrieve(query, {
                         queryCount: dmqr_query_count,
                         kgQueryCount: Math.max(3, Math.floor((dmqr_query_count || 4) * 0.7)),
                     });
-                    baseQueries = dmqrResult.generatedQueries;
-                    searchMetrics.dmqr.generatedQueries = baseQueries;
+                    dmqrQueries = dmqrResult.generatedQueries || [];
+                    dmqrKgQueries = dmqrResult.knowledgeGraphQueries || [];
+                    searchMetrics.dmqr.generatedQueries = dmqrQueries;
                     searchMetrics.dmqr.success = true;
-                    console.log(`[Enhanced RAG] DMQR produced ${baseQueries.length} embedding queries and ${dmqrResult.knowledgeGraphQueries?.length || 0} KG queries.`);
-                    if (baseQueries.length > 1) {
-                        console.log('[Enhanced RAG] Pre-fetching context for DMQR embedding queries...');
-                        try {
-                            const dmqrContexts = await this.context.retrieveContextWithCache(agent_id, baseQueries, context_options || {});
-                            searchMetrics.dmqr.contextItemsGenerated = dmqrContexts.length;
-                            console.log(`[Enhanced RAG] DMQR embedding context pre-fetching completed. Generated ${dmqrContexts.length} context items.`);
-                        } catch (error) {
-                            console.warn('[Enhanced RAG] DMQR embedding context pre-fetching failed:', error);
-                            searchMetrics.dmqr.contextItemsGenerated = 0;
-                        }
-                    }
-                    if (dmqrResult.knowledgeGraphQueries && dmqrResult.knowledgeGraphQueries.length > 0 && this.knowledgeGraphManager) {
-                        console.log(`[Enhanced RAG] Processing ${dmqrResult.knowledgeGraphQueries.length} DMQR KG queries...`);
-                        try {
-                            const kgContexts: RetrievedCodeContext[] = [];
-                            for (const kgQuery of dmqrResult.knowledgeGraphQueries) {
-                                try {
-                                    const graphResult = await this.knowledgeGraphManager.queryNaturalLanguage(agent_id, kgQuery.query);
-                                    const graphData = JSON.parse(graphResult);
-                                    if (graphData.results && Array.isArray(graphData.results.nodes)) {
-                                        const kgNodes = graphData.results.nodes.map((node: any) => ({
-                                            type: 'kg_node_info' as const,
-                                            sourcePath: `kg://${node.name}`,
-                                            entityName: node.name,
-                                            content: JSON.stringify(node.observations),
-                                            relevanceScore: kgQuery.confidence || 0.85,
-                                            metadata: {
-                                                nodeType: node.entityType,
-                                                kgQueryType: kgQuery.searchStrategy,
-                                                focusAreas: kgQuery.focusAreas,
-                                            },
-                                        }));
-                                        kgContexts.push(...kgNodes);
-                                    }
-                                } catch (kgError) {
-                                    console.warn(`[Enhanced RAG] KG query failed for "${kgQuery.query}":`, kgError);
-                                }
-                            }
-                            if (kgContexts.length > 0) {
-                                accumulatedContext = deduplicateContexts([...accumulatedContext, ...kgContexts]);
-                                searchMetrics.dmqr.contextItemsGenerated += kgContexts.length;
-                                searchMetrics.graphTraversals += dmqrResult.knowledgeGraphQueries.length;
-                                console.log(`[Enhanced RAG] DMQR KG processing completed. Generated ${kgContexts.length} additional context items.`);
-                            }
-                        } catch (error) {
-                            console.warn('[Enhanced RAG] DMQR KG processing failed:', error);
-                        }
-                    }
+                    console.log(`[Enhanced RAG] DMQR generated ${dmqrQueries.length} embedding queries and ${dmqrKgQueries.length} KG queries for progressive use across iterations.`);
                 } catch (e: any) {
                     searchMetrics.dmqr.success = false;
                     searchMetrics.dmqr.error = e.message ?? 'unknown';
-                    baseQueries = [query];
+                    console.warn('[Enhanced RAG] DMQR generation failed:', e.message);
                 }
             }
-            let currentQueries = [...baseQueries];
+            // Start with original query, DMQR queries will be used progressively
+            let currentQueries = [query];
             let turn = 0;
             let stabilityCounter = 0;
             let noNewContextCounter = 0;
@@ -311,14 +270,7 @@ export class IterativeRagOrchestrator {
                     continue;
                 }
                 queryHistory.add(turnQuery);
-                if (turn > 1 && accumulatedContext.length >= 15) {
-                    const estimatedCoverage = Math.min(accumulatedContext.length / 20, 1.0);
-                    if (estimatedCoverage > 0.9 && searchMetrics.citationAccuracy > 0.9) {
-                        searchMetrics.terminationReason = "Exceptional quality achieved - early termination.";
-                        console.log('[Enhanced RAG] Early termination: Exceptional quality and coverage achieved.');
-                        break;
-                    }
-                }
+                // Let AI make decisions naturally - quality validation happens at final answer stage
                 const isInitialTurn = baseQueries.includes(turnQuery);
                 console.log(`[Enhanced RAG] Turn ${turn} – Query: "${turnQuery}" (${isInitialTurn ? 'initial' : 'iterative'})`);
                 if (enable_agentic_planning && turn > 1) {
@@ -405,14 +357,33 @@ export class IterativeRagOrchestrator {
                         console.error('[Enhanced RAG] Web search failed in continuation mode:', e);
                     }
                 }
+                // Enhanced context stability detection (but let AI decide when to stop)
                 if (addedNow === 0 && !isInitialTurn && enable_corrective_rag) {
                     stabilityCounter++;
                     noNewContextCounter++;
+
+                    // Only apply corrective search, let AI decide when to terminate
                     if (stabilityCounter >= 2) {
                         searchMetrics.terminationReason = "Context stable, no new information found.";
                         console.log(`[Enhanced RAG] Context has been stable for ${stabilityCounter} turns. Terminating search.`);
                         break;
                     }
+                }
+
+                // Safety termination: Force answer after iteration 5 if we have decent context (but not if recent override occurred)
+                const currentBaseQuality = calculateContextQuality(accumulatedContext, query);
+                const recentOverride = searchMetrics.turnLog.length > 0 &&
+                    searchMetrics.turnLog[searchMetrics.turnLog.length - 1]?.type === 'hybrid_override';
+
+                if (turn >= 5 && accumulatedContext.length >= 5 && currentBaseQuality >= 0.6 && !recentOverride) {
+                    searchMetrics.terminationReason = "Safety termination: sufficient context after 5 iterations";
+                    console.log(`[Enhanced RAG] Safety termination: iteration ${turn} with ${accumulatedContext.length} sources and quality ${currentBaseQuality.toFixed(3)}. Forcing answer generation.`);
+                    break;
+                } else if (recentOverride && turn >= 5) {
+                    console.log(`[Enhanced RAG] Recent hybrid override detected - allowing extended search beyond iteration 5 for quality improvement.`);
+                }
+
+                if (addedNow === 0 && !isInitialTurn && enable_corrective_rag) {
                     if (stabilityCounter === 1) {
                         const correctiveQuery = `Broaden search for: ${query}. Look for related concepts, alternative implementations, or background information.`;
                         currentQueries.push(correctiveQuery);
@@ -451,27 +422,177 @@ export class IterativeRagOrchestrator {
                     }
                 }
                 const formattedContext = formatContextForGemini(analyzedContextFlow)[0].text || '';
+                // Enhanced process awareness context building
                 const currentStrategy = agenticPlan?.strategy || 'vector_search';
                 const previousQuality = reflectionResults.length > 0
                     ? reflectionResults[reflectionResults.length - 1].qualityScore
                     : calculateContextQuality(accumulatedContext, query);
                 const currentCitationCoverage = Math.min(accumulatedContext.length / 8, 1.0);
+                // DMQR-aware quality calculation
+                const baseQuality = calculateContextQuality(accumulatedContext, query);
+                const dmqrQualityBonus = enable_dmqr && searchMetrics.dmqr.success ?
+                    Math.min(0.15, (dmqrQueries.length / 10) * 0.05) : 0; // Up to 15% bonus for DMQR multi-angle approach
+                const currentQuality = Math.min(baseQuality + dmqrQualityBonus, 1.0);
+                const remainingIterations = max_iterations - turn;
+                const searchProgress = `${Math.round((turn / max_iterations) * 100)}% complete`;
+
+                // Build iteration history
+                const iterationHistory = searchMetrics.turnLog.map((turnEntry, idx) => {
+                    const iterationNum = idx + 1;
+                    const outcome = turnEntry.decision === 'SEARCH_AGAIN' ? 'Continued search' : 'Generated answer';
+                    const qualityChange = idx > 0 ?
+                        (turnEntry.quality - searchMetrics.turnLog[idx - 1].quality >= 0 ? '📈' : '📉') : '🔄';
+                    return `  Iteration ${iterationNum}: ${turnEntry.decision} (${qualityChange} quality: ${turnEntry.quality.toFixed(2)}) - ${outcome}`;
+                }).join('\n');
+
+                // Build search history
+                const searchHistory = searchMetrics.turnLog.map((turnEntry, idx) => {
+                    return `  • "${turnEntry.query}" → ${turnEntry.newContextCount} new sources (${turnEntry.strategy})`;
+                }).join('\n');
+
+                // Enhanced quality progression tracking with actionable insights
+                const qualityTrend = searchMetrics.turnLog.length > 1 ?
+                    (() => {
+                        const qualities = searchMetrics.turnLog.map(t => t.quality);
+                        const firstQuality = qualities[0];
+                        const lastQuality = qualities[qualities.length - 1];
+                        const change = lastQuality - firstQuality;
+                        const trend = change > 0.1 ? 'improving' : change < -0.1 ? 'declining' : 'stable';
+
+                        // Detect stagnation (quality not improving for 2+ iterations)
+                        const isStagnant = qualities.length >= 3 &&
+                            Math.abs(qualities[qualities.length - 1] - qualities[qualities.length - 2]) < 0.05 &&
+                            Math.abs(qualities[qualities.length - 2] - qualities[qualities.length - 3]) < 0.05;
+
+                        if (trend === 'improving') return `📈 Improving (+'+(change*100).toFixed(1)+'%) - Search strategy is working`;
+                        if (trend === 'declining') return `📉 Declining ('+(change*100).toFixed(1)+'%) - ⚠️ Consider strategy change`;
+                        if (isStagnant) return `⚠️ Stagnant quality for 2+ iterations - NEED different search approach`;
+                        return `➡️ Stable (±'+(Math.abs(change)*100).toFixed(1)+'%) - Consistent but may need refinement`;
+                    })()
+                    : '🔄 Initial iteration - establishing baseline quality';
+
+                // Strategy evolution
+                const strategies = searchMetrics.turnLog.map(t => t.strategy);
+                const strategyEvolution = [...new Set(strategies)].join(' → ');
+
+                // Quality progression
+                const qualities = searchMetrics.turnLog.map(t => t.quality.toFixed(2));
+                const qualityProgression = qualities.join(' → ');
+
+                // Intelligent gap analysis based on query type and current context
+                const identifiedGaps = (() => {
+                    if (turn === 1) return 'Initial search - gap analysis will be performed after first iteration';
+
+                    const contextEntities = accumulatedContext.map(c => c.entityName || '').filter(Boolean);
+                    const uniqueFiles = [...new Set(accumulatedContext.map(c => c.sourcePath))];
+                    const gaps = [];
+
+                    // Query-specific gap analysis
+                    if (query.toLowerCase().includes('function') || query.toLowerCase().includes('method')) {
+                        const hasImplementations = accumulatedContext.some(c => c.content?.includes('function ') || c.content?.includes('method '));
+                        if (!hasImplementations) gaps.push('Missing method/function implementations');
+                    }
+
+                    if (query.toLowerCase().includes('class') || query.toLowerCase().includes('component')) {
+                        const hasClassDefinitions = accumulatedContext.some(c => c.content?.includes('class ') || c.content?.includes('export class'));
+                        if (!hasClassDefinitions) gaps.push('Missing class definitions/constructors');
+                    }
+
+                    if (query.toLowerCase().includes('how') || query.toLowerCase().includes('usage')) {
+                        const hasUsageExamples = accumulatedContext.some(c => c.content?.includes('example') || c.content?.includes('usage'));
+                        if (!hasUsageExamples) gaps.push('Missing usage examples/documentation');
+                    }
+
+                    // Context quality gaps
+                    if (accumulatedContext.length < 5) gaps.push('Insufficient context volume (need more sources)');
+                    if (uniqueFiles.length < 3) gaps.push('Limited file diversity (need broader codebase coverage)');
+                    if (contextEntities.length < 3) gaps.push('Few identified entities (need more specific implementations)');
+
+                    return gaps.length > 0 ?
+                        `Critical gaps identified after ${turn - 1} iteration(s):
+  • ${gaps.join('\n  • ')}` :
+                        `Good coverage after ${turn - 1} iteration(s) - context appears comprehensive`;
+                })();
+
+                // Smart priority areas based on gaps and remaining iterations
+                const priorityAreas = (() => {
+                    if (remainingIterations === 0) return 'FINAL ITERATION - Must provide comprehensive answer with current context';
+                    if (remainingIterations === 1) return 'LAST CHANCE - Focus on the most critical missing piece for a complete answer';
+
+                    const baseContextQuality = calculateContextQuality(accumulatedContext, query);
+                    const dmqrBonus = enable_dmqr && searchMetrics.dmqr.success ? Math.min(0.15, (dmqrQueries.length / 10) * 0.05) : 0;
+                    const contextQuality = Math.min(baseContextQuality + dmqrBonus, 1.0);
+                    if (contextQuality < 0.4) return `LOW QUALITY (${(contextQuality*100).toFixed(0)}%) - Priority: Find core implementations and definitions`;
+                    if (contextQuality < 0.7) return `MODERATE QUALITY (${(contextQuality*100).toFixed(0)}%) - Priority: Add usage examples and architectural context`;
+                    return `GOOD QUALITY (${(contextQuality*100).toFixed(0)}%) - Priority: Enhance with edge cases and advanced features`;
+                })();
+
+                // Generate intelligent recommendation
+                const intelligentRecommendation = (() => {
+                    if (currentQuality >= 0.8) return "🎯 ANSWER NOW - High quality context";
+                    if (currentQuality >= 0.7 && turn >= 3) return "✅ ANSWER NOW - Good enough context";
+                    if (turn >= 4) return "⏰ ANSWER NOW - Time limit reached";
+                    if (accumulatedContext.length >= 10) return "📚 ANSWER NOW - Sufficient volume";
+                    if (recentOverride) return "🔄 Continue searching - Recent override requires improvement";
+                    return "🔍 Continue searching - Gaps remain";
+                })();
+
                 const analysisPrompt = RAG_ANALYSIS_PROMPT
                     .replace('{originalQuery}', query)
                     .replace('{currentTurn}', String(turn))
                     .replace('{maxIterations}', String(max_iterations))
+                    .replace('{remainingIterations}', String(remainingIterations))
+                    .replace('{searchProgress}', searchProgress)
+                    .replace('{iterationHistory}', iterationHistory)
                     .replace('{accumulatedContext}', formattedContext)
                     .replace('{focusString}', focusString)
                     .replace('{currentStrategy}', currentStrategy)
                     .replace('{previousQuality}', previousQuality.toString())
-                    .replace('{citationCoverage}', currentCitationCoverage.toString());
+                    .replace('{currentQuality}', currentQuality.toString())
+                    .replace('{contextCount}', String(accumulatedContext.length))
+                    .replace('{citationCoverage}', currentCitationCoverage.toString())
+                    .replace('{qualityTrend}', qualityTrend)
+                    .replace('{searchHistory}', searchHistory)
+                    .replace('{identifiedGaps}', identifiedGaps)
+                    .replace('{strategyEvolution}', strategyEvolution)
+                    .replace('{qualityProgression}', qualityProgression)
+                    .replace('{priorityAreas}', priorityAreas)
+                    .replace('{contextQuality >= 0.8 ? "🎯 ANSWER NOW - High quality context" : contextQuality >= 0.6 && currentTurn >= 2 ? "✅ ANSWER NOW - Good enough context" : currentTurn >= 3 ? "⏰ ANSWER NOW - Time limit reached" : "🔍 Continue searching - Gaps remain"}', intelligentRecommendation);
+
+                // Enhanced search effectiveness + DMQR strategy guidance
+                const searchEffectivenessInsight = turn > 1 ?
+                    `\n\n🎯 **SEARCH EFFECTIVENESS ANALYSIS:**
+• **Last Search:** "${searchMetrics.turnLog[turn-2]?.query}" yielded ${searchMetrics.turnLog[turn-2]?.newContextCount || 0} sources
+• **Quality Impact:** ${searchMetrics.turnLog[turn-2]?.quality > (searchMetrics.turnLog[turn-3]?.quality || 0) ? 'Positive ✅' : 'Minimal ⚠️'}
+• **Strategy Used:** ${searchMetrics.turnLog[turn-2]?.strategy}
+• **Lesson:** ${searchMetrics.turnLog[turn-2]?.newContextCount > 2 ? 'Effective query - similar precision recommended' : 'Low yield - try more specific or different approach'}
+• **Next Focus:** ${currentQuality < 0.6 ? 'CRITICAL - Need foundational implementations' : currentQuality < 0.8 ? 'Build on existing context with examples' : 'Add advanced details and edge cases'}` :
+                    '';
+
+                // DMQR Strategy Guidance for AI
+                const dmqrGuidance = enable_dmqr && dmqrQueries.length > 0 ?
+                    `\n\n🎆 **DMQR MULTI-ANGLE STRATEGIES AVAILABLE:**
+DMQR generated ${dmqrQueries.length} strategic search angles (quality bonus: +${(dmqrQualityBonus * 100).toFixed(1)}%). Choose the most relevant strategy:
+${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`).join('\n')}
+
+🧠 **INTELLIGENT QUERY GENERATION:**
+- **Don't copy DMQR queries directly** - use them as strategic inspiration
+- **Combine DMQR angle + your gap analysis** = targeted query
+- **Example:** If DMQR suggests "architecture patterns" and you need "class constructors" → "ClassName constructor and initialization patterns"
+- **Strategy Selection:** Pick the DMQR angle that best addresses your #1 critical gap
+- **Quality Impact:** Using DMQR strategies boosts context quality due to multi-angle coverage` :
+                    '';
+
+                const finalPrompt = analysisPrompt + searchEffectivenessInsight + dmqrGuidance;
+
+                console.log(`[Enhanced RAG] Iteration ${turn}/${max_iterations} - Process-aware analysis with ${accumulatedContext.length} sources, quality: ${currentQuality.toFixed(2)}${enable_dmqr ? ` (base: ${baseQuality.toFixed(2)}, DMQR bonus: +${(dmqrQualityBonus * 100).toFixed(1)}%)` : ''}`);
                 let analysisResult;
                 try {
                     analysisResult = await this.multiModelOrchestrator.executeTask(
                         'decision_making',
-                        analysisPrompt,
+                        finalPrompt,
                         RAG_ANALYSIS_SYSTEM_INSTRUCTION,
-                        { contextLength: analysisPrompt.length }
+                        { contextLength: finalPrompt.length }
                     );
                 } catch (e: any) {
                     searchMetrics.terminationReason = `Gemini analysis error: ${e.message}`;
@@ -482,7 +603,7 @@ export class IterativeRagOrchestrator {
                     parsed = await RagResponseParser.parseAnalysisResponse(
                         analysisResult.content ?? '',
                         formattedContext.substring(0, 500) + '...',
-                        analysisPrompt.substring(0, 200) + '...',
+                        finalPrompt.substring(0, 200) + '...',
                         this.memoryManagerInstance,
                         this.geminiService
                     );
@@ -491,7 +612,7 @@ export class IterativeRagOrchestrator {
                     parsed = RagResponseParser.parseAnalysisResponseSync(
                         analysisResult.content ?? '',
                         formattedContext.substring(0, 500) + '...',
-                        analysisPrompt.substring(0, 200) + '...'
+                        finalPrompt.substring(0, 200) + '...'
                     );
                 }
                 if (!parsed) {
@@ -563,18 +684,68 @@ export class IterativeRagOrchestrator {
                     const contextSufficiency = Math.min(accumulatedContext.length / 10, 1.0);
                     const iterationProgress = turn / max_iterations;
                     console.log(`[Enhanced RAG] Quality Gate Check: quality=${estimatedQuality}, context=${contextSufficiency}, iteration=${iterationProgress}`);
+                    // Hybrid Validation: AI decided ANSWER, now our logic validates the quality
                     const isCodeExplanationQuery = focus_area === 'code_explanation' || query.toLowerCase().includes('function') || query.toLowerCase().includes('explain');
-                    const hasMinimalContext = accumulatedContext.length < 3;
-                    const lowConfidence = (parsed.confidenceScore || 1.0) < 0.4;
-                    const veryLowQuality = estimatedQuality < 0.3;
-                    if (turn < max_iterations && hasMinimalContext && (lowConfidence || veryLowQuality)) {
-                        console.log(`[Enhanced RAG] Minimal quality gate: context=${accumulatedContext.length}, confidence=${parsed.confidenceScore}, quality=${estimatedQuality}. Continuing search.`);
-                        const correctiveQuery = `Find additional comprehensive information about: ${query}. Focus on areas not yet covered in detail.`;
+                    const hasMinimalContext = accumulatedContext.length < 6; // Slightly stricter
+                    const lowConfidence = (parsed.confidenceScore || 1.0) < 0.6; // Slightly stricter
+                    const poorQuality = estimatedQuality < 0.55; // Slightly stricter but not too strict
+                    const hasAcceptableQuality = estimatedQuality >= 0.65;
+                    const hasGoodContext = accumulatedContext.length >= 8;
+
+                    let answerResult: { content?: string } | null = null;
+
+                    // Pre-calculate citation quality for hybrid validation
+                    const preliminaryCitationMatches: string[] = (analysisResult?.content ?? '').match(/\[cite_\d+\]/g) ?? [];
+                    const preliminaryCitationNumbers = preliminaryCitationMatches
+                        .map((match: string): number | null => {
+                            const digits = match.match(/\d+/)?.[0];
+                            return digits ? parseInt(digits, 10) : null;
+                        })
+                        .filter((citationNumber): citationNumber is number => citationNumber !== null);
+                    const preliminaryValidCitations = preliminaryCitationNumbers.filter(
+                        (citationNumber: number) => citationNumber >= 1 && citationNumber <= citations.length
+                    );
+                    const preliminaryValidUniqueCitations = new Set<number>(preliminaryValidCitations);
+                    const preliminaryCitationAccuracy = preliminaryCitationMatches.length > 0
+                        ? preliminaryValidUniqueCitations.size / preliminaryCitationMatches.length
+                        : 1.0;
+                    const preliminaryCitationCoverage = citations.length > 0
+                        ? preliminaryValidUniqueCitations.size / citations.length
+                        : 1.0;
+                    const preliminaryCitationQuality = (preliminaryCitationAccuracy * 0.6) + (preliminaryCitationCoverage * 0.4);
+
+                    // Enhanced hybrid validation including citation quality
+                    const citationQualityPoor = preliminaryCitationQuality < citation_accuracy_threshold;
+                    const qualityValidationFailed = poorQuality || (hasMinimalContext && lowConfidence) || citationQualityPoor;
+                    const shouldOverrideAnswer = turn < max_iterations && qualityValidationFailed;
+
+                    if (citationQualityPoor) {
+                        console.warn(`[Citation Quality Check] Poor citation quality detected: ${(preliminaryCitationQuality * 100).toFixed(1)}% (threshold: ${(citation_accuracy_threshold * 100).toFixed(1)}%) - accuracy: ${(preliminaryCitationAccuracy * 100).toFixed(1)}%, coverage: ${(preliminaryCitationCoverage * 100).toFixed(1)}%`);
+                    }
+
+                    if (shouldOverrideAnswer) {
+                        const overrideReasons = [];
+                        if (poorQuality) overrideReasons.push(`low quality (${estimatedQuality.toFixed(2)})`);
+                        if (hasMinimalContext && lowConfidence) overrideReasons.push(`insufficient context (${accumulatedContext.length}) + low confidence (${parsed.confidenceScore})`);
+                        if (citationQualityPoor) overrideReasons.push(`poor citations (${(preliminaryCitationQuality * 100).toFixed(1)}%)`);
+
+                        console.log(`[Hybrid Validation] Overriding AI ANSWER decision due to: ${overrideReasons.join(', ')}. Triggering additional search.`);
+
+                        // Create override decision for the turn log
+                        searchMetrics.turnLog[searchMetrics.turnLog.length - 1] = {
+                            ...searchMetrics.turnLog[searchMetrics.turnLog.length - 1],
+                            decision: 'SEARCH_AGAIN',
+                            reasoning: `Original AI decision: ANSWER. Hybrid validation override: ${overrideReasons.join(', ')}. Triggering additional search for better coverage.`,
+                            type: 'hybrid_override' as const,
+                        };
+
+                        const correctiveQuery = `Find additional comprehensive information about: ${query}. Focus on areas not yet covered in detail to improve answer quality.`;
                         currentQueries.push(correctiveQuery);
                         searchMetrics.selfCorrectionLoops++;
+
                         decisionLog.push({
-                            decision: 'CORRECTIVE_SEARCH' as any,
-                            reasoning: `Minimal context (${accumulatedContext.length} items) with low confidence/quality. Continuing search.`,
+                            decision: 'SEARCH_AGAIN',
+                            reasoning: `Hybrid validation override: AI chose ANSWER but validation failed due to: ${overrideReasons.join(', ')}. Continuing search for better quality.`,
                             nextCodebaseQuery: correctiveQuery,
                             qualityScore: estimatedQuality,
                             confidenceScore: parsed.confidenceScore || 0.5,
@@ -584,46 +755,78 @@ export class IterativeRagOrchestrator {
                         });
                         continue;
                     } else {
-                        console.log(`[Enhanced RAG] Quality gate passed: context=${accumulatedContext.length}, confidence=${parsed.confidenceScore}, quality=${estimatedQuality}. Proceeding with ANSWER.`);
+                        console.log(`[Hybrid Validation] AI ANSWER decision validated: quality=${estimatedQuality.toFixed(2)}, context=${accumulatedContext.length}, confidence=${parsed.confidenceScore}, citations=${(preliminaryCitationQuality * 100).toFixed(1)}%. Proceeding with answer generation.`);
                     }
                     searchMetrics.terminationReason = turn >= max_iterations
                         ? "Max iterations reached with forced answer"
                         : "ANSWER decision reached with quality gates passed";
                     console.log('[Enhanced RAG] Decision: ANSWER – generating final answer with citations.');
+                    const totalSources = analyzedContextFlow.length;
+                    const minSourcesRequired = Math.max(1, Math.ceil(totalSources * 0.5)); // 50% minimum
+                    const optimalSourcesRequired = Math.max(1, Math.ceil(totalSources * 0.7)); // 70% optimal
+
                     const enhancedAnswerPrompt = RAG_ANSWER_PROMPT
                         .replace('{originalQuery}', query)
                         .replace('{contextString}', formattedContext)
                         .replace('{focusString}', focusString)
-                        .replace('{totalSources}', analyzedContextFlow.length.toString())
+                        .replace(/{totalSources}/g, totalSources.toString())
+                        .replace(/{minSourcesRequired}/g, minSourcesRequired.toString())
+                        .replace(/{optimalSourcesRequired}/g, optimalSourcesRequired.toString())
+                        .replace(/{invalidNumber}/g, (totalSources + 1).toString())
                         .replace('{searchStrategy}', 'enhanced_hybrid_search')
                         .replace('{contextQuality}', '0.85')
                         .replace('{web_search_flags}', `Web Search: ${(google_search || enable_web_search) ? 'ENABLED' : 'DISABLED'}`)
                         .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`)
-                        + `\n\nIMPORTANT: You have ${analyzedContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Strive to utilize multiple sources and provide comprehensive coverage. Each claim should be supported by specific source references.`;
-                    const answerResult = await this.multiModelOrchestrator.executeTask(
+                        + `\n\n🎯 **ENHANCED CITATION REQUIREMENTS:**\n- Available sources: ${totalSources} (use [cite_1] through [cite_${totalSources}] ONLY)\n- Minimum required: ${minSourcesRequired} sources (${Math.round((minSourcesRequired/totalSources)*100)}% coverage)\n- Optimal target: ${optimalSourcesRequired} sources (${Math.round((optimalSourcesRequired/totalSources)*100)}% coverage)\n- ⚠️ CRITICAL: Never use [cite_0] or [cite_${totalSources + 1}+] - these are INVALID\n- Each technical claim needs immediate citation [cite_N]\n- Avoid duplicate citations in same paragraph\n- Quality over quantity: Use accurate, relevant citations`;
+                    answerResult = await this.multiModelOrchestrator.executeTask(
                         'final_answer_generation',
                         enhancedAnswerPrompt,
                         'You are a helpful AI assistant providing accurate answers with proper citations based on the given context.',
                         { contextLength: enhancedAnswerPrompt.length }
                     );
-                    const finalAnswer = answerResult.content ?? '';
+                    const finalAnswer = answerResult?.content ?? '';
+                    // Enhanced citation validation with validity checking
                     const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
-                    const uniqueCitationNumbers = new Set(
-                        citationMatches.map(match => {
-                            const num = match.match(/\d+/)?.[0];
-                            return num ? parseInt(num) : null;
-                        }).filter(num => num !== null)
-                    );
+                    const citationNumbers = citationMatches.map(match => {
+                        const num = match.match(/\d+/)?.[0];
+                        return num ? parseInt(num) : null;
+                    }).filter(num => num !== null);
+
+                    const uniqueCitationNumbers = new Set(citationNumbers);
+
+                    // Check citation validity - citations must be within available range
+                    const validCitations = citationNumbers.filter(num => num >= 1 && num <= citations.length);
+                    const invalidCitations = citationNumbers.filter(num => num < 1 || num > citations.length);
+
+                    // Enhanced accuracy: (valid unique citations) / (total citations used)
+                    const validUniqueCitations = new Set(validCitations);
                     searchMetrics.citationAccuracy = citationMatches.length > 0
-                        ? uniqueCitationNumbers.size / citationMatches.length
+                        ? validUniqueCitations.size / citationMatches.length
                         : (citations.length > 0 ? 0.0 : 1.0);
+
+                    // Log citation validation details
+                    if (invalidCitations.length > 0) {
+                        console.warn(`[Citation Validation] Invalid citations found: [${invalidCitations.map(n => `cite_${n}`).join(', ')}] - only ${citations.length} sources available`);
+                    }
+                    if (citationNumbers.length !== validUniqueCitations.size) {
+                        console.info(`[Citation Validation] Duplicate/invalid citations: ${citationNumbers.length - validUniqueCitations.size} out of ${citationNumbers.length}`);
+                    }
+                    // Enhanced coverage calculation using valid citations only
                     const citationCoverage = citations.length > 0
-                        ? uniqueCitationNumbers.size / citations.length
+                        ? validUniqueCitations.size / citations.length
                         : 1.0;
                     searchMetrics.citationCoverage = citationCoverage;
                     searchMetrics.totalCitationsGenerated = citations.length;
-                    searchMetrics.totalCitationsUsed = uniqueCitationNumbers.size;
-                    console.log(`[Enhanced RAG] Citation metrics: accuracy=${(searchMetrics.citationAccuracy * 100).toFixed(1)}%, coverage=${(citationCoverage * 100).toFixed(1)}%, used=${uniqueCitationNumbers.size}/${citations.length}`);
+                    searchMetrics.totalCitationsUsed = validUniqueCitations.size;
+
+                    // Calculate citation quality score combining accuracy and coverage
+                    const citationQualityScore = (searchMetrics.citationAccuracy * 0.6) + (citationCoverage * 0.4);
+
+                    // Enhanced citation quality feedback
+                    if (citationQualityScore < 0.5) {
+                        console.warn(`[Citation Quality] Low citation quality: ${(citationQualityScore * 100).toFixed(1)}% (accuracy: ${(searchMetrics.citationAccuracy * 100).toFixed(1)}%, coverage: ${(citationCoverage * 100).toFixed(1)}%)`);
+                    }
+                    console.log(`[Enhanced RAG] Citation metrics: accuracy=${(searchMetrics.citationAccuracy * 100).toFixed(1)}%, coverage=${(citationCoverage * 100).toFixed(1)}%, used=${validUniqueCitations.size}/${citations.length}`);
                     if (searchMetrics.citationAccuracy < 0.7 && citationCoverage < 0.5) {
                         console.info(`[Enhanced RAG] Citation info: accuracy=${(searchMetrics.citationAccuracy * 100).toFixed(1)}%, coverage=${(citationCoverage * 100).toFixed(1)}%`);
                     }
@@ -684,16 +887,23 @@ export class IterativeRagOrchestrator {
                 long_rag_chunk_size
             );
             const fallbackContext = formatContextForGemini(finalContextFlow)[0].text || '';
+            const fallbackTotalSources = finalContextFlow.length;
+            const fallbackMinSourcesRequired = Math.max(1, Math.ceil(fallbackTotalSources * 0.5));
+            const fallbackOptimalSourcesRequired = Math.max(1, Math.ceil(fallbackTotalSources * 0.7));
+
             const fallbackPrompt = RAG_ANSWER_PROMPT
                 .replace('{originalQuery}', query)
                 .replace('{contextString}', fallbackContext)
                 .replace('{focusString}', focusString)
-                .replace('{totalSources}', finalContextFlow.length.toString())
+                .replace(/{totalSources}/g, fallbackTotalSources.toString())
+                .replace(/{minSourcesRequired}/g, fallbackMinSourcesRequired.toString())
+                .replace(/{optimalSourcesRequired}/g, fallbackOptimalSourcesRequired.toString())
+                .replace(/{invalidNumber}/g, (fallbackTotalSources + 1).toString())
                 .replace('{searchStrategy}', 'fallback_search')
                 .replace('{contextQuality}', '0.70')
                 .replace('{web_search_flags}', `Web Search: ${(google_search || enable_web_search) ? 'ENABLED' : 'DISABLED'}`)
                 .replace('{continuation_mode}', `Continuation Mode: ${continue_session ? 'ACTIVE - Building on conversation history' : 'DISABLED'}`)
-                + `\n\nIMPORTANT: You have ${finalContextFlow.length} context sources available. Include proper citations in your answer using the format [cite_N] where N is the citation number. Utilize multiple sources when possible for comprehensive coverage.`;
+                + `\n\n🎯 **FALLBACK CITATION REQUIREMENTS:**\n- Available sources: ${fallbackTotalSources} (use [cite_1] through [cite_${fallbackTotalSources}] ONLY)\n- Minimum required: ${fallbackMinSourcesRequired} sources (${Math.round((fallbackMinSourcesRequired/fallbackTotalSources)*100)}% coverage)\n- ⚠️ CRITICAL: Never use [cite_0] or [cite_${fallbackTotalSources + 1}+] - these are INVALID\n- Each technical claim needs citation [cite_N]\n- Focus on accuracy over quantity`;
             const fallbackResult = await this.multiModelOrchestrator.executeTask(
                 'final_answer_generation',
                 fallbackPrompt,
@@ -701,21 +911,24 @@ export class IterativeRagOrchestrator {
                 { contextLength: fallbackPrompt.length }
             );
             const finalAnswer = fallbackResult.content ?? 'Unable to formulate an answer.';
+            // Enhanced fallback citation validation
             const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
-            const uniqueCitationNumbers = new Set(
-                citationMatches.map(match => {
-                    const num = match.match(/\d+/)?.[0];
-                    return num ? parseInt(num) : null;
-                }).filter(num => num !== null)
-            );
+            const citationNumbers = citationMatches.map(match => {
+                const num = match.match(/\d+/)?.[0];
+                return num ? parseInt(num) : null;
+            }).filter(num => num !== null);
+
+            const validCitations = citationNumbers.filter(num => num >= 1 && num <= citations.length);
+            const validUniqueCitations = new Set(validCitations);
+
             searchMetrics.citationAccuracy = citationMatches.length > 0
-                ? uniqueCitationNumbers.size / citationMatches.length
+                ? validUniqueCitations.size / citationMatches.length
                 : (citations.length > 0 ? 0.0 : 1.0);
             searchMetrics.citationCoverage = citations.length > 0
-                ? uniqueCitationNumbers.size / citations.length
+                ? validUniqueCitations.size / citations.length
                 : 1.0;
             searchMetrics.totalCitationsGenerated = citations.length;
-            searchMetrics.totalCitationsUsed = uniqueCitationNumbers.size;
+            searchMetrics.totalCitationsUsed = validUniqueCitations.size;
             const finalSourceCoverage = sourceTracker.size > 0 ? sourceTracker.size / Math.min(accumulatedContext.length, 24) : 0;
             (searchMetrics as any).sourceCoverage = finalSourceCoverage;
             (searchMetrics as any).uniqueSourcesUsed = sourceTracker.size;

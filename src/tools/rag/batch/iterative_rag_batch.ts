@@ -3,13 +3,18 @@ import { RetrievedCodeContext } from '../../../database/services/CodebaseContext
 import { parseGeminiJsonResponse } from '../../../database/services/gemini-integration-modules/GeminiResponseParsers.js';
 import { MemoryManager } from '../../../database/memory_manager.js';
 import { GeminiIntegrationService } from '../../../database/services/GeminiIntegrationService.js';
+import { JSONRepairAgent } from '../../../database/services/JSONRepairAgent.js';
 
 export class IterativeRagBatch {
+    private jsonRepairAgent: JSONRepairAgent;
+
     constructor(
         private multiModelOrchestrator: MultiModelOrchestrator,
         private memoryManager: MemoryManager,
         private geminiService: GeminiIntegrationService
-    ) {}
+    ) {
+        this.jsonRepairAgent = new JSONRepairAgent(memoryManager, geminiService);
+    }
 
     async processConsolidatedBatchContextAnalysis(
         contexts: RetrievedCodeContext[],
@@ -26,7 +31,30 @@ export class IterativeRagBatch {
             `Content Preview: ${ctx.content.substring(0, 400)}...\n` +
             `Current Score: ${ctx.relevanceScore || 0.5}\n`
         ).join('\n---\n\n');
-        const consolidatedPrompt = `Analyze ALL ${contexts.length} code contexts for relevance to query: "${query}"${turn ? ` (Search turn ${turn})` : ''}For EACH context, provide:1. Relevance score (0.0-1.0) - how well it matches the query2. Key insights - what important information it contains3. Query relationship - how it specifically relates to the query4. Confidence level - how confident you are in this assessmentContexts to analyze:${contextSummaries}Return JSON format:{  "overallAnalysis": "Brief summary of all contexts and their collective relevance",  "contextAnalyses": [    {      "contextIndex": 0,      "relevanceScore": 0.85,      "insights": "Key insights about this context",      "queryRelationship": "How this relates to the query",      "confidence": 0.9    },    // ... for each context  ]}`;
+        const consolidatedPrompt = `Analyze ALL ${contexts.length} code contexts for relevance to query: "${query}"${turn ? ` (Search turn ${turn})` : ''}
+
+For EACH context, provide:
+1. Relevance score (0.0-1.0) - how well it matches the query
+2. Key insights - what important information it contains
+3. Query relationship - how it specifically relates to the query
+4. Confidence level - how confident you are in this assessment
+
+Contexts to analyze:
+${contextSummaries}
+
+IMPORTANT: Return ONLY valid JSON in exactly this format (no markdown, no extra text):
+{
+  "overallAnalysis": "Brief summary of all contexts and their collective relevance",
+  "contextAnalyses": [
+    {
+      "contextIndex": 0,
+      "relevanceScore": 0.85,
+      "insights": "Key insights about this context",
+      "queryRelationship": "How this relates to the query",
+      "confidence": 0.9
+    }
+  ]
+}`;
         try {
             const result = await this.multiModelOrchestrator.executeTask(
                 'complex_analysis',
@@ -38,6 +66,7 @@ export class IterativeRagBatch {
             console.log(`[Consolidated Batch Analysis] Received response for ${contexts.length} contexts`);
             let analysisData: any = {};
             try {
+                // First try the standard parser
                 analysisData = await parseGeminiJsonResponse(responseText, {
                     expectedStructure: 'Batch analysis response with contextAnalyses array and overallAnalysis',
                     contextDescription: 'Consolidated batch context analysis',
@@ -45,9 +74,45 @@ export class IterativeRagBatch {
                     geminiService: this.geminiService,
                     enableAIRepair: true,
                 });
+
+                // Validate the result
+                if (!analysisData || analysisData === null || typeof analysisData !== 'object') {
+                    throw new Error('JSON parser returned null or invalid object');
+                }
+
+                if (!analysisData.contextAnalyses || !Array.isArray(analysisData.contextAnalyses)) {
+                    throw new Error('Missing or invalid contextAnalyses array');
+                }
+
             } catch (parseError) {
-                console.warn('[Consolidated Batch Analysis] Enhanced parsing failed, using fallback:', parseError);
-                analysisData = { contextAnalyses: [], overallAnalysis: 'Parsing failed - enhanced recovery exhausted' };
+                console.warn('[Consolidated Batch Analysis] Standard parsing failed, using AI JSON repair:', parseError);
+
+                // Use our sophisticated AI JSON repair agent
+                const repairResult = await this.jsonRepairAgent.repairJSON(
+                    responseText,
+                    'JSON object with "overallAnalysis" string and "contextAnalyses" array containing objects with contextIndex, relevanceScore, insights, queryRelationship, and confidence fields',
+                    `Consolidated batch context analysis for query: "${query}"`
+                );
+
+                if (repairResult.success && repairResult.data) {
+                    console.log(`[Consolidated Batch Analysis] ✅ AI JSON repair successful (confidence: ${repairResult.confidence.toFixed(2)}, strategy: ${repairResult.repairStrategy})`);
+                    analysisData = repairResult.data;
+
+                    // Final validation after repair
+                    if (!analysisData.contextAnalyses || !Array.isArray(analysisData.contextAnalyses)) {
+                        console.warn('[Consolidated Batch Analysis] AI repair incomplete, creating minimal structure');
+                        analysisData = {
+                            contextAnalyses: [],
+                            overallAnalysis: analysisData.overallAnalysis || 'AI repair provided partial results'
+                        };
+                    }
+                } else {
+                    console.error('[Consolidated Batch Analysis] ❌ AI JSON repair failed, using safe fallback');
+                    analysisData = {
+                        contextAnalyses: [],
+                        overallAnalysis: 'AI JSON repair failed - using minimal analysis'
+                    };
+                }
             }
             const contextAnalyses = analysisData.contextAnalyses || [];
             const overallAnalysis = analysisData.overallAnalysis || 'Analysis completed';

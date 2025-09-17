@@ -72,7 +72,7 @@ export interface IterativeRagResult {
             newContextCount: number;
             decision: string;
             reasoning: string;
-            type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection';
+            type: 'initial' | 'iterative' | 'self-correction' | 'agentic-plan' | 'reflection' | 'early_termination' | 'stability_termination' | 'hybrid_intervention' | 'hybrid_override';
             quality: number;
             citations: number;
         }>;
