@@ -13,6 +13,7 @@ import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRe
 import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
 import { DEFAULT_EMBEDDING_MODEL, VECTOR_FLOAT_SIZE } from '../../constants/embedding_constants.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
+import { PathValidator } from '../../utils/pathValidator.js';
 import { RetrievedCodeContext } from './CodebaseContextRetrieverService.js';
 
 export class CodebaseEmbeddingService {
@@ -156,7 +157,8 @@ export class CodebaseEmbeddingService {
         // Process files in parallel with error isolation
         await Promise.all(filesToProcess.map(async (fileInfo) => {
             try {
-                const fileContent = await fs.readFile(fileInfo.absolutePath, 'utf-8');
+                // Secure file reading with path validation
+                const fileContent = await PathValidator.safeReadFile(fileInfo.absolutePath, 'utf-8');
                 if (!fileContent.trim()) {
                     report.scannedFiles.push({ file_path_relative: fileInfo.relativePath, status: 'skipped' });
                     return;
@@ -640,7 +642,8 @@ export class CodebaseEmbeddingService {
 
         await Promise.all(filesToProcess.map(async (fileInfo) => {
             try {
-                const fileContent = await fs.readFile(fileInfo.absolutePath, 'utf-8');
+                // Secure file reading with path validation
+                const fileContent = await PathValidator.safeReadFile(fileInfo.absolutePath, 'utf-8');
                 if (!fileContent.trim()) {
                     return; // Skip empty files
                 }

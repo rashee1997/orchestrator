@@ -7,6 +7,7 @@ import { ILanguageParser } from '../parsers/ParserFactory.js';
 import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 import { ParserFactory } from '../parsers/ParserFactory.js';
 import { DETECT_LANGUAGE_PROMPT } from './gemini-integration-modules/GeminiPromptTemplates.js';
+import { PathValidator } from '../../utils/pathValidator.js';
 
 export interface ScannedItem {
     path: string;
@@ -178,7 +179,8 @@ export class CodebaseIntrospectionService {
         const effectiveRootPath = rootPathToMakeRelative || directoryPath;
 
         try {
-            const items = await fs.readdir(directoryPath, { withFileTypes: true });
+            // Secure directory reading with path validation
+            const items = await PathValidator.safeReaddir(directoryPath, { withFileTypes: true });
 
             const scanPromises = items.map(async (item) => {
                 try {
@@ -189,7 +191,8 @@ export class CodebaseIntrospectionService {
                         return; // Skip ignored items
                     }
 
-                    const stats = await fs.stat(fullPath);
+                    // Secure file stats with path validation
+                    const stats = await PathValidator.safeStats(fullPath);
 
                     if (item.isDirectory()) {
                         results.push({
@@ -432,10 +435,12 @@ export class CodebaseIntrospectionService {
         const effectiveRootPath = rootPathToMakeRelative || directoryPath;
 
         try {
-            const items = await fs.readdir(directoryPath, { withFileTypes: true });
+            // Secure directory reading with path validation
+            const items = await PathValidator.safeReaddir(directoryPath, { withFileTypes: true });
 
             for (const item of items) {
-                const fullPath = path.join(directoryPath, item.name);
+                // Secure path joining with validation
+                const fullPath = await PathValidator.safePath(directoryPath, item.name);
 
                 if (CodebaseIntrospectionService.shouldIgnore(fullPath, item.isDirectory())) {
                     continue;
@@ -450,7 +455,8 @@ export class CodebaseIntrospectionService {
                     }
                 } else if (item.isFile()) {
                     try {
-                        const stats = await fs.stat(fullPath);
+                        // Secure file stats with path validation
+                        const stats = await PathValidator.safeStats(fullPath);
                         const language = await this.detectLanguage(agentId, fullPath, item.name);
                         const relativePath = path.relative(effectiveRootPath, fullPath).replace(/\\/g, '/');
 

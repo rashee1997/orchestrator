@@ -15,13 +15,18 @@ import {
     formatPlanToMarkdown,
     formatPlansListToMarkdownTable
 } from './utils/formatters.js';
+import { configureLoggerForEnvironment, logger } from './utils/Logger.js';
 
 import { getAllToolDefinitions, getAllToolHandlers } from './tools/index.js';
+
+// Configure logging based on environment
+configureLoggerForEnvironment();
 
 class MemoryMcpServer {
     private server!: Server;
     private memoryManager!: MemoryManager;
     private toolHandlers: { [key: string]: Function } = {};
+    private log = logger.component('MemoryMcpServer');
 
     private constructor() {
         // Private constructor to enforce async factory
@@ -50,7 +55,7 @@ class MemoryMcpServer {
         instance.setupToolHandlers(toolDefinitions);
 
         // Error handling
-        instance.server.onerror = (error) => console.error('[MCP Error]', error);
+        instance.server.onerror = (error) => instance.log.error('MCP Server Error', {}, error);
         process.on('SIGINT', async () => {
             await instance.server.close();
             process.exit(0);
@@ -104,7 +109,10 @@ class MemoryMcpServer {
                 return result;
 
             } catch (error: any) {
-                console.error(`Error handling tool call ${request.params.name}:`, error);
+                this.log.error('Tool execution failed', {
+                    toolName: request.params.name,
+                    errorMessage: error.message
+                }, error);
                 throw new McpError(
                     ErrorCode.InternalError,
                     `Failed to execute tool ${request.params.name}: ${error.message}`
@@ -116,9 +124,12 @@ class MemoryMcpServer {
     async run() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
-        console.error('Memory MCP server running on stdio');
+        this.log.info('Memory MCP server running on stdio');
     }
 }
 
 const server = await MemoryMcpServer.create();
-server.run().catch(console.error);
+server.run().catch(error => {
+    logger.component('Main').error('Failed to start server', {}, error);
+    process.exit(1);
+});
