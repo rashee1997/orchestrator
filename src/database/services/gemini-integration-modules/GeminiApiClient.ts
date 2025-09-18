@@ -1,4 +1,8 @@
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold, GenerationConfig, Content, Part } from "@google/genai";
+import { OAuth2Client } from "google-auth-library";
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as os from "os";
 
 // Custom error for when Gemini API is not initialized
 export class GeminiApiNotInitializedError extends Error {
@@ -17,6 +21,22 @@ export class GeminiApiError extends Error {
     }
 }
 
+// OAuth2 Configuration (from kilocode implementation)
+const OAUTH_CLIENT_ID = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const OAUTH_CLIENT_SECRET = "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";
+const OAUTH_REDIRECT_URI = "http://localhost:45289";
+
+// Code Assist API Configuration
+const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+const CODE_ASSIST_API_VERSION = "v1internal";
+
+interface OAuthCredentials {
+    access_token: string;
+    refresh_token: string;
+    token_type: string;
+    expiry_date: number;
+}
+
 export class GeminiApiClient {
     private genAI?: GoogleGenAI;
     private _apiKeys: string[] | null = null;
@@ -27,6 +47,15 @@ export class GeminiApiClient {
     private readonly maxRequestsPerMinute = 10; // Free tier limit
     private requestTimestamps: number[] = []; // Track request timestamps for rate limiting
     private keyRateLimits: Map<number, number[]> = new Map(); // Per-key rate limit tracking
+
+    // OAuth authentication properties
+    private authClient?: OAuth2Client;
+    private credentials?: OAuthCredentials;
+    private projectId?: string;
+    private useOAuth: boolean = false;
+    private oauthPath?: string;
+    private readonly oauthMaxRequestsPerMinute = 60; // OAuth free tier limit
+    private readonly oauthMinApiCallInterval = 1000; // 1 second between calls for 60 RPM
 
     private safetySettings = [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -40,11 +69,20 @@ export class GeminiApiClient {
         topP: 1,
         maxOutputTokens: 65536,
     };
-    constructor(genAIInstance?: GoogleGenAI) {
+    constructor(genAIInstance?: GoogleGenAI, options?: { oauthPath?: string }) {
         if (genAIInstance) {
             this.genAI = genAIInstance;
-        } else if (this.apiKeys.length > 0) {
-            this.genAI = new GoogleGenAI({ apiKey: this.apiKeys[this.currentApiKeyIndex] });
+        } else {
+            // Keep API key support for embedding models and fallback
+            this.oauthPath = options?.oauthPath;
+
+            // Initialize OAuth client for Flash 2.5 and Pro 2.5 models
+            this.initializeOAuth();
+
+            // Keep API key support for embeddings and fallback
+            if (this.apiKeys.length > 0) {
+                this.genAI = new GoogleGenAI({ apiKey: this.apiKeys[this.currentApiKeyIndex] });
+            }
         }
     }
     private get apiKeys(): string[] {
@@ -69,9 +107,9 @@ export class GeminiApiClient {
                 i++;
             }
             if (this._apiKeys.length === 0) {
-                console.warn('Gemini API key(s) not found. GeminiApiClient will not be functional for direct API calls.');
+                console.warn('[GeminiApiClient] Gemini API key(s) not found. OAuth will be used for supported models.');
             } else {
-                console.log(`[GeminiApiClient] Loaded ${this._apiKeys.length} API key(s).`);
+                console.log(`[GeminiApiClient] Loaded ${this._apiKeys.length} API key(s) for embeddings and fallback.`);
             }
         }
         return this._apiKeys;
@@ -79,6 +117,32 @@ export class GeminiApiClient {
 
     public getGenAIInstance(): GoogleGenAI | undefined {
         return this.genAI;
+    }
+
+    public getOAuthStatus(): { available: boolean, credentialsPath: string, hasCredentials: boolean } {
+        const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+        return {
+            available: !!this.authClient,
+            credentialsPath: credPath,
+            hasCredentials: !!this.credentials
+        };
+    }
+
+    public static getOAuthSetupInstructions(): string {
+        return `
+To enable OAuth for Gemini 2.5 models (60 RPM free tier):
+
+1. Install Gemini CLI:
+   npm install -g @google/generative-ai
+
+2. Authenticate:
+   gemini auth
+
+3. OAuth credentials will be saved to ~/.gemini/oauth_creds.json
+
+4. Restart your application to use OAuth for Gemini 2.5 models
+
+Note: Embedding models will continue using API keys.`;
     }
 
     /**
@@ -140,6 +204,24 @@ export class GeminiApiClient {
     }
 
     async askGemini(query: string, modelName: string, systemInstruction?: string, contextContent?: Part[], thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' }, toolConfig?: { tools?: any[] }): Promise<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> {
+        // Always use API keys for embedding models
+        if (this.isEmbeddingModel(modelName)) {
+            console.log(`[GeminiApiClient] Using API key for embedding model: ${modelName}`);
+            // Fall through to API key method
+        }
+        // Use OAuth for Flash 2.5 and Pro 2.5 models if OAuth is available
+        else if (this.supportsOAuth(modelName) && this.authClient) {
+            try {
+                console.log(`[GeminiApiClient] Using OAuth for model: ${modelName}`);
+                const result = await this.askGeminiWithOAuth(query, modelName, systemInstruction);
+                return { ...result, confidenceScore: undefined, groundingMetadata: undefined };
+            } catch (error) {
+                console.warn(`[GeminiApiClient] OAuth failed for ${modelName}, falling back to API key:`, error);
+                // Fall through to API key method
+            }
+        }
+
+        // Fallback to API key method for embeddings and other models
         const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
@@ -413,5 +495,166 @@ export class GeminiApiClient {
 
         // Default to not retrying for unknown errors
         return { shouldRetry: false, isRateLimit: false };
+    }
+
+    // ===== OAuth Authentication Methods =====
+
+    private initializeOAuth(): void {
+        this.authClient = new OAuth2Client(OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI);
+    }
+
+    private async loadOAuthCredentials(): Promise<void> {
+        try {
+            const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+            const credData = await fs.readFile(credPath, "utf-8");
+            this.credentials = JSON.parse(credData);
+
+            if (this.credentials && this.authClient) {
+                this.authClient.setCredentials({
+                    access_token: this.credentials.access_token,
+                    refresh_token: this.credentials.refresh_token,
+                    expiry_date: this.credentials.expiry_date,
+                });
+            }
+        } catch (error) {
+            console.warn('[GeminiApiClient] OAuth credentials not found, will use API keys for all models:', error);
+            this.useOAuth = false;
+        }
+    }
+
+    private async ensureOAuthAuthenticated(): Promise<void> {
+        if (!this.credentials) {
+            await this.loadOAuthCredentials();
+        }
+
+        // Check if token needs refresh
+        if (this.credentials && this.credentials.expiry_date < Date.now()) {
+            try {
+                const { credentials } = await this.authClient!.refreshAccessToken();
+                if (credentials.access_token) {
+                    this.credentials = {
+                        access_token: credentials.access_token!,
+                        refresh_token: credentials.refresh_token || this.credentials.refresh_token,
+                        token_type: credentials.token_type || "Bearer",
+                        expiry_date: credentials.expiry_date || Date.now() + 3600 * 1000,
+                    };
+                    // Save refreshed credentials
+                    const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+                    await fs.writeFile(credPath, JSON.stringify(this.credentials, null, 2));
+                }
+            } catch (error) {
+                console.error('[GeminiApiClient] OAuth token refresh failed:', error);
+                this.useOAuth = false;
+                throw new GeminiApiError('OAuth token refresh failed, falling back to API keys');
+            }
+        }
+    }
+
+    private async discoverProjectId(): Promise<string> {
+        if (this.projectId) {
+            return this.projectId;
+        }
+
+        // Try to get from environment
+        this.projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_PROJECT_ID;
+        if (this.projectId) {
+            return this.projectId;
+        }
+
+        try {
+            // Call loadCodeAssist to discover project ID (simplified version)
+            const loadRequest = {
+                cloudaicompanionProject: "default",
+                metadata: {
+                    ideType: "IDE_UNSPECIFIED",
+                    platform: "PLATFORM_UNSPECIFIED",
+                    pluginType: "GEMINI",
+                    duetProject: "default",
+                },
+            };
+
+            const response = await this.authClient!.request({
+                url: `${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}:loadCodeAssist`,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify(loadRequest),
+            });
+
+            const responseData = response.data as any;
+            this.projectId = responseData?.cloudaicompanionProject || "default";
+            return this.projectId!;
+        } catch (error) {
+            console.warn('[GeminiApiClient] Project discovery failed, using default:', error);
+            this.projectId = "default";
+            return this.projectId;
+        }
+    }
+
+    // Check if model supports OAuth (Flash 2.5 and Pro 2.5)
+    private supportsOAuth(modelName: string): boolean {
+        return modelName.includes('2.5') ||
+               modelName.includes('gemini-2.5-flash') ||
+               modelName.includes('gemini-2.5-pro');
+    }
+
+    // Check if this is an embedding model (always use API keys)
+    private isEmbeddingModel(modelName: string): boolean {
+        return modelName.includes('embedding') ||
+               modelName.includes('embed') ||
+               modelName.includes('text-embedding');
+    }
+
+    // OAuth-based API call for Flash 2.5 and Pro 2.5
+    private async askGeminiWithOAuth(query: string, modelName: string, systemInstruction?: string): Promise<{ content: Part[] }> {
+        await this.ensureOAuthAuthenticated();
+        const projectId = await this.discoverProjectId();
+
+        const requestBody = {
+            model: modelName,
+            project: projectId,
+            request: {
+                contents: [
+                    { role: "user", parts: [{ text: systemInstruction ? `${systemInstruction}\n\n${query}` : query }] }
+                ],
+                generationConfig: this.generationConfig,
+                safetySettings: this.safetySettings,
+            },
+        };
+
+        try {
+            const response = await this.authClient!.request({
+                url: `${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}:generateContent`,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify(requestBody),
+            });
+
+            const responseData = (response.data as any).response || (response.data as any);
+            if (responseData.candidates && responseData.candidates.length > 0) {
+                const candidate = responseData.candidates[0];
+                if (candidate.content && candidate.content.parts) {
+                    const textParts = candidate.content.parts
+                        .filter((part: any) => part.text && !part.thought)
+                        .map((part: any) => ({ text: part.text }));
+                    return { content: textParts };
+                }
+            }
+            return { content: [{ text: "" }] };
+        } catch (error: any) {
+            console.error('[GeminiApiClient] OAuth API call failed:', error);
+            throw new GeminiApiError(`OAuth API call failed: ${error.message}`, error.response?.status);
+        }
+    }
+
+    // Public method to check if OAuth is working
+    public async testOAuthConnection(): Promise<boolean> {
+        try {
+            await this.ensureOAuthAuthenticated();
+            await this.discoverProjectId();
+            return true;
+        } catch (error) {
+            console.error('[GeminiApiClient] OAuth test failed:', error);
+            return false;
+        }
     }
 }

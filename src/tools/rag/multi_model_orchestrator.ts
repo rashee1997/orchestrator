@@ -1,7 +1,11 @@
 import { MemoryManager } from '../../database/memory_manager.js';
 import { GeminiIntegrationService } from '../../database/services/GeminiIntegrationService.js';
 import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
+import { GeminiApiClient } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
 import { Mistral } from '@mistralai/mistralai';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs/promises';
 
 /**
  * Task types that can be distributed across models
@@ -32,6 +36,8 @@ export interface ModelInfo {
     costTier: 'free' | 'paid';
     rateLimit: number; // requests per minute
     available: boolean;
+    authMethod?: 'oauth' | 'api_key'; // Track authentication method
+    tier?: 'free_oauth' | 'free_api' | 'paid'; // More specific tier info
 }
 
 /**
@@ -55,28 +61,64 @@ export class MultiModelOrchestrator {
     private availableModels: Map<string, ModelInfo> = new Map();
     private taskRules: Map<RagTaskType, TaskDistributionRule> = new Map();
     private taskCompletionStats: Map<string, { success: number; failure: number; avgTime: number }> = new Map();
+    private geminiApiClient?: GeminiApiClient;
+    private hasOAuthCredentials: boolean = false;
 
     constructor(memoryManager: MemoryManager, geminiService: GeminiIntegrationService) {
         this.memoryManager = memoryManager;
         this.geminiService = geminiService;
-        
-        this.initializeModels();
+
+        // Initialize GeminiApiClient to check OAuth availability
+        this.geminiApiClient = new GeminiApiClient();
+
+        // Initialize models and rules (will be called async)
+        this.initialize();
+    }
+
+    /**
+     * Async initialization method
+     */
+    private async initialize(): Promise<void> {
+        await this.initializeModels();
         this.setupTaskDistributionRules();
+    }
+
+    /**
+     * Check if OAuth credentials are available
+     */
+    private async checkOAuthAvailability(): Promise<boolean> {
+        try {
+            const credPath = path.join(os.homedir(), ".gemini", "oauth_creds.json");
+            await fs.access(credPath);
+            const credData = await fs.readFile(credPath, "utf-8");
+            const credentials = JSON.parse(credData);
+            return !!(credentials.access_token && credentials.refresh_token);
+        } catch {
+            return false;
+        }
     }
 
     /**
      * Initialize available models based on environment configuration
      */
-    private initializeModels(): void {
+    private async initializeModels(): Promise<void> {
+        // Check OAuth availability first
+        this.hasOAuthCredentials = await this.checkOAuthAvailability();
+
         // Gemini models
-        const geminiAvailable = !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY;
+        const geminiApiKeyAvailable = !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY;
+        const geminiAvailable = geminiApiKeyAvailable || this.hasOAuthCredentials;
+
+        console.log(`[Multi-Model Orchestrator] Gemini availability: API Keys=${geminiApiKeyAvailable}, OAuth=${this.hasOAuthCredentials}`);
         this.availableModels.set('gemini-2.5-flash', {
             name: 'gemini-2.5-flash',
             provider: 'gemini',
             capability: 'complex',
             costTier: 'free',
-            rateLimit: 10, // Higher quota in free tier
-            available: geminiAvailable
+            rateLimit: this.hasOAuthCredentials ? 60 : 10, // OAuth: 60 RPM, API Key: 10 RPM
+            available: geminiAvailable,
+            authMethod: this.hasOAuthCredentials ? 'oauth' : 'api_key',
+            tier: this.hasOAuthCredentials ? 'free_oauth' : 'free_api'
         });
 
         this.availableModels.set('gemini-2.5-pro', {
@@ -84,17 +126,22 @@ export class MultiModelOrchestrator {
             provider: 'gemini',
             capability: 'complex',
             costTier: 'free',
-            rateLimit: 5, // Lower quota than flash in free tier
-            available: geminiAvailable
+            rateLimit: this.hasOAuthCredentials ? 60 : 5, // OAuth: 60 RPM, API Key: 5 RPM
+            available: geminiAvailable,
+            authMethod: this.hasOAuthCredentials ? 'oauth' : 'api_key',
+            tier: this.hasOAuthCredentials ? 'free_oauth' : 'free_api'
         });
 
+        // Older models - only available with API keys
         this.availableModels.set('gemini-2.5-flash-lite', {
             name: 'gemini-2.5-flash-lite',
             provider: 'gemini',
             capability: 'simple',
             costTier: 'free',
             rateLimit: 15, // Higher rate for low-latency simple tasks
-            available: geminiAvailable
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
         });
 
         this.availableModels.set('gemini-2.0-flash-lite', {
@@ -103,7 +150,21 @@ export class MultiModelOrchestrator {
             capability: 'simple',
             costTier: 'free',
             rateLimit: 25, // Higher quota than 2.5-flash-lite
-            available: geminiAvailable
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
+        });
+
+        // Add embedding models (always use API keys)
+        this.availableModels.set('models/gemini-embedding-001', {
+            name: 'models/gemini-embedding-001',
+            provider: 'gemini',
+            capability: 'simple',
+            costTier: 'free',
+            rateLimit: 10,
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
         });
 
         // Mistral models
@@ -118,7 +179,9 @@ export class MultiModelOrchestrator {
                     capability: 'complex',
                     costTier: 'paid',
                     rateLimit: 100, // Latest frontier-class multimodal model
-                    available: true
+                    available: true,
+                    authMethod: 'api_key',
+                    tier: 'paid'
                 });
 
                 console.log('[Multi-Model Orchestrator] Mistral integration enabled with 2 models');
@@ -129,19 +192,41 @@ export class MultiModelOrchestrator {
             console.log('[Multi-Model Orchestrator] Mistral API key not found - Mistral models unavailable');
         }
 
-        console.log(`[Multi-Model Orchestrator] Initialized with ${this.availableModels.size} models:`, 
-            Array.from(this.availableModels.keys()));
+        // Report authentication status
+        console.log(`[Multi-Model Orchestrator] Authentication Status:`);
+        console.log(`  📦 Mistral: ${mistralAvailable ? '✅ API Key' : '❌ No API Key'} (always requires API key)`);
+        console.log(`  🤖 Gemini: ${geminiApiKeyAvailable ? '✅ API Key' : '❌ No API Key'} | ${this.hasOAuthCredentials ? '✅ OAuth' : '❌ No OAuth'}`);
+
+        if (this.hasOAuthCredentials) {
+            console.log(`  🚀 OAuth Benefits: Gemini 2.5 models get 60 RPM (vs 10 RPM with API keys)`);
+        } else if (geminiApiKeyAvailable) {
+            console.log(`  💡 Tip: Enable OAuth for 6x higher Gemini rate limits (60 vs 10 RPM)`);
+        }
+
+        console.log(`[Multi-Model Orchestrator] Available Models:`);
+        Array.from(this.availableModels.entries())
+            .filter(([_, model]) => model.available)
+            .forEach(([name, model]) => {
+                const authInfo = model.provider === 'mistral'
+                    ? 'API Key Required'
+                    : `${model.authMethod === 'oauth' ? 'OAuth' : 'API Key'} (can use both)`;
+                console.log(`  ${name}: ${authInfo}, ${model.rateLimit} RPM`);
+            });
     }
 
     /**
      * Setup task distribution rules based on complexity and model capabilities
      */
     private setupTaskDistributionRules(): void {
-        // Simple tasks - use mistral-medium-latest (latest frontier-class model)
+        // Simple tasks - prefer Mistral (API key) for quality, then OAuth Gemini for speed
+        const simpleGeminiFallbacks = this.hasOAuthCredentials
+            ? ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite']
+            : ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'];
+
         this.taskRules.set('query_rewriting', {
             taskType: 'query_rewriting',
-            preferredModel: 'mistral-medium-latest',
-            fallbackModels: ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'],
+            preferredModel: 'mistral-medium-latest', // Mistral uses API key
+            fallbackModels: simpleGeminiFallbacks,   // Gemini can use OAuth or API key
             maxContextLength: 2000,
             complexity: 'simple'
         });
@@ -149,7 +234,7 @@ export class MultiModelOrchestrator {
         this.taskRules.set('context_summarization', {
             taskType: 'context_summarization',
             preferredModel: 'mistral-medium-latest',
-            fallbackModels: ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'],
+            fallbackModels: simpleGeminiFallbacks,
             maxContextLength: 4000,
             complexity: 'simple'
         });
@@ -157,7 +242,7 @@ export class MultiModelOrchestrator {
         this.taskRules.set('simple_analysis', {
             taskType: 'simple_analysis',
             preferredModel: 'mistral-medium-latest',
-            fallbackModels: ['gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash'],
+            fallbackModels: simpleGeminiFallbacks,
             maxContextLength: 3000,
             complexity: 'simple'
         });
@@ -165,7 +250,9 @@ export class MultiModelOrchestrator {
         this.taskRules.set('json_extraction', {
             taskType: 'json_extraction',
             preferredModel: 'mistral-medium-latest', // Latest frontier-class model excellent for structured output
-            fallbackModels: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash-lite'],
+            fallbackModels: this.hasOAuthCredentials
+                ? ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite']
+                : ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash-lite'],
             maxContextLength: 2000,
             complexity: 'simple'
         });
@@ -179,35 +266,39 @@ export class MultiModelOrchestrator {
             complexity: 'medium'
         });
 
-        // Complex tasks - prefer most capable models
+        // Complex tasks - prefer OAuth models for better rate limits
+        const complexGeminiOrder = this.hasOAuthCredentials
+            ? ['gemini-2.5-flash', 'gemini-2.5-pro'] // OAuth: higher rate limits
+            : ['gemini-2.5-pro', 'gemini-2.5-flash']; // API: prefer pro for quality
+
         this.taskRules.set('complex_analysis', {
             taskType: 'complex_analysis',
-            preferredModel: 'gemini-2.5-flash', // Best balance of performance and quota
-            fallbackModels: ['gemini-2.5-pro', 'mistral-medium-latest'],
+            preferredModel: complexGeminiOrder[0], // Best model with current auth
+            fallbackModels: [complexGeminiOrder[1], 'mistral-medium-latest'],
             maxContextLength: 8000,
             complexity: 'complex'
         });
 
         this.taskRules.set('decision_making', {
             taskType: 'decision_making',
-            preferredModel: 'gemini-2.5-flash', // Use pro for critical decisions
-            fallbackModels: ['gemini-2.5-pro', 'mistral-medium-latest'],
+            preferredModel: complexGeminiOrder[0],
+            fallbackModels: [complexGeminiOrder[1], 'mistral-medium-latest'],
             maxContextLength: 10000,
             complexity: 'complex'
         });
 
         this.taskRules.set('final_answer_generation', {
             taskType: 'final_answer_generation',
-            preferredModel: 'gemini-2.5-flash', // Flash has higher quota for final generation
-            fallbackModels: ['gemini-2.5-pro', 'mistral-medium-latest'],
+            preferredModel: complexGeminiOrder[0], // Best available model
+            fallbackModels: [complexGeminiOrder[1], 'mistral-medium-latest'],
             maxContextLength: 15000,
             complexity: 'complex'
         });
 
         this.taskRules.set('planning', {
             taskType: 'planning',
-            preferredModel: 'gemini-2.5-flash', // Use pro for complex planning
-            fallbackModels: ['gemini-2.5-pro', 'mistral-medium-latest'],
+            preferredModel: complexGeminiOrder[0],
+            fallbackModels: [complexGeminiOrder[1], 'mistral-medium-latest'],
             maxContextLength: 8000,
             complexity: 'complex'
         });
@@ -464,5 +555,46 @@ export class MultiModelOrchestrator {
      */
     getAvailableModels(): ModelInfo[] {
         return Array.from(this.availableModels.values()).filter(model => model.available);
+    }
+
+    /**
+     * Get OAuth status and setup instructions
+     */
+    getOAuthStatus(): { hasOAuth: boolean; instructions?: string; benefits: string } {
+        const benefits = this.hasOAuthCredentials
+            ? "✅ OAuth enabled: 60 RPM for Gemini 2.5 models"
+            : "⚡ Enable OAuth for 6x higher rate limits (60 vs 10 RPM)";
+
+        return {
+            hasOAuth: this.hasOAuthCredentials,
+            instructions: this.hasOAuthCredentials ? undefined : GeminiApiClient.getOAuthSetupInstructions(),
+            benefits
+        };
+    }
+
+    /**
+     * Get model information with authentication details
+     */
+    getModelDetails(): { [key: string]: ModelInfo & { isPreferred: boolean } } {
+        const details: any = {};
+        const preferredModels = new Set(Array.from(this.taskRules.values()).map(rule => rule.preferredModel));
+
+        for (const [name, info] of this.availableModels) {
+            if (info.available) {
+                details[name] = {
+                    ...info,
+                    isPreferred: preferredModels.has(name)
+                };
+            }
+        }
+
+        return details;
+    }
+
+    /**
+     * Test if a model supports OAuth (for debugging)
+     */
+    modelSupportsOAuth(modelName: string): boolean {
+        return modelName.includes('2.5');
     }
 }
