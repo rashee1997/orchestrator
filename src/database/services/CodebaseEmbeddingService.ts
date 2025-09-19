@@ -908,7 +908,8 @@ export class CodebaseEmbeddingService {
         const existingFileHashes = await this.repository.getLatestFileHashes(agentId);
         const allDbFilePaths = new Set(await this.repository.getAllFilePathsForAgent(agentId));
 
-        const scannedItems = await this.introspectionService.scanDirectoryRecursive(
+        // Bypass scan cache so deleted files disappear immediately for stale embedding cleanup.
+        const scannedItems = await this.introspectionService.scanDirectoryRecursiveBypassCache(
             agentId,
             absoluteDirectoryPath,
             absoluteProjectRootPath
