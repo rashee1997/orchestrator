@@ -67,7 +67,7 @@ export class GeminiApiClient {
         temperature: 0.7,
         topK: 1,
         topP: 1,
-        maxOutputTokens: 65536,
+        maxOutputTokens: 65535,
     };
     constructor(genAIInstance?: GoogleGenAI, options?: { oauthPath?: string }) {
         if (genAIInstance) {
@@ -647,6 +647,64 @@ Note: Embedding models will continue using API keys.`;
     }
 
     // Public method to check if OAuth is working
+    /**
+     * Generate embeddings using Gemini embedding models
+     * Always uses API key authentication for embedding models
+     */
+    public async generateEmbeddings(
+        inputs: string[],
+        modelName: string = 'models/gemini-embedding-001'
+    ): Promise<{
+        embeddings: Array<{ vector: number[], dimensions: number } | null>;
+        model: string;
+        totalTokensProcessed: number;
+    }> {
+        if (!this.genAI) {
+            throw new GeminiApiNotInitializedError('GeminiApiClient must be initialized before generating embeddings');
+        }
+
+        if (!this.isEmbeddingModel(modelName)) {
+            throw new GeminiApiError(`${modelName} is not an embedding model`);
+        }
+
+        console.log(`[GeminiApiClient] Generating embeddings for ${inputs.length} texts using ${modelName}`);
+
+        try {
+            // Always use API key for embedding models - extracted working logic from AIEmbeddingProvider.ts
+            const genAIInstance = this.genAI;
+            if (!genAIInstance) {
+                throw new Error('Gemini API not initialized');
+            }
+
+            const contents = inputs.map(text => ({ role: "user", parts: [{ text }] }));
+            const result = await genAIInstance.models.embedContent({
+                model: modelName,
+                contents
+            });
+
+            const embeddings = result.embeddings?.map(embedding => {
+                if (!embedding.values) return null;
+                return {
+                    vector: embedding.values,
+                    dimensions: embedding.values.length
+                };
+            }) || [];
+
+            // Estimate tokens processed (rough approximation)
+            const totalTokens = inputs.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0);
+
+            return {
+                embeddings,
+                model: modelName,
+                totalTokensProcessed: totalTokens
+            };
+
+        } catch (error) {
+            console.error('[GeminiApiClient] Embedding generation failed:', error);
+            throw new GeminiApiError(`Failed to generate embeddings: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
     public async testOAuthConnection(): Promise<boolean> {
         try {
             await this.ensureOAuthAuthenticated();

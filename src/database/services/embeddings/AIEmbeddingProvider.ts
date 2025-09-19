@@ -2,7 +2,7 @@ import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
 import { MistralEmbeddingService } from '../gemini-integration-modules/MistralEmbeddingService.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../../constants/embedding_constants.js';
 import { GENERATE_MEANINGFUL_ENTITY_NAME_PROMPT, BATCH_SUMMARIZE_CODE_CHUNKS_PROMPT } from '../gemini-integration-modules/GeminiPromptTemplates.js';
-import { ApiKeyManager } from './ApiKeyManager.js';
+import { ApiKeyManager } from '../ai-integration/utils/ApiKeyManager.js';
 import { RateLimiter } from './RateLimiter.js';
 import { BatchProcessor } from './BatchProcessor.js';
 import { MultiModelOrchestrator } from '../../../tools/rag/multi_model_orchestrator.js';

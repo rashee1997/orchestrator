@@ -11,7 +11,7 @@ import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGG
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
-import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
+import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel, getCurrentModelAsync, getAvailableShortNames, getAllAvailableModels } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
@@ -23,6 +23,30 @@ const VALID_FOCUS_AREAS = [
     "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
     "refactoring", "testing", "documentation", "code_modularization_orchestration", "codebase_analysis"
 ];
+
+// Get all available model names (both short names and full IDs)
+function getAllModelNames(): string[] {
+    const shortNames = getAvailableShortNames();
+    const fullModelIds = getAllAvailableModels().map(model => model.name);
+
+    // Combine and deduplicate
+    const allNames = [...new Set([...shortNames, ...fullModelIds])];
+
+    // Sort with Claude models first, then Gemini, then others
+    return allNames.sort((a, b) => {
+        const aIsClaude = a.startsWith('claude-');
+        const bIsClaude = b.startsWith('claude-');
+        const aIsGemini = a.startsWith('gemini-') || a.startsWith('models/gemini');
+        const bIsGemini = b.startsWith('gemini-') || b.startsWith('models/gemini');
+
+        if (aIsClaude && !bIsClaude) return -1;
+        if (!aIsClaude && bIsClaude) return 1;
+        if (aIsGemini && !bIsGemini && !bIsClaude) return -1;
+        if (!aIsGemini && bIsGemini && !aIsClaude) return 1;
+
+        return a.localeCompare(b);
+    });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,7 +72,9 @@ async function findProjectRoot(startDir: string): Promise<string> {
 async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrationService): Promise<string | null> {
     try {
         const classificationPrompt = INTENT_CLASSIFICATION_PROMPT.replace('{query}', query);
-        const result = await geminiService.askGemini(classificationPrompt, getCurrentModel());
+        // Use OAuth-aware model selection for better rate limits
+        const oauthAwareModel = await getCurrentModelAsync();
+        const result = await geminiService.askGemini(classificationPrompt, oauthAwareModel);
         const rawResponse = result.content[0].text || '';
 
         // Clean and normalize the response
@@ -163,7 +189,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 nullable: true
             },
             conversation_history_limit: { type: 'number', description: 'The number of recent messages to include from the session history.', default: 15 },
-            model: { type: 'string', description: 'Optional: The Gemini model to use.', default: getCurrentModel() },
+            model: {
+                type: 'string',
+                description: 'Optional: The AI model to use. Supports both short names (claude-sonnet-4, claude-opus-4.1, claude-haiku, gemini-flash, etc.) and full model IDs.',
+                default: getCurrentModel(),
+                enum: getAllModelNames()
+            },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Enable Retrieval-Augmented Generation (RAG).', default: false, nullable: true },
             enable_iterative_search: {
@@ -320,32 +351,50 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let autonomousFocusDecision: { selected: string | null; reasoning: string } = { selected: null, reasoning: 'User explicitly provided focus area' };
 
         if (!focus_area) {
-            try {
-                console.log('[ask_gemini] No focus area provided. Attempting autonomous selection...');
-                autonomousFocusArea = await _getIntentFocusArea(query, geminiService);
-                if (autonomousFocusArea) {
-                    autonomousFocusDecision = {
-                        selected: autonomousFocusArea,
-                        reasoning: `Autonomously selected focus area '${autonomousFocusArea}' based on query intent classification`
-                    };
-                    console.log(`[ask_gemini] Autonomous focus area selection: ${autonomousFocusArea}`);
-                    // Use the autonomously selected focus area
-                    focus_area = autonomousFocusArea;
-                } else {
-                    autonomousFocusDecision = {
-                        selected: null,
-                        reasoning: 'Autonomous selection failed or returned invalid focus area'
-                    };
-                    console.log('[ask_gemini] Autonomous focus area selection failed. Using default behavior.');
-                }
-            } catch (error: any) {
-                autonomousFocusDecision = {
-                    selected: null,
-                    reasoning: `Error during autonomous selection: ${error?.message || 'Unknown error'}`
-                };
-                console.error('[ask_gemini] Error during autonomous focus area selection:', error);
-            }
-        }
+  // Check if this is a simple general question that doesn't need focus area detection
+  const isGeneralQuestion = !live_review_file_paths?.length &&
+                            !enable_rag &&
+                            query.length < 200 &&
+                            !query.toLowerCase().includes('review') &&
+                            !query.toLowerCase().includes('analyze') &&
+                            !query.toLowerCase().includes('explain code') &&
+                            !query.toLowerCase().includes('debug');
+
+  if (isGeneralQuestion) {
+    console.log('[ask_gemini] General question detected. Skipping focus area detection.');
+    autonomousFocusDecision = {
+      selected: null,
+      reasoning: 'Skipped focus area detection for general question'
+    };
+  } else {
+    try {
+      console.log('[ask_gemini] No focus area provided. Attempting autonomous selection...');
+      autonomousFocusArea = await _getIntentFocusArea(query, geminiService);
+      if (autonomousFocusArea) {
+        autonomousFocusDecision = {
+          selected: autonomousFocusArea,
+          reasoning: `Autonomously selected focus area '${autonomousFocusArea}' based on query intent classification`
+        };
+        console.log(`[ask_gemini] Autonomous focus area selection: ${autonomousFocusArea}`);
+        // Use the autonomously selected focus area
+        focus_area = autonomousFocusArea;
+      } else {
+        autonomousFocusDecision = {
+          selected: null,
+          reasoning: 'Autonomous selection failed or returned invalid focus area'
+        };
+        console.log('[ask_gemini] Autonomous focus area selection failed. Using default behavior.');
+      }
+    } catch (error: any) {
+      autonomousFocusDecision = {
+        selected: null,
+        reasoning: `Error during autonomous selection: ${error?.message || 'Unknown error'}`
+      };
+      console.error('[ask_gemini] Error during autonomous focus area selection:', error);
+    }
+  }
+}
+
 
         let currentSessionId: string | null = session_id;
 

@@ -302,17 +302,6 @@ export const schemas = {
         required: ['agent_id', 'context_type'],
         additionalProperties: false,
     },
-    semanticSearchContext: {
-        type: 'object',
-        properties: {
-            agent_id: { type: 'string' },
-            context_type: { type: 'string' },
-            query_text: { type: 'string' },
-            top_k: { type: 'number', default: 5, minimum: 1 }
-        },
-        required: ['agent_id', 'context_type', 'query_text'],
-        additionalProperties: false,
-    },
     analyzeImageContent: {
         type: 'object',
         properties: {

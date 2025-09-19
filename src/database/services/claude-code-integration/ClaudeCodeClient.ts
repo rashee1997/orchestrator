@@ -389,7 +389,7 @@ Original error: ${originalError.message}
      */
     async testConnection(): Promise<{ available: boolean; version?: string; error?: string }> {
         try {
-            const result = await execa(this.claudePath, ["--version"], { timeout: 5000 });
+            const result = await execa(this.claudePath, ["--version"], { timeout: 15000 });
             return {
                 available: true,
                 version: result.stdout.trim(),

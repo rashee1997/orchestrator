@@ -68,10 +68,11 @@ export interface GeminiModelConfig {
     apiKeyOnlyModels: string[]; // Models that require API keys
     claudeCodeModels: string[]; // Claude Code models
     allModels: Record<string, ModelConfig>; // All available models
+    modelShortNames: Record<string, string>; // Short name to full model ID mapping
 }
 
 export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
-    defaultModel: "gemini-2.5-flash",
+    defaultModel: "gemini-2.5-pro",
     fallbackModel: "gemini-2.5-flash-lite",
     embeddingModel: "models/gemini-embedding-001",
     fallbackEmbeddingModel: "models/text-embedding-004",
@@ -241,6 +242,21 @@ export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
                 dimensions: 3072
             }
         ]
+    },
+    modelShortNames: {
+        // Claude Code short names
+        "claude-sonnet-4": "claude-sonnet-4-20250514",
+        "claude-opus-4.1": "claude-opus-4-1-20250805",
+        "claude-opus-4": "claude-opus-4-20250514",
+        "claude-sonnet-3.7": "claude-3-7-sonnet-20250219",
+        "claude-sonnet-3.5": "claude-3-5-sonnet-20241022",
+        "claude-haiku": "claude-3-5-haiku-20241022",
+
+        // Gemini short names for consistency
+        "gemini-flash": "gemini-2.5-flash",
+        "gemini-pro": "gemini-2.5-pro",
+        "gemini-flash-lite": "gemini-2.5-flash-lite",
+        "gemini-embed": "models/gemini-embedding-001"
     }
 };
 
@@ -362,6 +378,45 @@ export function getModelsByProvider(provider: ModelProvider): ModelConfig[] {
  */
 export function getModelsByAuth(authMethod: AuthMethod): ModelConfig[] {
     return Object.values(GEMINI_MODEL_CONFIG.allModels).filter(model => model.authMethod === authMethod);
+}
+
+/**
+ * Resolve a short model name to its full model ID
+ * @param modelName - Short name or full model ID
+ * @returns Full model ID
+ */
+export function resolveModelName(modelName: string): string {
+    // Check if it's a short name
+    if (GEMINI_MODEL_CONFIG.modelShortNames[modelName]) {
+        return GEMINI_MODEL_CONFIG.modelShortNames[modelName];
+    }
+    // Return as-is if it's already a full model ID
+    return modelName;
+}
+
+/**
+ * Get all available short names for models
+ * @returns Array of short names
+ */
+export function getAvailableShortNames(): string[] {
+    return Object.keys(GEMINI_MODEL_CONFIG.modelShortNames);
+}
+
+/**
+ * Get all Claude model short names
+ * @returns Array of Claude short names
+ */
+export function getClaudeShortNames(): string[] {
+    return Object.keys(GEMINI_MODEL_CONFIG.modelShortNames).filter(name => name.startsWith('claude-'));
+}
+
+/**
+ * Check if a model name is a valid short name
+ * @param modelName - Model name to check
+ * @returns True if it's a valid short name
+ */
+export function isValidShortName(modelName: string): boolean {
+    return modelName in GEMINI_MODEL_CONFIG.modelShortNames;
 }
 
 /**
