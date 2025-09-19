@@ -6,7 +6,7 @@
 import { AIProvider, AIRequest, AIResponse, ProviderCapabilities, ProviderStatus } from './interfaces/AIProvider.js';
 import { ModelProvider, AuthMethod } from '../AIApiConfig.js';
 import { getModelInfo, isValidModel } from '../AIModelList.js';
-import { ClaudeCodeClient } from '../../claude-code-integration/ClaudeCodeClient.js';
+import { ClaudeCodeClient } from './ClaudeCodeClient.js';
 
 export class ClaudeCodeProvider extends AIProvider {
     private claudeCodeClient: ClaudeCodeClient;

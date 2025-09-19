@@ -4,7 +4,7 @@
  */
 
 export type AuthMethod = 'api_key' | 'oauth' | 'cli' | 'subscription' | 'hybrid';
-export type ModelProvider = 'gemini' | 'claude_code' | 'mistral';
+export type ModelProvider = 'gemini' | 'claude_code' | 'mistral' | 'qwen_code';
 
 export interface ModelConfig {
     name: string;
@@ -282,6 +282,41 @@ export const AI_API_CONFIG: AIApiConfig = {
                     description: 'Codestral Embed - Code-focused embeddings'
                 }
             }
+        },
+
+        qwen_code: {
+            defaultAuthMethod: 'oauth',
+            rateLimit: {
+                oauth: 100,
+                apiKey: 0,
+                cli: 0
+            },
+            models: {
+                'qwen3-coder-plus': {
+                    name: 'qwen3-coder-plus',
+                    provider: 'qwen_code',
+                    authMethod: 'oauth',
+                    rateLimit: 100,
+                    maxTokens: 65536,
+                    contextWindow: 1000000,
+                    costTier: 'free',
+                    capabilities: ['text', 'code', 'analysis'],
+                    description: 'Qwen3 Coder Plus - High-performance coding model with 1M context window for large codebases',
+                    supportsOAuth: true
+                },
+                'qwen3-coder-flash': {
+                    name: 'qwen3-coder-flash',
+                    provider: 'qwen_code',
+                    authMethod: 'oauth',
+                    rateLimit: 100,
+                    maxTokens: 65536,
+                    contextWindow: 1000000,
+                    costTier: 'free',
+                    capabilities: ['text', 'code', 'analysis'],
+                    description: 'Qwen3 Coder Flash - Fast coding model with 1M context window optimized for speed',
+                    supportsOAuth: true
+                }
+            }
         }
     },
 
@@ -302,7 +337,11 @@ export const AI_API_CONFIG: AIApiConfig = {
 
         // Mistral short names
         'mistral-medium': 'mistral-medium-latest',
-        'mistral-embed': 'codestral-embed'
+        'mistral-embed': 'codestral-embed',
+
+        // QwenCode short names
+        'qwen-plus': 'qwen3-coder-plus',
+        'qwen-flash': 'qwen3-coder-flash'
     },
 
     parallelEmbedding: {

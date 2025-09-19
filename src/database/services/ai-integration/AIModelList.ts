@@ -229,6 +229,8 @@ export class AIModelList {
             return this.getModelInfo('claude-sonnet-4-20250514');
         } else if (provider === 'mistral') {
             return this.getModelInfo('mistral-medium-latest');
+        } else if (provider === 'qwen_code') {
+            return this.getModelInfo('qwen3-coder-plus');
         }
 
         return models.length > 0 ? models[0] : null;
@@ -276,6 +278,7 @@ export const ALL_MODELS = AIModelList.getAllModels;
 export const CLAUDE_MODELS = () => AIModelList.getModelsByProvider('claude_code');
 export const GEMINI_MODELS = () => AIModelList.getModelsByProvider('gemini');
 export const MISTRAL_MODELS = () => AIModelList.getModelsByProvider('mistral');
+export const QWEN_MODELS = () => AIModelList.getModelsByProvider('qwen_code');
 export const EMBEDDING_MODELS = AIModelList.getEmbeddingModels;
 export const TEXT_MODELS = AIModelList.getTextModels;
 

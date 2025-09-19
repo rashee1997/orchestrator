@@ -12,7 +12,7 @@ import { AIResponse } from './providers/interfaces/AIProvider.js';
 import { jsonRepairService } from './utils/JSONRepairService.js';
 
 export interface SimpleAIConfig {
-    defaultProvider?: 'gemini' | 'claude_code' | 'mistral';
+    defaultProvider?: 'gemini' | 'claude_code' | 'mistral' | 'qwen_code';
     defaultModel?: string;
     enableOrchestrator?: boolean;
 }
@@ -118,6 +118,8 @@ export class AIIntegrationService {
             return await this.executeMistralTask(resolvedModel, prompt, systemInstruction);
         } else if (provider === 'claude_code') {
             return await this.executeClaudeTask(resolvedModel, prompt, systemInstruction);
+        } else if (provider === 'qwen_code') {
+            return await this.executeQwenCodeTask(resolvedModel, prompt, systemInstruction);
         }
 
         throw new Error(`Provider ${provider} not implemented`);
@@ -175,7 +177,7 @@ export class AIIntegrationService {
     /**
      * Get provider for a model (for backward compatibility)
      */
-    getProvider(model: string): any {
+    getProviderForModel(model: string): any {
         const resolvedModel = resolveModel(model);
         const provider = getProviderForModel(resolvedModel);
         return provider ? { name: provider, model: resolvedModel } : null;
@@ -494,6 +496,57 @@ export class AIIntegrationService {
         }
 
         return response.trim();
+    }
+
+    /**
+     * Execute QwenCode task
+     */
+    private async executeQwenCodeTask(
+        model: string,
+        prompt: string,
+        systemInstruction?: string
+    ): Promise<AIResponse> {
+        try {
+            const { QwenCodeProvider } = await import('./providers/QwenCodeProvider.js');
+            const qwenProvider = new QwenCodeProvider();
+            await qwenProvider.initialize();
+
+            const response = await qwenProvider.execute({
+                model,
+                query: prompt,
+                systemInstruction,
+                maxTokens: 4000
+            });
+
+            return response;
+        } catch (error: any) {
+            throw new Error(`QwenCode execution failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Get provider instance for orchestrator
+     */
+    getProvider(providerName: string): any {
+        // For Phase 2, return simplified provider access
+        if (providerName === 'gemini') {
+            return {
+                execute: async (request: any) => this.executeGeminiTask(request.model, request.query, request.systemInstruction)
+            };
+        } else if (providerName === 'mistral') {
+            return {
+                execute: async (request: any) => this.executeMistralTask(request.model, request.query, request.systemInstruction)
+            };
+        } else if (providerName === 'claude_code') {
+            return {
+                execute: async (request: any) => this.executeClaudeTask(request.model, request.query, request.systemInstruction)
+            };
+        } else if (providerName === 'qwen_code') {
+            return {
+                execute: async (request: any) => this.executeQwenCodeTask(request.model, request.query, request.systemInstruction)
+            };
+        }
+        return null;
     }
 
     /**

@@ -75,7 +75,7 @@ export type ModelCapability = 'simple' | 'medium' | 'complex' | 'fallback';
  */
 export interface ModelInfo {
     name: string;
-    provider: 'gemini' | 'mistral' | 'claude_code';
+    provider: 'gemini' | 'mistral' | 'claude_code' | 'qwen_code';
     capability: ModelCapability;
     costTier: 'free' | 'paid' | 'subscription';
     rateLimit: number; // requests per minute
@@ -279,6 +279,36 @@ export class MultiModelOrchestrator {
             console.log('[Multi-Model Orchestrator] Mistral API key not found - Mistral models unavailable');
         }
 
+        // QwenCode models - check OAuth availability
+        const qwenCodeAvailable = await this.checkQwenCodeAvailability();
+        if (qwenCodeAvailable) {
+            this.availableModels.set('qwen3-coder-plus', {
+                name: 'qwen3-coder-plus',
+                provider: 'qwen_code',
+                capability: 'complex',
+                costTier: 'free',
+                rateLimit: 100,
+                available: true,
+                authMethod: 'oauth',
+                tier: 'free_oauth'
+            });
+
+            this.availableModels.set('qwen3-coder-flash', {
+                name: 'qwen3-coder-flash',
+                provider: 'qwen_code',
+                capability: 'medium',
+                costTier: 'free',
+                rateLimit: 100,
+                available: true,
+                authMethod: 'oauth',
+                tier: 'free_oauth'
+            });
+
+            console.log('[Multi-Model Orchestrator] QwenCode integration enabled with 2 models');
+        } else {
+            console.log('[Multi-Model Orchestrator] QwenCode OAuth not available - QwenCode models unavailable');
+        }
+
         // Claude Code models - check CLI availability
         this.claudeCodeAvailable = await this.checkClaudeCodeAvailability();
         const claudeCodeAvailable = this.claudeCodeAvailable;
@@ -327,6 +357,7 @@ export class MultiModelOrchestrator {
         console.log(`  📦 Mistral: ${mistralAvailable ? '✅ API Key' : '❌ No API Key'} (always requires API key)`);
         console.log(`  🤖 Gemini: ${geminiApiKeyAvailable ? '✅ API Key' : '❌ No API Key'} | ${this.hasOAuthCredentials ? '✅ OAuth' : '❌ No OAuth'}`);
         console.log(`  🎭 Claude Code: ${claudeCodeAvailable ? '✅ Available' : '❌ Not Available'} (subscription or API)`);
+        console.log(`  🔧 QwenCode: ${qwenCodeAvailable ? '✅ OAuth' : '❌ No OAuth'} (OAuth required)`);
 
         if (this.hasOAuthCredentials) {
             console.log(`  🚀 OAuth Benefits: Gemini 2.5 models get 60 RPM (vs 10 RPM with API keys)`);
@@ -388,6 +419,22 @@ export class MultiModelOrchestrator {
     }
 
     /**
+     * Check if QwenCode OAuth is available
+     */
+    private async checkQwenCodeAvailability(): Promise<boolean> {
+        try {
+            // Use same path as kilocode: ~/.qwen/oauth_creds.json
+            const credPath = path.join(os.homedir(), '.qwen', 'oauth_creds.json');
+            await fs.access(credPath);
+            const credData = await fs.readFile(credPath, 'utf8');
+            const credentials = JSON.parse(credData);
+            return !!(credentials.access_token && credentials.refresh_token);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
      * Check if Claude Code CLI is available and authenticated (using GeminiConfig pattern)
      */
     private async checkClaudeCodeAvailability(): Promise<boolean> {
@@ -406,9 +453,12 @@ export class MultiModelOrchestrator {
      * Setup task distribution rules based on complexity and model capabilities
      */
     private setupTaskDistributionRules(): void {
-        // Simple tasks - prefer Gemini 2.5 Flash Lite for lightweight tasks, Mistral as fallback
+        // Simple tasks - prefer QwenCode Flash for lightweight tasks, then Gemini
         const simpleModelOrder = [];
-        // Primary: Gemini Flash Lite (works with both OAuth and API)
+        // Primary: QwenCode Flash for fast coding tasks
+        const qwenCodeAvailable = this.availableModels.get('qwen3-coder-plus')?.available;
+        if (qwenCodeAvailable) simpleModelOrder.push('qwen3-coder-flash');
+        // Then Gemini Flash Lite (works with both OAuth and API)
         simpleModelOrder.push('gemini-2.5-flash-lite', 'gemini-2.0-flash-lite');
         if (this.claudeCodeAvailable) simpleModelOrder.push('claude-3-5-haiku-20241022');
         // Fallback: Mistral only as last resort
@@ -451,7 +501,9 @@ export class MultiModelOrchestrator {
         // Primary: Gemini Flash for medium tasks
         mediumModelOrder.push('gemini-2.5-flash');
         if (this.claudeCodeAvailable) mediumModelOrder.push('claude-sonnet-4-20250514');
-        // Fallback: Mistral only as last resort
+        // QwenCode as fallback for medium tasks
+        if (qwenCodeAvailable) mediumModelOrder.push('qwen3-coder-flash');
+        // Mistral as last resort
         if (this.mistralAvailable) mediumModelOrder.push('mistral-medium-latest');
 
         this.taskRules.set('reflection', {
@@ -469,7 +521,9 @@ export class MultiModelOrchestrator {
         if (this.claudeCodeAvailable) {
             complexModelOrder.push('claude-opus-4-1-20250805', 'claude-sonnet-4-20250514');
         }
-        // Fallback: Mistral only as last resort
+        // QwenCode as fallback for complex tasks (may be slow)
+        if (qwenCodeAvailable) complexModelOrder.push('qwen3-coder-plus');
+        // Mistral as last resort
         if (this.mistralAvailable) complexModelOrder.push('mistral-medium-latest');
 
         this.taskRules.set('complex_analysis', {
@@ -797,6 +851,9 @@ export class MultiModelOrchestrator {
                     } else if (modelInfo.provider === 'claude_code' && this.claudeCodeService) {
                         content = await this.executeClaudeCodeTask(modelName, prompt, systemInstruction, timeout);
                         console.log(`[Multi-Model Orchestrator] ✅ Success with Claude Code model: ${modelName}`);
+                    } else if (modelInfo.provider === 'qwen_code') {
+                        content = await this.executeQwenCodeTask(modelName, prompt, systemInstruction, timeout);
+                        console.log(`[Multi-Model Orchestrator] ✅ Success with QwenCode model: ${modelName}`);
                     } else {
                         throw new Error(`Unsupported model provider: ${modelInfo.provider}`);
                     }
@@ -1007,6 +1064,30 @@ export class MultiModelOrchestrator {
         }
 
         return response.trim();
+    }
+
+    /**
+     * Execute task using QwenCode
+     */
+    private async executeQwenCodeTask(
+        model: string,
+        prompt: string,
+        systemInstruction?: string,
+        timeout: number = 30000
+    ): Promise<string> {
+        const qwenProvider = this.aiService.getProvider('qwen_code');
+        if (!qwenProvider) {
+            throw new Error('QwenCode provider not available');
+        }
+
+        const response = await qwenProvider.execute({
+            model,
+            query: prompt,
+            systemInstruction,
+            maxTokens: 4000
+        });
+
+        return response.content[0]?.text || 'No response generated';
     }
 
     /**
