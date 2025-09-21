@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import crypto from 'crypto';
+import { CrossPlatformClaudeCode } from '../../../../utils/CrossPlatformClaudeCode.js';
 
 // Claude Code message types (from kilocode implementation)
 interface InitMessage {
@@ -52,7 +53,6 @@ interface ResultMessage {
 type ClaudeCodeMessage = InitMessage | AssistantMessage | ResultMessage;
 
 // Configuration
-const CLAUDE_CODE_INSTALLATION_URL = "https://docs.anthropic.com/en/docs/claude-code/setup";
 const CLAUDE_CODE_TIMEOUT = 600000; // 10 minutes
 const MAX_SYSTEM_PROMPT_LENGTH = 65536;
 
@@ -90,10 +90,12 @@ export interface ClaudeCodeResponse {
 }
 
 export class ClaudeCodeClient {
-    private readonly claudePath: string;
+    private claudePath: string;
     private readonly defaultMaxOutputTokens = 16000;
+    private crossPlatformHelper: CrossPlatformClaudeCode;
 
     constructor(claudePath: string = "claude") {
+        this.crossPlatformHelper = CrossPlatformClaudeCode.getInstance();
         this.claudePath = claudePath;
     }
 
@@ -368,13 +370,15 @@ export class ClaudeCodeClient {
      * Create user-friendly error for missing Claude Code CLI
      */
     private createClaudeCodeNotFoundError(originalError: Error): Error {
+        const platformConfig = this.crossPlatformHelper.getPlatformConfig();
+
         const errorMessage = `
 Claude Code CLI not found at "${this.claudePath}".
 
-To install Claude Code:
-1. Visit: ${CLAUDE_CODE_INSTALLATION_URL}
-2. Follow the installation instructions
-3. Ensure 'claude' command is in your PATH
+${platformConfig.setupInstructions}
+
+Platform: ${platformConfig.platform}
+Checked paths: ${platformConfig.possiblePaths.length} locations
 
 Original error: ${originalError.message}
         `.trim();
@@ -387,18 +391,86 @@ Original error: ${originalError.message}
     /**
      * Test if Claude Code CLI is available
      */
-    async testConnection(): Promise<{ available: boolean; version?: string; error?: string }> {
+    async testConnection(): Promise<{
+        available: boolean;
+        version?: string;
+        error?: string;
+        path?: string;
+        platformInfo?: any;
+    }> {
         try {
+            const detection = await this.crossPlatformHelper.detectClaudeCode(
+                this.claudePath !== "claude" ? this.claudePath : undefined
+            );
+
+            if (detection.found && detection.path) {
+                this.claudePath = detection.path;
+
+                return {
+                    available: true,
+                    version: detection.version,
+                    path: detection.path,
+                    platformInfo: {
+                        platform: this.crossPlatformHelper.getPlatformConfig().platform,
+                        installationMethod: detection.installationMethod,
+                        pathsChecked: this.crossPlatformHelper.getDebugInfo().possiblePaths.length
+                    }
+                };
+            }
+
             const result = await execa(this.claudePath, ["--version"], { timeout: 15000 });
             return {
                 available: true,
                 version: result.stdout.trim(),
+                path: this.claudePath
             };
         } catch (error: any) {
+            const debugInfo = this.crossPlatformHelper.getDebugInfo();
             return {
                 available: false,
                 error: error.message,
+                platformInfo: {
+                    platform: debugInfo.platform,
+                    pathsChecked: debugInfo.possiblePaths.length,
+                    possiblePaths: debugInfo.possiblePaths
+                }
             };
         }
+    }
+
+    /**
+     * Get optimal Claude Code path for current platform
+     */
+    async getOptimalPath(): Promise<string> {
+        return await this.crossPlatformHelper.getOptimalClaudeCodePath();
+    }
+
+    /**
+     * Get platform-specific setup information
+     */
+    async getSetupInfo(): Promise<{
+        detection: any;
+        platformConfig: any;
+        recommendations: string[];
+    }> {
+        return await this.crossPlatformHelper.getSetupInfo();
+    }
+
+    /**
+     * Test Claude Code installation with detailed diagnostics
+     */
+    async testInstallation(): Promise<{
+        success: boolean;
+        path?: string;
+        version?: string;
+        error?: string;
+        performance?: {
+            detectionTime: number;
+            versionCheckTime: number;
+        };
+    }> {
+        return await this.crossPlatformHelper.testClaudeCodeInstallation(
+            this.claudePath !== "claude" ? this.claudePath : undefined
+        );
     }
 }

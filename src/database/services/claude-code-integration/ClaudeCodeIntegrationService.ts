@@ -9,6 +9,7 @@ import {
     CLAUDE_CODE_CONFIG,
     isValidModel
 } from './ClaudeCodeConfig.js';
+import { CrossPlatformClaudeCode } from '../../../utils/CrossPlatformClaudeCode.js';
 
 export interface ClaudeCodeTaskOptions {
     taskType?: 'simple' | 'medium' | 'complex';
@@ -34,21 +35,25 @@ export interface ClaudeCodeTaskResult extends ClaudeCodeResponse {
 
 export class ClaudeCodeIntegrationService {
     private client: ClaudeCodeClient;
+    private crossPlatformHelper: CrossPlatformClaudeCode;
     private isAvailable: boolean = false;
     private connectionStatus: {
         available: boolean;
         version?: string;
         error?: string;
+        path?: string;
+        platformInfo?: any;
     } | null = null;
     private initPromise: Promise<void>;
 
     constructor(claudePath?: string) {
+        this.crossPlatformHelper = CrossPlatformClaudeCode.getInstance();
         this.client = new ClaudeCodeClient(claudePath);
         this.initPromise = this.initialize();
     }
 
     /**
-     * Initialize and test Claude Code availability
+     * Initialize and test Claude Code availability with cross-platform detection
      */
     private async initialize(): Promise<void> {
         try {
@@ -57,9 +62,18 @@ export class ClaudeCodeIntegrationService {
 
             if (this.isAvailable) {
                 console.log(`[ClaudeCode] Available - Version: ${this.connectionStatus.version}`);
+                console.log(`[ClaudeCode] Path: ${this.connectionStatus.path}`);
+                if (this.connectionStatus.platformInfo) {
+                    console.log(`[ClaudeCode] Platform: ${this.connectionStatus.platformInfo.platform}, Method: ${this.connectionStatus.platformInfo.installationMethod}`);
+                }
             } else {
                 console.warn(`[ClaudeCode] Not available: ${this.connectionStatus.error}`);
-                console.info(getClaudeCodeSetupInstructions());
+
+                // Use cross-platform setup instructions
+                const setupInfo = await this.crossPlatformHelper.getSetupInfo();
+                console.info('\n' + setupInfo.platformConfig.setupInstructions);
+                console.info('\nRecommendations:');
+                setupInfo.recommendations.forEach(rec => console.info(`  - ${rec}`));
             }
         } catch (error) {
             console.error('[ClaudeCode] Initialization failed:', error);
@@ -190,26 +204,47 @@ export class ClaudeCodeIntegrationService {
     }
 
     /**
-     * Get service status and statistics
+     * Get service status and statistics with cross-platform info
      */
     getStatus(): {
         available: boolean;
         version?: string;
+        path?: string;
+        platformInfo?: any;
         defaultModel: ClaudeCodeModelId;
         availableModels: number;
         authTypes: string[];
         setupInstructions?: string;
+        crossPlatformInfo?: {
+            platform: string;
+            detectedPaths: number;
+            recommendations: string[];
+        };
     } {
+        let crossPlatformInfo: any = undefined;
+
+        if (!this.isAvailable) {
+            const debugInfo = this.crossPlatformHelper.getDebugInfo();
+            crossPlatformInfo = {
+                platform: debugInfo.platform,
+                detectedPaths: debugInfo.possiblePaths.length,
+                recommendations: [`Primary recommendation: ${this.crossPlatformHelper.getPlatformConfig().installCommands[0]}`]
+            };
+        }
+
         return {
             available: this.isAvailable,
             version: this.connectionStatus?.version,
+            path: this.connectionStatus?.path,
+            platformInfo: this.connectionStatus?.platformInfo,
             defaultModel: claudeCodeDefaultModelId,
             availableModels: Object.keys(CLAUDE_CODE_CONFIG.categories).reduce(
                 (total, category) => total + CLAUDE_CODE_CONFIG.categories[category as keyof typeof CLAUDE_CODE_CONFIG.categories].length,
                 0
             ),
             authTypes: Object.values(CLAUDE_CODE_CONFIG.authTypes),
-            setupInstructions: !this.isAvailable ? getClaudeCodeSetupInstructions() : undefined
+            setupInstructions: !this.isAvailable ? getClaudeCodeSetupInstructions() : undefined,
+            crossPlatformInfo
         };
     }
 

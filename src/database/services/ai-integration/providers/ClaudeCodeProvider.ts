@@ -5,12 +5,19 @@
 
 import { AIProvider, AIRequest, AIResponse, ProviderCapabilities, ProviderStatus } from './interfaces/AIProvider.js';
 import { ModelProvider, AuthMethod } from '../AIApiConfig.js';
-import { getModelInfo, isValidModel } from '../AIModelList.js';
+import { getModelInfo } from '../AIModelList.js';
 import { ClaudeCodeClient } from './ClaudeCodeClient.js';
 
 export class ClaudeCodeProvider extends AIProvider {
     private claudeCodeClient: ClaudeCodeClient;
     private isAvailable: boolean = false;
+    private connectionStatus: {
+        available: boolean;
+        version?: string;
+        error?: string;
+        path?: string;
+        platformInfo?: any;
+    } | null = null;
 
     constructor() {
         const capabilities: ProviderCapabilities = {
@@ -37,22 +44,49 @@ export class ClaudeCodeProvider extends AIProvider {
 
         try {
             // Check if Claude Code CLI is available
-            this.isAvailable = (await this.claudeCodeClient.testConnection()).available;
+            this.connectionStatus = await this.claudeCodeClient.testConnection();
+            this.isAvailable = this.connectionStatus.available;
 
             if (this.isAvailable) {
-                console.log('[ClaudeCodeProvider] Claude Code CLI detected and ready');
+                const version = this.connectionStatus.version || 'unknown version';
+                const path = this.connectionStatus.path || 'claude';
+                console.log(`[ClaudeCodeProvider] Claude Code CLI detected (${version}) at ${path}`);
+
+                if (this.connectionStatus.platformInfo) {
+                    const platformDetails = this.connectionStatus.platformInfo;
+                    console.log(
+                        `[ClaudeCodeProvider] Platform: ${platformDetails.platform}, ` +
+                        `Installation: ${platformDetails.installationMethod || 'unknown'}`
+                    );
+                }
             } else {
-                console.warn('[ClaudeCodeProvider] Claude Code CLI not available');
+                const errorMessage = this.connectionStatus.error || 'Unknown detection error';
+                console.warn(`[ClaudeCodeProvider] Claude Code CLI not available: ${errorMessage}`);
+
+                const setupInfo = await this.claudeCodeClient.getSetupInfo();
+                console.info('\n' + setupInfo.platformConfig.setupInstructions);
+                console.info('\nRecommendations:');
+                setupInfo.recommendations.forEach(rec => console.info(`  - ${rec}`));
             }
         } catch (error) {
             console.error('[ClaudeCodeProvider] Failed to initialize:', error);
+            this.connectionStatus = {
+                available: false,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            };
             this.isAvailable = false;
         }
     }
 
     async execute(request: AIRequest): Promise<AIResponse> {
         if (!this.isAvailable) {
-            throw new Error('Claude Code CLI is not available. Please ensure Claude is installed and authenticated.');
+            this.connectionStatus = await this.claudeCodeClient.testConnection();
+            this.isAvailable = this.connectionStatus.available;
+
+            if (!this.isAvailable) {
+                const errorHint = this.connectionStatus.error ? ` Details: ${this.connectionStatus.error}` : '';
+                throw new Error(`Claude Code CLI is not available. Please ensure Claude is installed and authenticated.${errorHint}`);
+            }
         }
 
         const modelInfo = getModelInfo(request.model);
@@ -114,6 +148,8 @@ export class ClaudeCodeProvider extends AIProvider {
         try {
             const connectionTest = await this.claudeCodeClient.testConnection();
             const isAvailable = connectionTest.available;
+            this.connectionStatus = connectionTest;
+            this.isAvailable = isAvailable;
 
             return {
                 available: isAvailable,
@@ -122,7 +158,8 @@ export class ClaudeCodeProvider extends AIProvider {
                 rateLimit: {
                     current: 0, // Would need rate limit tracking
                     limit: 30
-                }
+                },
+                error: isAvailable ? undefined : connectionTest.error
             };
         } catch (error) {
             return {

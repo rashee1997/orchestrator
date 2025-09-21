@@ -3,6 +3,7 @@ import { OAuth2Client } from "google-auth-library";
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
+import { CrossPlatformOAuth, OAuthCredentials } from "../../../utils/CrossPlatformOAuth.js";
 
 // Custom error for when Gemini API is not initialized
 export class GeminiApiNotInitializedError extends Error {
@@ -30,12 +31,7 @@ const OAUTH_REDIRECT_URI = "http://localhost:45289";
 const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_API_VERSION = "v1internal";
 
-interface OAuthCredentials {
-    access_token: string;
-    refresh_token: string;
-    token_type: string;
-    expiry_date: number;
-}
+// OAuth credentials interface moved to CrossPlatformOAuth
 
 export class GeminiApiClient {
     private genAI?: GoogleGenAI;
@@ -54,6 +50,7 @@ export class GeminiApiClient {
     private projectId?: string;
     private useOAuth: boolean = false;
     private oauthPath?: string;
+    private crossPlatformOAuth: CrossPlatformOAuth;
     private readonly oauthMaxRequestsPerMinute = 60; // OAuth free tier limit
     private readonly oauthMinApiCallInterval = 1000; // 1 second between calls for 60 RPM
 
@@ -74,6 +71,7 @@ export class GeminiApiClient {
 
         // Always initialize OAuth for 2.5 models regardless of genAI instance
         this.oauthPath = options?.oauthPath;
+        this.crossPlatformOAuth = CrossPlatformOAuth.getInstance();
         this.initializeOAuth();
 
         if (genAIInstance) {
@@ -131,30 +129,21 @@ export class GeminiApiClient {
         return this.genAI;
     }
 
-    public getOAuthStatus(): { available: boolean, credentialsPath: string, hasCredentials: boolean } {
-        const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
+    public getOAuthStatus(): { available: boolean, credentialsPath: string, hasCredentials: boolean, platformInfo?: any } {
+        const paths = this.crossPlatformOAuth.getCredentialPaths(this.oauthPath);
+        const primaryPath = paths[0];
+
         return {
             available: !!this.authClient,
-            credentialsPath: credPath,
-            hasCredentials: !!this.credentials
+            credentialsPath: primaryPath,
+            hasCredentials: !!this.credentials,
+            platformInfo: this.crossPlatformOAuth.getDebugInfo()
         };
     }
 
     public static getOAuthSetupInstructions(): string {
-        return `
-To enable OAuth for Gemini 2.5 models (60 RPM free tier):
-
-1. Install Gemini CLI:
-   npm install -g @google/generative-ai
-
-2. Authenticate:
-   gemini auth
-
-3. OAuth credentials will be saved to ~/.gemini/oauth_creds.json
-
-4. Restart your application to use OAuth for Gemini 2.5 models
-
-Note: Embedding models will continue using API keys.`;
+        const crossPlatformOAuth = CrossPlatformOAuth.getInstance();
+        return crossPlatformOAuth.getSetupInstructions();
     }
 
     /**
@@ -226,38 +215,19 @@ Note: Embedding models will continue using API keys.`;
             throw new Error("Failed to get response from Gemini embedding model.");
         }
 
-        // For OAuth models, ALWAYS use OAuth Code Assist API (like Kilocode)
-        if (this.supportsOAuth(modelName)) {
-            // Ensure credentials are loaded
-            if (!this.credentials) {
-                try {
-                    await this.loadOAuthCredentials();
-                } catch (error) {
-                    throw new Error(`OAuth credentials required for ${modelName}. Please set up OAuth: ${error}`);
-                }
-            }
-
-            if (!this.credentials) {
-                throw new Error(`OAuth credentials not found for ${modelName}. Please run 'gemini auth' to set up OAuth.`);
-            }
-
-            console.log(`[GeminiApiClient] Using OAuth Code Assist API for model: ${modelName}`);
+        // Use OAuth for Flash 2.5 and Pro 2.5 models if OAuth is available
+        else if (this.supportsOAuth(modelName) && this.authClient) {
             try {
+                console.log(`[GeminiApiClient] Using OAuth for model: ${modelName}`);
                 const result = await this.askGeminiWithOAuth(query, modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
                 return result;
-            } catch (error: any) {
-                // Check for quota exhaustion and re-throw without fallback
-                const message = (error.message || '').toLowerCase();
-                if (error.response?.status === 429 && message.includes('quota')) {
-                    console.log('[GeminiApiClient] 🚫 OAuth quota exhausted, no API key fallback for OAuth models');
-                    throw error;
-                }
-                throw new Error(`OAuth API call failed for ${modelName}: ${error.message}`);
+            } catch (error) {
+                console.warn(`[GeminiApiClient] OAuth failed for ${modelName}, falling back to API key:`, error);
+                // Fall through to API key method
             }
         }
 
-        // For non-OAuth models, use API key method
-        console.log(`[GeminiApiClient] Using API key for non-OAuth model: ${modelName}`);
+        // Fallback to API key method for embeddings and other models
         const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
@@ -554,19 +524,25 @@ Note: Embedding models will continue using API keys.`;
 
     private async loadOAuthCredentials(): Promise<void> {
         try {
-            const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
-            const credData = await fs.readFile(credPath, "utf-8");
-            this.credentials = JSON.parse(credData);
+            const result = await this.crossPlatformOAuth.loadCredentials(this.oauthPath);
 
-            if (this.credentials && this.authClient) {
-                this.authClient.setCredentials({
-                    access_token: this.credentials.access_token,
-                    refresh_token: this.credentials.refresh_token,
-                    expiry_date: this.credentials.expiry_date,
-                });
+            if (result) {
+                this.credentials = result.credentials;
+                console.log(`[GeminiApiClient] OAuth credentials loaded from: ${result.path}`);
+
+                if (this.credentials && this.authClient) {
+                    this.authClient.setCredentials({
+                        access_token: this.credentials.access_token,
+                        refresh_token: this.credentials.refresh_token,
+                        expiry_date: this.credentials.expiry_date,
+                    });
+                }
+            } else {
+                console.warn('[GeminiApiClient] No OAuth credentials found in any platform-specific path, will use API keys for all models');
+                this.useOAuth = false;
             }
         } catch (error) {
-            console.warn('[GeminiApiClient] OAuth credentials not found, will use API keys for all models:', error);
+            console.warn('[GeminiApiClient] OAuth credential loading failed, will use API keys for all models:', error);
             this.useOAuth = false;
         }
     }
@@ -591,9 +567,8 @@ Note: Embedding models will continue using API keys.`;
                         token_type: credentials.token_type || "Bearer",
                         expiry_date: credentials.expiry_date || Date.now() + 3600 * 1000,
                     };
-                    // Save refreshed credentials
-                    const credPath = this.oauthPath || path.join(os.homedir(), ".gemini", "oauth_creds.json");
-                    await fs.writeFile(credPath, JSON.stringify(this.credentials, null, 2));
+                    // Save refreshed credentials using cross-platform path
+                    await this.crossPlatformOAuth.saveCredentials(this.credentials, this.oauthPath);
                 }
             } catch (error) {
                 console.error('[GeminiApiClient] OAuth token refresh failed:', error);
