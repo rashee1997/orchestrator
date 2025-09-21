@@ -642,20 +642,37 @@ export class CodebaseEmbeddingRepository {
         const targetEntity = queryTerms.find(term => term.length > 3) || queryText.toLowerCase();
 
         // Identify critical implementation chunks that might be missing
+        const isConstantEntity = (name: string | null | undefined): boolean => {
+            if (!name) {
+                return false;
+            }
+            const trimmed = name.trim();
+            if (!trimmed) {
+                return false;
+            }
+            const isAllCaps = trimmed === trimmed.toUpperCase();
+            const hasUnderscore = trimmed.includes('_');
+            const looksPrompt = trimmed.toLowerCase().includes('prompt');
+            return (isAllCaps && hasUnderscore) || looksPrompt;
+        };
+
         const coreMethodSignatures = [
-            'executetask',
-            'selectmodelfortask',
-            'updatetaskstats',
-            'processtask',
-            'initializemodels',
-            'constructor',
-            'configuremodel',
-            'distributionrules',
-            'taskexecution'
+            'executetask(',
+            'selectmodelfortask(',
+            'updatetaskstats(',
+            'processtask(',
+            'initializemodels(',
+            'constructor(',
+            'configuremodel(',
+            'distributionrules(',
+            'taskexecution('
         ];
 
         // Find existing implementation chunks
         const implementationChunks = results.filter(result => {
+            if (isConstantEntity(result.entity_name)) {
+                return false;
+            }
             const content = result.chunk_text?.toLowerCase() || '';
             const entityName = result.entity_name?.toLowerCase() || '';
 
@@ -705,6 +722,9 @@ export class CodebaseEmbeddingRepository {
 
             // Find chunks that contain the entity but might have been ranked lower
             const entityChunks = results.filter(r => {
+                if (isConstantEntity(r.entity_name)) {
+                    return false;
+                }
                 const entityName = r.entity_name?.toLowerCase() || '';
                 const content = r.chunk_text?.toLowerCase() || '';
                 return entityName.includes(targetEntity) || content.includes(targetEntity);

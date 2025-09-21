@@ -24,6 +24,45 @@ const VALID_FOCUS_AREAS = [
     "refactoring", "testing", "documentation", "code_modularization_orchestration", "codebase_analysis"
 ];
 
+function stripCitationMarkers(value: string | undefined | null): string {
+    if (!value) {
+        return value ?? '';
+    }
+    return value.replace(/\s*\[cite_\d+\]/gi, '');
+}
+
+function tryInlineJsonParse(raw: string | undefined | null): any | null {
+    if (!raw) {
+        return null;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return null;
+    }
+    const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = (fencedMatch ? fencedMatch[1] : trimmed).trim();
+    const attempt = (value: string): any | null => {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return null;
+        }
+    };
+    let parsed = attempt(candidate);
+    if (parsed && typeof parsed === 'object') {
+        return parsed;
+    }
+    const firstBrace = candidate.indexOf('{');
+    const lastBrace = candidate.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        parsed = attempt(candidate.slice(firstBrace, lastBrace + 1));
+        if (parsed && typeof parsed === 'object') {
+            return parsed;
+        }
+    }
+    return null;
+}
+
 // Get all available model names (both short names and full IDs)
 function getAllModelNames(): string[] {
     const shortNames = getAvailableShortNames();
@@ -737,7 +776,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     max_iterations: sanitized_max_iterations,
                     conversation_history_limit: sanitized_conversation_history_limit,
                     google_search: google_search,
-                    continue_session: continue_session
+                    continue_session: continue_session,
+                    execution_mode: execution_mode // Pass execution mode to control citation behavior
                 };
 
                 console.log(`[ask_gemini] Enhanced RAG enabled: hybrid=${enhancedRagArgs.enable_hybrid_search}, agentic=${enhancedRagArgs.enable_agentic_planning}, reflection=${enhancedRagArgs.enable_reflection}`);
@@ -768,7 +808,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{agentId}', agent_id);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
-                const parsedResponse = await parseGeminiJsonResponse(result.content[0].text ?? '', {
+                const rawPlanContent = result.content?.[0]?.text ?? '';
+                const cleanedPlanContent = stripCitationMarkers(rawPlanContent);
+                if (rawPlanContent !== cleanedPlanContent) {
+                    console.log('[ask_gemini] Citation override applied to plan generation response to maintain valid JSON.');
+                }
+                let parsedResponse = await parseGeminiJsonResponse(cleanedPlanContent, {
                     expectedStructure: '{"plan_title": "string", "tasks": [{"task_number": "number", "title": "string", "description": "string"}], "estimated_duration_days": "number"}',
                     contextDescription: 'Plan generation response with tasks and metadata',
                     memoryManager: memoryManagerInstance,
@@ -776,12 +821,38 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     enableAIRepair: true
                 });
 
-                parsedResponse.generation_metadata = {
-                    rag_metrics: iterativeResult?.searchMetrics,
-                    context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
-                    web_sources: iterativeResult?.webSearchSources,
-                    decision_log: iterativeResult?.decisionLog
-                };
+                // Check if parsedResponse is valid before setting metadata
+                if (!parsedResponse || typeof parsedResponse !== 'object') {
+                    const inlineParsed = tryInlineJsonParse(cleanedPlanContent);
+                    if (inlineParsed && typeof inlineParsed === 'object') {
+                        console.log('[ask_gemini] Inline JSON recovery succeeded for plan generation response.');
+                        parsedResponse = inlineParsed;
+                    }
+                }
+
+                if (parsedResponse && typeof parsedResponse === 'object') {
+                    parsedResponse.generation_metadata = {
+                        rag_metrics: iterativeResult?.searchMetrics,
+                        context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
+                        web_sources: iterativeResult?.webSearchSources,
+                        decision_log: iterativeResult?.decisionLog
+                    };
+                } else {
+                    console.error('[GeminiTools] parsedResponse is null or invalid, creating fallback response');
+                    const fallbackResponse = {
+                        plan_title: "Plan Generation Failed",
+                        tasks: [{task_number: 1, title: "Retry Request", description: "The plan generation failed due to parsing errors. Please try again."}],
+                        estimated_duration_days: 1,
+                        generation_metadata: {
+                            rag_metrics: iterativeResult?.searchMetrics,
+                            context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
+                            web_sources: iterativeResult?.webSearchSources,
+                            decision_log: iterativeResult?.decisionLog,
+                            error: "JSON parsing failed"
+                        }
+                    };
+                    return fallbackResponse;
+                }
                 parsedResponse.agent_id = agent_id;
                 parsedResponse.refinement_engine_model = modelToUse;
                 parsedResponse.refinement_timestamp = new Date().toISOString();

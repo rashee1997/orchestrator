@@ -78,11 +78,10 @@ export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
     fallbackEmbeddingModel: "models/text-embedding-004",
     embeddingDimensions: 3072,
     fallbackEmbeddingDimensions: 768,
-    oauthModels: ["gemini-2.5-flash", "gemini-2.5-pro"], // OAuth supported models
+    oauthModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"], // OAuth supported models
     apiKeyOnlyModels: [
         "models/gemini-embedding-001",
         "models/text-embedding-004",
-        "gemini-2.5-flash-lite",
         "gemini-2.0-flash-lite",
         "gemini-1.5-flash",
         "gemini-1.5-pro"
@@ -423,7 +422,20 @@ export function isValidShortName(modelName: string): boolean {
  * Get current model synchronously (for backward compatibility)
  */
 export function getCurrentModel(useFallback: boolean = false): string {
-    return useFallback ? GEMINI_MODEL_CONFIG.fallbackModel : GEMINI_MODEL_CONFIG.defaultModel;
+    // Check OAuth availability synchronously by looking for credentials file
+    try {
+        const credPath = require('path').join(require('os').homedir(), ".gemini", "oauth_creds.json");
+        require('fs').accessSync(credPath);
+        // If OAuth is available, always prefer OAuth models
+        if (!useFallback) {
+            return GEMINI_MODEL_CONFIG.defaultModel; // gemini-2.5-pro (supports OAuth)
+        } else {
+            return "gemini-2.5-flash"; // OAuth fallback instead of API key fallback
+        }
+    } catch {
+        // No OAuth available, use regular logic
+        return useFallback ? GEMINI_MODEL_CONFIG.fallbackModel : GEMINI_MODEL_CONFIG.defaultModel;
+    }
 }
 
 /**

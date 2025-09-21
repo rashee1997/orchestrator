@@ -66,6 +66,7 @@ function attemptAiJsonFixerRepair(jsonText: string): { success: boolean; data?: 
   try {
     // Remove code block markers first
     let cleaned = jsonText
+      .replace(/```json/g, '')
       .replace(/```/g, '')
       .trim();
 
@@ -76,10 +77,51 @@ function attemptAiJsonFixerRepair(jsonText: string): { success: boolean; data?: 
       .replace(/&amp;/g, '&')
       .replace(/"/g, '"');
 
+    // Try standard JSON.parse first before ai-json-fixer
+    try {
+      const standardResult = JSON.parse(cleaned);
+      console.log('[JSON Parser] ✅ Standard JSON.parse successful in ai-json-fixer');
+      return { success: true, data: standardResult };
+    } catch (standardError) {
+      console.log('[JSON Parser] Standard JSON.parse failed, trying ai-json-fixer...');
+    }
+
     // Use ai-json-fixer to fix the JSON
     const parser = new LLMJSONParser();
     const result = parser.parse(cleaned);
-    
+
+    console.log('[JSON Parser] 🔍 ai-json-fixer result:', {
+      hasResult: !!result,
+      resultType: typeof result,
+      isNull: result === null,
+      isUndefined: result === undefined,
+      resultKeys: result && typeof result === 'object' ? Object.keys(result) : 'not object'
+    });
+
+    if (result === null || result === undefined) {
+      console.warn('[JSON Parser] ai-json-fixer returned null/undefined, trying fallback');
+
+      // Fallback: try to manually extract array/object from cleaned text
+      const trimmed = cleaned.trim();
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        try {
+          // Try fixing common array issues
+          let fixedArray = trimmed
+            .replace(/,\s*]/g, ']')  // Remove trailing commas
+            .replace(/,\s*}/g, '}')  // Remove trailing commas in objects
+            .replace(/([}\]])\s*([{\[])/g, '$1,$2'); // Add missing commas between elements
+
+          const fallbackResult = JSON.parse(fixedArray);
+          console.log('[JSON Parser] ✅ Manual array fallback successful');
+          return { success: true, data: fallbackResult };
+        } catch (fallbackError: any) {
+          console.warn('[JSON Parser] Manual array fallback failed:', fallbackError.message);
+        }
+      }
+
+      return { success: false, error: 'ai-json-fixer returned null/undefined and fallback failed' };
+    }
+
     console.log('[JSON Parser] ✅ ai-json-fixer recovery successful');
     return { success: true, data: result };
   } catch (error: any) {
@@ -139,12 +181,9 @@ function preSanitizeCodeContent(jsonText: string): string {
   // Fix malformed escape sequences that commonly break JSON parsing
   let fixes = 0;
 
-  // Fix unescaped quotes within strings (but not the field delimiters)
-  const quoteFixes = (sanitized.match(/"([^"]*[^\\])"([^"]*[^\\])"(?!\s*[,}])/g) || []).length;
-  if (quoteFixes > 0) {
-    sanitized = sanitized.replace(/"([^"]*[^\\])"([^"]*[^\\])"(?!\s*[,}])/g, '"$1\\"$2"');
-    fixes += quoteFixes;
-  }
+  // DISABLED: This regex was too aggressive and broke valid JSON
+  // The pattern was incorrectly identifying "key": "value" pairs as unescaped quotes
+  // Only enable specific targeted fixes that we know are safe
 
   // Fix malformed backslash sequences
   const backslashPattern = /"([^"]*?)\\(?!["\\nrtbf/u])/g;
@@ -159,12 +198,9 @@ function preSanitizeCodeContent(jsonText: string): string {
   }
 
   // Phase 3: Fix unterminated strings (add missing closing quotes)
-  const unterminatedStringPattern = /"[^"]*\n[^"]*/g;
-  const unterminatedMatches = sanitized.match(unterminatedStringPattern) || [];
-  if (unterminatedMatches.length > 0) {
-    sanitized = sanitized.replace(unterminatedStringPattern, match => match + '"');
-    fixes += unterminatedMatches.length;
-  }
+  // DISABLED: This pattern was too aggressive and could break valid multiline JSON
+  // const unterminatedStringPattern = /"[^"]*\n[^"]*/g;
+  // Only enable if we have specific cases that need this fix
 
   if (sanitizedCount > 0 || fixes > 0) {
     console.log(`[JSON Parser] Pre-sanitization completed: fixed ${sanitizedCount} code blocks, ${fixes} JSON syntax issues`);
@@ -541,8 +577,8 @@ export async function parseGeminiJsonResponse(
     // -----------------------------------------------------------------
     let jsonString = sanitizedResponse.trim();
 
-    // Detect a markdown block (````````)
-    const markdownMatch = jsonString.match(/``````/);
+    // Detect a markdown block (```json...```)
+    const markdownMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (markdownMatch && markdownMatch[1]) {
       jsonString = markdownMatch[1].trim();
     }
@@ -987,8 +1023,8 @@ function parseGeminiJsonResponseOriginal(textResponse: string): any {
     // -----------------------------------------------------------------
     let jsonString = textResponse.trim();
 
-    // Detect a markdown block (````````)
-    const markdownMatch = jsonString.match(/``````/);
+    // Detect a markdown block (```json...```)
+    const markdownMatch = jsonString.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (markdownMatch && markdownMatch[1]) {
       jsonString = markdownMatch[1].trim();
     }

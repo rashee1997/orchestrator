@@ -75,13 +75,38 @@ IMPORTANT: Return ONLY valid JSON in exactly this format (no markdown, no extra 
                     enableAIRepair: true,
                 });
 
-                // Validate the result
+                // Validate the result and provide fallback if invalid
                 if (!analysisData || analysisData === null || typeof analysisData !== 'object') {
-                    throw new Error('JSON parser returned null or invalid object');
+                    console.warn('[Consolidated Batch Analysis] JSON parser returned null or invalid object, creating fallback');
+                    analysisData = {
+                        contextAnalyses: contexts.map((ctx, index) => ({
+                            contextId: `${ctx.sourcePath}:${ctx.entityName || 'unknown'}`,
+                            entities: [],
+                            relationships: [],
+                            relevanceScore: 0.5,
+                            summary: `Analysis failed for context ${index + 1}`,
+                            _fallback: true
+                        })),
+                        overallAnalysis: {
+                            primaryThemes: ['JSON parsing failed'],
+                            keyInsights: ['Unable to parse response'],
+                            confidenceScore: 0.3,
+                            _fallback: true
+                        },
+                        _parsing_failed: true
+                    };
                 }
 
                 if (!analysisData.contextAnalyses || !Array.isArray(analysisData.contextAnalyses)) {
-                    throw new Error('Missing or invalid contextAnalyses array');
+                    console.warn('[Consolidated Batch Analysis] Missing or invalid contextAnalyses array, creating fallback array');
+                    analysisData.contextAnalyses = contexts.map((ctx, index) => ({
+                        contextId: `${ctx.sourcePath}:${ctx.entityName || 'unknown'}`,
+                        entities: [],
+                        relationships: [],
+                        relevanceScore: 0.5,
+                        summary: `Fallback analysis for context ${index + 1}`,
+                        _fallback: true
+                    }));
                 }
 
             } catch (parseError) {

@@ -64,7 +64,26 @@ export class PlanTaskManager {
     async createPlanWithTasks(
         agent_id: string,
         planData: { title: string; overall_goal?: string; status?: string; version?: number; refined_prompt_id_associated?: string; analysis_report_id_referenced?: string; metadata?: any },
-        tasksData: Array<{ task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }>
+        tasksData: Array<{
+            task_number: number;
+            title: string;
+            description?: string;
+            status?: string;
+            purpose?: string;
+            action_description?: string;
+            files_involved_json?: string[] | string;
+            dependencies_task_ids_json?: string[] | string;
+            tools_required_list_json?: string[] | string;
+            inputs_summary?: string;
+            outputs_summary?: string;
+            success_criteria_text?: string;
+            estimated_effort_hours?: number;
+            assigned_to?: string;
+            verification_method?: string;
+            code_content?: string;
+            notes?: any;
+            [key: string]: any;
+        }>
     ): Promise<{ plan_id: string; task_ids: string[] }> {
         const db = this.dbService.getDb();
         const plan_id = randomUUID();
@@ -239,25 +258,29 @@ export class PlanTaskManager {
 
         const results: ParsedTask[] = await db.all(query, ...params as any[]);
         return results.map((row) => {
-            // Safely parse JSON fields, adding error flags and keeping raw data if parsing fails
-            const parseJsonSafe = (jsonString: string, fieldName: string) => {
+            const parseJsonSafe = (jsonString: string | null | undefined, fieldName: string, defaultValue: any) => {
                 if (jsonString) {
                     try {
                         return JSON.parse(jsonString);
                     } catch (e) {
                         console.error(`Failed to parse ${fieldName} for task ${row.task_id}:`, e);
-                        row[`${fieldName}_parsing_error`] = true;
-                        row[`raw_${fieldName}`] = jsonString;
-                        return null;
+                        (row as any)[`${fieldName}_parsing_error`] = true;
+                        (row as any)[`raw_${fieldName}`] = jsonString;
+                        return defaultValue;
                     }
                 }
-                return []; // Return empty array for consistency if field is null
+                return defaultValue;
             };
 
-            row.files_involved = parseJsonSafe(row.files_involved_json!, 'files_involved_json');
-            row.dependencies_task_ids = parseJsonSafe(row.dependencies_task_ids_json!, 'dependencies_task_ids_json');
-            row.tools_required_list = parseJsonSafe(row.tools_required_list_json!, 'tools_required_list_json');
-            row.notes = parseJsonSafe(row.notes_json!, 'notes_json');
+            const files = parseJsonSafe(row.files_involved_json, 'files_involved_json', []);
+            const dependencies = parseJsonSafe(row.dependencies_task_ids_json, 'dependencies_task_ids_json', []);
+            const tools = parseJsonSafe(row.tools_required_list_json, 'tools_required_list_json', []);
+            const notes = parseJsonSafe(row.notes_json, 'notes_json', {});
+
+            (row as any).files_involved_parsed = files;
+            (row as any).dependencies_task_ids_parsed = dependencies;
+            (row as any).tools_required_list_parsed = tools;
+            (row as any).notes_parsed = notes;
 
             return row;
         });

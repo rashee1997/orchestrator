@@ -46,12 +46,12 @@ export class JSONRepairService {
                 .replace(/```/g, '')
                 .trim();
 
-            // Fix HTML entities (common in AI responses)
+            // Fix HTML entities (common in AI responses) - but avoid breaking valid JSON
             cleaned = cleaned
                 .replace(/&lt;/g, '<')
                 .replace(/&gt;/g, '>')
-                .replace(/&amp;/g, '&')
-                .replace(/"/g, '"');
+                .replace(/&amp;/g, '&');
+                // REMOVED .replace(/"/g, '"') - this was breaking valid JSON by converting straight quotes
 
             // Use jsonrepair to fix the JSON
             const repaired = jsonrepair(cleaned);
@@ -75,12 +75,12 @@ export class JSONRepairService {
                 .replace(/```/g, '')
                 .trim();
 
-            // Fix HTML entities (common in AI responses)
+            // Fix HTML entities (common in AI responses) - but avoid breaking valid JSON
             cleaned = cleaned
                 .replace(/&lt;/g, '<')
                 .replace(/&gt;/g, '>')
-                .replace(/&amp;/g, '&')
-                .replace(/"/g, '"');
+                .replace(/&amp;/g, '&');
+                // REMOVED .replace(/"/g, '"') - this was breaking valid JSON by converting straight quotes
 
             // Use ai-json-fixer to fix the JSON
             const parser = new LLMJSONParser();
@@ -104,14 +104,13 @@ export class JSONRepairService {
             // Remove markdown code blocks
             cleaned = cleaned.replace(/```(?:json|javascript|js)?\n?/gi, '').replace(/```\n?/g, '');
 
-            // Fix common AI response issues
+            // Fix common AI response issues - but be careful not to break valid JSON
             cleaned = cleaned
                 .replace(/&lt;/g, '<')
                 .replace(/&gt;/g, '>')
-                .replace(/&amp;/g, '&')
-                .replace(/"/g, '"')
-                .replace(/"/g, '"')
-                .replace(/'/g, '"'); // Convert single quotes to double quotes
+                .replace(/&amp;/g, '&');
+                // REMOVED aggressive quote replacements that were breaking valid JSON
+                // Only convert single quotes to double quotes in safe contexts
 
             // Fix trailing commas
             cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');

@@ -70,20 +70,32 @@ export class GeminiApiClient {
         maxOutputTokens: 65535,
     };
     constructor(genAIInstance?: GoogleGenAI, options?: { oauthPath?: string }) {
+        console.log('[GeminiApiClient] Constructor called with genAIInstance:', !!genAIInstance);
+
+        // Always initialize OAuth for 2.5 models regardless of genAI instance
+        this.oauthPath = options?.oauthPath;
+        this.initializeOAuth();
+
         if (genAIInstance) {
             this.genAI = genAIInstance;
+            console.log('[GeminiApiClient] Using provided genAI instance + OAuth for 2.5 models');
         } else {
-            // Keep API key support for embedding models and fallback
-            this.oauthPath = options?.oauthPath;
-
-            // Initialize OAuth client for Flash 2.5 and Pro 2.5 models
-            this.initializeOAuth();
-
+            console.log('[GeminiApiClient] No genAI instance provided, will use OAuth/API keys');
             // Keep API key support for embeddings and fallback
             if (this.apiKeys.length > 0) {
                 this.genAI = new GoogleGenAI({ apiKey: this.apiKeys[this.currentApiKeyIndex] });
             }
         }
+
+        // Try to load OAuth credentials immediately for all instances
+        this.loadOAuthCredentials().then(() => {
+            if (this.credentials) {
+                this.useOAuth = true;
+                console.log('[GeminiApiClient] OAuth credentials loaded successfully');
+            }
+        }).catch(() => {
+            console.log('[GeminiApiClient] OAuth credentials not available, using API keys');
+        });
     }
     private get apiKeys(): string[] {
         if (this._apiKeys === null) {
@@ -207,21 +219,45 @@ Note: Embedding models will continue using API keys.`;
         // Always use API keys for embedding models
         if (this.isEmbeddingModel(modelName)) {
             console.log(`[GeminiApiClient] Using API key for embedding model: ${modelName}`);
-            // Fall through to API key method
+            const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
+            if (results.length > 0) {
+                return results[0];
+            }
+            throw new Error("Failed to get response from Gemini embedding model.");
         }
-        // Use OAuth for Flash 2.5 and Pro 2.5 models if OAuth is available
-        else if (this.supportsOAuth(modelName) && this.authClient) {
+
+        // For OAuth models, ALWAYS use OAuth Code Assist API (like Kilocode)
+        if (this.supportsOAuth(modelName)) {
+            // Ensure credentials are loaded
+            if (!this.credentials) {
+                try {
+                    await this.loadOAuthCredentials();
+                } catch (error) {
+                    throw new Error(`OAuth credentials required for ${modelName}. Please set up OAuth: ${error}`);
+                }
+            }
+
+            if (!this.credentials) {
+                throw new Error(`OAuth credentials not found for ${modelName}. Please run 'gemini auth' to set up OAuth.`);
+            }
+
+            console.log(`[GeminiApiClient] Using OAuth Code Assist API for model: ${modelName}`);
             try {
-                console.log(`[GeminiApiClient] Using OAuth for model: ${modelName}`);
-                const result = await this.askGeminiWithOAuth(query, modelName, systemInstruction);
-                return { ...result, confidenceScore: undefined, groundingMetadata: undefined };
-            } catch (error) {
-                console.warn(`[GeminiApiClient] OAuth failed for ${modelName}, falling back to API key:`, error);
-                // Fall through to API key method
+                const result = await this.askGeminiWithOAuth(query, modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
+                return result;
+            } catch (error: any) {
+                // Check for quota exhaustion and re-throw without fallback
+                const message = (error.message || '').toLowerCase();
+                if (error.response?.status === 429 && message.includes('quota')) {
+                    console.log('[GeminiApiClient] 🚫 OAuth quota exhausted, no API key fallback for OAuth models');
+                    throw error;
+                }
+                throw new Error(`OAuth API call failed for ${modelName}: ${error.message}`);
             }
         }
 
-        // Fallback to API key method for embeddings and other models
+        // For non-OAuth models, use API key method
+        console.log(`[GeminiApiClient] Using API key for non-OAuth model: ${modelName}`);
         const results = await this.batchAskGemini([query], modelName, systemInstruction, contextContent, thinkingConfig, toolConfig);
         if (results.length > 0) {
             return results[0];
@@ -480,6 +516,14 @@ Note: Embedding models will continue using API keys.`;
             return { shouldRetry: false, isRateLimit: false };
         }
 
+        // Check for daily quota exhaustion - this should NOT retry and should trigger model fallback
+        if (status === 429 && (message.includes('generativelanguage.googleapis.com/generate_content_free_tier_requests') ||
+                               message.includes('quota exceeded for metric') ||
+                               message.includes('free_tier'))) {
+            console.log(`[GeminiApiClient] 🚫 Daily quota exhausted detected, should trigger model fallback`);
+            return { shouldRetry: false, isRateLimit: false }; // Don't retry, let orchestrator handle model fallback
+        }
+
         const isRateLimit = status === 429 || message.includes('quota') || message.includes('rate limit');
         if (isRateLimit) {
             return { shouldRetry: true, isRateLimit: true };
@@ -500,7 +544,12 @@ Note: Embedding models will continue using API keys.`;
     // ===== OAuth Authentication Methods =====
 
     private initializeOAuth(): void {
-        this.authClient = new OAuth2Client(OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI);
+        try {
+            this.authClient = new OAuth2Client(OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI);
+            console.log('[GeminiApiClient] OAuth2Client initialized successfully');
+        } catch (error) {
+            console.error('[GeminiApiClient] Failed to initialize OAuth2Client:', error);
+        }
     }
 
     private async loadOAuthCredentials(): Promise<void> {
@@ -523,6 +572,10 @@ Note: Embedding models will continue using API keys.`;
     }
 
     private async ensureOAuthAuthenticated(): Promise<void> {
+        if (!this.authClient) {
+            throw new Error('OAuth client not initialized. Please ensure OAuth setup is correct.');
+        }
+
         if (!this.credentials) {
             await this.loadOAuthCredentials();
         }
@@ -530,7 +583,7 @@ Note: Embedding models will continue using API keys.`;
         // Check if token needs refresh
         if (this.credentials && this.credentials.expiry_date < Date.now()) {
             try {
-                const { credentials } = await this.authClient!.refreshAccessToken();
+                const { credentials } = await this.authClient.refreshAccessToken();
                 if (credentials.access_token) {
                     this.credentials = {
                         access_token: credentials.access_token!,
@@ -604,45 +657,135 @@ Note: Embedding models will continue using API keys.`;
                modelName.includes('text-embedding');
     }
 
-    // OAuth-based API call for Flash 2.5 and Pro 2.5
-    private async askGeminiWithOAuth(query: string, modelName: string, systemInstruction?: string): Promise<{ content: Part[] }> {
+    // OAuth-based API call using Code Assist API (following Kilocode pattern exactly)
+    private async askGeminiWithOAuth(
+        query: string,
+        modelName: string,
+        systemInstruction?: string,
+        contextContent?: Part[],
+        thinkingConfig?: { thinkingBudget?: number; thinkingMode?: 'AUTO' | 'MODE_THINK' },
+        toolConfig?: { tools?: any[] }
+    ): Promise<{ content: Part[], confidenceScore?: number, groundingMetadata?: any }> {
+        // Always ensure authentication like Kilocode
         await this.ensureOAuthAuthenticated();
         const projectId = await this.discoverProjectId();
 
-        const requestBody = {
+        // Build content like Kilocode - system instruction first, then content, then query
+        const contents: any[] = [];
+
+        if (systemInstruction) {
+            contents.push({
+                role: "user",
+                parts: [{ text: systemInstruction }]
+            });
+        }
+
+        // Add context content if provided
+        if (contextContent?.length) {
+            contextContent.forEach(content => {
+                if (typeof content === 'object' && 'text' in content) {
+                    contents.push({
+                        role: "user",
+                        parts: [{ text: content.text }]
+                    });
+                }
+            });
+        }
+
+        // Add main query
+        contents.push({
+            role: "user",
+            parts: [{ text: query }]
+        });
+
+        // Build request body exactly like Kilocode
+        const requestBody: any = {
             model: modelName,
             project: projectId,
             request: {
-                contents: [
-                    { role: "user", parts: [{ text: systemInstruction ? `${systemInstruction}\n\n${query}` : query }] }
-                ],
-                generationConfig: this.generationConfig,
-                safetySettings: this.safetySettings,
+                contents: contents,
+                generationConfig: {
+                    temperature: this.generationConfig.temperature ?? 0.7,
+                    maxOutputTokens: this.generationConfig.maxOutputTokens ?? 8192,
+                },
             },
         };
 
+        // Add thinking config if provided (Kilocode pattern)
+        if (thinkingConfig) {
+            requestBody.request.generationConfig.thinkingConfig = thinkingConfig;
+        }
+
+        // Add tools if provided
+        if (toolConfig?.tools) {
+            requestBody.request.tools = toolConfig.tools;
+        }
+
         try {
-            const response = await this.authClient!.request({
+            // Debug authClient state
+            if (!this.authClient) {
+                throw new Error('OAuth2Client not initialized - this.authClient is undefined');
+            }
+            console.log('[GeminiApiClient] OAuth2Client state check passed, making API request');
+
+            // Use authClient.request exactly like Kilocode
+            const response = await this.authClient.request({
                 url: `${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}:generateContent`,
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 data: JSON.stringify(requestBody),
             });
 
-            const responseData = (response.data as any).response || (response.data as any);
+            // Parse response like Kilocode
+            const rawData = response.data as any;
+            const responseData = rawData.response || rawData;
+
             if (responseData.candidates && responseData.candidates.length > 0) {
                 const candidate = responseData.candidates[0];
                 if (candidate.content && candidate.content.parts) {
                     const textParts = candidate.content.parts
                         .filter((part: any) => part.text && !part.thought)
                         .map((part: any) => ({ text: part.text }));
-                    return { content: textParts };
+
+                    if (textParts.length > 0) {
+                        return {
+                            content: textParts,
+                            confidenceScore: undefined,
+                            groundingMetadata: candidate.groundingMetadata
+                        };
+                    }
                 }
             }
-            return { content: [{ text: "" }] };
+
+            // Enhanced error handling for empty responses
+            console.error('[GeminiApiClient] OAuth response structure:', {
+                hasRawData: !!rawData,
+                hasResponse: !!responseData,
+                candidatesCount: responseData?.candidates?.length || 0,
+                responseDataKeys: responseData ? Object.keys(responseData) : 'no responseData'
+            });
+
+            throw new GeminiApiError(`OAuth API returned empty or invalid response structure. Response data: ${JSON.stringify(rawData, null, 2)}`);
         } catch (error: any) {
-            console.error('[GeminiApiClient] OAuth API call failed:', error);
-            throw new GeminiApiError(`OAuth API call failed: ${error.message}`, error.response?.status);
+            console.error('[GeminiApiClient] OAuth Code Assist API call failed:', error);
+
+            // Handle different error types
+            if (error.response) {
+                console.error('[GeminiApiClient] Error Response Status:', error.response.status);
+                console.error('[GeminiApiClient] Error Response Data:', error.response.data);
+
+                if (error.response.status === 429) {
+                    throw new GeminiApiError(`OAuth rate limit exceeded: ${error.message}`, 429);
+                }
+                if (error.response.status === 400) {
+                    throw new GeminiApiError(`OAuth bad request: ${JSON.stringify(error.response.data) || error.message}`, 400);
+                }
+                throw new GeminiApiError(`OAuth API error: ${error.message}`, error.response.status);
+            } else {
+                // Network error or other non-HTTP error
+                console.error('[GeminiApiClient] Non-HTTP error:', error.message || error);
+                throw new GeminiApiError(`OAuth connection error: ${error.message || 'Unknown error'}`, 0);
+            }
         }
     }
 

@@ -135,6 +135,7 @@ export class HistoryManager {
         const prompt = `Based on the following conversation, generate a very concise, 4-6 word filename in lowercase snake_case. Example: 'refactoring_the_user_service'.\n\nConversation:\n${conversationForSummary}`;
 
         try {
+            // Use OAuth-enabled model for conversation titles (now properly routed through OAuth)
             const result = await this.geminiService.askGemini(prompt, getCurrentModel());
             let name = result.content[0].text ?? 'untitled_session';
             // Clean up the name

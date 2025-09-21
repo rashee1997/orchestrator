@@ -9,6 +9,18 @@ function escapeMinimalMarkdown(text: string | number | boolean | null | undefine
     return stringText.replace(/([*_])/g, '\\$1');
 }
 
+// Safe JSON parsing helper with fallback
+function safelyParseJson<T = any>(value: string | null | undefined, fallback: T): T {
+    if (!value) {
+        return fallback;
+    }
+    try {
+        return JSON.parse(value) as T;
+    } catch {
+        return fallback;
+    }
+}
+
 // Helper to indent multi-line block content
 function indentBlockContent(content: string, indentString: string = '    '): string {
     return content.split('\n').map(line => `${indentString}${line}`).join('\n');
@@ -286,43 +298,59 @@ export function formatTasksListToMarkdownTable(tasks: any[], includeSubtasks: bo
 export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks: any[] = [], taskMap: Map<string, any> = new Map()): string {
     if (!plan) return "> ❓ *No plan details provided.*\n";
 
+    const statusText = formatValue(plan.status || 'N/A');
     const statusEmoji = getStatusEmoji(plan.status);
-    let md = `\n# 📋 Plan: ${formatValue(plan.title || 'N/A')}\n\n`;
-    md += `**Status:** ${statusEmoji} ${formatValue(plan.status || 'N/A')} | **ID:** ${formatValue(plan.plan_id, { isCodeOrId: true })}\n\n`;
+    const planId = formatValue(plan.plan_id, { isCodeOrId: true });
+
+    let md = `# Plan: ${formatValue(plan.title || 'N/A')}\n\n`;
+    md += `__Status:__ ${statusEmoji} ${statusText} | __ID:__ ${planId}\n\n`;
 
     if (plan.overall_goal) {
-        md += `> ### 🎯 **Overall Goal**\n> ${plan.overall_goal.replace(/\n/g, '\n> ')}\n\n`;
+        md += `> ### 🎯 __Overall Goal__\n>\n> ${plan.overall_goal.replace(/\n/g, '\n> ')}\n\n`;
     }
 
-    md += `--- \n\n`;
+    md += `---\n\n`;
 
     md += `### 📝 Plan Details\n\n`;
-    md += `- **Agent ID:** ${formatValue(plan.agent_id, { isCodeOrId: true })}\n`;
-    if (plan.refined_prompt_id_associated) md += `- **Refined Prompt:** ${formatValue(plan.refined_prompt_id_associated, { isCodeOrId: true })}\n`;
-    md += `- **Version:** ${formatValue(plan.version || 1)}\n`;
-    if (plan.creation_timestamp_iso) md += `- **Created:** ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
-    if (plan.last_updated_timestamp_iso) md += `- **Last Updated:** ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
-    
-    md += `\n### 🚀 Tasks\n`;
+    md += `- __Agent ID:__ ${formatValue(plan.agent_id, { isCodeOrId: true })}\n`;
+    if (plan.refined_prompt_id_associated) {
+        md += `- __Refined Prompt:__ ${formatValue(plan.refined_prompt_id_associated, { isCodeOrId: true })}\n`;
+    }
+    md += `- __Version:__ ${formatValue(plan.version || 1)}\n`;
+    if (plan.creation_timestamp_iso) {
+        md += `- __Created:__ ${formatValue(plan.creation_timestamp_iso ? new Date(plan.creation_timestamp_iso) : null)}\n`;
+    }
+    if (plan.last_updated_timestamp_iso) {
+        md += `- __Last Updated:__ ${formatValue(plan.last_updated_timestamp_iso ? new Date(plan.last_updated_timestamp_iso) : null)}\n`;
+    }
+
+    const metadata = plan.metadata_parsed || plan.metadata;
+    if (metadata) {
+        const meta = typeof metadata === 'string' ? safelyParseJson(metadata, {}) : metadata;
+        const kpis: string[] = meta?.kpis || [];
+        if (meta?.estimated_duration_days || meta?.target_start_date || meta?.target_end_date) {
+            md += `- __Duration:__ ${meta.estimated_duration_days ?? 'N/A'} days (Start: ${meta.target_start_date ?? 'TBD'}, End: ${meta.target_end_date ?? 'TBD'})\n`;
+        }
+        if (kpis.length > 0) {
+            md += `- __KPIs:__ ${kpis.map(kpi => formatValue(kpi)).join(', ')}\n`;
+        }
+    }
+
+    md += `\n### 🚀 Tasks\n\n`;
     if (!tasks || tasks.length === 0) {
-        md += "\n> ✨ *All tasks are complete or no tasks have been created yet.*\n";
+        md += `> ✨ *All tasks are complete or no tasks have been created yet.*\n`;
     } else {
-        tasks.sort((a, b) => (a.task_number || 0) - (b.task_number || 0)).forEach(task => {
-            const taskStatusEmoji = getStatusEmoji(task.status);
-            md += `\n<details>\n<summary><strong>${taskStatusEmoji} Task ${task.task_number}: ${formatValue(task.title)}</strong></summary>\n\n`;
-            md += formatTaskToMarkdown(task);
-            if (task.subtasks && task.subtasks.length > 0) {
-                md += `\n#### Sub-Tasks\n\n`;
-                md += formatSubtasksListToMarkdownTable(task.subtasks);
-            }
-            md += `\n</details>\n`;
+        const sortedTasks = [...tasks].sort((a, b) => (a.task_number || 0) - (b.task_number || 0));
+        sortedTasks.forEach(task => {
+            md += `${formatTaskToMarkdown(task)}\n`;
         });
     }
 
     if (planSubtasks && planSubtasks.length > 0) {
-        md += "\n### 📌 Plan-Level Subtasks (Unassigned)\n";
+        md += `\n### 📌 Plan-Level Subtasks (Unassigned)\n`;
         md += formatSubtasksListToMarkdownTable(planSubtasks);
     }
+
     return md;
 }
 

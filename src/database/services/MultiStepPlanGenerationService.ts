@@ -28,7 +28,7 @@ export interface BatchInstruction {
     requiredNewFiles?: Array<{
         path: string;
         purpose: string;
-        fileType: 'module' | 'component' | 'service' | 'utility' | 'config' | 'test';
+        fileType: BatchFileType;
     }>; // New files that need to be created
     codeComplexity: 'simple' | 'moderate' | 'complex';
     primaryGoal: string; // Clear objective for this batch
@@ -77,6 +77,25 @@ export interface TaskGenerationContext {
     nextTaskNumber: number;
     totalExpectedTasks: number;
     planContext: string;
+}
+
+type BatchFileType = 'module' | 'component' | 'service' | 'utility' | 'config' | 'test';
+
+interface NormalizedPlanHeader {
+    planTitle: string;
+    estimatedDurationDays: number;
+    targetStartDate: string;
+    targetEndDate: string;
+    kpis: string[];
+    dependencyAnalysis: string;
+    planRisksAndMitigations: Array<{ risk_description: string; mitigation_strategy: string; [key: string]: any }>;
+    timelineBreakdown: {
+        phase_1_duration: number;
+        phase_2_duration: number;
+        phase_3_duration: number;
+        buffer_days: number;
+    };
+    resourceRequirements: string[];
 }
 
 export class MultiStepPlanGenerationService {
@@ -265,6 +284,9 @@ Generate a JSON response with this ENHANCED structure:
                 batchPlanningPrompt
             );
 
+            console.log('[Multi-Step Plan] 🔍 Batch plan raw response length:', batchPlanResponse?.length || 0);
+            console.log('[Multi-Step Plan] 🔍 Batch plan raw preview:', batchPlanResponse?.substring(0, 500) || '<empty>');
+
             const batchPlan = await parseGeminiJsonResponse(batchPlanResponse, {
                 expectedStructure: 'Batch execution plan with header and strategy',
                 contextDescription: 'Multi-step batch planning',
@@ -273,34 +295,39 @@ Generate a JSON response with this ENHANCED structure:
                 enableAIRepair: true
             });
 
-            console.log(`[Multi-Step Plan] 🔍 Parsed batch plan keys:`, Object.keys(batchPlan));
-            
-            // Check if we have the expected structure or valid alternative
-            let planHeader = batchPlan.plan_header;
-            let batchStrategy = batchPlan.batch_strategy;
-            
-            if (!planHeader || !batchStrategy) {
-                console.log(`[Multi-Step Plan] ⚠️ Checking for valid JSON structure with data...`);
-                
-                // The response might be valid but just need field extraction
-                if (batchPlan && typeof batchPlan === 'object') {
-                    console.log(`[Multi-Step Plan] Found valid object, extracting fields...`);
-                    planHeader = batchPlan.plan_header;
-                    batchStrategy = batchPlan.batch_strategy;
-                    
-                    if (planHeader && batchStrategy) {
-                        console.log(`[Multi-Step Plan] ✅ Successfully extracted plan structure`);
-                    } else {
-                        console.log(`[Multi-Step Plan] ❌ Still missing required fields after extraction`);
-                        throw new Error('Invalid batch plan structure - missing plan_header or batch_strategy');
-                    }
-                } else {
-                    throw new Error('Invalid batch plan structure after parsing');
-                }
+            if (!batchPlan || typeof batchPlan !== 'object') {
+                console.error('[Multi-Step Plan] ❌ Batch planning returned invalid structure:', batchPlan);
+                throw new Error('Batch planning response was empty or invalid.');
             }
 
+            console.log(`[Multi-Step Plan] 🔍 Parsed batch plan keys:`, Object.keys(batchPlan));
+            
+            const rawPlanHeader = this.extractField(batchPlan, ['plan_header', 'planHeader', 'header']);
+            const rawBatchStrategy = this.extractField(batchPlan, ['batch_strategy', 'batchStrategy', 'strategy', 'batches', 'batchPlan']);
+
+            const normalizedStrategy = this.normalizeBatchStrategy(rawBatchStrategy);
+            if (!normalizedStrategy.length) {
+                console.error('[Multi-Step Plan] ❌ Batch strategy missing or empty after normalization:', {
+                    rawType: typeof rawBatchStrategy,
+                    rawKeys: rawBatchStrategy && typeof rawBatchStrategy === 'object' ? Object.keys(rawBatchStrategy) : 'none'
+                });
+                throw new Error('Batch planning response missing batch strategy.');
+            }
+
+            const defaultTitleSource = isRefinedPromptId
+                ? (originalPromptPayload?.refinedPromptDetails?.overall_goal
+                    || originalPromptPayload?.refinedPromptDetails?.plan_title
+                    || identifier)
+                : identifier;
+
+            const normalizedHeader = this.normalizePlanHeader(rawPlanHeader, normalizedStrategy, {
+                defaultTitle: defaultTitleSource,
+                startDateStr,
+                endDateStr
+            });
+
             const planId = `plan_${agentId}_${Date.now()}`;
-            const totalBatches = batchStrategy.length;
+            const totalBatches = normalizedStrategy.length;
             
             const progress: PlanGenerationProgress = {
                 planId,
@@ -309,24 +336,15 @@ Generate a JSON response with this ENHANCED structure:
                 totalSteps: totalBatches + 1,
                 completedTasks: 0,
                 planData: {
-                    plan_title: planHeader.plan_title || 'Multi-Step Generated Plan',
-                    estimated_duration_days: planHeader.estimated_duration_days || 14,
-                    target_start_date: planHeader.target_start_date || startDateStr,
-                    target_end_date: planHeader.target_end_date || endDateStr,
-                    kpis: planHeader.kpis || [],
-                    dependency_analysis: planHeader.dependency_analysis || '',
-                    plan_risks_and_mitigations: planHeader.plan_risks_and_mitigations || [],
-                    timeline_breakdown: planHeader.timeline_breakdown || {
-                        phase_1_duration: Math.ceil(totalBatches > 0 ? batchStrategy[0]?.estimatedBatchDays || 5 : 5),
-                        phase_2_duration: Math.ceil(totalBatches > 1 ? batchStrategy[1]?.estimatedBatchDays || 6 : 6),
-                        phase_3_duration: Math.ceil(totalBatches > 2 ? batchStrategy[2]?.estimatedBatchDays || 4 : 4),
-                        buffer_days: 2
-                    },
-                    resource_requirements: planHeader.resource_requirements || [
-                        'Development tools and environments',
-                        'Access to codebase and files',
-                        'Testing infrastructure'
-                    ]
+                    plan_title: normalizedHeader.planTitle,
+                    estimated_duration_days: normalizedHeader.estimatedDurationDays,
+                    target_start_date: normalizedHeader.targetStartDate,
+                    target_end_date: normalizedHeader.targetEndDate,
+                    kpis: normalizedHeader.kpis,
+                    dependency_analysis: normalizedHeader.dependencyAnalysis,
+                    plan_risks_and_mitigations: normalizedHeader.planRisksAndMitigations,
+                    timeline_breakdown: normalizedHeader.timelineBreakdown,
+                    resource_requirements: normalizedHeader.resourceRequirements
                 },
                 tasks: [],
                 isComplete: false,
@@ -336,7 +354,7 @@ Generate a JSON response with this ENHANCED structure:
                     identifier,
                     isRefinedPromptId,
                     allLiveFiles: liveFilesContent,
-                    prePlannedBatches: batchStrategy,
+                    prePlannedBatches: normalizedStrategy,
                     originalPromptPayload
                 }
             };
@@ -642,6 +660,227 @@ ${content.substring(0, 3500)}...
         }
     }
 
+    private extractField(source: any, keys: string[]): any {
+        if (!source || typeof source !== 'object') {
+            return undefined;
+        }
+        for (const key of keys) {
+            const value = this.getValue(source, key);
+            if (value !== undefined) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+
+    private normalizePlanHeader(rawHeader: any, strategy: BatchInstruction[], options: { defaultTitle: string; startDateStr: string; endDateStr: string }): NormalizedPlanHeader {
+        const { defaultTitle, startDateStr, endDateStr } = options;
+        const planTitle = this.getValue(rawHeader, 'plan_title', 'planTitle', 'title') || defaultTitle || 'Multi-Step Generated Plan';
+        const estimatedDurationDays = this.ensureNumber(this.getValue(rawHeader, 'estimated_duration_days', 'estimatedDurationDays', 'durationDays', 'duration'),
+            strategy.reduce((sum, batch) => sum + (batch.estimatedBatchDays || 0), 0) || 14);
+        const targetStartDate = this.getValue(rawHeader, 'target_start_date', 'targetStartDate', 'startDate') || startDateStr;
+        const targetEndDate = this.getValue(rawHeader, 'target_end_date', 'targetEndDate', 'endDate') || endDateStr;
+
+        const kpis = this.ensureStringArray(this.getValue(rawHeader, 'kpis', 'KPIs', 'successMetrics', 'success_metrics'));
+        const dependencyAnalysis = this.getValue(rawHeader, 'dependency_analysis', 'dependencyAnalysis', 'dependencies', 'analysis') || '';
+        const risksRaw = this.ensureArray(this.getValue(rawHeader, 'plan_risks_and_mitigations', 'planRisksAndMitigations', 'risks', 'riskMitigations'));
+        const planRisksAndMitigations = risksRaw.map((risk: any) => {
+            if (!risk || typeof risk !== 'object') {
+                return {
+                    risk_description: String(risk || 'Unspecified risk'),
+                    mitigation_strategy: ''
+                };
+            }
+            return {
+                risk_description: this.getValue(risk, 'risk_description', 'riskDescription', 'description') || 'Unspecified risk',
+                mitigation_strategy: this.getValue(risk, 'mitigation_strategy', 'mitigationStrategy', 'mitigation') || ''
+            };
+        });
+
+        const timelineRaw = this.getValue(rawHeader, 'timeline_breakdown', 'timelineBreakdown', 'timeline');
+        const timelineBreakdown = this.normalizeTimelineBreakdown(timelineRaw, strategy);
+
+        const resourcesRaw = this.ensureStringArray(this.getValue(rawHeader, 'resource_requirements', 'resourceRequirements', 'resources'));
+        const resourceRequirements = resourcesRaw.length > 0
+            ? resourcesRaw
+            : ['Development tools and environments', 'Access to codebase and files', 'Testing infrastructure'];
+
+        return {
+            planTitle,
+            estimatedDurationDays,
+            targetStartDate,
+            targetEndDate,
+            kpis,
+            dependencyAnalysis,
+            planRisksAndMitigations,
+            timelineBreakdown,
+            resourceRequirements,
+        };
+    }
+
+    private normalizeTimelineBreakdown(rawTimeline: any, strategy: BatchInstruction[]): { phase_1_duration: number; phase_2_duration: number; phase_3_duration: number; buffer_days: number; } {
+        const defaultPhase1 = strategy[0]?.estimatedBatchDays ?? 5;
+        const defaultPhase2 = strategy[1]?.estimatedBatchDays ?? Math.max(defaultPhase1, 6);
+        const remaining = strategy.slice(2).reduce((sum, batch) => sum + (batch.estimatedBatchDays || 0), 0);
+        const defaultPhase3 = remaining > 0 ? remaining : Math.max(strategy[2]?.estimatedBatchDays ?? 0, 4);
+        const defaultBuffer = 2;
+
+        if (!rawTimeline || typeof rawTimeline !== 'object') {
+            return {
+                phase_1_duration: defaultPhase1,
+                phase_2_duration: defaultPhase2,
+                phase_3_duration: defaultPhase3,
+                buffer_days: defaultBuffer,
+            };
+        }
+
+        return {
+            phase_1_duration: this.ensureNumber(this.getValue(rawTimeline, 'phase_1_duration', 'phase1Duration', 'phaseOneDuration'), defaultPhase1),
+            phase_2_duration: this.ensureNumber(this.getValue(rawTimeline, 'phase_2_duration', 'phase2Duration', 'phaseTwoDuration'), defaultPhase2),
+            phase_3_duration: this.ensureNumber(this.getValue(rawTimeline, 'phase_3_duration', 'phase3Duration', 'phaseThreeDuration'), defaultPhase3),
+            buffer_days: this.ensureNumber(this.getValue(rawTimeline, 'buffer_days', 'bufferDays', 'buffer'), defaultBuffer),
+        };
+    }
+
+    private normalizeBatchStrategy(rawStrategy: any): BatchInstruction[] {
+        const strategyArray = this.toArray(rawStrategy);
+        return strategyArray
+            .map((entry, index) => this.normalizeBatchInstruction(entry, index))
+            .filter((entry): entry is BatchInstruction => !!entry);
+    }
+
+    private normalizeBatchInstruction(rawInstruction: any, index: number): BatchInstruction | null {
+        if (!rawInstruction || typeof rawInstruction !== 'object') {
+            console.warn('[Multi-Step Plan] ⚠️ Skipping malformed batch instruction:', rawInstruction);
+            return null;
+        }
+
+        const batchNumber = this.ensureNumber(this.getValue(rawInstruction, 'batchNumber', 'batch_number', 'number'), index + 1);
+        const specificInstruction = this.getValue(rawInstruction, 'specificInstruction', 'specific_instruction', 'instruction', 'description') || 'Strategic batch execution';
+        const relevantFiles = this.ensureStringArray(this.getValue(rawInstruction, 'relevantFiles', 'relevant_files', 'files', 'fileTargets'));
+        const expectedTaskCount = Math.max(1, this.ensureNumber(this.getValue(rawInstruction, 'expectedTaskCount', 'expected_task_count', 'taskCount', 'task_count'), 3));
+        const buildUponTasks = this.ensureStringArray(this.getValue(rawInstruction, 'buildUponTasks', 'build_upon_tasks', 'dependencyTasks', 'dependency_tasks'));
+        const estimatedBatchDays = Math.max(1, this.ensureNumber(this.getValue(rawInstruction, 'estimatedBatchDays', 'estimated_batch_days', 'batchDuration', 'duration', 'estimatedDays'), expectedTaskCount));
+        const batchStartDate = this.getValue(rawInstruction, 'batchStartDate', 'batch_start_date', 'startDate') || '';
+        const batchEndDate = this.getValue(rawInstruction, 'batchEndDate', 'batch_end_date', 'endDate') || '';
+        const taskTimingGuidelines = this.getValue(rawInstruction, 'taskTimingGuidelines', 'task_timing_guidelines', 'timingGuidelines') || '';
+
+        const requiredNewFilesRaw = this.ensureArray(this.getValue(rawInstruction, 'requiredNewFiles', 'required_new_files', 'newFiles', 'new_files'));
+        const allowedFileTypes: BatchFileType[] = ['module', 'component', 'service', 'utility', 'config', 'test'];
+        const requiredNewFiles = (
+            requiredNewFilesRaw
+            .map((file: any) => {
+                if (!file || typeof file !== 'object') return null;
+                const path = this.getValue(file, 'path') || '';
+                if (!path) return null;
+                const fileTypeRaw = (this.getValue(file, 'fileType', 'file_type', 'type') || 'module').toString().toLowerCase();
+                const normalizedFileType = allowedFileTypes.includes(fileTypeRaw as BatchFileType) ? fileTypeRaw as BatchFileType : 'module';
+                return {
+                    path,
+                    purpose: this.getValue(file, 'purpose', 'description', 'reason') || '',
+                    fileType: normalizedFileType,
+                };
+            })
+            .filter((file): file is Required<BatchInstruction>['requiredNewFiles'][number] => !!file)
+        ) as Array<Required<BatchInstruction>['requiredNewFiles'][number]>;
+
+        const complexity = (this.getValue(rawInstruction, 'codeComplexity', 'code_complexity', 'complexity') || 'moderate').toString().toLowerCase();
+        const codeComplexity = ['simple', 'moderate', 'complex'].includes(complexity)
+            ? (complexity as 'simple' | 'moderate' | 'complex')
+            : 'moderate';
+
+        const primaryGoal = this.getValue(rawInstruction, 'primaryGoal', 'primary_goal', 'goal') || specificInstruction;
+        const qualityGates = this.ensureStringArray(this.getValue(rawInstruction, 'qualityGates', 'quality_gates', 'qualityChecks', 'quality_checks'));
+        const dependsOnFiles = this.ensureStringArray(this.getValue(rawInstruction, 'dependsOnFiles', 'depends_on_files', 'dependencyFiles', 'dependency_files'));
+        const taskRange = this.getValue(rawInstruction, 'taskRange', 'task_range', 'range') || `Tasks ${batchNumber * 3 - 2}-${batchNumber * 3}`;
+
+        return {
+            batchNumber,
+            taskRange,
+            specificInstruction,
+            relevantFiles,
+            expectedTaskCount,
+            buildUponTasks,
+            estimatedBatchDays,
+            batchStartDate,
+            batchEndDate,
+            taskTimingGuidelines,
+            requiredNewFiles,
+            codeComplexity,
+            primaryGoal,
+            qualityGates,
+            dependsOnFiles,
+        };
+    }
+
+    private getValue(source: any, ...keys: string[]): any {
+        if (!source || (typeof source !== 'object' && typeof source !== 'function')) {
+            return undefined;
+        }
+        for (const key of keys) {
+            for (const variant of this.keyVariants(key)) {
+                if (source[variant] !== undefined) {
+                    return source[variant];
+                }
+            }
+        }
+        return undefined;
+    }
+
+    private keyVariants(key: string): string[] {
+        const variants = new Set<string>();
+        variants.add(key);
+
+        const snake = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+        variants.add(snake.startsWith('_') ? snake.substring(1) : snake);
+
+        const camel = key.includes('_') ? key.replace(/_([a-z0-9])/gi, (_, char) => char.toUpperCase()) : key;
+        variants.add(camel);
+        variants.add(camel.charAt(0).toUpperCase() + camel.slice(1));
+
+        return Array.from(variants);
+    }
+
+    private ensureArray<T = any>(value: any): T[] {
+        if (Array.isArray(value)) {
+            return value as T[];
+        }
+        if (value === null || typeof value === 'undefined') {
+            return [];
+        }
+        return [value as T];
+    }
+
+    private ensureStringArray(value: any): string[] {
+        return this.ensureArray(value)
+            .map(item => item !== null && item !== undefined ? String(item).trim() : '')
+            .filter(item => item.length > 0);
+    }
+
+    private ensureNumber(value: any, fallback: number): number {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : fallback;
+    }
+
+    private toArray(value: any): any[] {
+        if (Array.isArray(value)) {
+            return value;
+        }
+        if (!value || typeof value !== 'object') {
+            return [];
+        }
+        const entries = Object.entries(value);
+        entries.sort((a, b) => {
+            const numA = parseInt(a[0].replace(/\D+/g, ''), 10);
+            const numB = parseInt(b[0].replace(/\D+/g, ''), 10);
+            if (Number.isFinite(numA) && Number.isFinite(numB)) {
+                return numA - numB;
+            }
+            return a[0].localeCompare(b[0]);
+        });
+        return entries.map(([, val]) => val);
+    }
+
     /**
      * Build context for task generation based on current progress
      */
@@ -667,9 +906,15 @@ ${content.substring(0, 3500)}...
      * Convert progress to database-ready format
      */
     convertToDbFormat(progress: PlanGenerationProgress, refinedPromptId?: string) {
+        const originalGoal = progress.batchPlan?.originalPromptPayload?.originalGoalText;
+        const planTitle = progress.planData?.plan_title || originalGoal || 'Multi-Step Generated Plan';
+        const overallGoal = refinedPromptId
+            ? `Generated via multi-step process: ${planTitle}`
+            : `Generated via multi-step process: ${originalGoal || planTitle}`;
+
         const planData = {
-            title: progress.planData?.plan_title || 'Multi-Step Generated Plan',
-            overall_goal: `Generated via multi-step process: ${progress.planData?.plan_title}`,
+            title: planTitle,
+            overall_goal: overallGoal,
             status: 'DRAFT',
             version: 1,
             refined_prompt_id_associated: refinedPromptId || null,
@@ -813,48 +1058,100 @@ ${content.substring(0, 3500)}...
 
             // Use GeminiIntegrationService directly for task generation calls
             console.log('[Multi-Step Plan] 🔍 Using GeminiIntegrationService askGemini for task generation...');
-            
-            const result = await this.geminiService.askGemini(
-                userQuery,
-                'gemini-2.0-flash-exp', // Use the most reliable model
-                systemInstruction
-            );
-            
-            if (!result) {
-                throw new Error('GeminiIntegrationService returned undefined result');
-            }
-            
-            // Handle the response from GeminiIntegrationService
-            let content: string;
-            if (result.content && Array.isArray(result.content) && result.content.length > 0) {
-                // Extract text from Part[] format
-                const firstPart = result.content[0];
-                if (firstPart && typeof firstPart === 'object' && 'text' in firstPart && typeof firstPart.text === 'string') {
-                    content = firstPart.text;
-                } else if (typeof firstPart === 'string') {
-                    content = firstPart;
-                } else {
-                    console.error('[Multi-Step Plan] ❌ Unexpected content part format:', firstPart);
-                    throw new Error('GeminiIntegrationService returned unexpected content part format');
+
+            // Try multiple models in case one fails
+            const models = ['gemini-2.5-flash', 'gemini-2.5-pro'];
+            let lastError: Error | null = null;
+
+            for (const model of models) {
+                try {
+                    console.log(`[Multi-Step Plan] 🔍 Trying model: ${model}`);
+
+                    const result = await this.geminiService.askGemini(
+                        userQuery,
+                        model,
+                        systemInstruction
+                    );
+
+                    if (!result) {
+                        throw new Error('GeminiIntegrationService returned undefined result');
+                    }
+
+                    // Handle the response from GeminiIntegrationService
+                    let content: string;
+
+                    // Try different response formats
+                    if (result.content && Array.isArray(result.content) && result.content.length > 0) {
+                        // Extract text from Part[] format
+                        const firstPart = result.content[0];
+                        if (firstPart && typeof firstPart === 'object' && 'text' in firstPart) {
+                            const textPart = firstPart as any;
+                            if (typeof textPart.text === 'string') {
+                                content = textPart.text;
+                            } else {
+                                throw new Error('GeminiIntegrationService returned content part without text property');
+                            }
+                        } else if (typeof firstPart === 'string') {
+                            content = firstPart;
+                        } else {
+                            console.error('[Multi-Step Plan] ❌ Unexpected content part format:', firstPart);
+                            throw new Error('GeminiIntegrationService returned unexpected content part format');
+                        }
+                    } else if (typeof result === 'string') {
+                        // Direct string response
+                        content = result;
+                    } else {
+                        console.error('[Multi-Step Plan] ❌ No content in result:', result);
+                        throw new Error('GeminiIntegrationService returned no content');
+                    }
+
+                    if (!content || content.trim().length === 0) {
+                        throw new Error('GeminiIntegrationService returned empty content');
+                    }
+
+                    // Validate that we got a JSON response
+                    if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
+                        try {
+                            JSON.parse(content);
+                        } catch (parseError) {
+                            console.error('[Multi-Step Plan] ❌ Invalid JSON in response:', parseError);
+                            throw new Error('GeminiIntegrationService returned invalid JSON');
+                        }
+                    }
+
+                    console.log('[Multi-Step Plan] ✅ GeminiIntegrationService succeeded with model:', model);
+                    console.log('[Multi-Step Plan] 🔍 Response Length:', content.length);
+                    console.log('[Multi-Step Plan] 🔍 Response preview:', content.substring(0, 300) + '...');
+
+                    return content;
+
+                } catch (modelError: any) {
+                    console.warn(`[Multi-Step Plan] ⚠️ Model ${model} failed:`, modelError.message);
+                    lastError = modelError;
+                    continue; // Try next model
                 }
-            } else {
-                console.error('[Multi-Step Plan] ❌ No content in result:', result);
-                throw new Error('GeminiIntegrationService returned no content');
             }
-            
-            if (!content || content.trim().length === 0) {
-                throw new Error('GeminiIntegrationService returned empty content');
+
+            // If all models failed, throw the last error
+            if (lastError) {
+                throw lastError;
             }
-            
-            console.log('[Multi-Step Plan] ✅ GeminiIntegrationService succeeded');
-            console.log('[Multi-Step Plan] 🔍 Response Length:', content.length);
-            console.log('[Multi-Step Plan] 🔍 Response preview:', content.substring(0, 300) + '...');
-            
-            return content;
-            
+
+            throw new Error('All Gemini models failed to generate a response');
+
         } catch (err: any) {
             console.error('[Multi-Step Plan] ❌ GeminiIntegrationService failed:', err.message);
-            throw new Error(`Failed to generate response: ${err.message}`);
+
+            // Provide more specific error messages
+            if (err.message.includes('API key')) {
+                throw new Error(`Gemini API authentication failed: ${err.message}`);
+            } else if (err.message.includes('quota') || err.message.includes('rate limit')) {
+                throw new Error(`Gemini API quota/rate limit exceeded: ${err.message}`);
+            } else if (err.message.includes('network') || err.message.includes('timeout')) {
+                throw new Error(`Network error communicating with Gemini API: ${err.message}`);
+            } else {
+                throw new Error(`Failed to generate response: ${err.message}`);
+            }
         }
     }
 
