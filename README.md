@@ -207,6 +207,77 @@ The server requires API keys for external services. These are best configured in
 |                 | `MISTRAL_API_KEY_2`, etc.  | 🔀 (Optional) |                                                    |
 | Tavily Search   | `TAVILY_API_KEY`           | ✅       | [Get Key](https://tavily.com/)                      |
 
+### Gemini CLI (Recommended for OAuth)
+
+Gemini 2.5 models unlock a much higher free-tier rate limit when you authenticate with the official Gemini CLI. The orchestrator automatically searches the standard credential locations the CLI writes to on every platform.
+
+**Install the CLI (Node.js 20+):**
+
+- Run instantly (no install):
+  ```bash
+  npx https://github.com/google-gemini/gemini-cli
+  ```
+- Install globally with npm:
+  ```bash
+  npm install -g @google/gemini-cli
+  ```
+- Install with Homebrew (macOS/Linux):
+  ```bash
+  brew install gemini-cli
+  ```
+
+**Authenticate:**
+
+```bash
+gemini
+```
+
+Choose **Login with Google** in the CLI prompt to start the browser OAuth flow. The CLI writes `oauth_creds.json` under your user profile (for example `~/.gemini/`, `~/.config/gemini/`, or `%APPDATA%\gemini\`). If you're using a paid Gemini Code Assist license, export your project before starting:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="YOUR_PROJECT_NAME"
+gemini
+```
+
+**Alternative authentication options:**
+
+- API key:
+  ```bash
+  export GEMINI_API_KEY="YOUR_API_KEY"
+  gemini
+  ```
+- Vertex AI:
+  ```bash
+  export GOOGLE_API_KEY="YOUR_API_KEY"
+  export GOOGLE_GENAI_USE_VERTEXAI=true
+  gemini
+  ```
+
+After signing in, restart the MCP server (or your MCP client). OAuth sessions are now preferred for `gemini-2.5-*` models (≈60 RPM + 1,000 requests/day), while embedding models continue to use the API keys configured above.
+
+> Tip: run `node build/index.js --check-oauth` (or restart your MCP client) to confirm the server picked up the new credentials. If the CLI is missing, startup logs list the paths that were checked and platform-specific install guidance.
+
+### Claude Code CLI Setup
+
+Claude Code models run through Anthropic's local CLI. The orchestrator bundles a cross-platform detector that checks your PATH plus the usual install directories and prints tailored instructions if it cannot find the binary.
+
+1. Install the CLI using your preferred package manager:
+   - macOS: `brew install claude-code`
+   - Windows: `npm install -g @anthropic/claude-code` or `choco install claude-code`
+   - Linux: `npm install -g @anthropic/claude-code`, `snap install claude-code`, or follow the [official setup guide](https://docs.anthropic.com/en/docs/claude-code/setup)
+2. Authenticate:
+   - Subscription users: run `claude auth` (included with Claude Pro/Team)
+   - API key users: export `ANTHROPIC_API_KEY="sk-ant-..."`
+3. Optional flags:
+   - `CLAUDE_CODE_MAX_OUTPUT_TOKENS` limits response length from the CLI
+   - `CLAUDE_CODE_USE_VERTEX=1` converts model IDs for Vertex AI deployments
+4. Verify everything works:
+   ```bash
+   claude --version
+   ```
+
+When the provider starts it logs the detected binary, version, and install method. If it is missing, the status endpoint and startup logs echo platform-specific install commands plus the paths that were checked.
+
 ### MCP Client Configuration (VS Code Client Example)
 
 1.  **Locate the settings file**:
