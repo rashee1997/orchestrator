@@ -147,6 +147,7 @@ Required JSON Schema:
   "tasks": [
     {
       "task_number": number,
+      "phase": "string (phase identifier like 'Phase 1: Analysis & Design', 'Phase 2: Core Implementation', 'Phase 3: Documentation & Quality')",
       "title": "string (≤ 10 words, non-empty)",
       "description": "string (detailed explanation with technical considerations)",
       "purpose": "string (why this task is necessary and its value proposition)",
@@ -301,6 +302,7 @@ Required Task JSON Schema (generate array of tasks):
 [
   {
     "task_number": number,
+    "phase": "string (phase identifier like 'Phase 1: Analysis & Design', 'Phase 2: Core Implementation', 'Phase 3: Documentation & Quality')",
     "title": "string (≤ 10 words, specific and actionable)",
     "description": "string (detailed explanation referencing specific files and components from live files)",
     "purpose": "string (why this task is essential for the batch objective)",
@@ -328,7 +330,7 @@ Required Task JSON Schema (generate array of tasks):
       "performance_considerations": "string (performance requirements and optimizations)"
     },
     "test_specification": {
-      "test_files_to_create": ["array of test file paths - ONLY for testing tasks"],
+      "test_files_to_create": ["array of test file paths - ONLY for testing tasks]",
       "components_to_test": ["array of components/functions to test"],
       "test_cases_required": ["array of specific test cases needed"],
       "mock_requirements": ["array of things that need to be mocked"],
@@ -401,6 +403,35 @@ export const MULTISTEP_TASK_USER_QUERY = `Generate focused tasks for this enhanc
 - Plan integration with existing code patterns and architectural decisions
 - Include specific verification methods and testing strategies for each task
 
+**CRITICAL OVERLAP PREVENTION RULES:**
+- **ZERO DUPLICATION**: Each specific action item (like "refactor string concatenation", "remove global exports", "add error handling") must appear in ONLY ONE task across the entire plan
+- **CONSOLIDATED CHANGES**: Group all related modifications to the same component (like all BadClass changes) into single comprehensive tasks
+- **SEQUENTIAL NUMBERING**: Tasks must be numbered consecutively (1, 2, 3, 4, 5...) without any gaps or jumps
+- **LOGICAL GROUPING**: Related refactoring actions should be consolidated into single tasks rather than spread across multiple tasks
+- **AVOID REDUNDANCY**: If an action is mentioned in multiple places, consolidate it into the most appropriate single task
+- **PHASE ORGANIZATION**: Assign each task to a logical phase (Phase 1: Analysis & Design, Phase 2: Core Implementation, Phase 3: Documentation & Quality) based on its nature and dependencies
+
+**REALISTIC EFFORT ESTIMATION:**
+- **Analysis tasks**: 2-4 hours (code review, documentation, requirements analysis)
+- **Simple implementation**: 4-8 hours (single feature, basic functionality)
+- **Complex implementation**: 8-16 hours (multi-component features, architecture changes)
+- **Testing tasks**: 4-12 hours (unit tests, integration tests, QA)
+- **Documentation**: 2-6 hours (README updates, API docs, user guides)
+- **Setup tasks**: 1-4 hours (tool configuration, environment setup, CI/CD)
+- **Bug fixes**: 2-8 hours (depending on complexity and investigation needed)
+- **Total project**: 20-40 hours for typical development projects, not 120+ hours
+
+**REQUIRED TASK TYPES TO INCLUDE:**
+- **Test Framework Setup**: Always include a task to set up testing framework (Jest/Vitest) if not already present
+- **Quality Assurance Review**: Include final peer review/QA task for validation
+- **Documentation Tasks**: Include README updates and code documentation
+- **Integration Testing**: Include tasks to verify changes work together
+
+**PATH HANDLING:**
+- **Use relative paths only**: Convert all absolute paths to relative paths (e.g., /absolute/path/file.js → ./file.js)
+- **Project root relative**: All file paths should be relative to project root (e.g., src/components/main.ts)
+- **No hardcoded user paths**: Never include user-specific or system-specific paths in task descriptions or file references
+
 Generate EXACTLY {expectedTaskCount} tasks as a JSON array following the schema provided in the system instruction.
 
 **CRITICAL SUCCESS FACTORS:**
@@ -409,5 +440,6 @@ Generate EXACTLY {expectedTaskCount} tasks as a JSON array following the schema 
 - Properly classify each task (implementation/testing/analysis) with appropriate specifications
 - Task sequence must build logically toward the batch objective
 - Technical requirements must be based on actual file analysis, not assumptions
+- **ENSURE NO OVERLAP**: Verify that no action appears in multiple tasks before finalizing
 
 🚨 CRITICAL: Output ONLY the JSON array of tasks. Do NOT include any explanations, markdown, or additional text. Start with [ and end with ].`;

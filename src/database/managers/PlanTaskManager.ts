@@ -41,6 +41,7 @@ export interface ParsedTask {
     assigned_to?: string;
     verification_method?: string;
     code_content?: string;
+    phase?: string;
     creation_timestamp_unix: number;
     creation_timestamp_iso: string;
     last_updated_timestamp_unix: number;
@@ -81,6 +82,7 @@ export class PlanTaskManager {
             assigned_to?: string;
             verification_method?: string;
             code_content?: string;
+            phase?: string;
             notes?: any;
             [key: string]: any;
         }>
@@ -139,9 +141,9 @@ export class PlanTaskManager {
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    estimated_effort_hours, assigned_to, verification_method, code_content, phase,
                     creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             );
 
             // Second pass: Insert tasks with resolved dependency IDs
@@ -173,6 +175,7 @@ export class PlanTaskManager {
                     task.assigned_to || null,
                     task.verification_method || null,
                     task.code_content || null,
+                    task.phase || null,
                     timestamp,
                     new Date(timestamp).toISOString(),
                     timestamp,
@@ -315,6 +318,7 @@ export class PlanTaskManager {
             assigned_to?: string;
             verification_method?: string;
             code_content?: string;
+            phase?: string;
             notes?: any;
         },
         completion_timestamp?: number
@@ -341,6 +345,10 @@ export class PlanTaskManager {
             if (value !== undefined) {
                 if (['files_involved_json', 'dependencies_task_ids_json', 'tools_required_list_json', 'notes_json'].includes(key)) {
                     updateFields.push(`${key} = ?`);
+                    updateValues.push(value ? JSON.stringify(value) : null);
+                } else if (key === 'notes') {
+                    // Handle notes object - convert to JSON string for notes_json column
+                    updateFields.push('notes_json = ?');
                     updateValues.push(value ? JSON.stringify(value) : null);
                 } else {
                     const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase(); // convert camelCase to snake_case for db
@@ -440,7 +448,7 @@ export class PlanTaskManager {
     async addTaskToPlan(
         agent_id: string,
         plan_id: string,
-        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }
+        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; phase?: string; notes?: any }
     ): Promise<string> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
@@ -463,9 +471,9 @@ export class PlanTaskManager {
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    estimated_effort_hours, assigned_to, verification_method, code_content, phase,
                     creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 task_id,
                 plan_id,
                 agent_id,
@@ -485,6 +493,7 @@ export class PlanTaskManager {
                 taskData.assigned_to || null,
                 taskData.verification_method || null,
                 taskData.code_content || null,
+                taskData.phase || null,
                 timestamp,
                 new Date(timestamp).toISOString(),
                 timestamp,

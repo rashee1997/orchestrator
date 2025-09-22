@@ -379,9 +379,18 @@ export const schemas = {
                         status: { type: 'string', default: 'PLANNED' },
                         purpose: { type: ['string', 'null'] },
                         action_description: { type: ['string', 'null'] },
-                        files_involved_json: { type: ['string', 'null'] },
-                        dependencies_task_ids_json: { type: ['string', 'null'] },
-                        tools_required_list_json: { type: ['string', 'null'] },
+                        files_involved_json: {
+                            type: ['string', 'array', 'null'],
+                            items: { type: 'string' }
+                        },
+                        dependencies_task_ids_json: {
+                            type: ['string', 'array', 'null'],
+                            items: { type: 'string' }
+                        },
+                        tools_required_list_json: {
+                            type: ['string', 'array', 'null'],
+                            items: { type: 'string' }
+                        },
                         inputs_summary: { type: ['string', 'null'] },
                         outputs_summary: { type: ['string', 'null'] },
                         success_criteria_text: { type: ['string', 'null'] },
@@ -450,9 +459,9 @@ export const schemas = {
             status: { type: ['string', 'null'] }, // Renamed from new_status and made nullable
             purpose: { type: ['string', 'null'] },
             action_description: { type: ['string', 'null'] },
-            files_involved: { type: ['array', 'null'], items: { type: 'string' } },
-            dependencies_task_ids: { type: ['array', 'null'], items: { type: 'string' } },
-            tools_required_list: { type: ['array', 'null'], items: { type: 'string' } },
+            files_involved_json: { type: ['array', 'null'], items: { type: 'string' } },
+            dependencies_task_ids_json: { type: ['array', 'null'], items: { type: 'string' } },
+            tools_required_list_json: { type: ['array', 'null'], items: { type: 'string' } },
             inputs_summary: { type: ['string', 'null'] },
             outputs_summary: { type: ['string', 'null'] },
             success_criteria_text: { type: ['string', 'null'] },
@@ -460,6 +469,7 @@ export const schemas = {
             assigned_to: { type: ['string', 'null'] },
             verification_method: { type: ['string', 'null'] },
             notes: { type: ['object', 'null'] },
+            notes_json: { type: ['string', 'null'] },
             completion_timestamp: { type: ['number', 'null'] }
         },
         required: ['agent_id', 'task_id'],
@@ -730,6 +740,7 @@ export const schemas = {
             assigned_to: { type: ['string', 'null'] },
             verification_method: { type: ['string', 'null'] },
             notes: { type: ['object', 'null'] },
+            notes_json: { type: ['string', 'null'] },
             completion_timestamp: { type: ['number', 'null'], description: 'Unix timestamp for completion (optional).' }
         },
         required: ['agent_id', 'task_id'],

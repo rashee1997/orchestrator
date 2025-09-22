@@ -341,8 +341,34 @@ export function formatPlanToMarkdown(plan: any, tasks: any[] = [], planSubtasks:
         md += `> ✨ *All tasks are complete or no tasks have been created yet.*\n`;
     } else {
         const sortedTasks = [...tasks].sort((a, b) => (a.task_number || 0) - (b.task_number || 0));
+
+        // Group tasks by phase
+        const tasksByPhase = new Map<string, any[]>();
         sortedTasks.forEach(task => {
-            md += `${formatTaskToMarkdown(task)}\n`;
+            const phase = task.phase || 'Unassigned';
+            if (!tasksByPhase.has(phase)) {
+                tasksByPhase.set(phase, []);
+            }
+            tasksByPhase.get(phase)!.push(task);
+        });
+
+        // Display tasks grouped by phase
+        const phaseOrder = ['Phase 1: Analysis & Design', 'Phase 2: Core Implementation', 'Phase 3: Documentation & Quality'];
+        const sortedPhases = Array.from(tasksByPhase.keys()).sort((a, b) => {
+            const aIndex = phaseOrder.indexOf(a);
+            const bIndex = phaseOrder.indexOf(b);
+            if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+            if (aIndex !== -1) return -1;
+            if (bIndex !== -1) return 1;
+            return a.localeCompare(b);
+        });
+
+        sortedPhases.forEach(phase => {
+            const phaseTasks = tasksByPhase.get(phase)!;
+            md += `#### 📋 ${phase} (${phaseTasks.length} tasks)\n\n`;
+            phaseTasks.forEach(task => {
+                md += `${formatTaskToMarkdown(task)}\n`;
+            });
         });
     }
 
