@@ -7,7 +7,7 @@ import {
     PLANNER_SYSTEM_INSTRUCTION_GOAL_PROMPT,
     PLANNER_USER_QUERY_GOAL_PROMPT
 } from './gemini-integration-modules/GeminiPlannerPrompts.js';
-import { CodeGenerationService, TaskWithCode } from './CodeGenerationService.js';
+import { CodeGenerationService, TaskWithCode } from './multi-step-plan-generation/CodeGenerationService.js';
 
 // Modularized imports
 import { BatchInstruction, PlanGenerationProgress } from './multi-step-plan-generation/types.js';

@@ -1,9 +1,9 @@
 // src/database/services/CodeGenerationService.ts
 
-import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
-import { MemoryManager } from '../memory_manager.js';
-import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
+import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
+import { parseGeminiJsonResponse } from '../gemini-integration-modules/GeminiResponseParsers.js';
+import { MemoryManager } from '../../memory_manager.js';
+import { MultiModelOrchestrator } from '../../../tools/rag/multi_model_orchestrator.js';
 
 export interface CodeSpecification {
     file_path: string;
