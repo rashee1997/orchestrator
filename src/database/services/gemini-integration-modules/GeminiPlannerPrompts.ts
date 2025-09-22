@@ -147,6 +147,7 @@ Required JSON Schema:
   "tasks": [
     {
       "task_number": number,
+      "phase": "string (phase identifier like 'Phase 1: Analysis & Design', 'Phase 2: Core Implementation', 'Phase 3: Documentation & Quality')",
       "title": "string (≤ 10 words, non-empty)",
       "description": "string (detailed explanation with technical considerations)",
       "purpose": "string (why this task is necessary and its value proposition)",
@@ -178,6 +179,8 @@ Required JSON Schema:
       "code_content": "string (will be populated during code generation phase - 'PENDING_CODE_GENERATION' for implementation tasks, null for others)",
       "completion_criteria": "string (specific, measurable, testable criteria)",
       "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
+      "task_risks": ["array", "of", "specific", "task-level", "risks"],
+      "micro_steps": ["array", "of", "detailed", "micro-steps", "for", "task", "execution"],
       "risks": ["array", "of", "specific", "task-level", "risks"],
       "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
     }
@@ -189,7 +192,7 @@ Task Generation Rules (STRICTLY ENFORCED):
 2. **TASK CLASSIFICATION**: Properly classify each task:
    - **implementation/refactoring/bugfix**: Set needs_code_generation=true, provide code_specification, set code_content="PENDING_CODE_GENERATION"
    - **testing**: Set needs_code_generation=false, provide test_specification, set code_content=null
-   - **analysis/planning/review**: Set needs_code_generation=false, provide analysis_deliverables, set code_content=null
+   - **analysis/planning/review**: Set needs_code_generation=false, provide analysis_deliverables (e.g., ["Architecture Analysis Report", "Performance Assessment Document", "Risk Assessment Summary"]), set code_content=null
 3. **Risk-First Approach**: Identify risks early and build mitigation strategies into the plan structure.
 4. **Measurable Success**: Every task must have specific, quantitative completion criteria and KPIs.
 5. **Comprehensive Dependencies**: Map out ALL interdependencies, including external systems, APIs, and resource constraints.
@@ -211,6 +214,12 @@ Quality Requirements:
 - Plan for scalability and maintainability
 
 🚨 CRITICAL MANDATE: Task classification determines code generation approach. Implementation tasks get code specifications, testing tasks get test specifications, analysis tasks get deliverable specifications.
+
+📝 REQUIRED DETAILS FOR ALL TASKS:
+- **task_risks**: Must include 2-4 specific risks (e.g., "API rate limiting", "Memory consumption issues", "Integration complexity")
+- **micro_steps**: Must include 3-6 detailed sub-steps (e.g., "1. Analyze current implementation", "2. Identify bottlenecks", "3. Design optimization strategy")
+- **required_skills**: Must specify needed expertise (e.g., ["TypeScript", "Performance Optimization", "Database Design"])
+- **analysis_deliverables**: For analysis tasks, must include specific deliverable documents (e.g., ["Code Review Report", "Performance Analysis", "Refactoring Recommendations"])
 
 FINAL REMINDER: Output ONLY the JSON array of tasks. No explanations, no markdown, no additional text.`;
 
@@ -293,6 +302,7 @@ Required Task JSON Schema (generate array of tasks):
 [
   {
     "task_number": number,
+    "phase": "string (phase identifier like 'Phase 1: Analysis & Design', 'Phase 2: Core Implementation', 'Phase 3: Documentation & Quality')",
     "title": "string (≤ 10 words, specific and actionable)",
     "description": "string (detailed explanation referencing specific files and components from live files)",
     "purpose": "string (why this task is essential for the batch objective)",
@@ -320,14 +330,20 @@ Required Task JSON Schema (generate array of tasks):
       "performance_considerations": "string (performance requirements and optimizations)"
     },
     "test_specification": {
-      "test_files_to_create": ["array of test file paths - ONLY for testing tasks"],
+      "test_files_to_create": ["array of test file paths - ONLY for testing tasks]",
       "components_to_test": ["array of components/functions to test"],
       "test_cases_required": ["array of specific test cases needed"],
       "mock_requirements": ["array of things that need to be mocked"],
       "coverage_targets": "string (coverage requirements like '90% line coverage')"
     },
     "analysis_deliverables": ["array of documents/reports to produce - ONLY for analysis tasks"],
-    "code_content": "string ('PENDING_CODE_GENERATION' for implementation tasks, null for others)"
+    "code_content": "string ('PENDING_CODE_GENERATION' for implementation tasks, null for others)",
+    "completion_criteria": "string (specific, measurable, testable criteria)",
+    "dependencies_task_ids_json": ["array", "of", "task", "title", "strings"],
+    "task_risks": ["array", "of", "specific", "task-level", "risks"],
+    "micro_steps": ["array", "of", "detailed", "micro-steps", "for", "task", "execution"],
+    "risks": ["array", "of", "specific", "task-level", "risks"],
+    "required_skills": ["array", "of", "skills", "or", "expertise", "needed"]
   }
 ]
 
@@ -342,6 +358,12 @@ Task Generation Rules:
 8. **No Timeline Creation**: DO NOT create your own timeline - use provided dates exactly
 
 🚨 CRITICAL MANDATE: Task classification determines specifications. Implementation/refactoring/bugfix tasks need code_specification and code_content='PENDING_CODE_GENERATION'. Testing tasks need test_specification and code_content=null. Analysis tasks need analysis_deliverables and code_content=null.
+
+📝 REQUIRED DETAILS FOR ALL TASKS:
+- **task_risks**: Must include 2-4 specific risks (e.g., "File locking issues", "Performance degradation", "Dependency conflicts")
+- **micro_steps**: Must include 3-6 detailed sub-steps (e.g., "1. Review existing code structure", "2. Identify refactoring opportunities", "3. Implement changes incrementally")
+- **required_skills**: Must specify needed expertise (e.g., ["Node.js", "Database Optimization", "Error Handling"])
+- **analysis_deliverables**: For analysis tasks, must include specific deliverable documents (e.g., ["Technical Assessment Report", "Implementation Strategy", "Code Quality Analysis"])
 
 FINAL REMINDER: Output ONLY the JSON array of tasks. No explanations, no markdown, no additional text.`;
 
@@ -381,6 +403,35 @@ export const MULTISTEP_TASK_USER_QUERY = `Generate focused tasks for this enhanc
 - Plan integration with existing code patterns and architectural decisions
 - Include specific verification methods and testing strategies for each task
 
+**CRITICAL OVERLAP PREVENTION RULES:**
+- **ZERO DUPLICATION**: Each specific action item (like "refactor string concatenation", "remove global exports", "add error handling") must appear in ONLY ONE task across the entire plan
+- **CONSOLIDATED CHANGES**: Group all related modifications to the same component (like all BadClass changes) into single comprehensive tasks
+- **SEQUENTIAL NUMBERING**: Tasks must be numbered consecutively (1, 2, 3, 4, 5...) without any gaps or jumps
+- **LOGICAL GROUPING**: Related refactoring actions should be consolidated into single tasks rather than spread across multiple tasks
+- **AVOID REDUNDANCY**: If an action is mentioned in multiple places, consolidate it into the most appropriate single task
+- **PHASE ORGANIZATION**: Assign each task to a logical phase (Phase 1: Analysis & Design, Phase 2: Core Implementation, Phase 3: Documentation & Quality) based on its nature and dependencies
+
+**REALISTIC EFFORT ESTIMATION:**
+- **Analysis tasks**: 2-4 hours (code review, documentation, requirements analysis)
+- **Simple implementation**: 4-8 hours (single feature, basic functionality)
+- **Complex implementation**: 8-16 hours (multi-component features, architecture changes)
+- **Testing tasks**: 4-12 hours (unit tests, integration tests, QA)
+- **Documentation**: 2-6 hours (README updates, API docs, user guides)
+- **Setup tasks**: 1-4 hours (tool configuration, environment setup, CI/CD)
+- **Bug fixes**: 2-8 hours (depending on complexity and investigation needed)
+- **Total project**: 20-40 hours for typical development projects, not 120+ hours
+
+**REQUIRED TASK TYPES TO INCLUDE:**
+- **Test Framework Setup**: Always include a task to set up testing framework (Jest/Vitest) if not already present
+- **Quality Assurance Review**: Include final peer review/QA task for validation
+- **Documentation Tasks**: Include README updates and code documentation
+- **Integration Testing**: Include tasks to verify changes work together
+
+**PATH HANDLING:**
+- **Use relative paths only**: Convert all absolute paths to relative paths (e.g., /absolute/path/file.js → ./file.js)
+- **Project root relative**: All file paths should be relative to project root (e.g., src/components/main.ts)
+- **No hardcoded user paths**: Never include user-specific or system-specific paths in task descriptions or file references
+
 Generate EXACTLY {expectedTaskCount} tasks as a JSON array following the schema provided in the system instruction.
 
 **CRITICAL SUCCESS FACTORS:**
@@ -389,5 +440,6 @@ Generate EXACTLY {expectedTaskCount} tasks as a JSON array following the schema 
 - Properly classify each task (implementation/testing/analysis) with appropriate specifications
 - Task sequence must build logically toward the batch objective
 - Technical requirements must be based on actual file analysis, not assumptions
+- **ENSURE NO OVERLAP**: Verify that no action appears in multiple tasks before finalizing
 
 🚨 CRITICAL: Output ONLY the JSON array of tasks. Do NOT include any explanations, markdown, or additional text. Start with [ and end with ].`;

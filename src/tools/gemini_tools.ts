@@ -6,11 +6,12 @@ import { GeminiIntegrationService } from '../database/services/GeminiIntegration
 import { InternalToolDefinition } from './index.js';
 import { formatSimpleMessage, formatJsonToMarkdownCodeBlock, formatPlanGenerationResponseToMarkdown } from '../utils/formatters.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { RAG_DECISION_PROMPT, CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, GEMINI_GOOGLE_SEARCH_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT, RAG_VERIFICATION_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { RAG_DECISION_PROMPT, DEFAULT_CODEBASE_ASSISTANT_META_PROMPT, GENERAL_WEB_ASSISTANT_META_PROMPT, GEMINI_GOOGLE_SEARCH_PROMPT, INTENT_CLASSIFICATION_PROMPT, CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT, RAG_VERIFICATION_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
+import { CODE_REVIEW_META_PROMPT, CODE_EXPLANATION_META_PROMPT, ENHANCEMENT_SUGGESTIONS_META_PROMPT, BUG_FIXING_META_PROMPT, REFACTORING_META_PROMPT, TESTING_META_PROMPT, DOCUMENTATION_META_PROMPT, CODE_MODULARIZATION_ORCHESTATION_META_PROMPT } from '../database/services/gemini-integration-modules/FocusAreaTemplates.js';
 import { RetrievedCodeContext } from '../database/services/CodebaseContextRetrieverService.js';
 import { formatRetrievedContextForPrompt } from '../database/services/gemini-integration-modules/GeminiContextFormatter.js';
 import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from '../database/services/gemini-integration-modules/GeminiResponseParsers.js';
-import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
+import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel, getCurrentModelAsync, getAvailableShortNames, getAllAvailableModels } from '../database/services/gemini-integration-modules/GeminiConfig.js';
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
@@ -22,6 +23,69 @@ const VALID_FOCUS_AREAS = [
     "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
     "refactoring", "testing", "documentation", "code_modularization_orchestration", "codebase_analysis"
 ];
+
+function stripCitationMarkers(value: string | undefined | null): string {
+    if (!value) {
+        return value ?? '';
+    }
+    return value.replace(/\s*\[cite_\d+\]/gi, '');
+}
+
+function tryInlineJsonParse(raw: string | undefined | null): any | null {
+    if (!raw) {
+        return null;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        return null;
+    }
+    const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = (fencedMatch ? fencedMatch[1] : trimmed).trim();
+    const attempt = (value: string): any | null => {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return null;
+        }
+    };
+    let parsed = attempt(candidate);
+    if (parsed && typeof parsed === 'object') {
+        return parsed;
+    }
+    const firstBrace = candidate.indexOf('{');
+    const lastBrace = candidate.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        parsed = attempt(candidate.slice(firstBrace, lastBrace + 1));
+        if (parsed && typeof parsed === 'object') {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+// Get all available model names (both short names and full IDs)
+function getAllModelNames(): string[] {
+    const shortNames = getAvailableShortNames();
+    const fullModelIds = getAllAvailableModels().map(model => model.name);
+
+    // Combine and deduplicate
+    const allNames = [...new Set([...shortNames, ...fullModelIds])];
+
+    // Sort with Claude models first, then Gemini, then others
+    return allNames.sort((a, b) => {
+        const aIsClaude = a.startsWith('claude-');
+        const bIsClaude = b.startsWith('claude-');
+        const aIsGemini = a.startsWith('gemini-') || a.startsWith('models/gemini');
+        const bIsGemini = b.startsWith('gemini-') || b.startsWith('models/gemini');
+
+        if (aIsClaude && !bIsClaude) return -1;
+        if (!aIsClaude && bIsClaude) return 1;
+        if (aIsGemini && !bIsGemini && !bIsClaude) return -1;
+        if (!aIsGemini && bIsGemini && !aIsClaude) return 1;
+
+        return a.localeCompare(b);
+    });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,7 +111,9 @@ async function findProjectRoot(startDir: string): Promise<string> {
 async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrationService): Promise<string | null> {
     try {
         const classificationPrompt = INTENT_CLASSIFICATION_PROMPT.replace('{query}', query);
-        const result = await geminiService.askGemini(classificationPrompt, getCurrentModel());
+        // Use OAuth-aware model selection for better rate limits
+        const oauthAwareModel = await getCurrentModelAsync();
+        const result = await geminiService.askGemini(classificationPrompt, oauthAwareModel);
         const rawResponse = result.content[0].text || '';
 
         // Clean and normalize the response
@@ -162,7 +228,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 nullable: true
             },
             conversation_history_limit: { type: 'number', description: 'The number of recent messages to include from the session history.', default: 15 },
-            model: { type: 'string', description: 'Optional: The Gemini model to use.', default: getCurrentModel() },
+            model: {
+                type: 'string',
+                description: 'Optional: The AI model to use. Supports both short names (claude-sonnet-4, claude-opus-4.1, claude-haiku, gemini-flash, etc.) and full model IDs.',
+                default: getCurrentModel(),
+                enum: getAllModelNames()
+            },
             systemInstruction: { type: 'string', description: 'Optional: A system instruction to guide the AI behavior.', nullable: true },
             enable_rag: { type: 'boolean', description: 'Enable Retrieval-Augmented Generation (RAG).', default: false, nullable: true },
             enable_iterative_search: {
@@ -305,7 +376,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         const userExplicitlyEnabledRag = enable_rag;
         const userExplicitlyEnabledIterativeSearch = enable_iterative_search;
 
+        // Keep original live file paths for direct file reading
         let mutable_live_review_paths = live_review_file_paths ? [...live_review_file_paths] : [];
+
         let mutable_enable_rag = enable_rag;
         let mutable_enable_iterative_search = enable_iterative_search;
 
@@ -317,32 +390,50 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let autonomousFocusDecision: { selected: string | null; reasoning: string } = { selected: null, reasoning: 'User explicitly provided focus area' };
 
         if (!focus_area) {
-            try {
-                console.log('[ask_gemini] No focus area provided. Attempting autonomous selection...');
-                autonomousFocusArea = await _getIntentFocusArea(query, geminiService);
-                if (autonomousFocusArea) {
-                    autonomousFocusDecision = {
-                        selected: autonomousFocusArea,
-                        reasoning: `Autonomously selected focus area '${autonomousFocusArea}' based on query intent classification`
-                    };
-                    console.log(`[ask_gemini] Autonomous focus area selection: ${autonomousFocusArea}`);
-                    // Use the autonomously selected focus area
-                    focus_area = autonomousFocusArea;
-                } else {
-                    autonomousFocusDecision = {
-                        selected: null,
-                        reasoning: 'Autonomous selection failed or returned invalid focus area'
-                    };
-                    console.log('[ask_gemini] Autonomous focus area selection failed. Using default behavior.');
-                }
-            } catch (error: any) {
-                autonomousFocusDecision = {
-                    selected: null,
-                    reasoning: `Error during autonomous selection: ${error?.message || 'Unknown error'}`
-                };
-                console.error('[ask_gemini] Error during autonomous focus area selection:', error);
-            }
-        }
+  // Check if this is a simple general question that doesn't need focus area detection
+  const isGeneralQuestion = !live_review_file_paths?.length &&
+                            !enable_rag &&
+                            query.length < 200 &&
+                            !query.toLowerCase().includes('review') &&
+                            !query.toLowerCase().includes('analyze') &&
+                            !query.toLowerCase().includes('explain code') &&
+                            !query.toLowerCase().includes('debug');
+
+  if (isGeneralQuestion) {
+    console.log('[ask_gemini] General question detected. Skipping focus area detection.');
+    autonomousFocusDecision = {
+      selected: null,
+      reasoning: 'Skipped focus area detection for general question'
+    };
+  } else {
+    try {
+      console.log('[ask_gemini] No focus area provided. Attempting autonomous selection...');
+      autonomousFocusArea = await _getIntentFocusArea(query, geminiService);
+      if (autonomousFocusArea) {
+        autonomousFocusDecision = {
+          selected: autonomousFocusArea,
+          reasoning: `Autonomously selected focus area '${autonomousFocusArea}' based on query intent classification`
+        };
+        console.log(`[ask_gemini] Autonomous focus area selection: ${autonomousFocusArea}`);
+        // Use the autonomously selected focus area
+        focus_area = autonomousFocusArea;
+      } else {
+        autonomousFocusDecision = {
+          selected: null,
+          reasoning: 'Autonomous selection failed or returned invalid focus area'
+        };
+        console.log('[ask_gemini] Autonomous focus area selection failed. Using default behavior.');
+      }
+    } catch (error: any) {
+      autonomousFocusDecision = {
+        selected: null,
+        reasoning: `Error during autonomous selection: ${error?.message || 'Unknown error'}`
+      };
+      console.error('[ask_gemini] Error during autonomous focus area selection:', error);
+    }
+  }
+}
+
 
         let currentSessionId: string | null = session_id;
 
@@ -387,7 +478,156 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         const hasConversationHistory = historyMessages.length > 1; // More than just the current user query
         let ragQuery = query;
 
-        if (hasConversationHistory && !userExplicitlyEnabledRag && !userExplicitlyEnabledIterativeSearch) {
+        // SPECIAL CASE: Live file review mode - bypass ALL other logic
+        if (mutable_live_review_paths?.length) {
+            console.log('[ask_gemini] 📁 LIVE FILE MODE: Processing attached files only - bypassing all RAG/history logic');
+
+            // Log live file mode
+            await conversationHistoryManager.storeConversationMessage(
+                currentSessionId,
+                'system',
+                `📁 **LIVE FILE MODE**: Processing ${mutable_live_review_paths.length} attached files directly: ${mutable_live_review_paths.map(p => path.basename(p)).join(', ')}. Bypassing RAG, history, and agentic planning.`,
+                'thought',
+                {
+                    mode: 'live_file_only',
+                    file_count: mutable_live_review_paths.length,
+                    file_paths: mutable_live_review_paths,
+                    bypass_rag: true,
+                    bypass_history: true,
+                    bypass_agentic: true
+                }
+            );
+
+            // Process ONLY the live files - directly read file content, no RAG, no embeddings
+            let liveFilesContent: Map<string, string> = new Map();
+            try {
+                console.log('[ask_gemini] 📄 Reading live files directly from filesystem...');
+
+                for (const filePath of live_review_file_paths) {
+                    if (!filePath) continue; // Skip empty/null paths
+
+                    let fullPath: string;
+                    let keyPath: string = filePath;
+
+                    // Check if the user has provided an absolute path
+                    if (path.isAbsolute(filePath)) {
+                        fullPath = filePath;
+                        console.log(`[ask_gemini] 📂 Reading absolute path: ${fullPath}`);
+                    } else {
+                        // If it's a relative path, resolve it against the project root
+                        const projectRoot = await findProjectRoot(process.cwd());
+                        fullPath = path.resolve(projectRoot, filePath);
+                        console.log(`[ask_gemini] 📂 Reading relative path: ${filePath} -> ${fullPath}`);
+                    }
+
+                    try {
+                        const content = await fs.readFile(fullPath, 'utf-8');
+                        liveFilesContent.set(keyPath, content);
+                        console.log(`[ask_gemini] ✅ Successfully read file: ${path.basename(fullPath)} (${content.length} chars)`);
+                    } catch (error: any) {
+                        console.warn(`[ask_gemini] ⚠️ Could not read live file: ${filePath}. Resolved to: ${fullPath}. Error: ${error.message}`);
+                    }
+                }
+
+                console.log(`[ask_gemini] ✅ Live files processed: ${liveFilesContent.size} files read successfully`);
+            } catch (error: any) {
+                console.error('[ask_gemini] Error processing live files:', error);
+                throw new McpError(ErrorCode.InternalError, `Live file processing failed: ${error.message}`);
+            }
+
+            // Use specialized template based on focus area or default
+            let template;
+            if (focus_area) {
+                switch (focus_area) {
+                    case 'code_review':
+                        template = CODE_REVIEW_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using CODE_REVIEW template for live files');
+                        break;
+                    case 'code_explanation':
+                        template = CODE_EXPLANATION_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using CODE_EXPLANATION template for live files');
+                        break;
+                    case 'enhancement_suggestions':
+                        template = ENHANCEMENT_SUGGESTIONS_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using ENHANCEMENT_SUGGESTIONS template for live files');
+                        break;
+                    case 'bug_fixing':
+                        template = BUG_FIXING_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using BUG_FIXING template for live files');
+                        break;
+                    case 'refactoring':
+                        template = REFACTORING_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using REFACTORING template for live files');
+                        break;
+                    case 'testing':
+                        template = TESTING_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using TESTING template for live files');
+                        break;
+                    case 'documentation':
+                        template = DOCUMENTATION_META_PROMPT;
+                        console.log('[ask_gemini] 🎯 Using DOCUMENTATION template for live files');
+                        break;
+                    default:
+                        template = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                        console.log('[ask_gemini] 📝 Using DEFAULT_CODEBASE template for live files');
+                        break;
+                }
+            } else {
+                template = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                console.log('[ask_gemini] 📝 Using DEFAULT_CODEBASE template for live files');
+            }
+
+            // Format context from live files only
+            let contextForPrompt = '';
+            if (liveFilesContent.size > 0) {
+                const fileContents: string[] = [];
+                for (const [filePath, content] of liveFilesContent.entries()) {
+                    fileContents.push(`## File: ${filePath}\n\n\`\`\`\n${content}\n\`\`\``);
+                }
+                contextForPrompt = fileContents.join('\n\n---\n\n');
+            } else {
+                contextForPrompt = 'No content could be extracted from the provided files.';
+            }
+
+            // Create prompt with ONLY live file context - no conversation history
+            const finalPrompt = template
+                .replace('{context}', contextForPrompt)
+                .replace('{query}', query)
+                .replace('{conversation_history}', ''); // NO history in live file mode
+
+            console.log('[ask_gemini] 🚀 Sending live file prompt to Gemini...');
+            const geminiResponse = await geminiService.askGemini(finalPrompt, model, systemInstruction);
+            const finalAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
+
+            // Build response for live file mode
+            const processedFiles = Array.from(liveFilesContent.keys());
+            const markdownOutput = `## 🤖 Gemini Response (Live File Mode)\n\n> ${query}\n\n${finalAnswer}\n\n---\n\n## 📁 Live Files Analyzed\n\n${processedFiles.map(p => `- ${path.basename(p)}`).join('\n')}\n\n**Mode**: Direct file analysis (no RAG search, no conversation history)`;
+
+            // Store the response
+            await conversationHistoryManager.storeConversationMessage(
+                currentSessionId,
+                'ai',
+                markdownOutput,
+                'text',
+                {
+                    mode: 'live_file_only',
+                    live_files_read: processedFiles,
+                    template_used: focus_area || 'default_codebase',
+                    files_processed: processedFiles,
+                    bypass_rag: true,
+                    bypass_history: true
+                }
+            );
+
+            return { content: [{ type: 'text', text: markdownOutput }] };
+        }
+
+        // NORMAL MODE: Only when NO live files are provided
+        // Only perform autonomous RAG decision when:
+        // 1. User explicitly requested to continue the conversation (continue=true)
+        // 2. There is actual conversation history
+        // 3. User didn't explicitly enable RAG or iterative search
+        if (continue_session && hasConversationHistory && !userExplicitlyEnabledRag && !userExplicitlyEnabledIterativeSearch) {
             try {
                 console.log('[ask_gemini] Conversation history detected. Analyzing if RAG is needed...');
 
@@ -448,7 +688,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         mutable_enable_rag = false;
                         mutable_enable_iterative_search = false;
                     }
-                    mutable_live_review_paths = [];
+                    // IMPORTANT: Preserve live_review_file_paths even when answering from history
+                    // Users may want to review specific files regardless of the RAG decision
+                    // mutable_live_review_paths = []; // REMOVED - preserve live file paths
                 } else if (decisionResponse.decision === 'PERFORM_RAG' && decisionResponse.rag_query) {
                     console.log(`[ask_gemini] 🔍 AI Decision: Perform RAG with refined query: "${decisionResponse.rag_query}"`);
                     ragQuery = decisionResponse.rag_query;
@@ -478,6 +720,22 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 `ℹ️ **Continue Session Requested**: No substantial conversation history found. Starting fresh.`,
                 'thought',
                 { continue_requested: true, history_found: false }
+            );
+        } else if (userExplicitlyEnabledRag || userExplicitlyEnabledIterativeSearch) {
+            // User explicitly enabled RAG - respect their intention and force RAG mode
+            console.log('[ask_gemini] 🎯 User explicitly enabled RAG - forcing RAG mode regardless of history.');
+            mutable_enable_rag = true;
+            if (userExplicitlyEnabledIterativeSearch) {
+                mutable_enable_iterative_search = true;
+            }
+
+            // Log explicit RAG usage
+            await conversationHistoryManager.storeConversationMessage(
+                currentSessionId,
+                'system',
+                `🎯 **Explicit RAG Mode**: User enabled RAG (enable_rag=${userExplicitlyEnabledRag}, enable_iterative_search=${userExplicitlyEnabledIterativeSearch}). Performing codebase search.`,
+                'thought',
+                { explicit_rag_enabled: true, user_force_rag: true, continue_session: continue_session || false }
             );
         }
 
@@ -518,7 +776,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     max_iterations: sanitized_max_iterations,
                     conversation_history_limit: sanitized_conversation_history_limit,
                     google_search: google_search,
-                    continue_session: continue_session
+                    continue_session: continue_session,
+                    execution_mode: execution_mode // Pass execution mode to control citation behavior
                 };
 
                 console.log(`[ask_gemini] Enhanced RAG enabled: hybrid=${enhancedRagArgs.enable_hybrid_search}, agentic=${enhancedRagArgs.enable_agentic_planning}, reflection=${enhancedRagArgs.enable_reflection}`);
@@ -527,11 +786,10 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 iterativeResult = await _performIterativeRagSearch(enhancedRagArgs, memoryManagerInstance, geminiService);
                 finalContext = iterativeResult.accumulatedContext;
                 console.log(`[ask_gemini] Enhanced _performIterativeRagSearch completed. SearchMetrics: ${JSON.stringify(iterativeResult.searchMetrics)}`);
-            } else if (mutable_enable_rag || mutable_live_review_paths?.length) {
-                console.log('[ask_gemini] Performing single-turn RAG...');
+            } else if (mutable_enable_rag) {
+                console.log('[ask_gemini] 🔍 Performing single-turn RAG search...');
                 const contextRetrieverService = memoryManagerInstance.getCodebaseContextRetrieverService();
-                const contextOptionsWithLiveFiles = { ...context_options, targetFilePaths: [...(context_options?.targetFilePaths || []), ...mutable_live_review_paths] };
-                finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, ragQuery, contextOptionsWithLiveFiles);
+                finalContext = await contextRetrieverService.retrieveContextForPrompt(agent_id, ragQuery, context_options);
             }
         } catch (error: any) {
             console.error('[ask_gemini] Error during context acquisition:', error);
@@ -550,7 +808,12 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{agentId}', agent_id);
             try {
                 const result = await geminiService.askGemini(metaPromptContent, modelToUse);
-                const parsedResponse = await parseGeminiJsonResponse(result.content[0].text ?? '', {
+                const rawPlanContent = result.content?.[0]?.text ?? '';
+                const cleanedPlanContent = stripCitationMarkers(rawPlanContent);
+                if (rawPlanContent !== cleanedPlanContent) {
+                    console.log('[ask_gemini] Citation override applied to plan generation response to maintain valid JSON.');
+                }
+                let parsedResponse = await parseGeminiJsonResponse(cleanedPlanContent, {
                     expectedStructure: '{"plan_title": "string", "tasks": [{"task_number": "number", "title": "string", "description": "string"}], "estimated_duration_days": "number"}',
                     contextDescription: 'Plan generation response with tasks and metadata',
                     memoryManager: memoryManagerInstance,
@@ -558,12 +821,38 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     enableAIRepair: true
                 });
 
-                parsedResponse.generation_metadata = {
-                    rag_metrics: iterativeResult?.searchMetrics,
-                    context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
-                    web_sources: iterativeResult?.webSearchSources,
-                    decision_log: iterativeResult?.decisionLog
-                };
+                // Check if parsedResponse is valid before setting metadata
+                if (!parsedResponse || typeof parsedResponse !== 'object') {
+                    const inlineParsed = tryInlineJsonParse(cleanedPlanContent);
+                    if (inlineParsed && typeof inlineParsed === 'object') {
+                        console.log('[ask_gemini] Inline JSON recovery succeeded for plan generation response.');
+                        parsedResponse = inlineParsed;
+                    }
+                }
+
+                if (parsedResponse && typeof parsedResponse === 'object') {
+                    parsedResponse.generation_metadata = {
+                        rag_metrics: iterativeResult?.searchMetrics,
+                        context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
+                        web_sources: iterativeResult?.webSearchSources,
+                        decision_log: iterativeResult?.decisionLog
+                    };
+                } else {
+                    console.error('[GeminiTools] parsedResponse is null or invalid, creating fallback response');
+                    const fallbackResponse = {
+                        plan_title: "Plan Generation Failed",
+                        tasks: [{task_number: 1, title: "Retry Request", description: "The plan generation failed due to parsing errors. Please try again."}],
+                        estimated_duration_days: 1,
+                        generation_metadata: {
+                            rag_metrics: iterativeResult?.searchMetrics,
+                            context_summary: finalContext.slice(0, 20).map(ctx => ({ source: ctx.sourcePath, entity: ctx.entityName, type: ctx.type, score: ctx.relevanceScore })),
+                            web_sources: iterativeResult?.webSearchSources,
+                            decision_log: iterativeResult?.decisionLog,
+                            error: "JSON parsing failed"
+                        }
+                    };
+                    return fallbackResponse;
+                }
                 parsedResponse.agent_id = agent_id;
                 parsedResponse.refinement_engine_model = modelToUse;
                 parsedResponse.refinement_timestamp = new Date().toISOString();
@@ -598,7 +887,14 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             
             console.log(`[ask_gemini] Context Analysis: RAG attempted: ${mutable_enable_rag || mutable_enable_iterative_search}, Context retrieved: ${contextRetrievalSuccessful}, Failed retrieval: ${ragAttemptedButFailed}`);
             
-            let conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
+            // Only include conversation history if user explicitly requested continuation
+            let conversationHistoryForPrompt = '';
+            if (continue_session && hasConversationHistory) {
+                conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
+                console.log('[ask_gemini] 📜 Including conversation history (continue=true)');
+            } else {
+                console.log('[ask_gemini] 🆕 Fresh query mode - no conversation history included');
+            }
             
             // Smart context message based on actual situation
             const contextForPrompt = (() => {
@@ -613,19 +909,42 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 }
             })();
             
-            // Always include context status in conversation history when RAG is involved
+            // Always include context status when RAG is involved
             if (mutable_enable_rag || mutable_enable_iterative_search || finalContext.length > 0) {
-                const contextStatusString = finalContext.length > 0 
+                const contextStatusString = finalContext.length > 0
                     ? `\n\n--- Retrieved Context ---\n${contextForPrompt}\n--- End Context ---\n`
                     : `\n\n--- Context Search Status ---\n${contextForPrompt}\n--- End Status ---\n`;
                 conversationHistoryForPrompt = contextStatusString + conversationHistoryForPrompt;
             }
             
-            // Smart template selection based on actual context availability and RAG attempts
+            // Smart template selection based on focus area and context availability
             const template = (() => {
-                if (ragAttemptedButFailed) {
+                // First check if user specified a focus area - use specialized prompts
+                if (focus_area && contextRetrievalSuccessful) {
+                    switch (focus_area) {
+                        case 'code_review':
+                            return CODE_REVIEW_META_PROMPT;
+                        case 'code_explanation':
+                            return CODE_EXPLANATION_META_PROMPT;
+                        case 'enhancement_suggestions':
+                            return ENHANCEMENT_SUGGESTIONS_META_PROMPT;
+                        case 'bug_fixing':
+                            return BUG_FIXING_META_PROMPT;
+                        case 'refactoring':
+                            return REFACTORING_META_PROMPT;
+                        case 'testing':
+                            return TESTING_META_PROMPT;
+                        case 'documentation':
+                            return DOCUMENTATION_META_PROMPT;
+                        case 'code_modularization_orchestration':
+                            return CODE_MODULARIZATION_ORCHESTATION_META_PROMPT;
+                        default:
+                            // Fall back to default codebase assistant for unknown focus areas
+                            return DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                    }
+                } else if (ragAttemptedButFailed) {
                     // RAG was attempted but failed - use general assistant template that doesn't expect context
-                    return `You are a helpful AI assistant. Please answer the user's question using your general knowledge and reasoning capabilities. 
+                    return `You are a helpful AI assistant. Please answer the user's question using your general knowledge and reasoning capabilities.
 
 If the question is about a specific codebase and you need additional context that isn't provided, acknowledge this limitation and:
 1. Provide general guidance based on common patterns and best practices
@@ -636,7 +955,7 @@ User Question: {query}
 
 Conversation History (if any):
 {conversation_history}`;
-                } else if (hasConversationHistory && contextRetrievalSuccessful) {
+                } else if (continue_session && hasConversationHistory && contextRetrievalSuccessful) {
                     return CONVERSATIONAL_CODEBASE_ASSISTANT_META_PROMPT;
                 } else if (contextRetrievalSuccessful) {
                     return DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
@@ -650,7 +969,23 @@ Conversation History (if any):
 {conversation_history}`;
                 }
             })();
-            
+
+            // Log template selection for transparency
+            if (focus_area && contextRetrievalSuccessful) {
+                console.log(`[ask_gemini] 🎯 Using specialized ${focus_area} template with context`);
+                await conversationHistoryManager.storeConversationMessage(
+                    currentSessionId,
+                    'system',
+                    `🎯 **Template Selection**: Using specialized '${focus_area}' template with retrieved context.`,
+                    'thought',
+                    { template_type: focus_area, context_available: true }
+                );
+            } else if (contextRetrievalSuccessful) {
+                console.log(`[ask_gemini] 📝 Using default codebase assistant template`);
+            } else {
+                console.log(`[ask_gemini] 🔧 Using general assistant template (no context)`);
+            }
+
             // Log RAG failure for transparency
             if (ragAttemptedButFailed) {
                 await conversationHistoryManager.storeConversationMessage(currentSessionId, 'system', 
@@ -666,7 +1001,7 @@ Conversation History (if any):
             let finalPrompt;
             if ((google_search || enable_web_search) && !iterativeResult) {
                 // Use enhanced search prompt that combines conversation history with web search
-                if (hasConversationHistory) {
+                if (continue_session && hasConversationHistory) {
                     finalPrompt = GEMINI_GOOGLE_SEARCH_PROMPT
                         .replace('{query}', query)
                         .replace('{context}', `${contextForPrompt}\n\n--- Conversation History ---\n${conversationHistoryForPrompt}\n--- End History ---`);

@@ -13,6 +13,47 @@ export class IterativeRagPlanning {
         private geminiService: GeminiIntegrationService
     ) {}
 
+    private _attemptInlineJsonParse(raw: string | undefined | null): any | null {
+        if (!raw) {
+            return null;
+        }
+        const trimmed = raw.trim();
+        const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const candidate = (fencedMatch ? fencedMatch[1] : trimmed).trim();
+        const tryParse = (value: string): any | null => {
+            try {
+                return JSON.parse(value);
+            } catch {
+                return null;
+            }
+        };
+        let parsed = tryParse(candidate);
+        if (parsed && typeof parsed === 'object') {
+            return parsed;
+        }
+        const firstBrace = candidate.indexOf('{');
+        const lastBrace = candidate.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            const sliceCandidate = candidate.slice(firstBrace, lastBrace + 1);
+            parsed = tryParse(sliceCandidate.trim());
+            if (parsed && typeof parsed === 'object') {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    private _mapReflectionResponse(parsed: any): ReflectionResult {
+        return {
+            hasHallucinations: parsed?.hallucination_analysis?.detected_hallucinations?.length > 0 || false,
+            missingInfo: parsed?.completeness_analysis?.missing_aspects || [],
+            qualityScore: parsed?.overall_assessment?.quality_score || 0.5,
+            suggestions: parsed?.improvement_recommendations?.enhancement_suggestions || [],
+            corrections: parsed?.improvement_recommendations?.immediate_fixes || [],
+            confidence: parsed?.overall_assessment?.overall_confidence || 0.5,
+        };
+    }
+
     async performAgenticPlanning(
         originalQuery: string,
         currentQuery: string,
@@ -94,22 +135,28 @@ export class IterativeRagPlanning {
             { contextLength: reflectionPrompt.length }
         );
         try {
-            const parsed = await parseGeminiJsonResponse(result.content?.trim() || '{}', {
+            let parsed = await parseGeminiJsonResponse(result.content?.trim() || '{}', {
                 expectedStructure: 'Reflection analysis with hallucination detection and quality assessment',
                 contextDescription: 'RAG reflection and quality control analysis',
                 memoryManager: this.memoryManager,
                 geminiService: this.geminiService,
                 enableAIRepair: true,
             });
-            return {
-                hasHallucinations: parsed.hallucination_analysis?.detected_hallucinations?.length > 0 || false,
-                missingInfo: parsed.completeness_analysis?.missing_aspects || [],
-                qualityScore: parsed.overall_assessment?.quality_score || 0.5,
-                suggestions: parsed.improvement_recommendations?.enhancement_suggestions || [],
-                corrections: parsed.improvement_recommendations?.immediate_fixes || [],
-                confidence: parsed.overall_assessment?.overall_confidence || 0.5,
-            };
+            if (!parsed || typeof parsed !== 'object') {
+                parsed = this._attemptInlineJsonParse(result.content);
+            }
+            // Check if parsing succeeded and return structured data
+            if (parsed && typeof parsed === 'object') {
+                return this._mapReflectionResponse(parsed);
+            } else {
+                throw new Error('Parsed result is null or not an object');
+            }
         } catch (error) {
+            const inlineParsed = this._attemptInlineJsonParse(result.content);
+            if (inlineParsed && typeof inlineParsed === 'object') {
+                console.warn('[Reflection] Using inline JSON recovery after enhanced parser failure.');
+                return this._mapReflectionResponse(inlineParsed);
+            }
             console.warn('[Reflection] Enhanced parsing failed, using fallback:', error);
             return {
                 hasHallucinations: false,
@@ -165,4 +212,4 @@ export class IterativeRagPlanning {
             return [];
         }
     }
-}
+}

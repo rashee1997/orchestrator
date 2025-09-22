@@ -141,6 +141,14 @@ export class IterativeRagOrchestrator {
         return focusString;
     }
 
+    private _applyCitationPolicy(answer: string, shouldUseCitations: boolean): string {
+        if (shouldUseCitations || !answer) {
+            return answer;
+        }
+        const withoutCitations = answer.replace(/\s*\[cite_\d+\]/gi, '');
+        return withoutCitations.replace(/\s{2,}/g, ' ').trim();
+    }
+
     async performIterativeSearch(args: IterativeRagArgs): Promise<IterativeRagResult> {
         const operationId = globalPerformanceTracker.startOperation('performIterativeSearch', { query: args.query });
         try {
@@ -170,7 +178,9 @@ export class IterativeRagOrchestrator {
                 citation_accuracy_threshold = 0.7,
                 long_rag_chunk_size = 2000,
                 reflection_frequency = 1,
+                execution_mode,
             } = args;
+            const shouldUseCitations = execution_mode !== 'plan_generation';
             const contextRetriever = this.memoryManagerInstance.getCodebaseContextRetrieverService();
             let accumulatedContext: RetrievedCodeContext[] = [];
             const webSearchSources: { title: string; url: string }[] = [];
@@ -310,8 +320,10 @@ export class IterativeRagOrchestrator {
                     const sourceKey = context.sourcePath;
                     const currentCount = sourceTracker.get(sourceKey) || 0;
                     sourceTracker.set(sourceKey, currentCount + 1);
-                    const citation = this._generateCitation(context, context.content.substring(0, 200), context.relevanceScore || 0.8);
-                    citations.push(citation);
+                    if (shouldUseCitations) {
+                        const citation = this._generateCitation(context, context.content.substring(0, 200), context.relevanceScore || 0.8);
+                        citations.push(citation);
+                    }
                 });
                 const uniqueSources = sourceTracker.size;
                 const totalContextItems = accumulatedContext.length;
@@ -350,7 +362,9 @@ export class IterativeRagOrchestrator {
                             }, r.content.substring(0, 200), 0.9);
                             webCitation.sourceType = 'web';
                             webCitation.url = r.url;
-                            citations.push(webCitation);
+                            if (shouldUseCitations) {
+                                citations.push(webCitation);
+                            }
                         });
                         console.log(`[Enhanced RAG] Web search completed: added ${webResults.length} web sources to context`);
                     } catch (e: any) {
@@ -674,6 +688,11 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                     citations: addedNow,
                 });
                 if (parsed.decision === 'ANSWER') {
+                    if (!shouldUseCitations) {
+                        searchMetrics.terminationReason = 'ANSWER decision reached (plan generation mode, citations disabled)';
+                        console.log('[Enhanced RAG] Plan generation mode detected – skipping citation-enforced final answer generation.');
+                        break;
+                    }
                     let estimatedQuality = parsed.qualityScore;
                     if (estimatedQuality === undefined || estimatedQuality === null || isNaN(estimatedQuality)) {
                         console.warn(`[Enhanced RAG] Quality score missing from parsed response. Calculating fallback quality estimate...`);
@@ -686,11 +705,16 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                     console.log(`[Enhanced RAG] Quality Gate Check: quality=${estimatedQuality}, context=${contextSufficiency}, iteration=${iterationProgress}`);
                     // Hybrid Validation: AI decided ANSWER, now our logic validates the quality
                     const isCodeExplanationQuery = focus_area === 'code_explanation' || query.toLowerCase().includes('function') || query.toLowerCase().includes('explain');
-                    const hasMinimalContext = accumulatedContext.length < 6; // Slightly stricter
-                    const lowConfidence = (parsed.confidenceScore || 1.0) < 0.6; // Slightly stricter
-                    const poorQuality = estimatedQuality < 0.55; // Slightly stricter but not too strict
-                    const hasAcceptableQuality = estimatedQuality >= 0.65;
-                    const hasGoodContext = accumulatedContext.length >= 8;
+                    const MIN_CONTEXT_THRESHOLD = 4;
+                    const MIN_CONFIDENCE_THRESHOLD = 0.5;
+                    const citationThreshold = citation_accuracy_threshold ?? 0.7;
+                    const MIN_QUALITY_THRESHOLD = Math.max(0.4, citationThreshold - 0.2);
+
+                    const hasMinimalContext = accumulatedContext.length < MIN_CONTEXT_THRESHOLD;
+                    const lowConfidence = (parsed.confidenceScore || 1.0) < MIN_CONFIDENCE_THRESHOLD;
+                    const poorQuality = estimatedQuality < MIN_QUALITY_THRESHOLD;
+                    const hasAcceptableQuality = !poorQuality;
+                    const hasGoodContext = !hasMinimalContext;
 
                     let answerResult: { content?: string } | null = null;
 
@@ -713,21 +737,13 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                         ? preliminaryValidUniqueCitations.size / citations.length
                         : 1.0;
                     const preliminaryCitationQuality = (preliminaryCitationAccuracy * 0.6) + (preliminaryCitationCoverage * 0.4);
-
-                    // Enhanced hybrid validation including citation quality
-                    const citationQualityPoor = preliminaryCitationQuality < citation_accuracy_threshold;
-                    const qualityValidationFailed = poorQuality || (hasMinimalContext && lowConfidence) || citationQualityPoor;
-                    const shouldOverrideAnswer = turn < max_iterations && qualityValidationFailed;
-
-                    if (citationQualityPoor) {
-                        console.warn(`[Citation Quality Check] Poor citation quality detected: ${(preliminaryCitationQuality * 100).toFixed(1)}% (threshold: ${(citation_accuracy_threshold * 100).toFixed(1)}%) - accuracy: ${(preliminaryCitationAccuracy * 100).toFixed(1)}%, coverage: ${(preliminaryCitationCoverage * 100).toFixed(1)}%`);
-                    }
+                    const qualityValidationFailed = poorQuality || (hasMinimalContext && lowConfidence);
+                    const shouldOverrideAnswer = turn < (max_iterations - 1) && qualityValidationFailed;
 
                     if (shouldOverrideAnswer) {
                         const overrideReasons = [];
                         if (poorQuality) overrideReasons.push(`low quality (${estimatedQuality.toFixed(2)})`);
                         if (hasMinimalContext && lowConfidence) overrideReasons.push(`insufficient context (${accumulatedContext.length}) + low confidence (${parsed.confidenceScore})`);
-                        if (citationQualityPoor) overrideReasons.push(`poor citations (${(preliminaryCitationQuality * 100).toFixed(1)}%)`);
 
                         console.log(`[Hybrid Validation] Overriding AI ANSWER decision due to: ${overrideReasons.join(', ')}. Triggering additional search.`);
 
@@ -755,7 +771,7 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                         });
                         continue;
                     } else {
-                        console.log(`[Hybrid Validation] AI ANSWER decision validated: quality=${estimatedQuality.toFixed(2)}, context=${accumulatedContext.length}, confidence=${parsed.confidenceScore}, citations=${(preliminaryCitationQuality * 100).toFixed(1)}%. Proceeding with answer generation.`);
+                        console.log(`[Hybrid Validation] AI ANSWER decision validated: quality=${estimatedQuality.toFixed(2)}, context=${accumulatedContext.length}, confidence=${parsed.confidenceScore}. Proceeding with answer generation.`);
                     }
                     searchMetrics.terminationReason = turn >= max_iterations
                         ? "Max iterations reached with forced answer"
@@ -785,6 +801,7 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                         { contextLength: enhancedAnswerPrompt.length }
                     );
                     const finalAnswer = answerResult?.content ?? '';
+                    const sanitizedFinalAnswer = this._applyCitationPolicy(finalAnswer, shouldUseCitations);
                     // Enhanced citation validation with validity checking
                     const citationMatches = finalAnswer.match(/\[cite_\d+\]/g) || [];
                     const citationNumbers = citationMatches.map(match => {
@@ -833,7 +850,7 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                     return {
                         accumulatedContext,
                         webSearchSources,
-                        finalAnswer,
+                        finalAnswer: sanitizedFinalAnswer,
                         decisionLog,
                         citations,
                         reflectionResults,
@@ -868,7 +885,9 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                             }, r.content.substring(0, 200), 0.9);
                             webCitation.sourceType = 'web';
                             webCitation.url = r.url;
-                            citations.push(webCitation);
+                            if (shouldUseCitations) {
+                                citations.push(webCitation);
+                            }
                         });
                     } catch (e: any) {
                         console.error('[Enhanced RAG] Web search failed:', e);
@@ -877,6 +896,24 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
             }
             if (searchMetrics.terminationReason === "In progress") {
                 searchMetrics.terminationReason = "Max iterations reached.";
+            }
+            if (!shouldUseCitations) {
+                console.log('[Enhanced RAG] Plan generation mode detected – returning context without generating citation-enforced answer.');
+                searchMetrics.citationAccuracy = 1.0;
+                searchMetrics.citationCoverage = 1.0;
+                searchMetrics.totalCitationsGenerated = 0;
+                searchMetrics.totalCitationsUsed = 0;
+                const planModeSummary = 'Plan generation mode active – final answer handled by plan generator.';
+                return {
+                    accumulatedContext,
+                    webSearchSources,
+                    finalAnswer: this._applyCitationPolicy(planModeSummary, shouldUseCitations),
+                    decisionLog,
+                    citations: [],
+                    reflectionResults,
+                    agenticPlan,
+                    searchMetrics,
+                };
             }
             console.log('[Enhanced RAG] Generating final answer from accumulated context with citations.');
             const finalContextFlow = this.context.createContextFlow(
@@ -937,7 +974,7 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
             return {
                 accumulatedContext,
                 webSearchSources,
-                finalAnswer,
+                finalAnswer: this._applyCitationPolicy(finalAnswer, shouldUseCitations),
                 decisionLog,
                 citations,
                 reflectionResults,

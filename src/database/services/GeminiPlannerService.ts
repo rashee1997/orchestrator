@@ -42,13 +42,22 @@ interface GeminiDetailedPlanGenerationResponse {
         risks?: string[];
         required_skills?: string[];
         assigned_to?: string; // ADDED: Assigned to field
+        task_type?: string;
+        needs_code_generation?: boolean;
+        code_specification?: any;
+        test_specification?: any;
+        analysis_deliverables?: any;
+        quality_gates?: string[];
     }>;
 }
 
 // Interface for additional task details that might be stored in notes_json
 interface TaskNotes {
+    summary?: string;
+    rationale?: string;
     task_risks?: string[];
     micro_steps?: string[];
+    required_skills?: string[];
     [key: string]: any; // Allow other metadata
 }
 
@@ -80,10 +89,10 @@ export interface InitialDetailedPlanAndTasks {
         estimated_effort_hours?: number; // This field exists in plan_tasks schema
         task_risks?: string[]; // Add this
         micro_steps?: string[]; // Add this
-        notes_json?: string | null; // For storing additional task details as a JSON string
-        suggested_files_involved?: string[]; // Added suggested_files_involved here
-        dependencies_task_ids_json?: string | null; // Added for explicit dependencies
-        tools_required_list_json?: string | null; // Added for tools required
+        notes?: TaskNotes; // For storing additional task details as structured JSON
+        files_involved_json?: string[]; // Added suggested_files_involved here
+        dependencies_task_ids_json?: string[]; // Added for explicit dependencies
+        tools_required_list_json?: string[]; // Added for tools required
         inputs_summary?: string | null; // Added for inputs summary
         outputs_summary?: string | null; // Added for outputs summary
         success_criteria_text?: string | null; // Added for success criteria
@@ -379,26 +388,62 @@ export class GeminiPlannerService {
             const safePurpose = rawPurpose ||
                 'Clarify intent and improve maintainability as part of the overall plan.';
 
-            const notes: TaskNotes = {}; // Initialize as empty object
+            const notes: TaskNotes = {
+                summary: safeDescription,
+                rationale: safePurpose,
+            };
 
-            if (t.task_risks !== undefined) {
+            if (Array.isArray(t.task_risks) && t.task_risks.length > 0) {
                 notes.task_risks = t.task_risks;
             }
-            if (t.micro_steps !== undefined) {
+            if (Array.isArray(t.micro_steps) && t.micro_steps.length > 0) {
                 notes.micro_steps = t.micro_steps;
             }
 
             // Handle new risk and skill fields
-            const allRisks = t.task_risks || t.risks || [];
-            const allSkills = t.roles_required || t.required_skills || [];
+            const allRisks = (t.task_risks || t.risks || []).filter(Boolean);
+            const requiredSkills = Array.isArray(t.required_skills) ? t.required_skills.filter(Boolean) : [];
+            const rolesRequired = Array.isArray(t.roles_required) ? t.roles_required.filter(Boolean) : [];
+            const allSkills = [...new Set([...rolesRequired, ...requiredSkills])];
 
             // Add new fields to notes if they exist
-            if (t.risks !== undefined && t.risks.length > 0) {
+            if (Array.isArray(t.risks) && t.risks.length > 0) {
                 notes.task_risks = [...(notes.task_risks || []), ...t.risks];
             }
-            if (t.required_skills !== undefined && t.required_skills.length > 0) {
-                notes.required_skills = t.required_skills;
+            if (requiredSkills.length > 0) {
+                notes.required_skills = requiredSkills;
             }
+
+            if (t.task_type) {
+                notes.task_type = t.task_type;
+            }
+            if (typeof t.needs_code_generation === 'boolean') {
+                notes.needs_code_generation = t.needs_code_generation;
+            }
+            if (t.code_specification) {
+                notes.code_specification = t.code_specification;
+            }
+            if (t.test_specification) {
+                notes.test_specification = t.test_specification;
+            }
+            if (t.analysis_deliverables) {
+                notes.analysis_deliverables = t.analysis_deliverables;
+            }
+            if (t.quality_gates) {
+                notes.quality_gates = t.quality_gates;
+            }
+
+            const needsCodeGen = !!t.needs_code_generation;
+
+            const filesInvolved = Array.isArray(t.suggested_files_involved)
+                ? t.suggested_files_involved.filter(Boolean)
+                : [];
+            const taskDependencies = Array.isArray((t as any).task_dependencies)
+                ? (t as any).task_dependencies.filter(Boolean)
+                : [];
+            const microSteps = Array.isArray(t.micro_steps) ? t.micro_steps.filter(Boolean) : undefined;
+
+            const assignedTo = t.assigned_to || (rolesRequired.length === 1 ? rolesRequired[0] : undefined);
 
             return {
                 task_number: taskNumber,
@@ -408,15 +453,20 @@ export class GeminiPlannerService {
                 status: TASK_STATUS_PLANNED,
                 estimated_duration_days: t.estimated_duration_days,
                 estimated_effort_hours: t.estimated_effort_hours,
-                task_risks: allRisks.length > 0 ? allRisks : t.task_risks,
-                micro_steps: t.micro_steps,
-                suggested_files_involved: t.suggested_files_involved ?? [],
-                dependencies_task_ids_json: t.task_dependencies ? JSON.stringify(t.task_dependencies) : null,
-                tools_required_list_json: allSkills.length > 0 ? JSON.stringify(allSkills) : (t.roles_required ? JSON.stringify(t.roles_required) : null),
-                assigned_to: t.roles_required ? JSON.stringify(t.roles_required) : null,
+                task_risks: allRisks.length > 0 ? allRisks : undefined,
+                micro_steps: microSteps,
+                files_involved_json: filesInvolved.length > 0 ? filesInvolved : undefined,
+                dependencies_task_ids_json: taskDependencies.length > 0 ? taskDependencies : undefined,
+                tools_required_list_json: allSkills.length > 0 ? allSkills : undefined,
+                assigned_to: assignedTo || null,
                 success_criteria_text: t.completion_criteria ?? null,
                 code_content: t.code_content ?? null,
-                ...(Object.keys(notes).length && { notes_json: JSON.stringify(notes) }),
+                needs_code_generation: needsCodeGen,
+                code_specification: t.code_specification,
+                test_specification: t.test_specification,
+                analysis_deliverables: t.analysis_deliverables,
+                task_type: t.task_type,
+                notes,
             };
         });
     }

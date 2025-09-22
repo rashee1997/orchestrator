@@ -110,4 +110,5 @@ export interface IterativeRagArgs {
     citation_accuracy_threshold?: number;
     long_rag_chunk_size?: number;
     reflection_frequency?: number;
-}
+    execution_mode?: string; // Added to control citation behavior
+}

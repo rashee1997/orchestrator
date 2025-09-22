@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
     assigned_to TEXT,
     verification_method TEXT,
     code_content TEXT, -- NEW: For storing full code for new files or diffs for existing files
+    phase TEXT, -- NEW: Phase identifier (e.g., 'Phase 1: Analysis & Design', 'Phase 2: Core Implementation')
     creation_timestamp_unix INTEGER NOT NULL,
     creation_timestamp_iso TEXT NOT NULL,
     last_updated_timestamp_unix INTEGER NOT NULL,

@@ -1,40 +1,81 @@
-import { MemoryManager } from '../../database/memory_manager.js';
-import { GeminiIntegrationService } from '../../database/services/GeminiIntegrationService.js';
-import { getCurrentModel } from '../../database/services/gemini-integration-modules/GeminiConfig.js';
-import { GeminiApiClient } from '../../database/services/gemini-integration-modules/GeminiApiClient.js';
-import { ClaudeCodeIntegrationService } from '../../database/services/claude-code-integration/ClaudeCodeIntegrationService.js';
+import { MemoryManager } from '../../../memory_manager.js';
+import { AIIntegrationService } from '../AIIntegrationService.js';
 import { Mistral } from '@mistralai/mistralai';
+import { jsonRepairService } from './JSONRepairService.js';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 
 /**
- * Task types that can be distributed across models
+ * Get current model (copied from GeminiConfig)
  */
-export type RagTaskType =
+function getCurrentModel(useFallback: boolean = false): string {
+    const defaultModel = "gemini-2.5-pro";
+    const fallbackModel = "gemini-2.5-flash-lite";
+    return useFallback ? fallbackModel : defaultModel;
+}
+
+/**
+ * Universal task types that can be distributed across AI models
+ * Covers all domains: text generation, analysis, coding, creative work, etc.
+ */
+export type AITaskType =
+    // TEXT PROCESSING
+    | 'text_rewriting'           // Simple - Gemini Flash Lite
+    | 'text_summarization'       // Medium - Gemini Flash
+    | 'text_analysis'            // Medium - Gemini Flash
+    | 'complex_analysis'         // Complex - Gemini/Claude
+    | 'decision_making'          // Complex - Gemini/Claude
+
+    // CODE & TECHNICAL
+    | 'code_generation'          // Complex - Claude
+    | 'code_review'              // Complex - Claude
+    | 'code_explanation'         // Medium - Gemini
+    | 'technical_writing'        // Medium - Gemini
+    | 'debugging'                // Complex - Claude
+
+    // CREATIVE & COMMUNICATION
+    | 'creative_writing'         // Medium - Various
+    | 'conversation_generation'  // Medium - Gemini
+    | 'content_creation'         // Medium - Gemini
+    | 'storytelling'             // Medium - Gemini/Claude
+
+    // DATA & EXTRACTION
+    | 'json_extraction'          // Simple - Mistral
+    | 'data_parsing'             // Simple - Mistral
+    | 'classification'           // Simple - Mistral
+    | 'entity_extraction'        // Simple - Mistral
+
+    // LANGUAGE & TRANSLATION
+    | 'translation'              // Medium - Various
+    | 'language_detection'       // Simple - Mistral
+
+    // SPECIALIZED
+    | 'embedding_generation'     // Specialized - Embedding models
+    | 'semantic_search'          // Specialized - Embedding models for similarity search
+    | 'question_answering'       // Medium - Gemini
+    | 'research_analysis'        // Complex - Claude/Gemini
+    | 'general_query'            // Medium - Gemini
+
+    // LEGACY RAG SUPPORT (for backward compatibility)
     | 'query_rewriting'          // Simple - Mistral
-    | 'context_summarization'    // Simple - Mistral
+    | 'context_summarization'    // Simple - Gemini Flash Lite
     | 'simple_analysis'          // Simple - Mistral
-    | 'complex_analysis'         // Complex - Gemini
-    | 'intent_analysis'          // Medium - Gemini 2.5 Flash (fast intent detection)
-    | 'decision_making'          // Complex - Gemini
     | 'final_answer_generation'  // Complex - Gemini
     | 'reflection'               // Medium - Mistral/Gemini
-    | 'planning'                 // Complex - Gemini
-    | 'json_extraction'          // Simple - Mistral
-    | 'code_generation';         // Complex - Gemini Pro
+    | 'planning';                // Complex - Gemini
 
 /**
  * Model capability levels
  */
-export type ModelCapability = 'simple' | 'medium' | 'complex';
+export type ModelCapability = 'simple' | 'medium' | 'complex' | 'fallback';
 
 /**
  * Available models and their capabilities
  */
 export interface ModelInfo {
     name: string;
-    provider: 'gemini' | 'mistral' | 'claude_code';
+    provider: 'gemini' | 'mistral' | 'claude_code' | 'qwen_code';
     capability: ModelCapability;
     costTier: 'free' | 'paid' | 'subscription';
     rateLimit: number; // requests per minute
@@ -47,7 +88,7 @@ export interface ModelInfo {
  * Task distribution rules
  */
 export interface TaskDistributionRule {
-    taskType: RagTaskType;
+    taskType: AITaskType;
     preferredModel: string;
     fallbackModels: string[];
     maxContextLength: number;
@@ -55,32 +96,31 @@ export interface TaskDistributionRule {
 }
 
 /**
- * Multi-model orchestrator for distributing RAG tasks efficiently
+ * Universal Multi-Model Orchestrator for distributing AI tasks efficiently
+ * Supports all domains: text processing, code generation, creative writing, data extraction, etc.
  */
 export class MultiModelOrchestrator {
     private memoryManager: MemoryManager;
-    private geminiService: GeminiIntegrationService;
+    private aiService: AIIntegrationService;
     private mistralClient?: Mistral;
-    private claudeCodeService?: ClaudeCodeIntegrationService;
+    private geminiApiClient: any;
+    private claudeCodeService: any;
     private availableModels: Map<string, ModelInfo> = new Map();
-    private taskRules: Map<RagTaskType, TaskDistributionRule> = new Map();
+    private taskRules: Map<AITaskType, TaskDistributionRule> = new Map();
     private taskCompletionStats: Map<string, { success: number; failure: number; avgTime: number }> = new Map();
-    private geminiApiClient?: GeminiApiClient;
     private hasOAuthCredentials: boolean = false;
     private claudeCodeAvailable: boolean = false;
     private mistralAvailable: boolean = false;
 
     private initPromise?: Promise<void>;
 
-    constructor(memoryManager: MemoryManager, geminiService: GeminiIntegrationService) {
+    constructor(memoryManager: MemoryManager, aiService: AIIntegrationService) {
         this.memoryManager = memoryManager;
-        this.geminiService = geminiService;
+        this.aiService = aiService;
 
-        // Use the same GeminiApiClient instance from geminiService to share OAuth credentials
-        this.geminiApiClient = (geminiService as any).geminiApiClient || new GeminiApiClient();
-
-        // Initialize Claude Code service
-        this.claudeCodeService = new ClaudeCodeIntegrationService();
+        // Note: These services will be available through aiService.orchestrator
+        this.geminiApiClient = aiService.getProvider('gemini');
+        this.claudeCodeService = aiService.getProvider('claude_code');
 
         // Initialize models and rules (will be called async)
         this.initPromise = this.initialize();
@@ -89,22 +129,22 @@ export class MultiModelOrchestrator {
     /**
      * Static factory method to create a fully initialized MultiModelOrchestrator
      */
-    static async create(memoryManager?: MemoryManager, geminiService?: GeminiIntegrationService): Promise<MultiModelOrchestrator> {
+    static async create(memoryManager?: MemoryManager, aiService?: AIIntegrationService): Promise<MultiModelOrchestrator> {
         // Create default dependencies if not provided
         const defaultMemoryManager = memoryManager || await MemoryManager.create();
 
-        let defaultGeminiService = geminiService;
-        if (!defaultGeminiService) {
-            // Create GeminiIntegrationService with required dependencies
-            const { DatabaseService } = await import('../../database/services/DatabaseService.js');
-            const { ContextInformationManager } = await import('../../database/managers/ContextInformationManager.js');
+        let defaultAiService = aiService;
+        if (!defaultAiService) {
+            // Create AIIntegrationService with required dependencies
+            const { DatabaseService } = await import('../../DatabaseService.js');
+            const { ContextInformationManager } = await import('../../../managers/ContextInformationManager.js');
 
             const dbService = new DatabaseService();
             const contextManager = new ContextInformationManager(dbService);
-            defaultGeminiService = new GeminiIntegrationService(dbService, contextManager, defaultMemoryManager);
+            defaultAiService = new AIIntegrationService(defaultMemoryManager);
         }
 
-        const orchestrator = new MultiModelOrchestrator(defaultMemoryManager, defaultGeminiService);
+        const orchestrator = new MultiModelOrchestrator(defaultMemoryManager, defaultAiService);
         await orchestrator.waitForInitialization();
 
         return orchestrator;
@@ -118,10 +158,7 @@ export class MultiModelOrchestrator {
             await this.initPromise;
         }
 
-        // Also wait for Claude Code service initialization
-        if (this.claudeCodeService) {
-            await this.claudeCodeService.waitForInitialization();
-        }
+        // Services are initialized through aiService
     }
 
     /**
@@ -181,16 +218,16 @@ export class MultiModelOrchestrator {
             tier: this.hasOAuthCredentials ? 'free_oauth' : 'free_api'
         });
 
-        // Gemini 2.5 Flash Lite - supports OAuth
+        // Older models - only available with API keys
         this.availableModels.set('gemini-2.5-flash-lite', {
             name: 'gemini-2.5-flash-lite',
             provider: 'gemini',
             capability: 'simple',
             costTier: 'free',
-            rateLimit: this.hasOAuthCredentials ? 60 : 15, // OAuth: 60 RPM, API Key: 15 RPM
-            available: geminiAvailable,
-            authMethod: this.hasOAuthCredentials ? 'oauth' : 'api_key',
-            tier: this.hasOAuthCredentials ? 'free_oauth' : 'free_api'
+            rateLimit: 15, // Higher rate for low-latency simple tasks
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
         });
 
         this.availableModels.set('gemini-2.0-flash-lite', {
@@ -226,9 +263,9 @@ export class MultiModelOrchestrator {
                 this.availableModels.set('mistral-medium-latest', {
                     name: 'mistral-medium-latest',
                     provider: 'mistral',
-                    capability: 'complex',
+                    capability: 'fallback',
                     costTier: 'paid',
-                    rateLimit: 100, // Latest frontier-class multimodal model
+                    rateLimit: 100, // Fallback model only - use sparingly
                     available: true,
                     authMethod: 'api_key',
                     tier: 'paid'
@@ -242,11 +279,38 @@ export class MultiModelOrchestrator {
             console.log('[Multi-Model Orchestrator] Mistral API key not found - Mistral models unavailable');
         }
 
-        // Claude Code models - wait for initialization to complete
-        if (this.claudeCodeService) {
-            await this.claudeCodeService.waitForInitialization();
+        // QwenCode models - check OAuth availability
+        const qwenCodeAvailable = await this.checkQwenCodeAvailability();
+        if (qwenCodeAvailable) {
+            this.availableModels.set('qwen3-coder-plus', {
+                name: 'qwen3-coder-plus',
+                provider: 'qwen_code',
+                capability: 'complex',
+                costTier: 'free',
+                rateLimit: 100,
+                available: true,
+                authMethod: 'oauth',
+                tier: 'free_oauth'
+            });
+
+            this.availableModels.set('qwen3-coder-flash', {
+                name: 'qwen3-coder-flash',
+                provider: 'qwen_code',
+                capability: 'medium',
+                costTier: 'free',
+                rateLimit: 100,
+                available: true,
+                authMethod: 'oauth',
+                tier: 'free_oauth'
+            });
+
+            console.log('[Multi-Model Orchestrator] QwenCode integration enabled with 2 models');
+        } else {
+            console.log('[Multi-Model Orchestrator] QwenCode OAuth not available - QwenCode models unavailable');
         }
-        this.claudeCodeAvailable = this.claudeCodeService?.isClaudeCodeAvailable() || false;
+
+        // Claude Code models - check CLI availability
+        this.claudeCodeAvailable = await this.checkClaudeCodeAvailability();
         const claudeCodeAvailable = this.claudeCodeAvailable;
         if (claudeCodeAvailable) {
             // Add Claude Code models
@@ -293,6 +357,7 @@ export class MultiModelOrchestrator {
         console.log(`  📦 Mistral: ${mistralAvailable ? '✅ API Key' : '❌ No API Key'} (always requires API key)`);
         console.log(`  🤖 Gemini: ${geminiApiKeyAvailable ? '✅ API Key' : '❌ No API Key'} | ${this.hasOAuthCredentials ? '✅ OAuth' : '❌ No OAuth'}`);
         console.log(`  🎭 Claude Code: ${claudeCodeAvailable ? '✅ Available' : '❌ Not Available'} (subscription or API)`);
+        console.log(`  🔧 QwenCode: ${qwenCodeAvailable ? '✅ OAuth' : '❌ No OAuth'} (OAuth required)`);
 
         if (this.hasOAuthCredentials) {
             console.log(`  🚀 OAuth Benefits: Gemini 2.5 models get 60 RPM (vs 10 RPM with API keys)`);
@@ -301,8 +366,7 @@ export class MultiModelOrchestrator {
         }
 
         if (claudeCodeAvailable) {
-            const claudeStatus = this.claudeCodeService!.getStatus();
-            console.log(`  🎭 Claude Code: Version ${claudeStatus.version}, ${claudeStatus.availableModels} models available`);
+            console.log(`  🎭 Claude Code: Available through AIIntegrationService`);
         }
 
         console.log(`[Multi-Model Orchestrator] Available Models:`);
@@ -317,23 +381,88 @@ export class MultiModelOrchestrator {
     }
 
     /**
+     * Process AI response with automatic JSON repair
+     */
+    private async processResponseWithJsonRepair(
+        response: string,
+        taskType: AITaskType,
+        model: string,
+        originalPrompt: string
+    ): Promise<string> {
+        // Check if this is a JSON extraction task or if response contains JSON
+        const isJsonTask = taskType === 'json_extraction' ||
+                          taskType.includes('extraction') ||
+                          taskType.includes('json');
+
+        const hasJsonContent = /(\{[\s\S]*\}|\[[\s\S]*\]|```json|```\w*json)/i.test(response);
+
+        if (isJsonTask || hasJsonContent) {
+            console.log(`[MultiModelOrchestrator] Attempting JSON repair for ${taskType} task on ${model}`);
+
+            const repairResult = await jsonRepairService.parseJsonFromAiResponse(
+                response,
+                originalPrompt,
+                `${taskType}-${model}-${Date.now()}`,
+                true // Enable AI repair
+            );
+
+            if (repairResult.success) {
+                console.log(`[MultiModelOrchestrator] ✅ JSON repair successful for ${model}`);
+                return JSON.stringify(repairResult.data, null, 2);
+            } else {
+                console.warn(`[MultiModelOrchestrator] ⚠️ JSON repair failed for ${model}:`, repairResult.error);
+                return response; // Return original if repair fails
+            }
+        }
+
+        return response;
+    }
+
+    /**
+     * Check if QwenCode OAuth is available
+     */
+    private async checkQwenCodeAvailability(): Promise<boolean> {
+        try {
+            // Use same path as kilocode: ~/.qwen/oauth_creds.json
+            const credPath = path.join(os.homedir(), '.qwen', 'oauth_creds.json');
+            await fs.access(credPath);
+            const credData = await fs.readFile(credPath, 'utf8');
+            const credentials = JSON.parse(credData);
+            return !!(credentials.access_token && credentials.refresh_token);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Check if Claude Code CLI is available and authenticated (using GeminiConfig pattern)
+     */
+    private async checkClaudeCodeAvailability(): Promise<boolean> {
+        try {
+            const { execa } = await import('execa');
+            await execa('claude', ['--version'], { timeout: 5000 });
+            console.log('[Multi-Model Orchestrator] Claude Code CLI available and authenticated');
+            return true;
+        } catch (error) {
+            console.log('[Multi-Model Orchestrator] Claude Code CLI not available or not authenticated');
+            return false;
+        }
+    }
+
+    /**
      * Setup task distribution rules based on complexity and model capabilities
      */
     private setupTaskDistributionRules(): void {
-        const pushIfAvailable = (list: string[], modelName: string) => {
-            const model = this.availableModels.get(modelName);
-            if (model?.available && !list.includes(modelName)) {
-                list.push(modelName);
-            }
-        };
-
-        // Simple tasks - default to Gemini Flash Lite, fall back through other providers
-        const simpleModelOrder: string[] = [];
-        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash-lite');
-        pushIfAvailable(simpleModelOrder, 'gemini-2.0-flash');
-        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash');
-        if (this.claudeCodeAvailable) pushIfAvailable(simpleModelOrder, 'claude-3-5-haiku-20241022');
-        if (this.mistralAvailable) pushIfAvailable(simpleModelOrder, 'mistral-medium-latest');
+        // Simple tasks - prefer QwenCode Flash for lightweight tasks, then Gemini
+        const simpleModelOrder = [];
+        // Primary: QwenCode Flash for fast coding tasks
+        const qwenCodeAvailable = this.availableModels.get('qwen3-coder-plus')?.available;
+        if (qwenCodeAvailable) simpleModelOrder.push('qwen3-coder-flash');
+        // Then Gemini Flash Lite (works with both OAuth and API)
+        simpleModelOrder.push('gemini-2.5-flash-lite', 'gemini-2.0-flash-lite');
+        if (this.claudeCodeAvailable) simpleModelOrder.push('claude-3-5-haiku-20241022');
+        // Fallback: Mistral only as last resort
+        if (this.mistralAvailable) simpleModelOrder.push('mistral-medium-latest');
 
         this.taskRules.set('query_rewriting', {
             taskType: 'query_rewriting',
@@ -367,14 +496,15 @@ export class MultiModelOrchestrator {
             complexity: 'simple'
         });
 
-        // Medium tasks - use Claude Code Sonnet or best available
-        const mediumModelOrder: string[] = [];
-        pushIfAvailable(mediumModelOrder, 'gemini-2.5-flash');
-        if (this.claudeCodeAvailable) pushIfAvailable(mediumModelOrder, 'claude-sonnet-4-20250514');
-        if (this.mistralAvailable) pushIfAvailable(mediumModelOrder, 'mistral-medium-latest');
-        pushIfAvailable(mediumModelOrder, 'gemini-2.5-pro');
-        pushIfAvailable(mediumModelOrder, 'gemini-2.5-flash-lite');
-        pushIfAvailable(mediumModelOrder, 'gemini-2.0-flash-lite');
+        // Medium tasks - prefer Gemini 2.5 Flash for normal tasks
+        const mediumModelOrder = [];
+        // Primary: Gemini Flash for medium tasks
+        mediumModelOrder.push('gemini-2.5-flash');
+        if (this.claudeCodeAvailable) mediumModelOrder.push('claude-sonnet-4-20250514');
+        // QwenCode as fallback for medium tasks
+        if (qwenCodeAvailable) mediumModelOrder.push('qwen3-coder-flash');
+        // Mistral as last resort
+        if (this.mistralAvailable) mediumModelOrder.push('mistral-medium-latest');
 
         this.taskRules.set('reflection', {
             taskType: 'reflection',
@@ -384,31 +514,17 @@ export class MultiModelOrchestrator {
             complexity: 'medium'
         });
 
-        // Intent analysis - specifically use Gemini 2.5 Flash for speed and efficiency
-        const intentAnalysisModelOrder: string[] = [];
-        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash');        // Primary choice for intent analysis
-        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash-lite');   // Fast fallback
-        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.0-flash-lite');   // Another fast option
-        if (this.claudeCodeAvailable) pushIfAvailable(intentAnalysisModelOrder, 'claude-3-5-haiku-20241022'); // Fast Claude model
-        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-pro');          // Last resort (too powerful for this task)
-
-        this.taskRules.set('intent_analysis', {
-            taskType: 'intent_analysis',
-            preferredModel: intentAnalysisModelOrder[0] || 'gemini-2.5-flash',
-            fallbackModels: intentAnalysisModelOrder.slice(1),
-            maxContextLength: 5000,
-            complexity: 'medium'
-        });
-
-        // Complex tasks - prefer Claude Code Opus/Sonnet for advanced reasoning
-        const complexModelOrder: string[] = [];
-        pushIfAvailable(complexModelOrder, 'gemini-2.5-pro');
-        pushIfAvailable(complexModelOrder, 'gemini-2.5-flash');
+        // Complex tasks - prefer Gemini 2.5 Pro for complex tasks
+        const complexModelOrder = [];
+        // Primary: Gemini Pro then Flash for complex tasks
+        complexModelOrder.push('gemini-2.5-pro', 'gemini-2.5-flash');
         if (this.claudeCodeAvailable) {
-            pushIfAvailable(complexModelOrder, 'claude-opus-4-1-20250805');
-            pushIfAvailable(complexModelOrder, 'claude-sonnet-4-20250514');
+            complexModelOrder.push('claude-opus-4-1-20250805', 'claude-sonnet-4-20250514');
         }
-        if (this.mistralAvailable) pushIfAvailable(complexModelOrder, 'mistral-medium-latest');
+        // QwenCode as fallback for complex tasks (may be slow)
+        if (qwenCodeAvailable) complexModelOrder.push('qwen3-coder-plus');
+        // Mistral as last resort
+        if (this.mistralAvailable) complexModelOrder.push('mistral-medium-latest');
 
         this.taskRules.set('complex_analysis', {
             taskType: 'complex_analysis',
@@ -442,22 +558,194 @@ export class MultiModelOrchestrator {
             complexity: 'complex'
         });
 
-        // Code generation tasks - prefer Gemini 2.5 Pro for superior code quality
-        const codeGenerationModelOrder: string[] = [];
-        pushIfAvailable(codeGenerationModelOrder, 'gemini-2.5-pro');       // Best for code generation
-        if (this.claudeCodeAvailable) {
-            pushIfAvailable(codeGenerationModelOrder, 'claude-opus-4-1-20250805');     // Excellent for complex code
-            pushIfAvailable(codeGenerationModelOrder, 'claude-sonnet-4-20250514');    // Good code quality
-        }
-        pushIfAvailable(codeGenerationModelOrder, 'gemini-2.5-flash');     // Fast fallback
-        if (this.mistralAvailable) pushIfAvailable(codeGenerationModelOrder, 'mistral-medium-latest');
+        // ============ NEW UNIVERSAL TASK TYPES ============
 
+        // TEXT PROCESSING TASKS
+        this.taskRules.set('text_rewriting', {
+            taskType: 'text_rewriting',
+            preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: simpleModelOrder.slice(1),
+            maxContextLength: 3000,
+            complexity: 'simple'
+        });
+
+        this.taskRules.set('text_summarization', {
+            taskType: 'text_summarization',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 8000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('text_analysis', {
+            taskType: 'text_analysis',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 5000,
+            complexity: 'medium'
+        });
+
+        // CODE & TECHNICAL TASKS
         this.taskRules.set('code_generation', {
             taskType: 'code_generation',
-            preferredModel: codeGenerationModelOrder[0] || 'gemini-2.5-pro',
-            fallbackModels: codeGenerationModelOrder.slice(1),
-            maxContextLength: 12000, // Larger context for code generation
+            preferredModel: complexModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: complexModelOrder.slice(1),
+            maxContextLength: 10000,
             complexity: 'complex'
+        });
+
+        this.taskRules.set('code_review', {
+            taskType: 'code_review',
+            preferredModel: complexModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: complexModelOrder.slice(1),
+            maxContextLength: 15000,
+            complexity: 'complex'
+        });
+
+        this.taskRules.set('code_explanation', {
+            taskType: 'code_explanation',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 8000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('technical_writing', {
+            taskType: 'technical_writing',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 6000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('debugging', {
+            taskType: 'debugging',
+            preferredModel: complexModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: complexModelOrder.slice(1),
+            maxContextLength: 12000,
+            complexity: 'complex'
+        });
+
+        // CREATIVE & COMMUNICATION TASKS
+        this.taskRules.set('creative_writing', {
+            taskType: 'creative_writing',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 8000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('conversation_generation', {
+            taskType: 'conversation_generation',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 6000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('content_creation', {
+            taskType: 'content_creation',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 5000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('storytelling', {
+            taskType: 'storytelling',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 10000,
+            complexity: 'medium'
+        });
+
+        // DATA & EXTRACTION TASKS
+        this.taskRules.set('data_parsing', {
+            taskType: 'data_parsing',
+            preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: simpleModelOrder.slice(1),
+            maxContextLength: 4000,
+            complexity: 'simple'
+        });
+
+        this.taskRules.set('classification', {
+            taskType: 'classification',
+            preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: simpleModelOrder.slice(1),
+            maxContextLength: 3000,
+            complexity: 'simple'
+        });
+
+        this.taskRules.set('entity_extraction', {
+            taskType: 'entity_extraction',
+            preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: simpleModelOrder.slice(1),
+            maxContextLength: 4000,
+            complexity: 'simple'
+        });
+
+        // LANGUAGE & TRANSLATION TASKS
+        this.taskRules.set('translation', {
+            taskType: 'translation',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 5000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('language_detection', {
+            taskType: 'language_detection',
+            preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: simpleModelOrder.slice(1),
+            maxContextLength: 1000,
+            complexity: 'simple'
+        });
+
+        // SPECIALIZED TASKS
+        this.taskRules.set('question_answering', {
+            taskType: 'question_answering',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 8000,
+            complexity: 'medium'
+        });
+
+        this.taskRules.set('research_analysis', {
+            taskType: 'research_analysis',
+            preferredModel: complexModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: complexModelOrder.slice(1),
+            maxContextLength: 15000,
+            complexity: 'complex'
+        });
+
+        this.taskRules.set('general_query', {
+            taskType: 'general_query',
+            preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: mediumModelOrder.slice(1),
+            maxContextLength: 6000,
+            complexity: 'medium'
+        });
+
+        // EMBEDDING GENERATION - Use proper embedding models from config
+        const embeddingModels = [
+            'models/gemini-embedding-001', // Gemini embedding (3072D)
+            'codestral-embed'              // Mistral embedding
+        ];
+        this.taskRules.set('embedding_generation', {
+            taskType: 'embedding_generation',
+            preferredModel: embeddingModels[0], // Prefer Gemini embedding
+            fallbackModels: embeddingModels.slice(1),
+            maxContextLength: 2048,
+            complexity: 'simple'
+        });
+
+        // SEMANTIC SEARCH - Use embedding models for similarity search
+        this.taskRules.set('semantic_search', {
+            taskType: 'semantic_search',
+            preferredModel: embeddingModels[0], // Prefer Gemini embedding for search
+            fallbackModels: embeddingModels.slice(1),
+            maxContextLength: 2048,
+            complexity: 'simple'
         });
 
         console.log(`[Multi-Model Orchestrator] Configured ${this.taskRules.size} task distribution rules`);
@@ -466,7 +754,7 @@ export class MultiModelOrchestrator {
     /**
      * Select the best available model for a given task
      */
-    private selectModelForTask(taskType: RagTaskType, contextLength: number = 0): string | null {
+    private selectModelForTask(taskType: AITaskType, contextLength: number = 0): string | null {
         const rule = this.taskRules.get(taskType);
         if (!rule) {
             console.warn(`[Multi-Model Orchestrator] No rule found for task type: ${taskType}`);
@@ -509,7 +797,7 @@ export class MultiModelOrchestrator {
      * Execute a task using the appropriate model with intelligent fallback
      */
     async executeTask(
-        taskType: RagTaskType,
+        taskType: AITaskType,
         prompt: string,
         systemInstruction?: string,
         options: {
@@ -519,11 +807,9 @@ export class MultiModelOrchestrator {
             tryAllModels?: boolean; // New option to try all available models
         } = {}
     ): Promise<{ content: string; model: string; executionTime: number }> {
-        await this.waitForInitialization();
-
         const startTime = Date.now();
         const { maxRetries = 3, timeout = 30000, contextLength = prompt.length, tryAllModels = false } = options;
-
+        
         const rule = this.taskRules.get(taskType);
         if (!rule) {
             throw new Error(`No rule found for task type: ${taskType}`);
@@ -565,12 +851,18 @@ export class MultiModelOrchestrator {
                     } else if (modelInfo.provider === 'claude_code' && this.claudeCodeService) {
                         content = await this.executeClaudeCodeTask(modelName, prompt, systemInstruction, timeout);
                         console.log(`[Multi-Model Orchestrator] ✅ Success with Claude Code model: ${modelName}`);
+                    } else if (modelInfo.provider === 'qwen_code') {
+                        content = await this.executeQwenCodeTask(modelName, prompt, systemInstruction, timeout);
+                        console.log(`[Multi-Model Orchestrator] ✅ Success with QwenCode model: ${modelName}`);
                     } else {
                         throw new Error(`Unsupported model provider: ${modelInfo.provider}`);
                     }
 
+                    // Process response with JSON repair
+                    content = await this.processResponseWithJsonRepair(content, taskType, modelName, prompt);
+
                     const executionTime = Date.now() - startTime;
-                    
+
                     // Update success statistics
                     this.updateTaskStats(modelName, true, executionTime);
                     
@@ -665,46 +957,137 @@ export class MultiModelOrchestrator {
         systemInstruction?: string,
         timeout: number = 30000
     ): Promise<string> {
-        // Use the OAuth-enabled GeminiApiClient directly to ensure OAuth is used when available
-        if (this.geminiApiClient) {
-            console.log(`[Multi-Model Orchestrator] Using OAuth-enabled GeminiApiClient for model: ${model}`);
-            const response = await this.geminiApiClient.askGemini(prompt, model, systemInstruction);
-            return response.content[0]?.text || 'No response generated';
-        } else {
-            console.log(`[Multi-Model Orchestrator] Fallback to geminiService for model: ${model}`);
-            // Fallback to geminiService if no direct client available
-            const response = await this.geminiService.askGemini(prompt, model, systemInstruction);
-            return response.content[0]?.text || 'No response generated';
-        }
+        const response = await this.aiService.askGemini(prompt, model, systemInstruction);
+        return response.content[0]?.text || 'No response generated';
     }
 
     /**
-     * Execute task using Claude Code
+     * Execute task using Claude Code (following Kilocode pattern)
      */
     private async executeClaudeCodeTask(
         model: string,
         prompt: string,
         systemInstruction?: string,
-        timeout: number = 30000
+        timeout: number = 600000 // 10 minutes like Kilocode
     ): Promise<string> {
-        if (!this.claudeCodeService) {
-            throw new Error('Claude Code service not initialized');
+        try {
+            const { execa } = await import('execa');
+
+            // Build args array like Kilocode does
+            const args = ['-p'];
+
+            // Add system prompt if provided
+            if (systemInstruction) {
+                args.push('--system-prompt', systemInstruction);
+            }
+
+            // Add output format for better parsing
+            args.push(
+                '--verbose',
+                '--output-format', 'stream-json',
+                '--max-turns', '1'
+            );
+
+            // Add model if provided
+            if (model) {
+                args.push('--model', model);
+            }
+
+            console.log(`[Multi-Model Orchestrator] Executing Claude Code: ${model}`);
+
+            // Execute with proper timeout and error handling
+            const process = execa('claude', args, {
+                stdin: 'pipe',
+                stdout: 'pipe',
+                stderr: 'pipe',
+                timeout,
+                maxBuffer: 1024 * 1024 * 1000, // 1GB buffer like Kilocode
+            });
+
+            // Send the prompt via stdin
+            process.stdin?.write(JSON.stringify([{ role: 'user', content: prompt }]));
+            process.stdin?.end();
+
+            const { stdout, stderr } = await process;
+
+            if (stderr && !stderr.includes('Warning')) {
+                console.warn(`[Multi-Model Orchestrator] Claude Code stderr: ${stderr}`);
+            }
+
+            // Parse the stream-json output to extract the response
+            const response = this.parseClaudeCodeResponse(stdout);
+            return response || 'No response generated';
+
+        } catch (error: any) {
+            console.error(`[Multi-Model Orchestrator] Claude Code execution failed:`, error.message);
+
+            // Check if it's a "not found" error and provide helpful message
+            if (error.code === 'ENOENT' || error.message?.includes('ENOENT')) {
+                console.warn('[Multi-Model Orchestrator] Claude Code CLI not found. Install from: https://docs.anthropic.com/en/docs/claude-code/setup');
+            }
+
+            // Check for rate limit errors
+            if (error.message?.includes('rate limit') || error.message?.includes('quota')) {
+                console.warn('[Multi-Model Orchestrator] Claude Code rate limit hit, will fallback to Gemini');
+            }
+
+            // Always throw to trigger fallback to next model
+            throw new Error(`Claude Code execution failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Parse Claude Code stream-json response
+     */
+    private parseClaudeCodeResponse(stdout: string): string {
+        const lines = stdout.split('\n').filter(line => line.trim());
+        let response = '';
+
+        for (const line of lines) {
+            try {
+                const chunk = JSON.parse(line);
+
+                if (chunk.type === 'assistant' && chunk.message) {
+                    const content = chunk.message.content;
+                    if (Array.isArray(content)) {
+                        for (const part of content) {
+                            if (part.type === 'text') {
+                                response += part.text;
+                            }
+                        }
+                    }
+                }
+            } catch (parseError) {
+                // Ignore JSON parse errors, might be partial chunks
+                continue;
+            }
         }
 
-        const taskComplexity = model.includes('haiku') ? 'simple' :
-                              model.includes('sonnet') ? 'medium' : 'complex';
+        return response.trim();
+    }
 
-        const result = await this.claudeCodeService.executeTask(
-            prompt,
+    /**
+     * Execute task using QwenCode
+     */
+    private async executeQwenCodeTask(
+        model: string,
+        prompt: string,
+        systemInstruction?: string,
+        timeout: number = 30000
+    ): Promise<string> {
+        const qwenProvider = this.aiService.getProvider('qwen_code');
+        if (!qwenProvider) {
+            throw new Error('QwenCode provider not available');
+        }
+
+        const response = await qwenProvider.execute({
+            model,
+            query: prompt,
             systemInstruction,
-            {
-                taskType: taskComplexity,
-                modelId: model as any, // Type assertion for now
-                timeout
-            }
-        );
+            maxTokens: 4000
+        });
 
-        return result.content || 'No response generated';
+        return response.content[0]?.text || 'No response generated';
     }
 
     /**
@@ -767,7 +1150,7 @@ export class MultiModelOrchestrator {
 
         return {
             hasOAuth: this.hasOAuthCredentials,
-            instructions: this.hasOAuthCredentials ? undefined : GeminiApiClient.getOAuthSetupInstructions(),
+            instructions: this.hasOAuthCredentials ? undefined : 'Setup OAuth for higher rate limits',
             benefits
         };
     }

@@ -562,7 +562,7 @@ export class CodebaseEmbeddingService {
                 // Merge batch results into combined report
                 combinedReport.newEmbeddingsCount += batchResult.newEmbeddingsCount;
                 combinedReport.reusedEmbeddingsCount += batchResult.reusedEmbeddingsCount;
-                combinedReport.reusedFilesCount += batchResult.reusedFilesCount;
+                // DON'T add reusedFilesCount directly - will recalculate from deduplicated files
                 combinedReport.newEmbeddings.push(...batchResult.newEmbeddings);
                 combinedReport.reusedEmbeddings.push(...batchResult.reusedEmbeddings);
                 combinedReport.reusedFiles.push(...batchResult.reusedFiles);
@@ -617,6 +617,10 @@ export class CodebaseEmbeddingService {
                 continue;
             }
         }
+
+        // Recalculate reusedFilesCount from deduplicated unique file paths
+        const uniqueReusedFiles = new Set(combinedReport.reusedFiles.map(f => f.file_path_relative));
+        combinedReport.reusedFilesCount = uniqueReusedFiles.size;
 
         console.log(`[_processBatchedFiles] All batches completed. Total: ${combinedReport.newEmbeddingsCount} new, ${combinedReport.reusedEmbeddingsCount} reused, ${combinedReport.reusedFilesCount} files reused`);
 
@@ -904,7 +908,8 @@ export class CodebaseEmbeddingService {
         const existingFileHashes = await this.repository.getLatestFileHashes(agentId);
         const allDbFilePaths = new Set(await this.repository.getAllFilePathsForAgent(agentId));
 
-        const scannedItems = await this.introspectionService.scanDirectoryRecursive(
+        // Bypass scan cache so deleted files disappear immediately for stale embedding cleanup.
+        const scannedItems = await this.introspectionService.scanDirectoryRecursiveBypassCache(
             agentId,
             absoluteDirectoryPath,
             absoluteProjectRootPath
@@ -969,6 +974,10 @@ export class CodebaseEmbeddingService {
 
             // Add unchanged files to the result for complete reporting
             await this._addUnchangedFilesToResult(result, agentId, unchangedFiles);
+
+            // Recalculate reusedFilesCount from deduplicated unique file paths after adding unchanged files
+            const uniqueReusedFiles = new Set(result.reusedFiles.map(f => f.file_path_relative));
+            result.reusedFilesCount = uniqueReusedFiles.size;
         }
 
         const processedFilePaths = new Set(filesToProcess.map(f => f.relativePath));

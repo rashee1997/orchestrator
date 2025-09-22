@@ -106,7 +106,7 @@ class MemoryMcpServer {
 
                 // Execute the handler
                 const result = await handler(args, agent_id);
-                return result;
+                return this.normalizeToolResult(result, toolName);
 
             } catch (error: any) {
                 this.log.error('Tool execution failed', {
@@ -125,6 +125,42 @@ class MemoryMcpServer {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
         this.log.info('Memory MCP server running on stdio');
+    }
+
+    private normalizeToolResult(result: any, toolName: string): { content: Array<{ type: string; text: string }> } {
+        const ensureArray = (value: any): Array<{ type: string; text: string }> => {
+            if (Array.isArray(value) && value.every(item => item && typeof item === 'object')) {
+                return value as Array<{ type: string; text: string }>;
+            }
+            if (value && typeof value === 'object' && 'type' in value && 'text' in value) {
+                return [value as { type: string; text: string }];
+            }
+            return [{ type: 'text', text: this.stringifyResult(value) }];
+        };
+
+        if (result && typeof result === 'object' && 'content' in result) {
+            const content = (result as any).content;
+            return { content: ensureArray(content) };
+        }
+
+        const fallbackText = this.stringifyResult(result) || `Tool ${toolName} completed without additional output.`;
+        return {
+            content: [{ type: 'text', text: fallbackText }]
+        };
+    }
+
+    private stringifyResult(result: any): string {
+        if (result === null || result === undefined) {
+            return '';
+        }
+        if (typeof result === 'string') {
+            return result;
+        }
+        try {
+            return JSON.stringify(result, null, 2);
+        } catch {
+            return String(result);
+        }
     }
 }
 

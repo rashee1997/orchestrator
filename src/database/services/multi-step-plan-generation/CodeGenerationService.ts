@@ -1,8 +1,9 @@
 // src/database/services/CodeGenerationService.ts
 
-import { GeminiIntegrationService } from './GeminiIntegrationService.js';
-import { parseGeminiJsonResponse } from './gemini-integration-modules/GeminiResponseParsers.js';
-import { MemoryManager } from '../memory_manager.js';
+import { GeminiIntegrationService } from '../GeminiIntegrationService.js';
+import { parseGeminiJsonResponse } from '../gemini-integration-modules/GeminiResponseParsers.js';
+import { MemoryManager } from '../../memory_manager.js';
+import { MultiModelOrchestrator } from '../../../tools/rag/multi_model_orchestrator.js';
 
 export interface CodeSpecification {
     file_path: string;
@@ -41,10 +42,12 @@ export interface TaskWithCode {
 export class CodeGenerationService {
     private geminiService: GeminiIntegrationService;
     private memoryManager: MemoryManager;
+    private multiModelOrchestrator: MultiModelOrchestrator;
 
     constructor(geminiService: GeminiIntegrationService, memoryManager: MemoryManager) {
         this.geminiService = geminiService;
         this.memoryManager = memoryManager;
+        this.multiModelOrchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
     }
 
     /**
@@ -276,7 +279,7 @@ DETAILED SPECIFICATION:
 - Error Handling: ${spec.error_handling_requirements}
 - Logging: ${spec.logging_requirements}
 - Testing: ${spec.testing_requirements}
-- Integration Points: ${spec.integration_points.join(', ')}
+- Integration Points: ${Array.isArray(spec.integration_points) ? spec.integration_points.join(', ') : spec.integration_points || 'None specified'}
 - Performance: ${spec.performance_considerations}
 
 LIVE FILES FOR CONTEXT:
@@ -284,26 +287,24 @@ ${liveFilesContext}
 
 Generate the complete, production-ready code now:`;
 
-        const response = await this.geminiService.askGemini(
+        // Use MultiModelOrchestrator for intelligent model selection for code generation
+        const response = await this.multiModelOrchestrator.executeTask(
+            'code_generation',
             userQuery,
-            'gemini-2.0-flash-exp',
-            systemInstruction
+            systemInstruction,
+            {
+                maxRetries: 2,
+                timeout: 60000, // Longer timeout for code generation
+                contextLength: userQuery.length + systemInstruction.length
+            }
         );
 
-        if (!response || !response.content || !Array.isArray(response.content) || response.content.length === 0) {
+        if (!response || !response.content) {
             throw new Error('Empty response from code generation service');
         }
 
-        const firstPart = response.content[0];
-        let generatedCode: string;
-
-        if (firstPart && typeof firstPart === 'object' && 'text' in firstPart && typeof firstPart.text === 'string') {
-            generatedCode = firstPart.text;
-        } else if (typeof firstPart === 'string') {
-            generatedCode = firstPart;
-        } else {
-            throw new Error('Unexpected response format from code generation service');
-        }
+        // MultiModelOrchestrator returns a simple string content
+        let generatedCode = response.content;
 
         // Clean up the generated code
         generatedCode = this.cleanupGeneratedCode(generatedCode);

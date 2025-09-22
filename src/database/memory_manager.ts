@@ -314,9 +314,6 @@ export class MemoryManager {
     async extractEntities(...args: Parameters<GeminiIntegrationService['extractEntities']>) {
         return this.geminiIntegrationService.extractEntities(...args);
     }
-    async semanticSearchContext(...args: Parameters<GeminiIntegrationService['semanticSearchContext']>) {
-        return this.geminiIntegrationService.semanticSearchContext(...args);
-    }
 
     async storeRefinedPrompt(...args: Parameters<GeminiIntegrationService['storeRefinedPrompt']>) {
         return this.geminiIntegrationService.storeRefinedPrompt(...args);

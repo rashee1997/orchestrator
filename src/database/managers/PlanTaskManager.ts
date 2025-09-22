@@ -41,6 +41,7 @@ export interface ParsedTask {
     assigned_to?: string;
     verification_method?: string;
     code_content?: string;
+    phase?: string;
     creation_timestamp_unix: number;
     creation_timestamp_iso: string;
     last_updated_timestamp_unix: number;
@@ -64,7 +65,27 @@ export class PlanTaskManager {
     async createPlanWithTasks(
         agent_id: string,
         planData: { title: string; overall_goal?: string; status?: string; version?: number; refined_prompt_id_associated?: string; analysis_report_id_referenced?: string; metadata?: any },
-        tasksData: Array<{ task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }>
+        tasksData: Array<{
+            task_number: number;
+            title: string;
+            description?: string;
+            status?: string;
+            purpose?: string;
+            action_description?: string;
+            files_involved_json?: string[] | string;
+            dependencies_task_ids_json?: string[] | string;
+            tools_required_list_json?: string[] | string;
+            inputs_summary?: string;
+            outputs_summary?: string;
+            success_criteria_text?: string;
+            estimated_effort_hours?: number;
+            assigned_to?: string;
+            verification_method?: string;
+            code_content?: string;
+            phase?: string;
+            notes?: any;
+            [key: string]: any;
+        }>
     ): Promise<{ plan_id: string; task_ids: string[] }> {
         const db = this.dbService.getDb();
         const plan_id = randomUUID();
@@ -120,9 +141,9 @@ export class PlanTaskManager {
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    estimated_effort_hours, assigned_to, verification_method, code_content, phase,
                     creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             );
 
             // Second pass: Insert tasks with resolved dependency IDs
@@ -154,6 +175,7 @@ export class PlanTaskManager {
                     task.assigned_to || null,
                     task.verification_method || null,
                     task.code_content || null,
+                    task.phase || null,
                     timestamp,
                     new Date(timestamp).toISOString(),
                     timestamp,
@@ -239,25 +261,29 @@ export class PlanTaskManager {
 
         const results: ParsedTask[] = await db.all(query, ...params as any[]);
         return results.map((row) => {
-            // Safely parse JSON fields, adding error flags and keeping raw data if parsing fails
-            const parseJsonSafe = (jsonString: string, fieldName: string) => {
+            const parseJsonSafe = (jsonString: string | null | undefined, fieldName: string, defaultValue: any) => {
                 if (jsonString) {
                     try {
                         return JSON.parse(jsonString);
                     } catch (e) {
                         console.error(`Failed to parse ${fieldName} for task ${row.task_id}:`, e);
-                        row[`${fieldName}_parsing_error`] = true;
-                        row[`raw_${fieldName}`] = jsonString;
-                        return null;
+                        (row as any)[`${fieldName}_parsing_error`] = true;
+                        (row as any)[`raw_${fieldName}`] = jsonString;
+                        return defaultValue;
                     }
                 }
-                return []; // Return empty array for consistency if field is null
+                return defaultValue;
             };
 
-            row.files_involved = parseJsonSafe(row.files_involved_json!, 'files_involved_json');
-            row.dependencies_task_ids = parseJsonSafe(row.dependencies_task_ids_json!, 'dependencies_task_ids_json');
-            row.tools_required_list = parseJsonSafe(row.tools_required_list_json!, 'tools_required_list_json');
-            row.notes = parseJsonSafe(row.notes_json!, 'notes_json');
+            const files = parseJsonSafe(row.files_involved_json, 'files_involved_json', []);
+            const dependencies = parseJsonSafe(row.dependencies_task_ids_json, 'dependencies_task_ids_json', []);
+            const tools = parseJsonSafe(row.tools_required_list_json, 'tools_required_list_json', []);
+            const notes = parseJsonSafe(row.notes_json, 'notes_json', {});
+
+            (row as any).files_involved_parsed = files;
+            (row as any).dependencies_task_ids_parsed = dependencies;
+            (row as any).tools_required_list_parsed = tools;
+            (row as any).notes_parsed = notes;
 
             return row;
         });
@@ -292,6 +318,7 @@ export class PlanTaskManager {
             assigned_to?: string;
             verification_method?: string;
             code_content?: string;
+            phase?: string;
             notes?: any;
         },
         completion_timestamp?: number
@@ -318,6 +345,10 @@ export class PlanTaskManager {
             if (value !== undefined) {
                 if (['files_involved_json', 'dependencies_task_ids_json', 'tools_required_list_json', 'notes_json'].includes(key)) {
                     updateFields.push(`${key} = ?`);
+                    updateValues.push(value ? JSON.stringify(value) : null);
+                } else if (key === 'notes') {
+                    // Handle notes object - convert to JSON string for notes_json column
+                    updateFields.push('notes_json = ?');
                     updateValues.push(value ? JSON.stringify(value) : null);
                 } else {
                     const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase(); // convert camelCase to snake_case for db
@@ -417,7 +448,7 @@ export class PlanTaskManager {
     async addTaskToPlan(
         agent_id: string,
         plan_id: string,
-        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; notes?: any }
+        taskData: { task_number: number; title: string; description?: string; status?: string; purpose?: string; action_description?: string; files_involved_json?: string[]; dependencies_task_ids_json?: string[]; tools_required_list_json?: string[]; inputs_summary?: string; outputs_summary?: string; success_criteria_text?: string; estimated_effort_hours?: number; assigned_to?: string; verification_method?: string; code_content?: string; phase?: string; notes?: any }
     ): Promise<string> {
         const db = this.dbService.getDb();
         const timestamp = Date.now();
@@ -440,9 +471,9 @@ export class PlanTaskManager {
                     task_id, plan_id, agent_id, task_number, title, description, status,
                     purpose, action_description, files_involved_json, dependencies_task_ids_json,
                     tools_required_list_json, inputs_summary, outputs_summary, success_criteria_text,
-                    estimated_effort_hours, assigned_to, verification_method, code_content,
+                    estimated_effort_hours, assigned_to, verification_method, code_content, phase,
                     creation_timestamp_unix, creation_timestamp_iso, last_updated_timestamp_unix, last_updated_timestamp_iso, notes_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 task_id,
                 plan_id,
                 agent_id,
@@ -462,6 +493,7 @@ export class PlanTaskManager {
                 taskData.assigned_to || null,
                 taskData.verification_method || null,
                 taskData.code_content || null,
+                taskData.phase || null,
                 timestamp,
                 new Date(timestamp).toISOString(),
                 timestamp,

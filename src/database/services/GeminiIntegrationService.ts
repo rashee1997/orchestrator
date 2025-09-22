@@ -210,20 +210,18 @@ export class GeminiIntegrationService {
 
         await this._checkRateLimit('askGemini');
 
+        const targetModel = modelName || this.defaultAskModelName;
+        console.log(`[GeminiIntegrationService] askGemini called with model: ${targetModel}`);
+
         try {
-            const results = await this.geminiApiClient.batchAskGemini([query], modelName || this.defaultAskModelName, systemInstruction, undefined, thinkingConfig, toolConfig);
+            // Use OAuth-enabled askGemini for single queries (supports OAuth for 2.5 models)
+            const result = await this.geminiApiClient.askGemini(query, targetModel, systemInstruction, undefined, thinkingConfig, toolConfig);
+            const finalResult = { ...result, confidenceScore: undefined, groundingMetadata: result.groundingMetadata };
 
-            if (results.length > 0) {
-                const result = results[0];
-                const finalResult = { ...result, confidenceScore: undefined, groundingMetadata: result.groundingMetadata };
+            this.requestCache.set(cacheKey, { data: finalResult, timestamp: Date.now() });
+            this._cleanupCache();
 
-                this.requestCache.set(cacheKey, { data: finalResult, timestamp: Date.now() });
-                this._cleanupCache();
-
-                return finalResult;
-            }
-
-            throw new Error("Failed to get response from Gemini.");
+            return finalResult;
         } catch (error) {
             console.error("Error in askGemini:", error);
 
