@@ -16,6 +16,7 @@ export type RagTaskType =
     | 'context_summarization'    // Simple - Mistral
     | 'simple_analysis'          // Simple - Mistral
     | 'complex_analysis'         // Complex - Gemini
+    | 'intent_analysis'          // Medium - Gemini 2.5 Flash (fast intent detection)
     | 'decision_making'          // Complex - Gemini
     | 'final_answer_generation'  // Complex - Gemini
     | 'reflection'               // Medium - Mistral/Gemini
@@ -380,6 +381,22 @@ export class MultiModelOrchestrator {
             preferredModel: mediumModelOrder[0] || 'gemini-2.5-flash',
             fallbackModels: mediumModelOrder.slice(1),
             maxContextLength: 6000,
+            complexity: 'medium'
+        });
+
+        // Intent analysis - specifically use Gemini 2.5 Flash for speed and efficiency
+        const intentAnalysisModelOrder: string[] = [];
+        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash');        // Primary choice for intent analysis
+        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash-lite');   // Fast fallback
+        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.0-flash-lite');   // Another fast option
+        if (this.claudeCodeAvailable) pushIfAvailable(intentAnalysisModelOrder, 'claude-3-5-haiku-20241022'); // Fast Claude model
+        pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-pro');          // Last resort (too powerful for this task)
+
+        this.taskRules.set('intent_analysis', {
+            taskType: 'intent_analysis',
+            preferredModel: intentAnalysisModelOrder[0] || 'gemini-2.5-flash',
+            fallbackModels: intentAnalysisModelOrder.slice(1),
+            maxContextLength: 5000,
             complexity: 'medium'
         });
 

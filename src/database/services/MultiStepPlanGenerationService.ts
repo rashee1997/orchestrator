@@ -17,6 +17,12 @@ import * as PlanUtils from './multi-step-plan-generation/utils.js';
 import { TaskConsolidationService } from './multi-step-plan-generation/TaskConsolidationService.js';
 import { TestGenerationService } from './multi-step-plan-generation/TestGenerationService.js';
 
+// New adaptive planning imports
+import { DynamicPlanAnalyzer } from './multi-step-plan-generation/DynamicPlanAnalyzer.js';
+import { AdaptiveBatchPlanner, RefinedPromptContext } from './multi-step-plan-generation/AdaptiveBatchPlanner.js';
+import { AIIntentAnalyzer } from './multi-step-plan-generation/AIIntentAnalyzer.js';
+import type { CodebaseIntrospectionService } from './CodebaseIntrospectionService.js';
+
 export type { BatchInstruction, PlanGenerationProgress }; // Re-export for compatibility
 
 export class MultiStepPlanGenerationService {
@@ -25,16 +31,24 @@ export class MultiStepPlanGenerationService {
     private codeGenerationService: CodeGenerationService;
     private taskConsolidationService: TaskConsolidationService;
     private testGenerationService: TestGenerationService;
+    private dynamicPlanAnalyzer: DynamicPlanAnalyzer;
+    private adaptiveBatchPlanner: AdaptiveBatchPlanner;
+    private aiIntentAnalyzer: AIIntentAnalyzer;
 
     constructor(
-        memoryManager: MemoryManager, 
-        geminiService: GeminiIntegrationService
+        memoryManager: MemoryManager,
+        geminiService: GeminiIntegrationService,
+        projectRootPath: string = process.cwd(),
+        introspectionService?: CodebaseIntrospectionService
     ) {
         this.memoryManager = memoryManager;
         this.geminiService = geminiService;
         this.codeGenerationService = new CodeGenerationService(geminiService, memoryManager);
         this.taskConsolidationService = new TaskConsolidationService(geminiService, memoryManager);
         this.testGenerationService = new TestGenerationService(geminiService);
+        this.dynamicPlanAnalyzer = new DynamicPlanAnalyzer(projectRootPath, memoryManager, introspectionService);
+        this.aiIntentAnalyzer = new AIIntentAnalyzer(geminiService, memoryManager);
+        this.adaptiveBatchPlanner = new AdaptiveBatchPlanner(this.aiIntentAnalyzer);
     }
 
     async generatePlanStructure(
@@ -43,7 +57,7 @@ export class MultiStepPlanGenerationService {
         isRefinedPromptId: boolean,
         liveFiles: Array<{ path: string; content: string }> = []
     ): Promise<PlanGenerationProgress> {
-        console.log(`[Multi-Step Plan] Step 1: Analyzing refined prompt and pre-planning batches for agent ${agentId}`);
+        console.log(`[Multi-Step Plan] Step 1: Intelligent analysis for agent ${agentId} (${isRefinedPromptId ? 'refined prompt' : 'direct goal'})`);
         
         try {
             const liveFilesContent = new Map(liveFiles.map(f => [f.path, f.content]));
@@ -56,25 +70,75 @@ export class MultiStepPlanGenerationService {
             const endDate = new Date(startDate);
             endDate.setDate(endDate.getDate() + 14);
             const endDateStr = endDate.toISOString().split('T')[0];
-            
-            const batchPlanningPrompt = buildBatchPlanningPrompt(today, startDateStr, endDateStr, identifier, liveFilesContent);
-            
-            const batchPlanResponse = await callGemini(this.geminiService, 'You are an intelligent multi-step orchestrator.', batchPlanningPrompt);
 
-            const batchPlan = await parseGeminiJsonResponse(batchPlanResponse, {
-                contextDescription: 'Multi-step batch planning', memoryManager: this.memoryManager,
-                geminiService: this.geminiService, enableAIRepair: true
-            });
+            // Use adaptive planning based on whether we have refined prompt or direct goal
+            let adaptivePlan;
+            let normalizedStrategy: BatchInstruction[];
+            let normalizedHeader;
 
-            if (!batchPlan || typeof batchPlan !== 'object') throw new Error('Batch planning response was empty or invalid.');
-            
-            const rawPlanHeader = PlanUtils.extractField(batchPlan, ['plan_header', 'planHeader']);
-            const rawBatchStrategy = PlanUtils.extractField(batchPlan, ['batch_strategy', 'batchStrategy']);
-            const normalizedStrategy = PlanUtils.normalizeBatchStrategy(rawBatchStrategy);
-            if (!normalizedStrategy.length) throw new Error('Batch planning response missing batch strategy.');
+            if (isRefinedPromptId && originalPromptPayload?.refinedPromptDetails) {
+                // Path 1: Use refined prompt with decomposed tasks
+                console.log(`[Multi-Step Plan] Using refined prompt analysis with decomposed tasks`);
 
-            const defaultTitleSource = isRefinedPromptId ? (originalPromptPayload?.refinedPromptDetails?.overall_goal || identifier) : identifier;
-            const normalizedHeader = PlanUtils.normalizePlanHeader(rawPlanHeader, normalizedStrategy, { defaultTitle: defaultTitleSource, startDateStr, endDateStr });
+                const fileAnalyses = await Promise.all(
+                    liveFiles.map(file => this.dynamicPlanAnalyzer.analyzeFile(file.path, file.content))
+                );
+
+                const refinedContext: RefinedPromptContext = {
+                    overall_goal: originalPromptPayload.refinedPromptDetails.overall_goal,
+                    decomposed_tasks: originalPromptPayload.refinedPromptDetails.decomposed_tasks_parsed || originalPromptPayload.refinedPromptDetails.decomposed_tasks || [],
+                    key_entities_identified: originalPromptPayload.refinedPromptDetails.key_entities_identified_parsed || originalPromptPayload.refinedPromptDetails.key_entities_identified || [],
+                    explicit_constraints_from_prompt: originalPromptPayload.refinedPromptDetails.explicit_constraints_from_prompt_parsed || originalPromptPayload.refinedPromptDetails.explicit_constraints_from_prompt || [],
+                    implicit_assumptions_made_by_refiner: originalPromptPayload.refinedPromptDetails.implicit_assumptions_made_by_refiner_parsed || originalPromptPayload.refinedPromptDetails.implicit_assumptions_made_by_refiner || []
+                };
+
+                adaptivePlan = this.adaptiveBatchPlanner.createPlanFromRefinedPrompt(
+                    refinedContext,
+                    fileAnalyses,
+                    startDateStr,
+                    endDateStr
+                );
+
+                normalizedStrategy = adaptivePlan.adaptiveBatches;
+                const defaultTitleSource = refinedContext.overall_goal || identifier;
+                normalizedHeader = this.createPlanHeaderFromAdaptivePlan(adaptivePlan, defaultTitleSource, startDateStr, endDateStr);
+
+            } else {
+                // Path 2: Use enhanced AI-driven goal analysis
+                console.log(`[Multi-Step Plan] Using AI-enhanced dynamic goal analysis`);
+
+                const fileAnalyses = await Promise.all(
+                    liveFiles.map(file => this.dynamicPlanAnalyzer.analyzeFile(file.path, file.content))
+                );
+
+                // Use AI intent analysis for intelligent planning
+                adaptivePlan = await this.adaptiveBatchPlanner.createPlanWithAIAnalysis(
+                    identifier,
+                    fileAnalyses,
+                    startDateStr,
+                    endDateStr
+                );
+
+                // Check for legacy fallback
+                if (adaptivePlan.usedLegacyFallback) {
+                    console.log(`[Multi-Step Plan] 🔄 Using legacy planning for enterprise scenario: ${adaptivePlan.scenario?.name}`);
+                    // Fall back to original planning logic for very complex scenarios
+                    const planContext = await this.dynamicPlanAnalyzer.analyzePlanningContext(identifier, liveFiles);
+                    const legacyPlan = this.adaptiveBatchPlanner.createPlanFromGoalAnalysis(planContext, startDateStr, endDateStr);
+                    normalizedStrategy = legacyPlan.adaptiveBatches;
+                    normalizedHeader = this.createPlanHeaderFromAdaptivePlan(legacyPlan, identifier, startDateStr, endDateStr);
+                } else {
+                    // If we should skip multi-step, return early with single task plan
+                    if (adaptivePlan.skipMultiStep) {
+                        console.log(`[Multi-Step Plan] ✅ AI detected simple change - recommending direct execution`);
+                        console.log(`[AI Analysis] Scenario: ${adaptivePlan.scenario?.name}, Confidence: ${(adaptivePlan.aiAnalysis?.confidence || 0) * 100}%`);
+                        return this.createSingleTaskPlan(agentId, identifier, liveFilesContent, originalPromptPayload, startDateStr, endDateStr);
+                    }
+
+                    normalizedStrategy = adaptivePlan.adaptiveBatches;
+                    normalizedHeader = this.createPlanHeaderFromAdaptivePlan(adaptivePlan, identifier, startDateStr, endDateStr);
+                }
+            }
 
             const planId = `plan_${agentId}_${Date.now()}`;
             const progress: PlanGenerationProgress = {
@@ -89,11 +153,13 @@ export class MultiStepPlanGenerationService {
                 tasks: [], isComplete: false, createdAt: new Date(), updatedAt: new Date(),
                 batchPlan: {
                     identifier, isRefinedPromptId, allLiveFiles: liveFilesContent,
-                    prePlannedBatches: normalizedStrategy, originalPromptPayload
+                    prePlannedBatches: normalizedStrategy, originalPromptPayload,
+                    adaptivePlan // Store the adaptive plan for reference
                 }
             };
 
-            console.log(`[Multi-Step Plan] ✅ Batch plan created: "${progress.planData?.plan_title}" with ${normalizedStrategy.length} batches`);
+            console.log(`[Multi-Step Plan] ✅ Adaptive plan created: "${progress.planData?.plan_title}" with ${normalizedStrategy.length} batches (${adaptivePlan.planComplexity})`);
+            console.log(`[Multi-Step Plan] 📋 Planning rationale: ${adaptivePlan.planningRationale}`);
             return progress;
         } catch (error) {
             console.error('[Multi-Step Plan] Failed to generate batch plan:', error);
@@ -125,10 +191,8 @@ export class MultiStepPlanGenerationService {
             const completedTasksSummary = progress.tasks.slice(-3).map(t => `- ${t.title}: ${t.description?.substring(0, 100)}...`).join('\n') || 'No previous tasks';
             const avgTaskHours = PlanUtils.calculateRealisticEffortHours(currentBatch, currentBatch.expectedTaskCount);
 
-            const liveFilesString = Array.from(relevantFilesContent.entries()).map(([path, content]) => {
-                const analysis = PlanUtils.analyzeFileForBatch(path, content, currentBatch);
-                return `--- LIVE FILE: ${path} ---\nFILE ANALYSIS: ${analysis.purpose}\n${content.substring(0, 3500)}...\n--- END FILE ---`;
-            }).join('\n\n');
+            // Use intelligent file formatting with chunking for large files
+            const liveFilesString = await this.formatFilesForAI(relevantFilesContent, currentBatch);
 
             const userQuery = MULTISTEP_TASK_USER_QUERY
                 .replace('{originalGoal}', 'Context provided')
@@ -261,5 +325,110 @@ export class MultiStepPlanGenerationService {
             .replace('{goal}', goal)
             .replace('{codebaseContext}', codebaseContext || 'No context provided.')
             .replace('{liveFilesString}', liveFilesString);
+    }
+
+    /**
+     * Creates a plan header from adaptive plan results
+     */
+    private createPlanHeaderFromAdaptivePlan(adaptivePlan: any, defaultTitle: string, startDateStr: string, endDateStr: string): any {
+        return {
+            planTitle: `${defaultTitle} (${adaptivePlan.planComplexity.replace('_', ' ')})`,
+            estimatedDurationDays: Math.max(7, adaptivePlan.totalBatches * 3),
+            targetStartDate: startDateStr,
+            targetEndDate: endDateStr,
+            kpis: [
+                `Complete ${adaptivePlan.totalBatches} planned batches`,
+                'Maintain code quality standards',
+                'Ensure all tests pass'
+            ],
+            dependencyAnalysis: adaptivePlan.planningRationale,
+            planRisksAndMitigations: [
+                {
+                    risk_description: 'Implementation complexity may exceed estimates',
+                    mitigation_strategy: 'Break down complex tasks into smaller, manageable pieces',
+                    probability: 'Medium',
+                    impact: 'Medium'
+                }
+            ],
+            timelineBreakdown: {
+                phase_1_duration: Math.ceil(adaptivePlan.totalBatches / 3) * 3,
+                phase_2_duration: Math.ceil(adaptivePlan.totalBatches / 3) * 3,
+                phase_3_duration: Math.floor(adaptivePlan.totalBatches / 3) * 3,
+                buffer_days: 2
+            },
+            resourceRequirements: [
+                'Development environment and tools',
+                'Access to codebase and files',
+                'Testing infrastructure'
+            ]
+        };
+    }
+
+    /**
+     * Creates a simple single-task plan for very basic changes
+     */
+    private createSingleTaskPlan(
+        agentId: string,
+        identifier: string,
+        liveFilesContent: Map<string, string>,
+        originalPromptPayload: any,
+        startDateStr: string,
+        endDateStr: string
+    ): PlanGenerationProgress {
+        const planId = `plan_${agentId}_${Date.now()}`;
+        const planTitle = `Simple task: ${identifier}`;
+
+        return {
+            planId,
+            agentId,
+            currentStep: 1,
+            totalSteps: 1,
+            completedTasks: 0,
+            planData: {
+                plan_title: planTitle,
+                estimated_duration_days: 1,
+                target_start_date: startDateStr,
+                target_end_date: startDateStr, // Same day completion
+                kpis: ['Complete the requested change', 'Maintain code quality'],
+                dependency_analysis: 'Simple change with minimal dependencies',
+                plan_risks_and_mitigations: [],
+                timeline_breakdown: { phase_1_duration: 1, phase_2_duration: 0, phase_3_duration: 0, buffer_days: 0 },
+                resource_requirements: ['Development environment']
+            },
+            tasks: [],
+            isComplete: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            batchPlan: {
+                identifier,
+                isRefinedPromptId: false,
+                allLiveFiles: liveFilesContent,
+                prePlannedBatches: [], // No batches for single task
+                originalPromptPayload,
+                singleTask: true // Flag to indicate this should be handled as single task
+            }
+        };
+    }
+
+    /**
+     * Formats files for AI consumption using intelligent chunking
+     */
+    private async formatFilesForAI(relevantFilesContent: Map<string, string>, currentBatch: BatchInstruction): Promise<string> {
+        const formattedFiles: string[] = [];
+
+        for (const [path, content] of relevantFilesContent.entries()) {
+            try {
+                const fileAnalysis = await this.dynamicPlanAnalyzer.analyzeFile(path, content);
+                const formattedContent = this.dynamicPlanAnalyzer.getFormattedFileContent(fileAnalysis);
+                formattedFiles.push(formattedContent);
+            } catch (error) {
+                console.warn(`Failed to analyze ${path}, using fallback formatting:`, error);
+                // Fallback to simple formatting
+                const analysis = PlanUtils.analyzeFileForBatch(path, content, currentBatch);
+                formattedFiles.push(`--- LIVE FILE: ${path} ---\nFILE ANALYSIS: ${analysis.purpose}\n${content.substring(0, 3500)}...\n--- END FILE ---`);
+            }
+        }
+
+        return formattedFiles.join('\n\n---\n\n');
     }
 }

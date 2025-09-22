@@ -385,7 +385,7 @@ export const schemas = {
                         },
                         dependencies_task_ids_json: {
                             type: ['string', 'array', 'null'],
-                            items: { type: 'string' }
+                            items: { type: ['string', 'number'] }
                         },
                         tools_required_list_json: {
                             type: ['string', 'array', 'null'],

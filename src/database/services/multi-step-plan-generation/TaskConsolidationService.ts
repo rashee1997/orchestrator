@@ -63,14 +63,32 @@ export class TaskConsolidationService {
             if (seenTitles.has(titleKey)) continue;
             seenTitles.add(titleKey);
             if (!task.title || !task.description) continue;
-            if (task.code_content) task.code_content = this.cleanCodeSnippet(task.code_content);
+
+            // Ensure code_content is always a string or null
+            if (task.code_content !== null && task.code_content !== undefined) {
+                task.code_content = this.cleanCodeSnippet(task.code_content);
+            } else {
+                task.code_content = null;
+            }
+
             validatedTasks.push(task);
         }
         console.log(`[Task Validation] ✅ Validated ${validatedTasks.length} tasks`);
         return validatedTasks;
     }
 
-    private cleanCodeSnippet(code: string): string {
-        return code.replace(/\bvar\s+/g, 'const ');
+    private cleanCodeSnippet(code: any): string {
+        // Handle different types of code content
+        if (typeof code === 'string') {
+            return code.replace(/\bvar\s+/g, 'const ');
+        } else if (code && typeof code === 'object') {
+            // If it's an object or array, convert to string first
+            return JSON.stringify(code);
+        } else if (code === null || code === undefined) {
+            return '';
+        } else {
+            // Convert any other type to string
+            return String(code);
+        }
     }
 }

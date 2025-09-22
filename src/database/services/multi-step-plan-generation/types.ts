@@ -54,6 +54,8 @@ export interface PlanGenerationProgress {
         allLiveFiles: Map<string, string>;
         prePlannedBatches: BatchInstruction[];
         originalPromptPayload: any;
+        adaptivePlan?: any; // Store adaptive plan for reference
+        singleTask?: boolean; // Flag for single task mode
     };
 }
 
