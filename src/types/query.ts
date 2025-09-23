@@ -1,3 +1,21 @@
+export interface GraphTraversalNode {
+    node_id: string;
+    name: string;
+    entityType: string;
+    observations?: string[];
+    [key: string]: unknown;
+}
+
+export interface GraphTraversalRelation {
+    relation_id?: string;
+    relationType: string;
+    fromNodeId?: string;
+    toNodeId?: string;
+    from?: string;
+    to?: string;
+    [key: string]: unknown;
+}
+
 export interface SimpleSearchQuery {
     type: 'simple_search';
     query: string;

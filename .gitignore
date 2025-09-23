@@ -25,3 +25,6 @@ QWEN.MD
 .qwen/
 AI_INTEGRATION_OVERHAUL_PLAN.md
 AGENTS.md
+
+#Ignore insiders AI rules
+.github/instructions/codacy.instructions.md

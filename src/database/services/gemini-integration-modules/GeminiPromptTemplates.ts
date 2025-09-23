@@ -149,44 +149,73 @@ export const EXTRACT_ENTITIES_PROMPT = `Extract key entities and keywords from t
 // ============================================================================
 
 export const ENHANCED_KG_NL_TRANSLATION_PROMPT = `
-You are an expert Knowledge Graph query translator specialized in understanding code structure and relationships. Analyze this natural language query about a codebase and translate it into an optimized Knowledge Graph search.
+You are an expert Knowledge Graph query translator specialized in KuzuDB graph database and modern software architecture analysis. Transform natural language queries into highly optimized graph operations that leverage KuzuDB's native Cypher-style capabilities.
 
 **Query to Analyze**: "{naturalLanguageQuery}"
 
-**Your Task:**
-Transform this natural language query into a comprehensive KG search specification that understands:
-1. **Structural Patterns**: How code entities are organized and related
-2. **Semantic Intent**: What the user is trying to understand or find
-3. **Graph Traversal Strategy**: How to navigate relationships effectively
-4. **Entity Hierarchy**: The importance and priority of different entity types
+**KuzuDB Context:**
+- **Database**: High-performance columnar graph database with native Cypher support
+- **Performance**: 10-188x faster than traditional file-based storage
+- **Capabilities**: Native graph traversal, pattern matching, aggregation, and vector similarity
+- **Schema**: Agent-isolated databases with KGNode and KGRelation tables
 
-**Advanced Analysis Context:**
-- **Codebase Domain**: Software engineering, with focus on classes, functions, modules, files, and their relationships
-- **Relationship Types Available**: imports, exports, calls, inherits, implements, contains, depends_on, defines, references
-- **Entity Types Available**: file, module, class, function, method, variable, interface, type, enum, constant
-- **Search Strategies**: semantic (content-based), structural (relationship-based), hybrid (both), traversal (multi-hop)
+**Advanced Query Analysis:**
+Transform the natural language query into intelligent graph operations considering:
+
+1. **Graph Pattern Recognition**:
+   - Path patterns (A→B→C)
+   - Star patterns (central hub)
+   - Tree patterns (hierarchical)
+   - Cluster patterns (tightly connected)
+
+2. **Cypher-Optimized Operations**:
+   - MATCH patterns for structural queries
+   - Traversal with variable-length paths
+   - Aggregations for summary statistics
+   - Filtering with WHERE clauses
+   - Multi-hop relationship following
+
+3. **Smart Query Strategies**:
+   - **semantic**: Content/name-based matching using CONTAINS
+   - **structural**: Pure relationship traversal using MATCH patterns
+   - **hybrid**: Combined semantic + structural analysis
+   - **traversal**: Multi-hop exploration with depth limits
+   - **aggregation**: Count, group, summarize patterns
 
 **Enhanced Response Format:**
 {
-  "enhanced_query": "Sophisticated query optimized for graph structure understanding",
-  "query_intent": "What the user is fundamentally trying to accomplish",
-  "search_strategy": "semantic|structural|hybrid|traversal",
-  "primary_entity_types": ["most relevant entity types"],
-  "secondary_entity_types": ["supporting entity types"],
-  "key_relation_types": ["essential relationships to explore"],
+  "enhanced_query": "KuzuDB-optimized query description with specific graph patterns",
+  "query_intent": "Core user objective (find, analyze, understand, trace, etc.)",
+  "search_strategy": "semantic|structural|hybrid|traversal|aggregation",
+  "primary_entity_types": ["main entities to focus on"],
+  "secondary_entity_types": ["related entities for context"],
+  "key_relation_types": ["critical relationships to explore"],
+  "cypher_patterns": [
+    "MATCH patterns that would be most effective",
+    "Variable-length path patterns like [r*1..3]",
+    "Filter conditions and WHERE clauses"
+  ],
   "traversal_depth": 1-5,
-  "structural_patterns": ["patterns to look for: hierarchy, dependency_chain, cluster, etc."],
-  "semantic_keywords": ["key terms for semantic matching"],
+  "structural_patterns": ["graph_topology", "dependency_chain", "call_tree", "inheritance_hierarchy"],
+  "semantic_keywords": ["exact terms to match in names/observations"],
   "graph_traversal_rules": {
-    "start_nodes": "where to begin the search",
-    "follow_relations": ["which relationships to follow"],
-    "stop_conditions": "when to stop traversing"
+    "start_nodes": "Initial nodes to begin traversal (specific names or patterns)",
+    "follow_relations": ["relationship types to traverse"],
+    "direction": "outgoing|incoming|bidirectional",
+    "stop_conditions": "Termination criteria (depth, entity type, etc.)"
+  },
+  "performance_optimization": {
+    "use_indexes": true,
+    "limit_results": 50,
+    "parallel_traversal": true,
+    "cache_friendly": true
   },
   "search_optimization": {
     "weight_structure": 0.0-1.0,
     "weight_semantic": 0.0-1.0,
-    "expected_result_count": "estimated number of relevant results",
-    "confidence": 0.0-1.0
+    "expected_result_count": "5-10|10-50|50-100|100+",
+    "confidence": 0.0-1.0,
+    "focus_nodes": ["specific node names to prioritize if mentioned"]
   }
 }
 

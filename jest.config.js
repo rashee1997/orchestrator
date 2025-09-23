@@ -11,12 +11,9 @@ export default {
   transformIgnorePatterns: [
     '/node_modules/'
   ],
+  transform: {
+    '^.+\\.(ts|tsx)$': ['ts-jest', { useESM: true, tsconfig: './tsconfig.json' }]
+  },
   extensionsToTreatAsEsm: ['.ts'],
-  moduleFileExtensions: ['ts', 'js', 'json'],
-  globals: {
-    'ts-jest': {
-      useESM: true,
-      tsconfig: './tsconfig.json'
-    }
-  }
+  moduleFileExtensions: ['ts', 'js', 'json']
 };

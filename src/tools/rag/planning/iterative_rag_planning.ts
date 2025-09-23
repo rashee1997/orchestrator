@@ -13,14 +13,14 @@ export class IterativeRagPlanning {
         private geminiService: GeminiIntegrationService
     ) {}
 
-    private _attemptInlineJsonParse(raw: string | undefined | null): any | null {
+    private _attemptInlineJsonParse(raw: string | undefined | null): unknown | null {
         if (!raw) {
             return null;
         }
         const trimmed = raw.trim();
         const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
         const candidate = (fencedMatch ? fencedMatch[1] : trimmed).trim();
-        const tryParse = (value: string): any | null => {
+        const tryParse = (value: string): unknown | null => {
             try {
                 return JSON.parse(value);
             } catch {
@@ -58,8 +58,7 @@ export class IterativeRagPlanning {
         originalQuery: string,
         currentQuery: string,
         currentContext: RetrievedCodeContext[],
-        iteration: number,
-        model?: string
+        iteration: number
     ): Promise<AgenticRagPlan> {
         const contextSummary = currentContext.slice(-3).map(c =>
             `- ${c.type}: ${c.entityName || 'Unknown'} (${c.sourcePath})`
@@ -114,8 +113,7 @@ export class IterativeRagPlanning {
     async performReflection(
         originalQuery: string,
         context: RetrievedCodeContext[],
-        currentAnswer: string,
-        model?: string
+        currentAnswer: string
     ): Promise<ReflectionResult> {
         const sourceContext = context.map(c =>
             `Source: ${c.sourcePath} | Entity: ${c.entityName || 'Unknown'} | Type: ${c.type}`
