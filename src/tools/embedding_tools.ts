@@ -220,9 +220,86 @@ async function _generateUnifiedAiSummary(
 ): Promise<string> {
     const { newEmbeddings, reusedEmbeddings, deletedEmbeddings } = resultCounts;
 
-    if (newEmbeddings.length === 0 && reusedEmbeddings.length === 0 && deletedEmbeddings.length === 0) {
+    // Enhanced validation: Only generate AI summary when there are ACTUAL changes
+    const hasActualChanges = (
+        newEmbeddings.length > 0 ||
+        deletedEmbeddings.length > 0
+    );
+
+    const hasCommitChanges = resultCounts.commitMetadata &&
+        resultCounts.commitMetadata.currentCommit &&
+        resultCounts.commitMetadata.previousCommit &&
+        resultCounts.commitMetadata.currentCommit !== resultCounts.commitMetadata.previousCommit;
+
+    const hasUncommittedChanges = projectRootPath && (() => {
+        try {
+            // Use dynamic import since we're already inside the module
+            const gitService = new (require('../utils/GitService.js').GitService)(projectRootPath);
+
+            // Check for any working directory changes
+            const diffOutput = gitService.getDiffOutput({ unified: 0 });
+            const stagedOutput = gitService.getDiffOutput({ staged: true, unified: 0 });
+
+            return diffOutput.trim().length > 0 || stagedOutput.trim().length > 0;
+        } catch (error: any) {
+            console.warn('[AI Summary] Could not check git changes:', error?.message || error);
+            return false;
+        }
+    })();
+
+    // Additional validation: Check if any changed files actually have git diffs
+    let hasActualFileChanges = false;
+    if (hasActualChanges && projectRootPath) {
+        const changedFiles = new Set([
+            ...newEmbeddings.map(e => e.file_path_relative),
+            ...deletedEmbeddings.map(e => e.file_path_relative)
+        ]);
+
+        // Create a diff provider to check if files actually have changes
+        const tempDiffProvider = createGitDiffProvider(
+            projectRootPath,
+            resultCounts.commitMetadata ? {
+                baseCommit: resultCounts.commitMetadata.previousCommit ?? null,
+                headCommit: resultCounts.commitMetadata.currentCommit ?? undefined
+            } : undefined
+        );
+
+        if (tempDiffProvider) {
+            for (const filePath of changedFiles) {
+                const diff = tempDiffProvider(filePath);
+                if (diff && diff.trim().length > 0) {
+                    hasActualFileChanges = true;
+                    break;
+                }
+            }
+        } else {
+            // If no diff provider, assume changes are valid (fallback)
+            hasActualFileChanges = hasActualChanges;
+        }
+    } else {
+        hasActualFileChanges = hasActualChanges;
+    }
+
+    // Only generate summary if we have actual file changes AND (commit changes OR working directory changes)
+    if (!hasActualFileChanges || (!hasCommitChanges && !hasUncommittedChanges)) {
+        console.log('[AI Summary] Skipping AI summary - no meaningful changes detected', {
+            hasActualChanges,
+            hasActualFileChanges,
+            hasCommitChanges,
+            hasUncommittedChanges,
+            newCount: newEmbeddings.length,
+            deletedCount: deletedEmbeddings.length,
+            reusedCount: reusedEmbeddings.length
+        });
         return '';
     }
+
+    console.log('[AI Summary] Generating AI summary for meaningful changes', {
+        newEmbeddings: newEmbeddings.length,
+        deletedEmbeddings: deletedEmbeddings.length,
+        hasCommitChanges,
+        hasUncommittedChanges
+    });
 
     const commitMetadata = resultCounts.commitMetadata;
     const diffProvider = createGitDiffProvider(
