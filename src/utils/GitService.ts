@@ -79,6 +79,35 @@ export class GitService {
         }
     }
 
+    private runGitCommand(args: string[], input?: string): string {
+        try {
+            return execFileSync('git', args, {
+                cwd: this.workingDirectory,
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'pipe'],
+                input
+            });
+        } catch (error: any) {
+            const stderr = error?.stderr?.toString?.() ?? '';
+            const stdout = error?.stdout?.toString?.() ?? '';
+            const message = stderr || stdout || error.message || 'Unknown git error';
+            throw new Error(`Git command failed: git ${args.join(' ')}\n${message}`);
+        }
+    }
+
+    private normalizePathForGit(filePath: string): string {
+        const trimmed = filePath.trim();
+        if (!trimmed) {
+            return trimmed;
+        }
+
+        if (path.isAbsolute(trimmed)) {
+            return path.relative(this.workingDirectory, trimmed);
+        }
+
+        return trimmed;
+    }
+
     public async gatherStagedChanges(): Promise<GitChange[]> {
         return this.gatherChanges(true);
     }
@@ -266,6 +295,137 @@ export class GitService {
         } catch (error) {
             return '';
         }
+    }
+
+    public getWorkingDirectory(): string {
+        return this.workingDirectory;
+    }
+
+    public getCurrentBranchName(): string {
+        return this.getCurrentBranch();
+    }
+
+    public getStatus(verbose: boolean = false): string {
+        const args = verbose ? ['status'] : ['status', '--short', '--branch'];
+        return this.runGitCommand(args);
+    }
+
+    public stageFiles(filePaths?: string[]): string {
+        if (!filePaths || filePaths.length === 0) {
+            return this.runGitCommand(['add', '--all']);
+        }
+
+        const normalized = filePaths
+            .map(pathSegment => this.normalizePathForGit(pathSegment))
+            .filter(segment => segment.length > 0);
+
+        if (normalized.length === 0) {
+            throw new Error('No valid file paths provided to stage.');
+        }
+
+        return this.runGitCommand(['add', '--', ...normalized]);
+    }
+
+    public unstageFiles(filePaths?: string[]): string {
+        if (!filePaths || filePaths.length === 0) {
+            return this.runGitCommand(['reset', 'HEAD', '--', '.']);
+        }
+
+        const normalized = filePaths
+            .map(pathSegment => this.normalizePathForGit(pathSegment))
+            .filter(segment => segment.length > 0);
+
+        if (normalized.length === 0) {
+            throw new Error('No valid file paths provided to unstage.');
+        }
+
+        return this.runGitCommand(['reset', 'HEAD', '--', ...normalized]);
+    }
+
+    public listBranches(includeRemote: boolean = false): { current: string | null; branches: Array<{ name: string; isCurrent: boolean; isRemote: boolean }> } {
+        const args = ['branch', '--no-color'];
+        if (includeRemote) {
+            args.push('-a');
+        }
+
+        const output = this.runGitCommand(args);
+        const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+
+        const branches = lines.map(line => {
+            const isCurrent = line.startsWith('*');
+            const name = line.replace(/^\*\s*/, '').replace(/^\s*/, '');
+            return {
+                name,
+                isCurrent,
+                isRemote: name.startsWith('remotes/')
+            };
+        });
+
+        const currentBranch = branches.find(branch => branch.isCurrent)?.name || null;
+
+        return {
+            current: currentBranch,
+            branches
+        };
+    }
+
+    public checkoutBranch(branchName: string, options: { create?: boolean; startPoint?: string } = {}): string {
+        const trimmedName = branchName.trim();
+        if (!trimmedName) {
+            throw new Error('Branch name cannot be empty');
+        }
+
+        if (options.create) {
+            const args = ['checkout', '-b', trimmedName];
+            if (options.startPoint) {
+                args.push(options.startPoint);
+            }
+            return this.runGitCommand(args);
+        }
+
+        return this.runGitCommand(['checkout', trimmedName]);
+    }
+
+    public createBranch(branchName: string, startPoint?: string): string {
+        const trimmedName = branchName.trim();
+        if (!trimmedName) {
+            throw new Error('Branch name cannot be empty');
+        }
+
+        const args = ['branch', trimmedName];
+        if (startPoint) {
+            args.push(startPoint);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public getDiffOutput(options: { staged?: boolean; files?: string[]; stat?: boolean; unified?: number } = {}): string {
+        const args: string[] = ['diff'];
+
+        if (options.stat) {
+            args.push('--stat');
+        }
+
+        if (typeof options.unified === 'number' && !Number.isNaN(options.unified)) {
+            args.push(`-U${options.unified}`);
+        }
+
+        if (options.staged) {
+            args.push('--cached');
+        }
+
+        if (options.files && options.files.length > 0) {
+            const normalized = options.files
+                .map(file => this.normalizePathForGit(file))
+                .filter(file => file.length > 0);
+
+            if (normalized.length > 0) {
+                args.push('--', ...normalized);
+            }
+        }
+
+        return this.runGitCommand(args);
     }
 
     public async getCommitContext(preferStaged: boolean = true): Promise<GitContext> {
