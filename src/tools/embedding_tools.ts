@@ -9,6 +9,7 @@ import { formatJsonToMarkdownCodeBlock, formatSimpleMessage } from '../utils/for
 import { schemas, validate } from '../utils/validation.js';
 import { DiverseQueryRewriterService } from './rag/diverse_query_rewriter_service.js';
 import { getCurrentModel } from '../database/services/gemini-integration-modules/GeminiConfig.js';
+import { GitService } from '../utils/GitService.js';
 
 // Define the interface for the chunk result, including the new original_code_snippet
 interface CodeChunkResult {
@@ -18,6 +19,99 @@ interface CodeChunkResult {
     entity_name: string | null;
     score: number;
     metadata?: Record<string, any> | null;
+}
+
+const MAX_DIFF_LINES = 80;
+const MAX_DIFF_CHARACTERS = 4000;
+
+type DiffProvider = (relativePath: string) => string | null;
+
+interface GitDiffProviderOptions {
+    baseCommit?: string | null;
+    headCommit?: string | null;
+}
+
+function createGitDiffProvider(projectRootPath?: string, options?: GitDiffProviderOptions): DiffProvider | null {
+    if (!projectRootPath) {
+        return null;
+    }
+
+    try {
+        const gitService = new GitService(projectRootPath);
+        const cache = new Map<string, string | null>();
+
+        const fetchDiff = (relativePath: string, staged: boolean): string => {
+            if (options?.baseCommit !== undefined || options?.headCommit !== undefined) {
+                const baseRef = options.baseCommit ?? null;
+                const headRef = options.headCommit ?? 'HEAD';
+                return gitService.getDiffBetweenRefs(baseRef, headRef, [relativePath], 3).trim();
+            }
+
+            const diffOptions = staged
+                ? { staged: true as const, files: [relativePath], unified: 3 }
+                : { files: [relativePath], unified: 3 };
+
+            return gitService.getDiffOutput(diffOptions).trim();
+        };
+
+        const trimDiffOutput = (diff: string): string => {
+            if (!diff) {
+                return diff;
+            }
+
+            const lines = diff.split('\n');
+            let trimmed = diff;
+
+            if (lines.length > MAX_DIFF_LINES) {
+                const truncatedLines = lines.slice(0, MAX_DIFF_LINES);
+                truncatedLines.push(`... (+${lines.length - MAX_DIFF_LINES} more lines)`);
+                trimmed = truncatedLines.join('\n');
+            }
+
+            if (trimmed.length > MAX_DIFF_CHARACTERS) {
+                trimmed = trimmed.slice(0, MAX_DIFF_CHARACTERS) + '\n... (diff truncated)';
+            }
+
+            return trimmed;
+        };
+
+        return (relativePath: string): string | null => {
+            if (cache.has(relativePath)) {
+                return cache.get(relativePath)!;
+            }
+
+            try {
+                let combined = '';
+
+                if (options?.baseCommit !== undefined || options?.headCommit !== undefined) {
+                    const commitDiff = trimDiffOutput(fetchDiff(relativePath, false));
+                    combined = commitDiff ? commitDiff : '';
+                } else {
+                    const stagedDiff = trimDiffOutput(fetchDiff(relativePath, true));
+                    const unstagedDiff = trimDiffOutput(fetchDiff(relativePath, false));
+
+                    const sections: string[] = [];
+                    if (stagedDiff) {
+                        sections.push(`--- staged\n${stagedDiff}`);
+                    }
+                    if (unstagedDiff && unstagedDiff !== stagedDiff) {
+                        sections.push(`--- unstaged\n${unstagedDiff}`);
+                    }
+                    combined = sections.join('\n\n');
+                }
+                const result = combined || null;
+                cache.set(relativePath, result);
+                return result;
+            } catch (error) {
+                console.warn(`[Embedding Tools] Unable to retrieve git diff for ${relativePath}:`, error);
+                cache.set(relativePath, null);
+                return null;
+            }
+        };
+    } catch (error) {
+        console.warn('[Embedding Tools] Git diff provider unavailable:', error);
+        return null;
+    }
 }
 
 const queryCodebaseEmbeddingsSchema = {
@@ -105,13 +199,23 @@ export const embeddingToolDefinitions = [
  */
 async function _generateUnifiedAiSummary(
     memoryManager: MemoryManager,
-    resultCounts: EmbeddingIngestionResult
+    resultCounts: EmbeddingIngestionResult,
+    projectRootPath?: string
 ): Promise<string> {
     const { newEmbeddings, reusedEmbeddings, deletedEmbeddings } = resultCounts;
 
     if (newEmbeddings.length === 0 && reusedEmbeddings.length === 0 && deletedEmbeddings.length === 0) {
         return '';
     }
+
+    const commitMetadata = resultCounts.commitMetadata;
+    const diffProvider = createGitDiffProvider(
+        projectRootPath,
+        commitMetadata ? {
+            baseCommit: commitMetadata.previousCommit ?? null,
+            headCommit: commitMetadata.currentCommit ?? undefined
+        } : undefined
+    );
 
     // --- Programmatic Refactor Detection ---
     const fileChanges = new Map<string, { added: Set<string>, removed: Set<string> }>();
@@ -146,30 +250,34 @@ async function _generateUnifiedAiSummary(
     const formatChangeList = (chunks: typeof newEmbeddings) => {
         if (!chunks || chunks.length === 0) return "  - None\n";
         const MAX_ITEMS_PER_SECTION = 20; // Reduced to show chunk content
-        const MAX_CHUNK_PREVIEW = 150; // Characters to show from each chunk
 
         const groupedByFile = chunks.slice(0, MAX_ITEMS_PER_SECTION).reduce((acc, chunk) => {
             const key = chunk.file_path_relative;
             if (!acc[key]) acc[key] = [];
-
-            // Include chunk content preview for better AI understanding
-            const chunkPreview = chunk.chunk_text.length > MAX_CHUNK_PREVIEW
-                ? chunk.chunk_text.substring(0, MAX_CHUNK_PREVIEW) + '...'
-                : chunk.chunk_text;
-
             acc[key].push({
                 entity_name: chunk.entity_name || null,
-                chunk_preview: chunkPreview.replace(/\n/g, ' ').trim()
+                chunk_preview: chunk.chunk_text
             });
             return acc;
-        }, {} as Record<string, Array<{entity_name: string | null, chunk_preview: string}>>);
+        }, {} as Record<string, Array<{ entity_name: string | null; chunk_preview: string }>>);
 
         let list = Object.entries(groupedByFile).map(([filePath, chunks]) => {
             let fileEntry = `  - File: \`${filePath}\`\n`;
-            chunks.forEach(chunk => {
-                const entityInfo = chunk.entity_name ? `\`${chunk.entity_name}\`` : 'code block';
-                fileEntry += `    * ${entityInfo}: ${chunk.chunk_preview}\n`;
-            });
+
+            const gitDiff = diffProvider ? diffProvider(filePath) : null;
+
+            if (gitDiff) {
+                fileEntry += `    \`\`\`diff\n${gitDiff}\n    \`\`\`\n`;
+            } else {
+                const MAX_CHUNK_PREVIEW = 150;
+                chunks.forEach(chunk => {
+                    const chunkPreview = chunk.chunk_preview.length > MAX_CHUNK_PREVIEW
+                        ? chunk.chunk_preview.substring(0, MAX_CHUNK_PREVIEW) + '...'
+                        : chunk.chunk_preview;
+                    const entityInfo = chunk.entity_name ? `\`${chunk.entity_name}\`` : 'code block';
+                    fileEntry += `    * ${entityInfo}: ${chunkPreview.replace(/\n/g, ' ').trim()}\n`;
+                });
+            }
             return fileEntry;
         }).join('');
 
@@ -180,8 +288,27 @@ async function _generateUnifiedAiSummary(
     };
 
     // Create the final, structured changelog for the AI
-    const batchInfo = resultCounts.batchMetadata ?
-        `\n**Processing Context:**\n- Processed ${resultCounts.batchMetadata.totalFilesProcessed} files in ${resultCounts.batchMetadata.totalBatches} batches of ${resultCounts.batchMetadata.batchSize} files each\n- Used automatic batching to prevent API rate limiting\n` : '';
+    let batchInfo = '';
+    if (resultCounts.batchMetadata) {
+        batchInfo += `\n**Processing Context:**\n- Processed ${resultCounts.batchMetadata.totalFilesProcessed} files in ${resultCounts.batchMetadata.totalBatches} batches of ${resultCounts.batchMetadata.batchSize} files each\n- Used automatic batching to prevent API rate limiting\n`;
+    }
+
+    if (commitMetadata?.currentCommit) {
+        batchInfo += `\n**Git Context:**\n- Repository Root: \`${commitMetadata.repositoryRoot}\`\n- Branch: \`${commitMetadata.branchName ?? 'unknown'}\`\n- Current Commit: \`${commitMetadata.currentCommit}\``;
+        if (commitMetadata.previousCommit) {
+            batchInfo += `\n- Previous Ingested Commit: \`${commitMetadata.previousCommit}\``;
+        }
+        if (commitMetadata.commits && commitMetadata.commits.length > 0) {
+            batchInfo += `\n- Commits Since Last Ingestion (${commitMetadata.commits.length}):\n`;
+            commitMetadata.commits.slice(0, 10).forEach(commit => {
+                batchInfo += `  - \`${commit.hash.substring(0, 8)}\` ${commit.message} (${commit.author} on ${commit.date})\n`;
+            });
+            if (commitMetadata.commits.length > 10) {
+                batchInfo += `  - ...and ${commitMetadata.commits.length - 10} more commits.\n`;
+            }
+        }
+        batchInfo += '\n';
+    }
 
     const changelog = `${batchInfo}
 **Refactored Entities (Modified or Replaced):**
@@ -419,7 +546,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
             }
 
             if (!disable_ai_output_summary) {
-                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts);
+                const unifiedSummary = await _generateUnifiedAiSummary(memoryManager, resultCounts, absoluteProjectRootPath);
                 detailedOutput += unifiedSummary;
             }
 

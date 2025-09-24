@@ -48,3 +48,19 @@ CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_model_full_name ON codebas
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_request_id ON codebase_embeddings (embedding_request_id);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_generation_method ON codebase_embeddings (embedding_generation_method);
 CREATE INDEX IF NOT EXISTS idx_vs_codebase_embeddings_generation_timestamp ON codebase_embeddings (embedding_generation_timestamp);
+
+-- Track ingestion checkpoints tied to git commits
+CREATE TABLE IF NOT EXISTS codebase_ingestion_commits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository_root TEXT NOT NULL,
+    agent_id TEXT,
+    commit_hash TEXT NOT NULL,
+    parent_commit_hash TEXT,
+    branch_name TEXT,
+    commit_timestamp INTEGER,
+    metadata_json TEXT,
+    ingested_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    UNIQUE(repository_root, agent_id, commit_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vs_ingestion_commits_repo_agent ON codebase_ingestion_commits (repository_root, agent_id);

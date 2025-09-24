@@ -17,6 +17,13 @@ export interface GitContext {
     workingDirectory: string;
 }
 
+export interface GitCommitSummary {
+    hash: string;
+    author: string;
+    date: string;
+    message: string;
+}
+
 export class GitService {
     private workingDirectory: string;
 
@@ -292,6 +299,71 @@ export class GitService {
         try {
             return this.executeGitCommand(['log', '--oneline', `-${count}`]);
         } catch (error) {
+            return '';
+        }
+    }
+
+    public getHeadCommit(): string {
+        return this.executeGitCommand(['rev-parse', 'HEAD']).trim();
+    }
+
+    public getCommitTimestamp(commitRef: string = 'HEAD'): number {
+        try {
+            const output = this.executeGitCommand(['show', commitRef, '--no-patch', "--format=%ct"]).trim();
+            return Number.parseInt(output, 10);
+        } catch (error) {
+            return Date.now() / 1000;
+        }
+    }
+
+    public getCommitsBetween(baseRef?: string | null, headRef: string = 'HEAD', maxCount: number = 20): GitCommitSummary[] {
+        const format = '%H%x1f%an%x1f%ad%x1f%s%x1e';
+        const rangeArg = baseRef ? `${baseRef}..${headRef}` : headRef;
+        const args = ['log', '--date=iso-strict', `--max-count=${maxCount}`, `--format=${format}`];
+        if (baseRef) {
+            args.push(rangeArg);
+        } else {
+            args.push(headRef);
+        }
+
+        try {
+            const output = this.executeGitCommand(args).trim();
+            if (!output) {
+                return [];
+            }
+
+            return output.split('\u001e').filter(Boolean).map(line => {
+                const [hash, author, date, message] = line.split('\u001f');
+                return {
+                    hash,
+                    author,
+                    date,
+                    message
+                };
+            });
+        } catch (error) {
+            console.warn('Failed to retrieve git commits between refs:', error);
+            return [];
+        }
+    }
+
+    public getDiffBetweenRefs(baseRef: string | null, headRef: string = 'HEAD', files?: string[], unified: number = 3): string {
+        const args: string[] = ['diff', `-U${unified}`];
+        if (baseRef) {
+            args.push(`${baseRef}..${headRef}`);
+        } else {
+            // Compare commit against its parent when no base provided
+            args.push(`${headRef}^..${headRef}`);
+        }
+
+        if (files && files.length > 0) {
+            args.push('--', ...files.map(file => this.normalizePathForGit(file)));
+        }
+
+        try {
+            return this.executeGitCommand(args);
+        } catch (error) {
+            console.warn(`Failed to diff refs ${baseRef ?? headRef + '^'}..${headRef}:`, error);
             return '';
         }
     }

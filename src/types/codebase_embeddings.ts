@@ -59,6 +59,21 @@ export interface EmbeddingIngestionResult {
         totalFilesProcessed: number;
         batchDelayMs: number;
     };
+    commitMetadata?: EmbeddingCommitMetadata;
+}
+
+export interface EmbeddingCommitMetadata {
+    repositoryRoot: string;
+    branchName?: string | null;
+    currentCommit?: string | null;
+    previousCommit?: string | null;
+    commits?: Array<{
+        hash: string;
+        author: string;
+        date: string;
+        message: string;
+    }>;
+    commitTimestamp?: number | null;
 }
 
 export interface CachedChunk {

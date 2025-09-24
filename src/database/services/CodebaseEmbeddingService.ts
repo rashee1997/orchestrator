@@ -10,11 +10,12 @@ import { AIEmbeddingProvider } from './embeddings/AIEmbeddingProvider.js';
 import { ParallelEmbeddingManager } from './embeddings/ParallelEmbeddingManager.js';
 import { CodeChunkingService } from './embeddings/CodeChunkingService.js';
 import { CodebaseEmbeddingRepository } from '../repositories/CodebaseEmbeddingRepository.js';
-import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
+import { ChunkingStrategy, CodebaseEmbeddingRecord, EmbeddingCommitMetadata, EmbeddingIngestionResult } from '../../types/codebase_embeddings.js';
 import { DEFAULT_EMBEDDING_MODEL, VECTOR_FLOAT_SIZE } from '../../constants/embedding_constants.js';
 import { deduplicateContexts } from '../../utils/context_utils.js';
 import { PathValidator } from '../../utils/pathValidator.js';
 import { RetrievedCodeContext } from './CodebaseContextRetrieverService.js';
+import { GitCommitSummary, GitService } from '../../utils/GitService.js';
 
 export class CodebaseEmbeddingService {
     public repository: CodebaseEmbeddingRepository;
@@ -23,6 +24,42 @@ export class CodebaseEmbeddingService {
     public chunkingService: CodeChunkingService;
     public embeddingCache: EmbeddingCache;
     public introspectionService: CodebaseIntrospectionService;
+    
+    private async resolveCommitMetadata(
+        agentId: string,
+        projectRootPath: string
+    ): Promise<EmbeddingCommitMetadata | undefined> {
+        try {
+            const gitService = new GitService(projectRootPath);
+            const repositoryRoot = gitService.getWorkingDirectory();
+            const branchName = gitService.getCurrentBranchName();
+            const currentCommit = gitService.getHeadCommit();
+            const commitTimestamp = currentCommit ? gitService.getCommitTimestamp(currentCommit) : null;
+
+            const previousRecord = await this.repository.getLastIngestionCommit(repositoryRoot, agentId);
+            const previousCommit = previousRecord?.commit_hash || null;
+
+            let commits: GitCommitSummary[] = [];
+            if (currentCommit) {
+                commits = gitService.getCommitsBetween(previousCommit && previousCommit !== currentCommit ? previousCommit : null, currentCommit, 25);
+                if (commits.length === 0) {
+                    commits = gitService.getCommitsBetween(null, currentCommit, 1);
+                }
+            }
+
+            return {
+                repositoryRoot,
+                branchName,
+                currentCommit,
+                previousCommit,
+                commits,
+                commitTimestamp: commitTimestamp ?? null
+            };
+        } catch (error) {
+            console.warn('[CodebaseEmbeddingService] Unable to resolve git commit metadata for embeddings:', error);
+            return undefined;
+        }
+    }
 
     constructor(
         memoryManager: MemoryManager,
@@ -801,6 +838,7 @@ export class CodebaseEmbeddingService {
         const startTime = Date.now();
         const absoluteProjectRootPath = path.resolve(projectRootPath);
         const existingFileHashes = await this.repository.getLatestFileHashes(agentId);
+        const commitMetadata = await this.resolveCommitMetadata(agentId, absoluteProjectRootPath);
 
         const filesToProcess = filePaths.map(fp => {
             const absolutePath = path.resolve(absoluteProjectRootPath, fp);
@@ -818,12 +856,33 @@ export class CodebaseEmbeddingService {
             existingFileHashes
         );
 
-        return {
+        const finalResult: EmbeddingIngestionResult = {
             ...result,
             deletedEmbeddingsCount: result.deletedEmbeddings.length,
             aiSummary: '',
-            totalTimeMs: Date.now() - startTime
+            totalTimeMs: Date.now() - startTime,
+            commitMetadata
         };
+
+        if (commitMetadata?.currentCommit && commitMetadata.currentCommit !== commitMetadata.previousCommit) {
+            try {
+                await this.repository.recordIngestionCommit({
+                    repositoryRoot: commitMetadata.repositoryRoot,
+                    agentId,
+                    commitHash: commitMetadata.currentCommit,
+                    parentCommitHash: commitMetadata.previousCommit ?? null,
+                    branchName: commitMetadata.branchName ?? null,
+                    commitTimestamp: commitMetadata.commitTimestamp ?? null,
+                    metadataJson: commitMetadata.commits && commitMetadata.commits.length > 0
+                        ? JSON.stringify({ commits: commitMetadata.commits })
+                        : null
+                });
+            } catch (error) {
+                console.warn('[CodebaseEmbeddingService] Failed to record ingestion commit checkpoint:', error);
+            }
+        }
+
+        return finalResult;
     }
 
     public async resumeFailedEmbeddingBatch(
@@ -907,6 +966,7 @@ export class CodebaseEmbeddingService {
         const absoluteDirectoryPath = path.resolve(directoryPath);
         const existingFileHashes = await this.repository.getLatestFileHashes(agentId);
         const allDbFilePaths = new Set(await this.repository.getAllFilePathsForAgent(agentId));
+        const commitMetadata = await this.resolveCommitMetadata(agentId, absoluteProjectRootPath);
 
         // Bypass scan cache so deleted files disappear immediately for stale embedding cleanup.
         const scannedItems = await this.introspectionService.scanDirectoryRecursiveBypassCache(
@@ -1023,12 +1083,33 @@ export class CodebaseEmbeddingService {
             console.warn(`  - Files requiring retry: ${result.resumeInfo!.failedFiles.join(', ')}`);
         }
         
-        return {
+        const finalResult: EmbeddingIngestionResult = {
             ...result,
             deletedEmbeddingsCount,
             aiSummary: '',
-            totalTimeMs: Date.now() - startTime
+            totalTimeMs: Date.now() - startTime,
+            commitMetadata
         };
+
+        if (commitMetadata?.currentCommit && commitMetadata.currentCommit !== commitMetadata.previousCommit) {
+            try {
+                await this.repository.recordIngestionCommit({
+                    repositoryRoot: commitMetadata.repositoryRoot,
+                    agentId,
+                    commitHash: commitMetadata.currentCommit,
+                    parentCommitHash: commitMetadata.previousCommit ?? null,
+                    branchName: commitMetadata.branchName ?? null,
+                    commitTimestamp: commitMetadata.commitTimestamp ?? null,
+                    metadataJson: commitMetadata.commits && commitMetadata.commits.length > 0
+                        ? JSON.stringify({ commits: commitMetadata.commits })
+                        : null
+                });
+            } catch (error) {
+                console.warn('[CodebaseEmbeddingService] Failed to record ingestion commit checkpoint:', error);
+            }
+        }
+
+        return finalResult;
     }
 
     public async retrieveSimilarCodeChunks(
