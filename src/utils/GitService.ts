@@ -1,4 +1,3 @@
-// src/utils/GitService.ts
 import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -524,28 +523,15 @@ export class GitService {
             const fileName = path.basename(filePath);
             const fileExtension = path.extname(fileName).toLowerCase();
             const relativePath = path.relative(this.workingDirectory, filePath);
+            const normalizedPath = relativePath.split(path.sep).join('/');
+            const segments = normalizedPath.split('/').filter(Boolean);
 
-            let category = 'Other Files';
+            let category = this.detectSpecialCategory(segments, fileName, fileExtension);
 
-            // Categorize by path patterns and file types
-            if (relativePath.includes('src/tools/')) {
-                category = 'Tool/Service Files';
-            } else if (relativePath.includes('src/utils/')) {
-                category = 'Utility/Helper Files';
-            } else if (relativePath.includes('src/database/') || relativePath.includes('src/services/')) {
-                category = 'Database/Service Files';
-            } else if (relativePath.includes('src/types/') || fileExtension === '.d.ts') {
-                category = 'Type Definition Files';
-            } else if (relativePath.includes('test') || relativePath.includes('spec') || fileName.includes('.test.') || fileName.includes('.spec.')) {
-                category = 'Test Files';
-            } else if (relativePath.startsWith('.github/') || fileName.startsWith('.')) {
-                category = 'Configuration/CI Files';
-            } else if (['.md', '.txt', '.doc'].includes(fileExtension)) {
-                category = 'Documentation Files';
-            } else if (['.json', '.yml', '.yaml', '.toml', '.ini'].includes(fileExtension)) {
-                category = 'Configuration Files';
-            } else if (['.ts', '.js', '.tsx', '.jsx'].includes(fileExtension)) {
-                category = 'Source Code Files';
+            if (!category) {
+                // Build category dynamically from path segments
+                const significantSegments = this.getSignificantSegments(segments);
+                category = this.formatCategoryLabel(significantSegments);
             }
 
             if (!analysis[category]) {
@@ -555,6 +541,63 @@ export class GitService {
         }
 
         return analysis;
+    }
+
+    private detectSpecialCategory(segments: string[], fileName: string, fileExtension: string): string | null {
+        const lowerFileName = fileName.toLowerCase();
+
+        const isTest =
+            segments.some(segment => /test|spec/i.test(segment)) ||
+            lowerFileName.includes('.test.') ||
+            lowerFileName.includes('.spec.') ||
+            lowerFileName.endsWith('.test') ||
+            lowerFileName.endsWith('.spec');
+        if (isTest) {
+            return 'Test Files';
+        }
+
+        if (['.md', '.markdown', '.txt', '.rst', '.doc', '.docx'].includes(fileExtension)) {
+            return 'Documentation Files';
+        }
+
+        if (['.json', '.yml', '.yaml', '.toml', '.ini', '.env', '.rc'].includes(fileExtension) ||
+            segments.some(segment => segment.startsWith('.github') || segment === '.vscode' || segment === 'config')) {
+            return 'Configuration Files';
+        }
+
+        if (fileExtension === '.d.ts') {
+            return 'Type Definition Files';
+        }
+
+        if (lowerFileName.startsWith('.')) {
+            return 'Dotfiles';
+        }
+
+        return null;
+    }
+
+    private getSignificantSegments(segments: string[]): string[] {
+        if (segments.length === 0) {
+            return ['Repository Root'];
+        }
+
+        if (segments[0] === 'src') {
+            if (segments.length === 1) {
+                return ['src'];
+            }
+            return ['src', segments[1]];
+        }
+
+        return segments.slice(0, Math.min(2, segments.length));
+    }
+
+    private formatCategoryLabel(segments: string[]): string {
+        const formatted = segments
+            .map(segment => segment.replace(/[-_]/g, ' '))
+            .map(segment => segment.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '))
+            .join(' / ');
+
+        return `${formatted} Files`.trim();
     }
 
     public hasUncommittedChanges(): boolean {
@@ -636,5 +679,317 @@ export class GitService {
         }
 
         return null;
+    }
+
+    public getLog(options: {
+        maxCount?: number;
+        format?: string;
+        branch?: string;
+        file?: string;
+        author?: string;
+        since?: string;
+        until?: string;
+        grep?: string;
+    } = {}): string {
+        const args: string[] = ['log'];
+
+        if (options.maxCount) {
+            args.push(`-${options.maxCount}`);
+        }
+
+        if (options.format) {
+            args.push(`--format=${options.format}`);
+        }
+
+        if (options.branch) {
+            args.push(options.branch);
+        }
+
+        if (options.file) {
+            args.push('--follow', options.file);
+        }
+
+        if (options.author) {
+            args.push(`--author=${options.author}`);
+        }
+
+        if (options.since) {
+            args.push(`--since=${options.since}`);
+        }
+
+        if (options.until) {
+            args.push(`--until=${options.until}`);
+        }
+
+        if (options.grep) {
+            args.push(`--grep=${options.grep}`);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public pull(options: {
+        remote?: string;
+        branch?: string;
+        rebase?: boolean;
+        prune?: boolean;
+    } = {}): string {
+        const args: string[] = ['pull'];
+
+        if (options.rebase) {
+            args.push('--rebase');
+        }
+
+        if (options.prune) {
+            args.push('--prune');
+        }
+
+        if (options.remote) {
+            args.push(options.remote);
+        }
+
+        if (options.branch) {
+            args.push(options.branch);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public push(options: {
+        remote?: string;
+        branch?: string;
+        force?: boolean;
+        forceWithLease?: boolean;
+        setUpstream?: boolean;
+    } = {}): string {
+        const args: string[] = ['push'];
+
+        if (options.force) {
+            args.push('--force');
+        }
+
+        if (options.forceWithLease) {
+            args.push('--force-with-lease');
+        }
+
+        if (options.setUpstream) {
+            args.push('--set-upstream');
+        }
+
+        if (options.remote) {
+            args.push(options.remote);
+        }
+
+        if (options.branch) {
+            args.push(options.branch);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public merge(options: {
+        branch: string;
+        message?: string;
+        noCommit?: boolean;
+        noFf?: boolean;
+        squash?: boolean;
+    }): string {
+        const args: string[] = ['merge'];
+
+        if (options.message) {
+            args.push('-m', options.message);
+        }
+
+        if (options.noCommit) {
+            args.push('--no-commit');
+        }
+
+        if (options.noFf) {
+            args.push('--no-ff');
+        }
+
+        if (options.squash) {
+            args.push('--squash');
+        }
+
+        args.push(options.branch);
+
+        return this.runGitCommand(args);
+    }
+
+    public rebase(options: {
+        onto: string;
+        interactive?: boolean;
+        autosquash?: boolean;
+        continue?: boolean;
+        abort?: boolean;
+        skip?: boolean;
+    }): string {
+        const args: string[] = ['rebase'];
+
+        if (options.interactive) {
+            args.push('--interactive');
+        }
+
+        if (options.autosquash) {
+            args.push('--autosquash');
+        }
+
+        if (options.continue) {
+            args.push('--continue');
+        }
+
+        if (options.abort) {
+            args.push('--abort');
+        }
+
+        if (options.skip) {
+            args.push('--skip');
+        }
+
+        args.push(options.onto);
+
+        return this.runGitCommand(args);
+    }
+
+    public reset(options: {
+        commit?: string;
+        mode?: 'soft' | 'mixed' | 'hard' | 'merge' | 'keep';
+        paths?: string[];
+    } = {}): string {
+        const args: string[] = ['reset'];
+
+        if (options.mode) {
+            args.push(`--${options.mode}`);
+        }
+
+        if (options.commit) {
+            args.push(options.commit);
+        }
+
+        if (options.paths && options.paths.length > 0) {
+            args.push('--');
+            args.push(...options.paths);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public revert(options: {
+        commits: string[];
+        noCommit?: boolean;
+        edit?: boolean;
+    }): string {
+        const args: string[] = ['revert'];
+
+        if (options.noCommit) {
+            args.push('--no-commit');
+        }
+
+        if (options.edit) {
+            args.push('--edit');
+        }
+
+        args.push(...options.commits);
+
+        return this.runGitCommand(args);
+    }
+
+    public stash(options: {
+        action: 'push' | 'pop' | 'apply' | 'list' | 'drop' | 'clear';
+        message?: string;
+        index?: number;
+        includeUntracked?: boolean;
+        keepIndex?: boolean;
+    }): string {
+        const args: string[] = ['stash'];
+
+        if (options.action !== 'list') {
+            args.push(options.action);
+        }
+
+        if (options.message && options.action === 'push') {
+            args.push('-m', options.message);
+        }
+
+        if (options.includeUntracked && options.action === 'push') {
+            args.push('--include-untracked');
+        }
+
+        if (options.keepIndex && options.action === 'push') {
+            args.push('--keep-index');
+        }
+
+        if (options.index !== undefined && ['pop', 'apply', 'drop'].includes(options.action)) {
+            args.push(`stash@{${options.index}}`);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public tag(options: {
+        action: 'create' | 'list' | 'delete';
+        name?: string;
+        commit?: string;
+        message?: string;
+        force?: boolean;
+        pattern?: string;
+    }): string {
+        const args: string[] = ['tag'];
+
+        if (options.force && ['create', 'delete'].includes(options.action)) {
+            args.push('--force');
+        }
+
+        if (options.message && options.action === 'create') {
+            args.push('-a', '-m', options.message);
+        }
+
+        if (options.action === 'list' && options.pattern) {
+            args.push('-l', options.pattern);
+        }
+
+        if (options.action === 'delete' && options.name) {
+            args.push('-d', options.name);
+        }
+
+        if (options.action === 'create' && options.name) {
+            args.push(options.name);
+        }
+
+        if (options.commit && options.action === 'create' && options.name) {
+            args.push(options.commit);
+        }
+
+        return this.runGitCommand(args);
+    }
+
+    public remote(options: {
+        action: 'add' | 'rename' | 'remove' | 'list' | 'set_url' | 'prune';
+        name?: string;
+        url?: string;
+        newName?: string;
+    }): string {
+        const args: string[] = ['remote'];
+
+        args.push(options.action);
+
+        if (options.name && ['add', 'rename', 'remove', 'set_url', 'prune'].includes(options.action)) {
+            args.push(options.name);
+        }
+
+        if (options.url && ['add', 'set_url'].includes(options.action)) {
+            args.push(options.url);
+        }
+
+        if (options.newName && options.action === 'rename') {
+            args.push(options.newName);
+        }
+
+        if (options.action === 'prune' && options.name) {
+            args.push('--dry-run');
+        }
+
+        return this.runGitCommand(args);
     }
 }

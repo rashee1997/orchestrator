@@ -1,4 +1,3 @@
-// src/tools/git_commit_tools.ts
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { MemoryManager } from '../database/memory_manager.js';
 import { GitService, GitContext, GitChange } from '../utils/GitService.js';
@@ -956,6 +955,1028 @@ export const gitCommitToolDefinitions: InternalToolDefinition[] = [
                 throw new McpError(
                     ErrorCode.InternalError,
                     `Failed to create branch: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_log',
+        description: 'Show commit history with customizable formatting and filtering options.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                max_count: {
+                    type: 'number',
+                    description: 'Maximum number of commits to display (default: 10)'
+                },
+                format: {
+                    type: 'string',
+                    description: 'Custom format string for commit display (default: "%h - %s (%an, %ar)")'
+                },
+                branch: {
+                    type: 'string',
+                    description: 'Show commits only from this branch'
+                },
+                file: {
+                    type: 'string',
+                    description: 'Show only commits that affected this file'
+                },
+                author: {
+                    type: 'string',
+                    description: 'Show only commits by this author'
+                },
+                since: {
+                    type: 'string',
+                    description: 'Show commits more recent than a specific date (e.g., "2023-01-01")'
+                },
+                until: {
+                    type: 'string',
+                    description: 'Show commits older than a specific date (e.g., "2023-01-01")'
+                },
+                grep: {
+                    type: 'string',
+                    description: 'Show commits with messages matching the pattern'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                max_count = 10,
+                format = '%h - %s (%an, %ar)',
+                branch,
+                file,
+                author,
+                since,
+                until,
+                grep
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const logOutput = gitService.getLog({
+                    maxCount: max_count,
+                    format,
+                    branch,
+                    file,
+                    author,
+                    since,
+                    until,
+                    grep
+                });
+
+                let response = '# 📜 Git Log\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Branch:** \`${branch || gitService.getCurrentBranchName()}\`\n`;
+                response += `- **Max Commits:** ${max_count}\n\n`;
+                response += '## Commit History\n\n';
+                response += `\`\`\`\n${logOutput.trim() || 'No commits found.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to retrieve git log: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_pull',
+        description: 'Pull changes from a remote repository with options for rebase and pruning.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                remote: {
+                    type: 'string',
+                    description: 'Remote repository to pull from (default: "origin")'
+                },
+                branch: {
+                    type: 'string',
+                    description: 'Remote branch to pull (default: current branch\'s upstream)'
+                },
+                rebase: {
+                    type: 'boolean',
+                    description: 'Use rebase instead of merge (default: false)'
+                },
+                prune: {
+                    type: 'boolean',
+                    description: 'Remove remote-tracking references that no longer exist (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be pulled without actually pulling (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                remote = 'origin',
+                branch,
+                rebase = false,
+                prune = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git pull\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Remote:** \`${remote}\`\n`;
+                    if (branch) {
+                        response += `- **Branch:** \`${branch}\`\n`;
+                    }
+                    response += `- **Mode:** ${rebase ? 'rebase' : 'merge'}\n`;
+                    response += `- **Prune:** ${prune ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to pull changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const pullOutput = gitService.pull({
+                    remote,
+                    branch,
+                    rebase,
+                    prune
+                });
+
+                let response = '# ✅ Git Pull Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Remote:** \`${remote}\`\n`;
+                if (branch) {
+                    response += `- **Branch:** \`${branch}\`\n`;
+                }
+                response += `- **Mode:** ${rebase ? 'rebase' : 'merge'}\n`;
+                response += `- **Prune:** ${prune ? 'yes' : 'no'}\n\n`;
+                response += '## git pull output\n\n';
+                response += `\`\`\`\n${pullOutput.trim() || 'Pull completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to pull changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_push',
+        description: 'Push changes to a remote repository with options for force pushing and setting upstream.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                remote: {
+                    type: 'string',
+                    description: 'Remote repository to push to (default: "origin")'
+                },
+                branch: {
+                    type: 'string',
+                    description: 'Branch to push (default: current branch)'
+                },
+                force: {
+                    type: 'boolean',
+                    description: 'Force push (default: false)'
+                },
+                force_with_lease: {
+                    type: 'boolean',
+                    description: 'Force push with lease (safer than force) (default: false)'
+                },
+                set_upstream: {
+                    type: 'boolean',
+                    description: 'Set upstream for the branch (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be pushed without actually pushing (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                remote = 'origin',
+                branch,
+                force = false,
+                force_with_lease = false,
+                set_upstream = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git push\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Remote:** \`${remote}\`\n`;
+                    if (branch) {
+                        response += `- **Branch:** \`${branch}\`\n`;
+                    }
+                    response += `- **Force:** ${force ? 'yes' : 'no'}\n`;
+                    response += `- **Force with lease:** ${force_with_lease ? 'yes' : 'no'}\n`;
+                    response += `- **Set upstream:** ${set_upstream ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to push changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const pushOutput = gitService.push({
+                    remote,
+                    branch,
+                    force,
+                    forceWithLease: force_with_lease,
+                    setUpstream: set_upstream
+                });
+
+                let response = '# ✅ Git Push Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Remote:** \`${remote}\`\n`;
+                if (branch) {
+                    response += `- **Branch:** \`${branch}\`\n`;
+                }
+                response += `- **Force:** ${force ? 'yes' : 'no'}\n`;
+                response += `- **Force with lease:** ${force_with_lease ? 'yes' : 'no'}\n`;
+                response += `- **Set upstream:** ${set_upstream ? 'yes' : 'no'}\n\n`;
+                response += '## git push output\n\n';
+                response += `\`\`\`\n${pushOutput.trim() || 'Push completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to push changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_merge',
+        description: 'Merge changes from another branch into the current branch.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                branch: {
+                    type: 'string',
+                    description: 'Branch to merge into the current branch (required)'
+                },
+                message: {
+                    type: 'string',
+                    description: 'Custom merge commit message'
+                },
+                no_commit: {
+                    type: 'boolean',
+                    description: 'Prepare the merge but do not actually commit (default: false)'
+                },
+                no_ff: {
+                    type: 'boolean',
+                    description: 'Create a merge commit even if the merge is a fast-forward (default: false)'
+                },
+                squash: {
+                    type: 'boolean',
+                    description: 'Squash all changes from the other branch into a single commit (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be merged without actually merging (default: false)'
+                }
+            },
+            required: ['branch'],
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                branch,
+                message,
+                no_commit = false,
+                no_ff = false,
+                squash = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git merge\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Source Branch:** \`${branch}\`\n`;
+                    if (message) {
+                        response += `- **Message:** \`${message}\`\n`;
+                    }
+                    response += `- **No commit:** ${no_commit ? 'yes' : 'no'}\n`;
+                    response += `- **No fast-forward:** ${no_ff ? 'yes' : 'no'}\n`;
+                    response += `- **Squash:** ${squash ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to merge changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const mergeOutput = gitService.merge({
+                    branch,
+                    message,
+                    noCommit: no_commit,
+                    noFf: no_ff,
+                    squash
+                });
+
+                let response = '# ✅ Git Merge Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Source Branch:** \`${branch}\`\n`;
+                if (message) {
+                    response += `- **Message:** \`${message}\`\n`;
+                }
+                response += `- **No commit:** ${no_commit ? 'yes' : 'no'}\n`;
+                response += `- **No fast-forward:** ${no_ff ? 'yes' : 'no'}\n`;
+                response += `- **Squash:** ${squash ? 'yes' : 'no'}\n\n`;
+                response += '## git merge output\n\n';
+                response += `\`\`\`\n${mergeOutput.trim() || 'Merge completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to merge changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_rebase',
+        description: 'Rebase the current branch onto another branch or commit.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                onto: {
+                    type: 'string',
+                    description: 'Branch or commit to rebase onto (required)'
+                },
+                interactive: {
+                    type: 'boolean',
+                    description: 'Start an interactive rebase (default: false)'
+                },
+                autosquash: {
+                    type: 'boolean',
+                    description: 'Automatically squash commits with "fixup!" or "squash!" messages (default: false)'
+                },
+                continue: {
+                    type: 'boolean',
+                    description: 'Continue a rebase after resolving conflicts (default: false)'
+                },
+                abort: {
+                    type: 'boolean',
+                    description: 'Abort a rebase in progress (default: false)'
+                },
+                skip: {
+                    type: 'boolean',
+                    description: 'Skip the current commit during a rebase (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be rebased without actually rebasing (default: false)'
+                }
+            },
+            required: ['onto'],
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                onto,
+                interactive = false,
+                autosquash = false,
+                continue: continueRebase = false,
+                abort = false,
+                skip = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git rebase\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Target:** \`${onto}\`\n`;
+                    response += `- **Interactive:** ${interactive ? 'yes' : 'no'}\n`;
+                    response += `- **Autosquash:** ${autosquash ? 'yes' : 'no'}\n`;
+                    response += `- **Continue:** ${continueRebase ? 'yes' : 'no'}\n`;
+                    response += `- **Abort:** ${abort ? 'yes' : 'no'}\n`;
+                    response += `- **Skip:** ${skip ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to rebase changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const rebaseOutput = gitService.rebase({
+                    onto,
+                    interactive,
+                    autosquash,
+                    continue: continueRebase,
+                    abort,
+                    skip
+                });
+
+                let response = '# ✅ Git Rebase Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Target:** \`${onto}\`\n`;
+                response += `- **Interactive:** ${interactive ? 'yes' : 'no'}\n`;
+                response += `- **Autosquash:** ${autosquash ? 'yes' : 'no'}\n`;
+                response += `- **Continue:** ${continueRebase ? 'yes' : 'no'}\n`;
+                response += `- **Abort:** ${abort ? 'yes' : 'no'}\n`;
+                response += `- **Skip:** ${skip ? 'yes' : 'no'}\n\n`;
+                response += '## git rebase output\n\n';
+                response += `\`\`\`\n${rebaseOutput.trim() || 'Rebase completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to rebase changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_reset',
+        description: 'Reset current HEAD to the specified state with options for different reset modes.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                commit: {
+                    type: 'string',
+                    description: 'Commit to reset to (default: HEAD)'
+                },
+                mode: {
+                    type: 'string',
+                    enum: ['soft', 'mixed', 'hard', 'merge', 'keep'],
+                    description: 'Reset mode (default: "mixed")'
+                },
+                paths: {
+                    oneOf: [
+                        { type: 'string', description: 'Single file path or newline/comma separated list of files to reset' },
+                        {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of file paths to reset'
+                        }
+                    ]
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be reset without actually resetting (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                commit = 'HEAD',
+                mode = 'mixed',
+                paths,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+                const fileList = parseFileArguments(paths);
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git reset\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Target Commit:** \`${commit}\`\n`;
+                    response += `- **Mode:** \`${mode}\`\n`;
+                    if (fileList.length > 0) {
+                        response += `- **Paths:** ${fileList.map(file => `\`${file}\``).join(', ')}\n`;
+                    }
+                    response += '\nRun again without `dry_run` to reset changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const resetOutput = gitService.reset({
+                    commit,
+                    mode,
+                    paths: fileList
+                });
+
+                let response = '# ✅ Git Reset Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Target Commit:** \`${commit}\`\n`;
+                response += `- **Mode:** \`${mode}\`\n`;
+                if (fileList.length > 0) {
+                    response += `- **Paths:** ${fileList.map(file => `\`${file}\``).join(', ')}\n`;
+                }
+                response += '\n## git reset output\n\n';
+                response += `\`\`\`\n${resetOutput.trim() || 'Reset completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to reset changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_revert',
+        description: 'Revert commits by creating new commits that undo the changes from previous commits.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                commits: {
+                    oneOf: [
+                        { type: 'string', description: 'Single commit hash or newline/comma separated list of commits to revert' },
+                        {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of commit hashes to revert'
+                        }
+                    ]
+                },
+                no_commit: {
+                    type: 'boolean',
+                    description: 'Prepare the revert but do not actually commit (default: false)'
+                },
+                edit: {
+                    type: 'boolean',
+                    description: 'Edit the commit message before committing (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be reverted without actually reverting (default: false)'
+                }
+            },
+            required: ['commits'],
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                commits,
+                no_commit = false,
+                edit = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+                const commitList = parseFileArguments(commits);
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git revert\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Commits to revert:** ${commitList.map(commit => `\`${commit}\``).join(', ')}\n`;
+                    response += `- **No commit:** ${no_commit ? 'yes' : 'no'}\n`;
+                    response += `- **Edit message:** ${edit ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to revert changes.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const revertOutput = gitService.revert({
+                    commits: commitList,
+                    noCommit: no_commit,
+                    edit
+                });
+
+                let response = '# ✅ Git Revert Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Commits reverted:** ${commitList.map(commit => `\`${commit}\``).join(', ')}\n`;
+                response += `- **No commit:** ${no_commit ? 'yes' : 'no'}\n`;
+                response += `- **Edit message:** ${edit ? 'yes' : 'no'}\n\n`;
+                response += '## git revert output\n\n';
+                response += `\`\`\`\n${revertOutput.trim() || 'Revert completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to revert changes: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_stash',
+        description: 'Stash changes, list stashes, or apply stashed changes.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                action: {
+                    type: 'string',
+                    enum: ['push', 'pop', 'apply', 'list', 'drop', 'clear'],
+                    description: 'Stash action to perform (default: "push")'
+                },
+                message: {
+                    type: 'string',
+                    description: 'Description for the stash (only for "push" action)'
+                },
+                index: {
+                    type: 'number',
+                    description: 'Stash index to apply, pop, or drop (only for "pop", "apply", and "drop" actions)'
+                },
+                include_untracked: {
+                    type: 'boolean',
+                    description: 'Include untracked files in the stash (only for "push" action) (default: false)'
+                },
+                keep_index: {
+                    type: 'boolean',
+                    description: 'Keep the index intact when stashing (only for "push" action) (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be stashed without actually stashing (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                action = 'push',
+                message,
+                index,
+                include_untracked = false,
+                keep_index = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git stash\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Action:** \`${action}\`\n`;
+                    if (message) {
+                        response += `- **Message:** \`${message}\`\n`;
+                    }
+                    if (index !== undefined) {
+                        response += `- **Index:** \`${index}\`\n`;
+                    }
+                    response += `- **Include untracked:** ${include_untracked ? 'yes' : 'no'}\n`;
+                    response += `- **Keep index:** ${keep_index ? 'yes' : 'no'}\n\n`;
+                    response += 'Run again without `dry_run` to perform stash action.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const stashOutput = gitService.stash({
+                    action,
+                    message,
+                    index,
+                    includeUntracked: include_untracked,
+                    keepIndex: keep_index
+                });
+
+                let response = '# ✅ Git Stash Action Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Action:** \`${action}\`\n`;
+                if (message) {
+                    response += `- **Message:** \`${message}\`\n`;
+                }
+                if (index !== undefined) {
+                    response += `- **Index:** \`${index}\`\n`;
+                }
+                response += `- **Include untracked:** ${include_untracked ? 'yes' : 'no'}\n`;
+                response += `- **Keep index:** ${keep_index ? 'yes' : 'no'}\n\n`;
+                response += '## git stash output\n\n';
+                response += `\`\`\`\n${stashOutput.trim() || 'Stash action completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to perform stash action: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_tag',
+        description: 'Create, list, or delete tags.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                action: {
+                    type: 'string',
+                    enum: ['create', 'list', 'delete'],
+                    description: 'Tag action to perform (default: "list")'
+                },
+                name: {
+                    type: 'string',
+                    description: 'Tag name (required for "create" and "delete" actions)'
+                },
+                commit: {
+                    type: 'string',
+                    description: 'Commit to tag (only for "create" action, default: HEAD)'
+                },
+                message: {
+                    type: 'string',
+                    description: 'Tag message (only for "create" action, creates an annotated tag)'
+                },
+                force: {
+                    type: 'boolean',
+                    description: 'Force tag creation or deletion (only for "create" and "delete" actions) (default: false)'
+                },
+                pattern: {
+                    type: 'string',
+                    description: 'Pattern to filter tags (only for "list" action)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be done without actually doing it (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                action = 'list',
+                name,
+                commit,
+                message,
+                force = false,
+                pattern,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git tag\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Action:** \`${action}\`\n`;
+                    if (name) {
+                        response += `- **Tag name:** \`${name}\`\n`;
+                    }
+                    if (commit) {
+                        response += `- **Commit:** \`${commit}\`\n`;
+                    }
+                    if (message) {
+                        response += `- **Message:** \`${message}\`\n`;
+                    }
+                    response += `- **Force:** ${force ? 'yes' : 'no'}\n`;
+                    if (pattern) {
+                        response += `- **Pattern:** \`${pattern}\`\n`;
+                    }
+                    response += '\nRun again without `dry_run` to perform tag action.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const tagOutput = gitService.tag({
+                    action,
+                    name,
+                    commit,
+                    message,
+                    force,
+                    pattern
+                });
+
+                let response = '# ✅ Git Tag Action Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Action:** \`${action}\`\n`;
+                if (name) {
+                    response += `- **Tag name:** \`${name}\`\n`;
+                }
+                if (commit) {
+                    response += `- **Commit:** \`${commit}\`\n`;
+                }
+                if (message) {
+                    response += `- **Message:** \`${message}\`\n`;
+                }
+                response += `- **Force:** ${force ? 'yes' : 'no'}\n`;
+                if (pattern) {
+                    response += `- **Pattern:** \`${pattern}\`\n`;
+                }
+                response += '\n## git tag output\n\n';
+                response += `\`\`\`\n${tagOutput.trim() || 'Tag action completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to perform tag action: ${error.message}`
+                );
+            }
+        }
+    },
+    {
+        name: 'git_remote',
+        description: 'Manage remote repositories.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                action: {
+                    type: 'string',
+                    enum: ['add', 'rename', 'remove', 'list', 'set_url', 'prune'],
+                    description: 'Remote action to perform (default: "list")'
+                },
+                name: {
+                    type: 'string',
+                    description: 'Remote name (required for "add", "rename", "remove", "set_url", and "prune" actions)'
+                },
+                url: {
+                    type: 'string',
+                    description: 'Remote URL (required for "add" and "set_url" actions)'
+                },
+                new_name: {
+                    type: 'string',
+                    description: 'New remote name (only for "rename" action)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Show what would be done without actually doing it (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any) => {
+            const {
+                working_directory,
+                action = 'list',
+                name,
+                url,
+                new_name,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const currentBranch = gitService.getCurrentBranchName();
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: git remote\n\n';
+                    response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                    response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                    response += `- **Action:** \`${action}\`\n`;
+                    if (name) {
+                        response += `- **Remote name:** \`${name}\`\n`;
+                    }
+                    if (url) {
+                        response += `- **URL:** \`${url}\`\n`;
+                    }
+                    if (new_name) {
+                        response += `- **New name:** \`${new_name}\`\n`;
+                    }
+                    response += '\nRun again without `dry_run` to perform remote action.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const remoteOutput = gitService.remote({
+                    action,
+                    name,
+                    url,
+                    newName: new_name
+                });
+
+                let response = '# ✅ Git Remote Action Completed\n\n';
+                response += `- **Repository:** \`${gitService.getWorkingDirectory()}\`\n`;
+                response += `- **Current Branch:** \`${currentBranch}\`\n`;
+                response += `- **Action:** \`${action}\`\n`;
+                if (name) {
+                    response += `- **Remote name:** \`${name}\`\n`;
+                }
+                if (url) {
+                    response += `- **URL:** \`${url}\`\n`;
+                }
+                if (new_name) {
+                    response += `- **New name:** \`${new_name}\`\n`;
+                }
+                response += '\n## git remote output\n\n';
+                response += `\`\`\`\n${remoteOutput.trim() || 'Remote action completed successfully.'}\n\`\`\`\n`;
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to perform remote action: ${error.message}`
                 );
             }
         }
