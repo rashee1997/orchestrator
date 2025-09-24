@@ -9,6 +9,7 @@ import { knowledgeGraphToolDefinitions, getKnowledgeGraphToolHandlers } from './
 import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js';
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
+import { gitCommitToolDefinitions, getGitCommitToolHandlers } from './git_commit_tools.js';
 
 import { MemoryManager } from '../database/memory_manager.js';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
@@ -79,6 +80,7 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(promptRefinementToolDefinitions),
         ...stripFuncFromDefs(geminiToolDefinitions),
         ...stripFuncFromDefs(embeddingToolDefinitions),
+        ...stripFuncFromDefs(gitCommitToolDefinitions),
         stripFuncFromDefs([listToolsToolDefinition])[0]
     ];
 
@@ -107,5 +109,6 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         ...getGeminiToolHandlers(memoryManager),
         ...getEmbeddingToolHandlers(memoryManager),
         ...getTavilyToolHandlers(memoryManager),
+        ...getGitCommitToolHandlers(memoryManager),
     };
 }

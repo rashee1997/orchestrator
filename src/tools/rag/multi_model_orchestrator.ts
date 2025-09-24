@@ -15,6 +15,7 @@ export type RagTaskType =
     | 'query_rewriting'          // Simple - Mistral
     | 'context_summarization'    // Simple - Mistral
     | 'simple_analysis'          // Simple - Mistral
+    | 'commit_message_generation'// Simple - Gemini 2.5 Flash Lite
     | 'complex_analysis'         // Complex - Gemini
     | 'intent_analysis'          // Medium - Gemini 2.5 Flash (fast intent detection)
     | 'decision_making'          // Complex - Gemini
@@ -364,6 +365,22 @@ export class MultiModelOrchestrator {
             preferredModel: simpleModelOrder[0] || 'gemini-2.5-flash',
             fallbackModels: simpleModelOrder.slice(1),
             maxContextLength: 2000,
+            complexity: 'simple'
+        });
+
+        const commitMessageModelOrder: string[] = [];
+        pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-flash-lite');
+        pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-flash');
+        pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-pro');
+        pushIfAvailable(commitMessageModelOrder, 'gemini-2.0-flash-lite');
+        if (this.claudeCodeAvailable) pushIfAvailable(commitMessageModelOrder, 'claude-3-5-haiku-20241022');
+        if (this.mistralAvailable) pushIfAvailable(commitMessageModelOrder, 'mistral-medium-latest');
+
+        this.taskRules.set('commit_message_generation', {
+            taskType: 'commit_message_generation',
+            preferredModel: commitMessageModelOrder[0] || 'gemini-2.5-flash-lite',
+            fallbackModels: commitMessageModelOrder.slice(1),
+            maxContextLength: 12000,
             complexity: 'simple'
         });
 
