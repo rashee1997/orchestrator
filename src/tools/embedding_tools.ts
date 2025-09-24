@@ -231,21 +231,24 @@ async function _generateUnifiedAiSummary(
         resultCounts.commitMetadata.previousCommit &&
         resultCounts.commitMetadata.currentCommit !== resultCounts.commitMetadata.previousCommit;
 
-    const hasUncommittedChanges = projectRootPath && (() => {
+    // Check for uncommitted changes using a simpler approach
+    let hasUncommittedChanges = false;
+    if (projectRootPath) {
         try {
-            // Use dynamic import since we're already inside the module
-            const gitService = new (require('../utils/GitService.js').GitService)(projectRootPath);
+            // Use the GitService import that's available at the top of the file
+            const gitService = new GitService(projectRootPath);
 
             // Check for any working directory changes
             const diffOutput = gitService.getDiffOutput({ unified: 0 });
             const stagedOutput = gitService.getDiffOutput({ staged: true, unified: 0 });
 
-            return diffOutput.trim().length > 0 || stagedOutput.trim().length > 0;
+            hasUncommittedChanges = diffOutput.trim().length > 0 || stagedOutput.trim().length > 0;
         } catch (error: any) {
+            // If we can't check git changes, be conservative and assume there might be changes
             console.warn('[AI Summary] Could not check git changes:', error?.message || error);
-            return false;
+            hasUncommittedChanges = true;
         }
-    })();
+    }
 
     // Additional validation: Check if any changed files actually have git diffs
     let hasActualFileChanges = false;
