@@ -240,6 +240,177 @@ export const gitCommitToolDefinitions: InternalToolDefinition[] = [
                 );
             }
         }
+    },
+    {
+        name: 'git_commit',
+        description: 'Generate an AI-powered commit message for staged changes and create the git commit automatically. Unstaged changes are left untouched.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                working_directory: {
+                    type: 'string',
+                    description: 'Absolute path to the git repository. If not provided, searches for git repo starting from current directory.'
+                },
+                conventional_commits: {
+                    type: 'boolean',
+                    description: 'Use Conventional Commits format (default: true)'
+                },
+                max_length: {
+                    type: 'number',
+                    description: 'Maximum length of commit message (default: 1500)'
+                },
+                custom_instructions: {
+                    type: 'string',
+                    description: 'Additional custom instructions for commit message generation'
+                },
+                different_from_previous: {
+                    type: 'string',
+                    description: 'Previous commit message to generate a different alternative from'
+                },
+                verbose: {
+                    type: 'boolean',
+                    description: 'Generate detailed multi-line commit messages with body explanations (default: false)'
+                },
+                dry_run: {
+                    type: 'boolean',
+                    description: 'Generate the commit message and show the plan without running git commit (default: false)'
+                }
+            },
+            additionalProperties: false
+        },
+        func: async (args: any, memoryManager?: MemoryManager) => {
+            if (!memoryManager) {
+                throw new McpError(ErrorCode.InternalError, 'MemoryManager instance is required');
+            }
+
+            const {
+                working_directory,
+                conventional_commits = true,
+                max_length = 1500,
+                custom_instructions,
+                different_from_previous,
+                verbose = false,
+                dry_run = false
+            } = args;
+
+            try {
+                const gitService = new GitService(working_directory);
+                const stagedChanges = await gitService.gatherStagedChanges();
+
+                if (stagedChanges.length === 0) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: '⚠️ **No staged changes detected**\n\nStage files before running `git_commit`, or use `generate_commit_message` if you only need a draft message.'
+                        }]
+                    };
+                }
+
+                const unstagedChanges = await gitService.gatherUnstagedChanges();
+                
+                const contextSections = await collectContextSections(gitService, true, false);
+                if (contextSections.length === 0) {
+                    return {
+                        content: [{
+                            type: 'text',
+                            text: '⚠️ **Unable to build commit context**\n\nStaged changes were detected but no analyzable context could be generated. Ensure files are correctly staged and try again.'
+                        }]
+                    };
+                }
+
+                const geminiService = memoryManager.getGeminiIntegrationService();
+                const commitAI = new CommitMessageAI(geminiService);
+
+                const formattedContext = buildCombinedContextForAI(gitService, contextSections);
+                const options: CommitMessageOptions = {
+                    conventionalCommits: conventional_commits,
+                    maxLength: max_length,
+                    customInstructions: custom_instructions,
+                    differentFromPrevious: different_from_previous,
+                    verbose: verbose
+                };
+
+                const commitMessage = await commitAI.generateCommitMessage(formattedContext, options);
+                const validation = commitAI.validateCommitMessage(commitMessage, options);
+
+                if (!validation.isValid) {
+                    let response = '# ⚠️ Commit Aborted Due to Validation Issues\n\n';
+                    response += 'The generated commit message did not meet validation requirements. No commit was made.\n\n';
+                    response += '## Generated Message\n\n';
+                    response += `\`\`\`\n${commitMessage}\n\`\`\`\n\n`;
+                    response += '## Validation Issues\n\n';
+                    for (const issue of validation.issues) {
+                        response += `- ${issue}\n`;
+                    }
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const changeBuckets = bucketChanges(contextSections);
+                const primaryContext = contextSections[0].context;
+                const changedFilesSection = buildChangedFilesSection(contextSections);
+                const analyzedScope = changeBuckets.unstaged.length > 0 || unstagedChanges.length > 0
+                    ? 'staged changes (unstaged files not committed)'
+                    : 'staged changes';
+
+                if (dry_run) {
+                    let response = '# 🧪 Dry Run: Generated Commit Message\n\n';
+                    response += `\`\`\`\n${commitMessage}\n\`\`\`\n\n`;
+                    response += '## 📊 Context Summary\n\n';
+                    response += `- **Repository:** \`${primaryContext.workingDirectory}\`\n`;
+                    response += `- **Branch:** \`${primaryContext.currentBranch}\`\n`;
+                    response += `- **Changes:** ${changeBuckets.staged.length} staged / ${unstagedChanges.length} unstaged files\n`;
+                    response += `- **Analyzed Scope:** ${analyzedScope}\n`;
+                    response += `- **Format:** ${conventional_commits ? 'Conventional Commits' : 'Standard'}\n`;
+
+                    if (changedFilesSection) {
+                        response += '\n' + changedFilesSection;
+                    }
+
+                    response += '\nRun again without `dry_run` to create the commit.';
+
+                    return {
+                        content: [{ type: 'text', text: response }]
+                    };
+                }
+
+                const commitOutput = gitService.commitStagedChanges(commitMessage);
+                const remainingUnstaged = unstagedChanges.length;
+                const hasRemainingChanges = remainingUnstaged > 0;
+
+                let response = '# ✅ Commit Created with AI-Generated Message\n\n';
+                response += '## ✉️ Commit Message\n\n';
+                response += `\`\`\`\n${commitMessage}\n\`\`\`\n\n`;
+                response += '## 📊 Context Summary\n\n';
+                response += `- **Repository:** \`${primaryContext.workingDirectory}\`\n`;
+                response += `- **Branch:** \`${primaryContext.currentBranch}\`\n`;
+                response += `- **Changes:** ${changeBuckets.staged.length} staged / ${remainingUnstaged} unstaged files\n`;
+                response += `- **Analyzed Scope:** ${analyzedScope}\n`;
+                response += `- **Format:** ${conventional_commits ? 'Conventional Commits' : 'Standard'}\n`;
+
+                if (changedFilesSection) {
+                    response += '\n' + changedFilesSection;
+                }
+
+                response += '## 📦 Git Commit Output\n\n';
+                response += `\`\`\`\n${commitOutput.trim() || 'Commit completed.'}\n\`\`\`\n`;
+
+                if (hasRemainingChanges) {
+                    response += '\n⚠️ Unstaged changes remain in the working directory. Stage and commit them separately if needed.';
+                }
+
+                return {
+                    content: [{ type: 'text', text: response }]
+                };
+
+            } catch (error: any) {
+                throw new McpError(
+                    ErrorCode.InternalError,
+                    `Failed to commit with generated message: ${error.message}`
+                );
+            }
+        }
     }
 ];
 

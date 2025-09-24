@@ -1,5 +1,5 @@
 // src/utils/GitService.ts
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -404,6 +404,24 @@ export class GitService {
             return stagedChanges.length > 0 || unstagedChanges.length > 0;
         } catch (error) {
             return false;
+        }
+    }
+
+    public commitStagedChanges(message: string): string {
+        const trimmedMessage = message.trim();
+        if (trimmedMessage.length === 0) {
+            throw new Error('Commit message cannot be empty');
+        }
+
+        try {
+            return execFileSync('git', ['commit', '-F', '-'], {
+                cwd: this.workingDirectory,
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'pipe'],
+                input: trimmedMessage
+            });
+        } catch (error: any) {
+            throw new Error(`Git commit failed: ${error.message || error}`);
         }
     }
 
