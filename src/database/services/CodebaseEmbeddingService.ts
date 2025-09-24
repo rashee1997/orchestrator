@@ -427,82 +427,116 @@ export class CodebaseEmbeddingService {
 
             const newEmbeddingsToStore: CodebaseEmbeddingRecord[] = [];
             const parentIdMap = new Map<string, string>();
+            const failedVectorFiles = new Map<string, number>();
 
             // First pass: create records and identify parent IDs
             embeddings.embeddings.forEach((embeddingResult, index) => {
-                if (embeddingResult) {
-                    const { chunk } = chunksToEmbed[index];
-                    const embeddingId = crypto.randomUUID();
-                    if (chunk.embedding_type === 'summary' && chunk.parent_embedding_id) {
-                        parentIdMap.set(chunk.parent_embedding_id, embeddingId);
-                    }
-                    chunksToEmbed[index].chunk.final_embedding_id = embeddingId;
+                const { chunk, fileInfo } = chunksToEmbed[index];
+
+                if (!embeddingResult || !embeddingResult.vector) {
+                    failedVectorFiles.set(
+                        fileInfo.relativePath,
+                        (failedVectorFiles.get(fileInfo.relativePath) ?? 0) + 1
+                    );
+                    return;
                 }
+
+                const embeddingId = crypto.randomUUID();
+                if (chunk.embedding_type === 'summary' && chunk.parent_embedding_id) {
+                    parentIdMap.set(chunk.parent_embedding_id, embeddingId);
+                }
+                chunksToEmbed[index].chunk.final_embedding_id = embeddingId;
             });
 
             // Second pass: build the final records with correct parent links
             const generationTimestamp = Date.now();
             await Promise.all(embeddings.embeddings.map(async (embeddingResult, index) => {
-                if (embeddingResult && embeddingResult.vector) {
-                    const { chunk, fileInfo } = chunksToEmbed[index];
-                    const vectorBuffer = Buffer.alloc(embeddingResult.vector.length * VECTOR_FLOAT_SIZE);
-                    embeddingResult.vector.forEach((val, i) => vectorBuffer.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
-
-                    let entityNameVectorBlob: Buffer | null = null;
-                    let entityNameVectorDimensions: number | null = null;
-
-                    if (chunk.entity_name) {
-                        try {
-                            const { embeddings: entityNameEmbeddings } = await this.aiProvider.getEmbeddingsForChunks([chunk.entity_name]);
-                            if (entityNameEmbeddings && entityNameEmbeddings[0] && entityNameEmbeddings[0].vector) {
-                                entityNameVectorBlob = Buffer.alloc(entityNameEmbeddings[0].vector.length * VECTOR_FLOAT_SIZE);
-                                entityNameEmbeddings[0].vector.forEach((val, i) => entityNameVectorBlob!.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
-                                entityNameVectorDimensions = entityNameEmbeddings[0].dimensions;
-                            }
-                            report.namingApiCallCount++; // Increment count for entity name embedding API call
-                        } catch (error) {
-                            console.warn(`Error generating embedding for entity name "${chunk.entity_name}":`, error);
-                        }
-                    }
-
-                    newEmbeddingsToStore.push({
-                        embedding_id: chunk.final_embedding_id,
-                        agent_id: agentId,
-                        chunk_text: chunk.chunk_text,
-                        entity_name: chunk.entity_name || null,
-                        entity_name_vector_blob: entityNameVectorBlob,
-                        entity_name_vector_dimensions: entityNameVectorDimensions,
-                        vector_blob: vectorBuffer,
-                        vector_dimensions: embeddingResult.dimensions,
-                        model_name: embeddingResult.model || embeddings.model,
-                        chunk_hash: chunk.chunk_hash || this.generateChunkHash(chunk.chunk_text),
-                        file_hash: fileInfo.fileHash,
-                        metadata_json: JSON.stringify(chunk.metadata || {}),
-                        created_timestamp_unix: Math.floor(Date.now() / 1000),
-                        file_path_relative: fileInfo.relativePath,
-                        full_file_path: fileInfo.absolutePath,
-                        embedding_type: chunk.embedding_type,
-                        parent_embedding_id: chunk.embedding_type === 'chunk' ?
-                            parentIdMap.get(chunk.parent_embedding_id) :
-                            chunk.final_embedding_id,
-                        // New parallel embedding metadata
-                        embedding_provider: embeddingResult.provider || 'gemini',
-                        embedding_model_full_name: embeddingResult.model || embeddings.model,
-                        embedding_generation_method: embeddings.parallelMetadata ? 'parallel' : 'single',
-                        embedding_request_id: embeddings.parallelMetadata?.requestId || null,
-                        embedding_quality_score: 1.0, // Default quality score
-                        embedding_generation_timestamp: generationTimestamp
-                    });
-
-                    report.newEmbeddings.push({
-                        file_path_relative: fileInfo.relativePath,
-                        chunk_text: chunk.chunk_text,
-                        entity_name: chunk.entity_name
-                    });
+                if (!embeddingResult || !embeddingResult.vector) {
+                    return;
                 }
+
+                const { chunk, fileInfo } = chunksToEmbed[index];
+                const vectorBuffer = Buffer.alloc(embeddingResult.vector.length * VECTOR_FLOAT_SIZE);
+                embeddingResult.vector.forEach((val, i) => vectorBuffer.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
+
+                let entityNameVectorBlob: Buffer | null = null;
+                let entityNameVectorDimensions: number | null = null;
+
+                if (chunk.entity_name) {
+                    try {
+                        const { embeddings: entityNameEmbeddings } = await this.aiProvider.getEmbeddingsForChunks([chunk.entity_name]);
+                        if (entityNameEmbeddings && entityNameEmbeddings[0] && entityNameEmbeddings[0].vector) {
+                            entityNameVectorBlob = Buffer.alloc(entityNameEmbeddings[0].vector.length * VECTOR_FLOAT_SIZE);
+                            entityNameEmbeddings[0].vector.forEach((val, i) => entityNameVectorBlob!.writeFloatLE(val, i * VECTOR_FLOAT_SIZE));
+                            entityNameVectorDimensions = entityNameEmbeddings[0].dimensions;
+                        }
+                        report.namingApiCallCount++; // Increment count for entity name embedding API call
+                    } catch (error) {
+                        console.warn(`Error generating embedding for entity name "${chunk.entity_name}":`, error);
+                    }
+                }
+
+                newEmbeddingsToStore.push({
+                    embedding_id: chunk.final_embedding_id,
+                    agent_id: agentId,
+                    chunk_text: chunk.chunk_text,
+                    entity_name: chunk.entity_name || null,
+                    entity_name_vector_blob: entityNameVectorBlob,
+                    entity_name_vector_dimensions: entityNameVectorDimensions,
+                    vector_blob: vectorBuffer,
+                    vector_dimensions: embeddingResult.dimensions,
+                    model_name: embeddingResult.model || embeddings.model,
+                    chunk_hash: chunk.chunk_hash || this.generateChunkHash(chunk.chunk_text),
+                    file_hash: fileInfo.fileHash,
+                    metadata_json: JSON.stringify(chunk.metadata || {}),
+                    created_timestamp_unix: Math.floor(Date.now() / 1000),
+                    file_path_relative: fileInfo.relativePath,
+                    full_file_path: fileInfo.absolutePath,
+                    embedding_type: chunk.embedding_type,
+                    parent_embedding_id: chunk.embedding_type === 'chunk' ?
+                        parentIdMap.get(chunk.parent_embedding_id) :
+                        chunk.final_embedding_id,
+                    // New parallel embedding metadata
+                    embedding_provider: embeddingResult.provider || 'gemini',
+                    embedding_model_full_name: embeddingResult.model || embeddings.model,
+                    embedding_generation_method: embeddings.parallelMetadata ? 'parallel' : 'single',
+                    embedding_request_id: embeddings.parallelMetadata?.requestId || null,
+                    embedding_quality_score: 1.0, // Default quality score
+                    embedding_generation_timestamp: generationTimestamp
+                });
+
+                report.newEmbeddings.push({
+                    file_path_relative: fileInfo.relativePath,
+                    chunk_text: chunk.chunk_text,
+                    entity_name: chunk.entity_name
+                });
             }));
 
             report.newEmbeddingsCount = newEmbeddingsToStore.length;
+
+            if (failedVectorFiles.size > 0) {
+                for (const [filePath, failureCount] of failedVectorFiles.entries()) {
+                    report.processingErrors.push({
+                        file_path_relative: filePath,
+                        error: `Failed to generate ${failureCount} embedding chunk(s) due to provider limits or API errors`,
+                        stage: 'embedding_generation'
+                    });
+
+                    if (!report.resumeInfo!.failedFiles.includes(filePath)) {
+                        report.resumeInfo!.failedFiles.push(filePath);
+                    }
+
+                    const scannedEntry = report.scannedFiles.find(entry => entry.file_path_relative === filePath);
+                    if (scannedEntry) {
+                        scannedEntry.status = scannedEntry.status === 'processed' ? 'partial' : scannedEntry.status;
+                        scannedEntry.skipReason = scannedEntry.skipReason
+                            ? `${scannedEntry.skipReason}; embedding_generation`
+                            : 'embedding_generation';
+                    }
+
+                    report.batchStatus = 'partial';
+                }
+            }
 
             // Store embeddings with error handling
             if (newEmbeddingsToStore.length > 0) {

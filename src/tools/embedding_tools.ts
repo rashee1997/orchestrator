@@ -534,7 +534,7 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                         detailedOutput += `- \`${error.file_path_relative}\`: ${error.error}\n`;
                     });
                 }
-                
+
                 // Add resumption guidance
                 if (resultCounts.resumeInfo && resultCounts.resumeInfo.failedFiles.length > 0) {
                     detailedOutput += `\n### 🔄 Resumption Available\n`;
@@ -543,6 +543,13 @@ export function getEmbeddingToolHandlers(memoryManager: MemoryManager) {
                     detailedOutput += `1. Re-run the ingestion for the same directory (failed files will be automatically retried)\n`;
                     detailedOutput += `2. Or target specific failed files: \`${resultCounts.resumeInfo.failedFiles.slice(0, 3).join(', ')}${resultCounts.resumeInfo.failedFiles.length > 3 ? '...' : ''}\`\n\n`;
                 }
+            }
+
+            if (resultCounts.resumeInfo && resultCounts.resumeInfo.failedFiles.length > 0) {
+                const failedFiles = resultCounts.resumeInfo.failedFiles;
+                detailedOutput += `\n### 📌 Files Awaiting Embedding (${failedFiles.length})\n`;
+                detailedOutput += failedFiles.map(filePath => `- \`${filePath}\``).join('\n');
+                detailedOutput += '\n\nUse `resume_failed_files` with these paths to retry without rescanning unchanged files.';
             }
 
             if (!disable_ai_output_summary) {
