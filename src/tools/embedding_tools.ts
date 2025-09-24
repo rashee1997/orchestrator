@@ -62,14 +62,30 @@ function createGitDiffProvider(projectRootPath?: string, options?: GitDiffProvid
             const lines = diff.split('\n');
             let trimmed = diff;
 
+            // Enhanced diff processing - preserve important context
             if (lines.length > MAX_DIFF_LINES) {
-                const truncatedLines = lines.slice(0, MAX_DIFF_LINES);
-                truncatedLines.push(`... (+${lines.length - MAX_DIFF_LINES} more lines)`);
+                // Keep the header and important context lines
+                const headerLines = lines.slice(0, 5); // Keep diff header
+                const contentLines = lines.slice(5);
+                const importantLines = contentLines.filter(line =>
+                    line.startsWith('+') || line.startsWith('-') ||
+                    line.includes('interface') || line.includes('function') ||
+                    line.includes('class') || line.includes('export')
+                );
+
+                const truncatedLines = [
+                    ...headerLines,
+                    ...importantLines.slice(0, MAX_DIFF_LINES - 10)
+                ];
+                truncatedLines.push(`... (+${lines.length - truncatedLines.length} more lines - showing key changes only)`);
                 trimmed = truncatedLines.join('\n');
             }
 
             if (trimmed.length > MAX_DIFF_CHARACTERS) {
-                trimmed = trimmed.slice(0, MAX_DIFF_CHARACTERS) + '\n... (diff truncated)';
+                // Try to cut at a logical boundary
+                const cutPoint = trimmed.lastIndexOf('\n', MAX_DIFF_CHARACTERS);
+                trimmed = trimmed.slice(0, cutPoint > 0 ? cutPoint : MAX_DIFF_CHARACTERS) +
+                         '\n... (diff truncated - showing most important changes)';
             }
 
             return trimmed;
@@ -262,24 +278,28 @@ async function _generateUnifiedAiSummary(
         }, {} as Record<string, Array<{ entity_name: string | null; chunk_preview: string }>>);
 
         let list = Object.entries(groupedByFile).map(([filePath, chunks]) => {
-            let fileEntry = `  - File: \`${filePath}\`\n`;
-
             const gitDiff = diffProvider ? diffProvider(filePath) : null;
 
             if (gitDiff) {
-                fileEntry += `    \`\`\`diff\n${gitDiff}\n    \`\`\`\n`;
+                // Enhanced git diff formatting for better AI analysis
+                return `\n📄 **FILE: \`${filePath}\`**\n` +
+                       `🔍 **GIT DIFF ANALYSIS:**\n` +
+                       `\`\`\`diff\n${gitDiff}\n\`\`\`\n` +
+                       `⚡ **KEY CHANGES:** Analyze the +/- lines above to identify new interfaces, functions, fields, and logic.\n`;
             } else {
-                const MAX_CHUNK_PREVIEW = 150;
+                // Fallback to chunk analysis when no git diff available
+                let fileEntry = `\n📄 **FILE: \`${filePath}\`** (no git diff available)\n`;
+                const MAX_CHUNK_PREVIEW = 200; // Increased for better context
                 chunks.forEach(chunk => {
                     const chunkPreview = chunk.chunk_preview.length > MAX_CHUNK_PREVIEW
                         ? chunk.chunk_preview.substring(0, MAX_CHUNK_PREVIEW) + '...'
                         : chunk.chunk_preview;
                     const entityInfo = chunk.entity_name ? `\`${chunk.entity_name}\`` : 'code block';
-                    fileEntry += `    * ${entityInfo}: ${chunkPreview.replace(/\n/g, ' ').trim()}\n`;
+                    fileEntry += `   🔹 **${entityInfo}:** ${chunkPreview.replace(/\n/g, ' ').trim()}\n`;
                 });
+                return fileEntry;
             }
-            return fileEntry;
-        }).join('');
+        }).join('\n');
 
         if (chunks.length > MAX_ITEMS_PER_SECTION) {
             list += `\n  - ...and ${chunks.length - MAX_ITEMS_PER_SECTION} more items.`;
@@ -287,58 +307,70 @@ async function _generateUnifiedAiSummary(
         return list;
     };
 
-    // Create the final, structured changelog for the AI
-    let batchInfo = '';
+    // Create the final, structured changelog for the AI with enhanced formatting
+    let contextInfo = '';
     if (resultCounts.batchMetadata) {
-        batchInfo += `\n**Processing Context:**\n- Processed ${resultCounts.batchMetadata.totalFilesProcessed} files in ${resultCounts.batchMetadata.totalBatches} batches of ${resultCounts.batchMetadata.batchSize} files each\n- Used automatic batching to prevent API rate limiting\n`;
+        contextInfo += `📦 **PROCESSING CONTEXT:**\n- Processed ${resultCounts.batchMetadata.totalFilesProcessed} files in ${resultCounts.batchMetadata.totalBatches} batches\n- Used automatic batching to prevent API rate limiting\n\n`;
     }
 
     if (commitMetadata?.currentCommit) {
-        batchInfo += `\n**Git Context:**\n- Repository Root: \`${commitMetadata.repositoryRoot}\`\n- Branch: \`${commitMetadata.branchName ?? 'unknown'}\`\n- Current Commit: \`${commitMetadata.currentCommit}\``;
+        contextInfo += `🔗 **GIT CONTEXT:**\n- Repository: \`${commitMetadata.repositoryRoot}\`\n- Branch: \`${commitMetadata.branchName ?? 'unknown'}\`\n- Current Commit: \`${commitMetadata.currentCommit}\`\n`;
         if (commitMetadata.previousCommit) {
-            batchInfo += `\n- Previous Ingested Commit: \`${commitMetadata.previousCommit}\``;
+            contextInfo += `- Previous Commit: \`${commitMetadata.previousCommit}\`\n`;
         }
-        if (commitMetadata.commits && commitMetadata.commits.length > 0) {
-            batchInfo += `\n- Commits Since Last Ingestion (${commitMetadata.commits.length}):\n`;
-            commitMetadata.commits.slice(0, 10).forEach(commit => {
-                batchInfo += `  - \`${commit.hash.substring(0, 8)}\` ${commit.message} (${commit.author} on ${commit.date})\n`;
-            });
-            if (commitMetadata.commits.length > 10) {
-                batchInfo += `  - ...and ${commitMetadata.commits.length - 10} more commits.\n`;
-            }
-        }
-        batchInfo += '\n';
+        contextInfo += '\n';
     }
 
-    const changelog = `${batchInfo}
-**Refactored Entities (Modified or Replaced):**
+    // Enhanced git diff emphasis
+    const hasGitDiffs = diffProvider && (
+        (trulyNew.length > 0 && diffProvider(trulyNew[0]?.file_path_relative)) ||
+        (refactored.length > 0 && diffProvider(refactored[0]?.file_path_relative))
+    );
+
+    const analysisHeader = hasGitDiffs
+        ? `🚨 **IMPORTANT: ANALYZE THE GIT DIFFS BELOW** 🚨\nThe code changes are shown in git diff format. Focus on the +/- lines to identify specific changes.\n\n`
+        : `📋 **CODE ENTITY ANALYSIS** (no git diffs available)\nAnalyzing code entities since git diffs are not available.\n\n`;
+
+    const changelog = `${contextInfo}${analysisHeader}🔄 **REFACTORED/MODIFIED ENTITIES:**
 ${formatChangeList(refactored)}
 
-**Newly Added Entities:**
+✨ **NEWLY ADDED ENTITIES:**
 ${formatChangeList(trulyNew)}
 
-**Removed Entities:**
+🗑️ **REMOVED ENTITIES:**
 ${formatChangeList(trulyDeleted)}
 
 `;
 
-    const prompt = `You are a Senior Developer writing a clear, specific summary of code changes. Your task is to analyze the following changelog and describe WHAT was actually changed in concrete terms${resultCounts.batchMetadata ? ', processed through automatic batching' : ''}.
+    const prompt = `You are a Technical Lead analyzing SPECIFIC CODE CHANGES from git diffs. Your job is to read the git diff output and identify exactly what functionality was added, modified, or removed.
 
-**Instructions:**
-1. **Focus on specific functionality**: Describe what new features, functions, or capabilities were added/modified/removed
-2. **Mention key files and functions**: Reference the most important files or functions that changed
-3. **Describe the purpose**: Explain WHY these changes were made (performance, new feature, bug fix, etc.)
-4. **Be concrete**: Instead of "refactored the pipeline", say "added batch processing to prevent API rate limits"
-5. **Highlight user-visible changes**: What would a user or developer notice is different?${resultCounts.batchMetadata ? '\n6. **Batched processing context**: These changes were processed in multiple batches for efficiency' : ''}
+**CRITICAL: Focus on the git diff content below, not generic descriptions.**
 
-**Changelog:**
+**Analysis Instructions:**
+1. **Read the git diffs carefully** - Look at the +/- lines to see what specific code was added/removed
+2. **Identify new interfaces, functions, classes** - Mention specific names from the diffs
+3. **Describe new features** - What new capabilities do the added lines provide?
+4. **Note enhanced functionality** - What existing features were improved?
+5. **Explain the technical improvements** - Better error handling, performance, validation, etc.
+
+**Example of GOOD analysis:**
+"Added retry logic with exponential backoff to TavilyApiService, enhanced WebSearchResult interface with snippet and relevance_score fields, and introduced SearchMetadata for tracking API performance metrics."
+
+**Example of BAD analysis:**
+"Enhanced error tracking for partial embedding failures and API interactions."
+
+**CODE CHANGES TO ANALYZE:**
 ${changelog}
 
-**Summary Requirements:**
-- Write 2-3 sentences maximum
-- Be specific about what functionality changed
-- Mention key file names or function names when relevant
-- Focus on practical impact over technical architecture
+**Required Output:**
+- Write 2-4 sentences maximum
+- Mention specific interface names, function names, and new fields from the diffs
+- Focus on what developers can now do that they couldn't before
+- Be concrete and technical, not vague or generic
+- If you see git diff blocks, analyze the +/- changes specifically
+
+**Template to follow:**
+"Added [specific new interfaces/functions] to [file], introduced [new capabilities like X, Y, Z], and enhanced [existing functionality] with [specific improvements]."
 `;
 
     let summaryText = `(AI summary could not be generated.)`;

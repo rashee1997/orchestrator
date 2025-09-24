@@ -344,7 +344,7 @@ export class IterativeRagOrchestrator {
                             max_results: tavily_max_results,
                             include_raw_content: tavily_include_raw_content,
                         });
-                        webResults.forEach((r: WebSearchResult) => {
+                        webResults.results.forEach((r: WebSearchResult) => {
                             webSearchSources.push({ title: r.title, url: r.url });
                             accumulatedContext.push({
                                 type: 'documentation',
@@ -366,7 +366,7 @@ export class IterativeRagOrchestrator {
                                 citations.push(webCitation);
                             }
                         });
-                        console.log(`[Enhanced RAG] Web search completed: added ${webResults.length} web sources to context`);
+                        console.log(`[Enhanced RAG] Web search completed: added ${webResults.results.length} web sources to context`);
                     } catch (e: any) {
                         console.error('[Enhanced RAG] Web search failed in continuation mode:', e);
                     }
@@ -867,7 +867,7 @@ ${dmqrQueries.map((query, idx) => `  ${idx + 1}. "${query.substring(0, 80)}..."`
                             max_results: tavily_max_results,
                             include_raw_content: tavily_include_raw_content,
                         });
-                        webResults.forEach((r: WebSearchResult) => {
+                        webResults.results.forEach((r: WebSearchResult) => {
                             webSearchSources.push({ title: r.title, url: r.url });
                             accumulatedContext.push({
                                 type: 'documentation',

@@ -42,10 +42,10 @@ export function getTavilyToolHandlers(memoryManager: MemoryManager) {
             });
 
             let md = `## Tavily Web Search Results for Query: "${args.query}"\n\n`;
-            if (!tavilySearchResults || tavilySearchResults.length === 0) {
+            if (!tavilySearchResults || !tavilySearchResults.results || tavilySearchResults.results.length === 0) {
                 md += "*No results found.*\n";
             } else {
-                tavilySearchResults.forEach((result: any, index: number) => {
+                tavilySearchResults.results.forEach((result: any, index: number) => {
                     md += `### Result ${index + 1}: ${result.title || 'N/A'}\n`;
                     md += `- **URL:** <${result.url || '#'}>\n`;
                     if (result.content) md += `- **Content Snippet:**\n  > ${result.content.replace(/\n/g, '\n  > ')}\n`;
