@@ -325,10 +325,11 @@ async function _generateUnifiedAiSummary(
     // Generate summary for meaningful changes:
     // 1. New commits detected (hasCommitChanges)
     // 2. OR working directory changes with actual file changes (not just debug/logging)
-    // 3. OR when we have actual embedding changes (new/deleted) regardless of git state
+    // 3. OR when we have actual embedding changes (new/deleted) - includes first-time ingestions
+    // 4. CRITICAL: Always generate summary if we have new embeddings (first-time file ingestion)
     const shouldGenerateSummary = hasCommitChanges ||
         (hasActualFileChanges && hasUncommittedChanges) ||
-        (hasActualChanges && hasUncommittedChanges);
+        hasActualChanges; // Remove dependency on hasUncommittedChanges for new embeddings
 
     if (!shouldGenerateSummary) {
         console.log('[AI Summary] Skipping AI summary - no meaningful changes detected', {
@@ -469,7 +470,38 @@ ${formatChangeList(trulyDeleted)}
 
 `;
 
-    const prompt = `You are a Technical Lead analyzing SPECIFIC CODE CHANGES from git diffs. Your job is to read the git diff output and identify exactly what functionality was added, modified, or removed.
+    // Determine if this is a first-time ingestion (no git diffs available)
+    const isFirstTimeIngestion = !hasGitDiffs && hasActualChanges;
+
+    const prompt = isFirstTimeIngestion
+        ? `You are a Technical Lead analyzing NEWLY INGESTED FILES for the first time. These files have never been processed before, so there are no git diffs to analyze. Your job is to summarize what these new files contain.
+
+**FIRST-TIME INGESTION ANALYSIS:**
+You are analyzing file content chunks for files being added to the system for the first time.
+
+**Analysis Instructions:**
+1. **Focus on file content** - Analyze the actual text/code content provided
+2. **Identify file purposes** - What does each file do? What's its main purpose?
+3. **Note key features** - What functionality, interfaces, classes, or content does it provide?
+4. **Be descriptive** - Since this is the first time seeing these files, describe what they contain
+
+**Example of GOOD first-time analysis:**
+"Adding new documentation file TEST_NEW_FILE.md that explains testing procedures and fallback logic for AI summary generation. The file includes purpose descriptions, feature lists, and integration testing guidelines."
+
+**NEWLY INGESTED CONTENT TO ANALYZE:**
+${changelog}
+
+**Required Output:**
+- Write 2-4 sentences maximum
+- Mention specific file names and their main purposes
+- Focus on what new content/functionality is being added to the system
+- Be concrete about what these files contain
+- Use "Adding" or "Introducing" since these are new files
+
+**Template to follow:**
+"Adding [file names] that [main purposes/content]. These files [specific functionality they provide] and [key features or sections they contain]."
+`
+        : `You are a Technical Lead analyzing SPECIFIC CODE CHANGES from git diffs. Your job is to read the git diff output and identify exactly what functionality was added, modified, or removed.
 
 **CRITICAL: Prioritize CURRENT working directory changes over historical commits.**
 
