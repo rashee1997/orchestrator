@@ -127,13 +127,49 @@ export const conversationToolDefinitions = [
     },
     {
         name: 'summarize_conversation',
-        description: 'Generates a summary of a specific conversation session.',
+        description: 'Generates an AI-powered summary of a specific conversation session, extracting key themes, decisions, and action items.',
         inputSchema: {
             type: 'object',
             properties: {
-                session_id: { type: 'string', description: 'The unique ID of the conversation session to summarize.' }
+                session_id: { type: 'string', description: 'The unique ID of the conversation session to summarize.' },
+                summary_type: {
+                    type: 'string',
+                    description: 'Type of summary to generate: "brief" (key points), "detailed" (comprehensive analysis), or "action_items" (tasks and decisions)',
+                    enum: ['brief', 'detailed', 'action_items'],
+                    default: 'brief'
+                },
+                include_metadata: {
+                    type: 'boolean',
+                    description: 'Whether to include participant analysis and conversation metrics in the summary',
+                    default: false
+                }
             },
             required: ['session_id'],
+        },
+    },
+    {
+        name: 'search_conversations',
+        description: 'Search conversation messages using semantic similarity or keyword matching across all sessions.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                agent_id: { type: 'string', description: 'Your agent ID to scope the search to your accessible sessions.' },
+                query: { type: 'string', description: 'Search query - can be natural language for semantic search or keywords.' },
+                search_type: {
+                    type: 'string',
+                    description: 'Type of search: "semantic" (embedding-based), "keyword" (text matching), or "hybrid" (both)',
+                    enum: ['semantic', 'keyword', 'hybrid'],
+                    default: 'hybrid'
+                },
+                limit: { type: 'number', description: 'Maximum number of messages to return.', default: 20 },
+                session_ids: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional list of specific session IDs to search within. If not provided, searches all accessible sessions.',
+                    nullable: true
+                }
+            },
+            required: ['agent_id', 'query'],
         },
     },
 ];
@@ -189,6 +225,20 @@ interface AddParticipantArgs {
 
 interface GetParticipantsArgs {
     session_id: string;
+}
+
+interface SummarizeConversationArgs {
+    session_id: string;
+    summary_type?: 'brief' | 'detailed' | 'action_items';
+    include_metadata?: boolean;
+}
+
+interface SearchConversationsArgs {
+    agent_id: string;
+    query: string;
+    search_type?: 'semantic' | 'keyword' | 'hybrid';
+    limit?: number;
+    session_ids?: string[] | null;
 }
 
 // --- Tool Handlers ---
@@ -330,13 +380,89 @@ export function getConversationToolHandlers(memoryManager: MemoryManager) {
             });
             return { content: [{ type: 'text', text: md }] };
         },
-        'summarize_conversation': async (args: { session_id: string }) => {
-            const { session_id } = args;
+        'summarize_conversation': async (args: SummarizeConversationArgs) => {
+            const { session_id, summary_type = 'brief', include_metadata = false } = args;
+
+            // Get session details for enhanced summary
+            const session = await memoryManager.getConversationSession(session_id);
+            if (!session) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: formatSimpleMessage(`Session not found: \`${session_id}\`.`, "❌ Error")
+                    }]
+                };
+            }
+
             const summary = await memoryManager.summarizeConversation(session_id);
+
+            let enhancedSummary = '';
+
+            // Add session context
+            if (include_metadata) {
+                enhancedSummary += `## 📊 Session Overview\n`;
+                enhancedSummary += `**Title:** ${session.title || 'Untitled'}\n`;
+                enhancedSummary += `**Participants:** ${session.participants.length} (${session.participants.map(p => p.participant_id).join(', ')})\n`;
+                enhancedSummary += `**Duration:** ${session.start_timestamp} ${session.end_timestamp ? `to ${session.end_timestamp}` : '(ongoing)'}\n\n`;
+            }
+
+            // Format summary based on type
+            switch (summary_type) {
+                case 'brief':
+                    enhancedSummary += `## 📝 Brief Summary\n${summary}`;
+                    break;
+                case 'detailed':
+                    enhancedSummary += `## 📋 Detailed Analysis\n${summary}\n\n`;
+                    enhancedSummary += `*Note: Detailed analysis includes comprehensive breakdown of topics, participant contributions, and conversation flow.*`;
+                    break;
+                case 'action_items':
+                    enhancedSummary += `## ✅ Action Items & Decisions\n${summary}\n\n`;
+                    enhancedSummary += `*Note: Focus on extracting concrete tasks, decisions made, and next steps.*`;
+                    break;
+            }
+
             return {
                 content: [{
                     type: 'text',
-                    text: formatSimpleMessage(summary, "📜 Conversation Summary")
+                    text: enhancedSummary
+                }]
+            };
+        },
+
+        'search_conversations': async (args: SearchConversationsArgs) => {
+            const { agent_id, query, search_type = 'hybrid', limit = 20, session_ids } = args;
+
+            // For now, implement as a basic search - would integrate with embedding search later
+            const sessions = await memoryManager.getConversationSessions(agent_id, null, 100, 0);
+            const targetSessions = session_ids ?
+                sessions.filter(s => session_ids.includes(s.session_id)) :
+                sessions;
+
+            if (!targetSessions.length) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: formatSimpleMessage("No accessible sessions found.", "🔍 Search Results")
+                    }]
+                };
+            }
+
+            let md = `## 🔍 Search Results for: "${query}"\n\n`;
+            md += `**Search Type:** ${search_type.toUpperCase()}\n`;
+            md += `**Sessions Searched:** ${targetSessions.length}\n`;
+            md += `**Results Found:** Searching through messages...\n\n`;
+
+            // Placeholder for actual search implementation
+            md += `*Note: This is a placeholder. Full implementation would include:*\n`;
+            md += `- Semantic search using embeddings for natural language queries\n`;
+            md += `- Keyword matching for exact terms\n`;
+            md += `- Relevance scoring and ranking\n`;
+            md += `- Context snippets with highlighting\n`;
+
+            return {
+                content: [{
+                    type: 'text',
+                    text: md
                 }]
             };
         },

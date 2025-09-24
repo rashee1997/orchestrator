@@ -41,12 +41,18 @@ function createGitDiffProvider(projectRootPath?: string, options?: GitDiffProvid
         const cache = new Map<string, string | null>();
 
         const fetchDiff = (relativePath: string, staged: boolean): string => {
-            if (options?.baseCommit !== undefined || options?.headCommit !== undefined) {
+            // Only use commit-to-commit diff if the commits are actually different
+            const hasCommitDiff = options?.baseCommit !== undefined &&
+                                  options?.headCommit !== undefined &&
+                                  options.baseCommit !== options.headCommit;
+
+            if (hasCommitDiff) {
                 const baseRef = options.baseCommit ?? null;
                 const headRef = options.headCommit ?? 'HEAD';
                 return gitService.getDiffBetweenRefs(baseRef, headRef, [relativePath], 3).trim();
             }
 
+            // For identical commits or no commit metadata, check working directory changes
             const diffOptions = staged
                 ? { staged: true as const, files: [relativePath], unified: 3 }
                 : { files: [relativePath], unified: 3 };
@@ -97,24 +103,38 @@ function createGitDiffProvider(projectRootPath?: string, options?: GitDiffProvid
             }
 
             try {
-                let combined = '';
+                const sections: string[] = [];
 
-                if (options?.baseCommit !== undefined || options?.headCommit !== undefined) {
-                    const commitDiff = trimDiffOutput(fetchDiff(relativePath, false));
-                    combined = commitDiff ? commitDiff : '';
-                } else {
-                    const stagedDiff = trimDiffOutput(fetchDiff(relativePath, true));
-                    const unstagedDiff = trimDiffOutput(fetchDiff(relativePath, false));
+                // PRIORITY 1: Current working directory changes (staged and unstaged)
+                const stagedDiff = trimDiffOutput(fetchDiff(relativePath, true));
+                const unstagedDiff = trimDiffOutput(fetchDiff(relativePath, false));
 
-                    const sections: string[] = [];
-                    if (stagedDiff) {
-                        sections.push(`--- staged\n${stagedDiff}`);
-                    }
-                    if (unstagedDiff && unstagedDiff !== stagedDiff) {
-                        sections.push(`--- unstaged\n${unstagedDiff}`);
-                    }
-                    combined = sections.join('\n\n');
+                if (stagedDiff) {
+                    sections.push(`🟡 STAGED CHANGES:\n${stagedDiff}`);
                 }
+                if (unstagedDiff && unstagedDiff !== stagedDiff) {
+                    sections.push(`🔴 UNSTAGED CHANGES:\n${unstagedDiff}`);
+                }
+
+                // PRIORITY 2: Historical committed changes (when commit options are provided)
+                if (options?.baseCommit !== undefined || options?.headCommit !== undefined) {
+                    const commitDiff = trimDiffOutput(gitService.getDiffBetweenRefs(
+                        options.baseCommit ?? null,
+                        options.headCommit ?? 'HEAD',
+                        [relativePath],
+                        3
+                    ).trim());
+
+                    if (commitDiff) {
+                        const commitLabel = options.baseCommit && options.headCommit
+                            ? `📚 COMMITTED CHANGES (${options.baseCommit?.substring(0, 7)}..${options.headCommit?.substring(0, 7)}):`
+                            : `📚 COMMITTED CHANGES:`;
+                        sections.push(`${commitLabel}\n${commitDiff}`);
+                    }
+                }
+
+                // Combine all sections, prioritizing current changes
+                const combined = sections.join('\n\n');
                 const result = combined || null;
                 cache.set(relativePath, result);
                 return result;
@@ -221,6 +241,7 @@ async function _generateUnifiedAiSummary(
     const { newEmbeddings, reusedEmbeddings, deletedEmbeddings } = resultCounts;
 
     // Enhanced validation: Only generate AI summary when there are ACTUAL changes
+    // This includes new/deleted embeddings OR uncommitted changes to existing files
     const hasActualChanges = (
         newEmbeddings.length > 0 ||
         deletedEmbeddings.length > 0
@@ -230,6 +251,14 @@ async function _generateUnifiedAiSummary(
         resultCounts.commitMetadata.currentCommit &&
         resultCounts.commitMetadata.previousCommit &&
         resultCounts.commitMetadata.currentCommit !== resultCounts.commitMetadata.previousCommit;
+
+    console.log(`[AI Summary] Commit metadata analysis:`, {
+        hasCommitMetadata: !!resultCounts.commitMetadata,
+        currentCommit: resultCounts.commitMetadata?.currentCommit?.substring(0, 7),
+        previousCommit: resultCounts.commitMetadata?.previousCommit?.substring(0, 7),
+        commitsAreEqual: resultCounts.commitMetadata?.currentCommit === resultCounts.commitMetadata?.previousCommit,
+        hasCommitChanges
+    });
 
     // Check for uncommitted changes using a simpler approach
     let hasUncommittedChanges = false;
@@ -258,38 +287,56 @@ async function _generateUnifiedAiSummary(
             ...deletedEmbeddings.map(e => e.file_path_relative)
         ]);
 
-        // Create a diff provider to check if files actually have changes
-        const tempDiffProvider = createGitDiffProvider(
-            projectRootPath,
-            resultCounts.commitMetadata ? {
-                baseCommit: resultCounts.commitMetadata.previousCommit ?? null,
-                headCommit: resultCounts.commitMetadata.currentCommit ?? undefined
-            } : undefined
-        );
+        // Create a comprehensive diff provider that checks BOTH committed and working directory changes
+        console.log(`[AI Summary] Creating diff provider with commit metadata:`, JSON.stringify(resultCounts.commitMetadata, null, 2));
+        const diffProviderOptions = resultCounts.commitMetadata ? {
+            baseCommit: resultCounts.commitMetadata.previousCommit ?? null,
+            headCommit: resultCounts.commitMetadata.currentCommit ?? undefined
+        } : undefined;
+        console.log(`[AI Summary] Diff provider options:`, JSON.stringify(diffProviderOptions, null, 2));
+
+        const tempDiffProvider = createGitDiffProvider(projectRootPath, diffProviderOptions);
 
         if (tempDiffProvider) {
             for (const filePath of changedFiles) {
                 const diff = tempDiffProvider(filePath);
+                console.log(`[AI Summary] Testing diff for ${filePath}: ${diff ? `${diff.length} chars` : 'null/empty'}`);
                 if (diff && diff.trim().length > 0) {
                     hasActualFileChanges = true;
+                    console.log(`[AI Summary] Found actual git diff for: ${filePath} (${diff.length} chars)`);
                     break;
+                } else {
+                    console.log(`[AI Summary] No diff found for: ${filePath} (diff was ${typeof diff})`);
                 }
             }
+
+            if (!hasActualFileChanges) {
+                console.log(`[AI Summary] No git diffs found for changed files: ${Array.from(changedFiles).join(', ')}`);
+            }
         } else {
-            // If no diff provider, assume changes are valid (fallback)
-            hasActualFileChanges = hasActualChanges;
+            // If no diff provider, but we detected uncommitted changes, assume valid
+            hasActualFileChanges = Boolean(hasUncommittedChanges) || Boolean(hasCommitChanges);
+            console.log(`[AI Summary] No diff provider available, using fallback: hasUncommittedChanges=${hasUncommittedChanges}, hasCommitChanges=${hasCommitChanges}`);
         }
     } else {
         hasActualFileChanges = hasActualChanges;
     }
 
-    // Only generate summary if we have actual file changes AND (commit changes OR working directory changes)
-    if (!hasActualFileChanges || (!hasCommitChanges && !hasUncommittedChanges)) {
+    // Generate summary for meaningful changes:
+    // 1. New commits detected (hasCommitChanges)
+    // 2. OR working directory changes with actual file changes (not just debug/logging)
+    // 3. OR when we have actual embedding changes (new/deleted) regardless of git state
+    const shouldGenerateSummary = hasCommitChanges ||
+        (hasActualFileChanges && hasUncommittedChanges) ||
+        (hasActualChanges && hasUncommittedChanges);
+
+    if (!shouldGenerateSummary) {
         console.log('[AI Summary] Skipping AI summary - no meaningful changes detected', {
             hasActualChanges,
             hasActualFileChanges,
             hasCommitChanges,
             hasUncommittedChanges,
+            shouldGenerateSummary,
             newCount: newEmbeddings.length,
             deletedCount: deletedEmbeddings.length,
             reusedCount: reusedEmbeddings.length
@@ -424,20 +471,30 @@ ${formatChangeList(trulyDeleted)}
 
     const prompt = `You are a Technical Lead analyzing SPECIFIC CODE CHANGES from git diffs. Your job is to read the git diff output and identify exactly what functionality was added, modified, or removed.
 
-**CRITICAL: Focus on the git diff content below, not generic descriptions.**
+**CRITICAL: Prioritize CURRENT working directory changes over historical commits.**
 
 **Analysis Instructions:**
-1. **Read the git diffs carefully** - Look at the +/- lines to see what specific code was added/removed
-2. **Identify new interfaces, functions, classes** - Mention specific names from the diffs
-3. **Describe new features** - What new capabilities do the added lines provide?
-4. **Note enhanced functionality** - What existing features were improved?
-5. **Explain the technical improvements** - Better error handling, performance, validation, etc.
+1. **PRIORITY ORDER for analysis:**
+   - 🟡 STAGED CHANGES (highest priority - these are immediate modifications)
+   - 🔴 UNSTAGED CHANGES (second priority - current work in progress)
+   - 📚 COMMITTED CHANGES (background context - already completed work)
 
-**Example of GOOD analysis:**
-"Added retry logic with exponential backoff to TavilyApiService, enhanced WebSearchResult interface with snippet and relevance_score fields, and introduced SearchMetadata for tracking API performance metrics."
+2. **Read the git diffs carefully** - Look at the +/- lines to see what specific code was added/removed
+3. **Identify new interfaces, functions, classes** - Mention specific names from the diffs
+4. **Describe new features** - What new capabilities do the added lines provide?
+5. **Note enhanced functionality** - What existing features were improved?
+6. **Focus on current changes** - If both staged/unstaged AND committed changes exist, emphasize the current modifications
+
+**Example of GOOD analysis with mixed changes:**
+"Currently modifying the TavilyApiService to add retry logic with exponential backoff (staged), while also working on WebSearchResult interface enhancements (unstaged). These build on recently committed SearchMetadata additions for API performance tracking."
 
 **Example of BAD analysis:**
 "Enhanced error tracking for partial embedding failures and API interactions."
+
+**Change Types Guide:**
+- 🟡 STAGED = Ready to commit, immediate focus
+- 🔴 UNSTAGED = Work in progress, current development
+- 📚 COMMITTED = Background context, completed work
 
 **CODE CHANGES TO ANALYZE:**
 ${changelog}
@@ -445,12 +502,13 @@ ${changelog}
 **Required Output:**
 - Write 2-4 sentences maximum
 - Mention specific interface names, function names, and new fields from the diffs
-- Focus on what developers can now do that they couldn't before
+- **Emphasize current work (staged/unstaged) over committed work**
+- Focus on what developers are actively working on right now
 - Be concrete and technical, not vague or generic
 - If you see git diff blocks, analyze the +/- changes specifically
 
 **Template to follow:**
-"Added [specific new interfaces/functions] to [file], introduced [new capabilities like X, Y, Z], and enhanced [existing functionality] with [specific improvements]."
+"Currently [working on specific changes in staged/unstaged], which [adds/modifies specific functionality]. This builds on [committed changes if relevant] to [overall purpose/impact]."
 `;
 
     let summaryText = `(AI summary could not be generated.)`;
