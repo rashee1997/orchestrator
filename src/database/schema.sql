@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS agents (
     creation_timestamp_unix INTEGER NOT NULL,
     creation_timestamp_iso TEXT NOT NULL,
     last_updated_timestamp_unix INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-    last_updated_timestamp_iso TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_updated_timestamp_iso TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), -- NOSONAR: consistent ISO format requires explicit strftime literal
     configuration_json TEXT,
     status TEXT DEFAULT 'ACTIVE'
 );
@@ -278,10 +278,26 @@ CREATE INDEX IF NOT EXISTS idx_patches_finding_id ON code_review_patches (findin
 CREATE INDEX IF NOT EXISTS idx_patches_file_path ON code_review_patches (file_path);
 
 -- Insert default agents
+WITH
+    default_agents AS (
+        SELECT 'cline' AS agent_id,
+               'Default AI Agent' AS name,
+               'Automatically created default agent for testing and operations.' AS description
+        UNION ALL
+        SELECT 'test_agent',
+               'Test AI Agent',
+               'Agent for testing purposes.'
+    ),
+    timestamp_defaults AS (
+        SELECT STRFTIME('%s', 'now') * 1000 AS creation_timestamp_unix,
+               STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') AS creation_timestamp_iso
+    )
 INSERT INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
-VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
-ON CONFLICT(agent_id) DO NOTHING;
-
-INSERT INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
-VALUES ('test_agent', 'Test AI Agent', 'Agent for testing purposes.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+SELECT d.agent_id,
+       d.name,
+       d.description,
+       t.creation_timestamp_unix,
+       t.creation_timestamp_iso
+FROM default_agents d
+CROSS JOIN timestamp_defaults t
 ON CONFLICT(agent_id) DO NOTHING;

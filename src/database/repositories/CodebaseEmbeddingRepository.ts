@@ -8,13 +8,13 @@ import { CodebaseEmbeddingCommitsRepository } from './CodebaseEmbeddingCommitsRe
 import { CodebaseEmbeddingSearchRepository } from './CodebaseEmbeddingSearchRepository.js';
 
 export class CodebaseEmbeddingRepository {
-  private writeRepo: CodebaseEmbeddingWriteRepository;
-  private readRepo: CodebaseEmbeddingReadRepository;
-  private statsRepo: CodebaseEmbeddingStatsRepository;
-  private commitsRepo: CodebaseEmbeddingCommitsRepository;
-  private searchRepo: CodebaseEmbeddingSearchRepository;
+  private readonly writeRepo: CodebaseEmbeddingWriteRepository;
+  private readonly readRepo: CodebaseEmbeddingReadRepository;
+  private readonly statsRepo: CodebaseEmbeddingStatsRepository;
+  private readonly commitsRepo: CodebaseEmbeddingCommitsRepository;
+  private readonly searchRepo: CodebaseEmbeddingSearchRepository;
 
-  constructor(private db: Database, private boostConfig: BoostConfiguration = DEFAULT_BOOST_CONFIGURATION) {
+  constructor(private readonly db: Database, private readonly boostConfig: BoostConfiguration = DEFAULT_BOOST_CONFIGURATION) {
     applyPragmas(this.db);
     ensureCommitCheckpointTable(this.db);
 

@@ -77,99 +77,127 @@ export function calculateStringSimilarity(str1: string, str2: string): number {
   return intersection.size / maxLen;
 }
 
-export function calculateEntityNameRelevanceBoost(
-  queryText: string,
-  embedding: CodebaseEmbeddingRecord,
-  boostConfig: BoostConfiguration
-): number {
-  let boost = 0;
-  const queryLower = queryText.toLowerCase();
-  const contentLower = embedding.chunk_text?.toLowerCase() || '';
+function getQueryTerms(queryText: string): string[] {
+    return queryText
+        .split(/\s+/)
+        .filter((t) => t.length > 2)
+        .map((t) => t.toLowerCase().replace(/[^\w]/g, ''));
+}
 
-  const queryTerms = queryText
-    .split(/\s+/)
-    .filter((t) => t.length > 2)
-    .map((t) => t.toLowerCase().replace(/[^\w]/g, ''));
-
-  if (embedding.entity_name) {
+function entityNameBoost(queryTerms: string[], embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    if (!embedding.entity_name) return boost;
     const entityNameLower = embedding.entity_name.toLowerCase();
 
     if (queryTerms.some((t) => t === entityNameLower)) {
-      boost += boostConfig.entityNameExactMatchBoost;
+        boost += boostConfig.entityNameExactMatchBoost;
     }
     if (queryTerms.some((t) => entityNameLower.includes(t) || t.includes(entityNameLower))) {
-      boost += boostConfig.entityNamePartialMatchBoost;
+        boost += boostConfig.entityNamePartialMatchBoost;
     }
     const maxSimilarity = Math.max(
-      ...queryTerms.map((t) => calculateStringSimilarity(t, entityNameLower))
+        ...queryTerms.map((t) => calculateStringSimilarity(t, entityNameLower))
     );
     if (maxSimilarity > boostConfig.entityNameFuzzyMatchThreshold) {
-      boost += boostConfig.entityNameFuzzyMatchBoost * maxSimilarity;
+        boost += boostConfig.entityNameFuzzyMatchBoost * maxSimilarity;
     }
-  }
+    return boost;
+}
 
-  let methodImplementationBoost = 0;
-  for (const rule of boostConfig.methodImplementationPatterns) {
-    if (rule.pattern.test(contentLower)) methodImplementationBoost += rule.boost;
-  }
-  if (
-    embedding.entity_name &&
-    queryTerms.some((t) => embedding.entity_name!.toLowerCase().includes(t))
-  ) {
-    methodImplementationBoost *= boostConfig.implementationBoostMultiplier;
-  }
-  boost += Math.min(0.3, methodImplementationBoost);
+function methodImplementationBoost(queryTerms: string[], embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    const contentLower = embedding.chunk_text?.toLowerCase() || '';
+    for (const rule of boostConfig.methodImplementationPatterns) {
+        if (rule.pattern.test(contentLower)) boost += rule.boost;
+    }
+    if (
+        embedding.entity_name &&
+        queryTerms.some((t) => embedding.entity_name!.toLowerCase().includes(t))
+    ) {
+        boost *= boostConfig.implementationBoostMultiplier;
+    }
+    return Math.min(0.3, boost);
+}
 
-  let implementationScore = 0;
-  for (const rule of boostConfig.implementationContentPatterns) {
-    if (rule.pattern.test(contentLower)) implementationScore += rule.boost;
-  }
-  boost += Math.min(0.2, implementationScore);
+function implementationContentBoost(embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    const contentLower = embedding.chunk_text?.toLowerCase() || '';
+    for (const rule of boostConfig.implementationContentPatterns) {
+        if (rule.pattern.test(contentLower)) boost += rule.boost;
+    }
+    return Math.min(0.2, boost);
+}
 
-  if (embedding.file_path_relative) {
+function filePathBoost(queryTerms: string[], embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    if (!embedding.file_path_relative) return boost;
     const fileName = embedding.file_path_relative.split('/').pop()?.replace(/\.[^.]*$/, '') || '';
     const fileNameLower = fileName.toLowerCase();
     if (queryTerms.some((t) => fileNameLower.includes(t))) {
-      boost += boostConfig.fileNameMatchBoost;
+        boost += boostConfig.fileNameMatchBoost;
     }
     const pathParts = embedding.file_path_relative.toLowerCase().split('/');
     if (queryTerms.some((t) => pathParts.some((p) => p.includes(t)))) {
-      boost += boostConfig.directoryMatchBoost;
+        boost += boostConfig.directoryMatchBoost;
     }
-  }
+    return boost;
+}
 
-  if (embedding.embedding_type === 'chunk') {
+function chunkTypeBoost(embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    if (embedding.embedding_type !== 'chunk') return boost;
     const chunkLength = embedding.chunk_text?.length || 0;
     if (chunkLength > boostConfig.substantialContentThreshold) {
-      boost += boostConfig.substantialContentBoost;
+        boost += boostConfig.substantialContentBoost;
     }
     if (chunkLength > boostConfig.largeContentThreshold) {
-      boost += boostConfig.largeContentBoost;
+        boost += boostConfig.largeContentBoost;
     }
+    const contentLower = embedding.chunk_text?.toLowerCase() || '';
     if (embedding.entity_name && contentLower.includes(embedding.entity_name.toLowerCase())) {
-      boost += 0.1;
+        boost += 0.1;
     }
-  }
+    return boost;
+}
 
-  if (embedding.metadata_json) {
+function metadataBoost(queryLower: string, queryTerms: string[], embedding: CodebaseEmbeddingRecord, boostConfig: BoostConfiguration): number {
+    let boost = 0;
+    if (!embedding.metadata_json) return boost;
     try {
-      const metadata = JSON.parse(embedding.metadata_json);
-      if (metadata.language && queryLower.includes(metadata.language.toLowerCase())) {
-        boost += boostConfig.languageMatchBoost;
-      }
-      if (
-        metadata.code_type &&
-        queryTerms.some((t) => metadata.code_type.toLowerCase().includes(t))
-      ) {
-        boost += boostConfig.codeTypeMatchBoost;
-      }
-      if (metadata.isImplementation) {
-        boost += boostConfig.implementationVsDeclarationBoost;
-      }
+        const metadata = JSON.parse(embedding.metadata_json);
+        if (metadata.language && queryLower.includes(metadata.language.toLowerCase())) {
+            boost += boostConfig.languageMatchBoost;
+        }
+        if (
+            metadata.code_type &&
+            queryTerms.some((t) => metadata.code_type.toLowerCase().includes(t))
+        ) {
+            boost += boostConfig.codeTypeMatchBoost;
+        }
+        if (metadata.isImplementation) {
+            boost += boostConfig.implementationVsDeclarationBoost;
+        }
     } catch {
-      // ignore
+        // ignore
     }
-  }
+    return boost;
+}
 
-  return Math.min(boostConfig.maxTotalBoost, boost);
+export function calculateEntityNameRelevanceBoost(
+    queryText: string,
+    embedding: CodebaseEmbeddingRecord,
+    boostConfig: BoostConfiguration
+): number {
+    const queryLower = queryText.toLowerCase();
+    const queryTerms = getQueryTerms(queryText);
+
+    let boost = 0;
+    boost += entityNameBoost(queryTerms, embedding, boostConfig);
+    boost += methodImplementationBoost(queryTerms, embedding, boostConfig);
+    boost += implementationContentBoost(embedding, boostConfig);
+    boost += filePathBoost(queryTerms, embedding, boostConfig);
+    boost += chunkTypeBoost(embedding, boostConfig);
+    boost += metadataBoost(queryLower, queryTerms, embedding, boostConfig);
+
+    return Math.min(boostConfig.maxTotalBoost, boost);
 }
