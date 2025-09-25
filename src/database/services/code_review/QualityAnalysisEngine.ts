@@ -19,10 +19,47 @@ export interface QualityFinding {
   pattern?: string;
 }
 
+interface QualityAgent {
+  id: string;
+  label: string;
+  category: QualityFinding['engine'];
+  analyze: (context: CodeReviewContext) => Promise<void>;
+}
+
 export class QualityAnalysisEngine {
   private findings: QualityFinding[] = [];
+  private readonly agents: QualityAgent[];
+  private duplicationCandidates: Map<string, { occurrences: Set<string>; files: Set<string>; length: number }> = new Map();
+  private totalLinesAnalyzed = 0;
 
-  constructor() {}
+  constructor() {
+    this.agents = [
+      {
+        id: 'security-agent',
+        label: 'Security Agent',
+        category: 'security',
+        analyze: async (context) => this.runSecurityEngine(context)
+      },
+      {
+        id: 'performance-agent',
+        label: 'Performance Agent',
+        category: 'performance',
+        analyze: async (context) => this.runPerformanceEngine(context)
+      },
+      {
+        id: 'maintainability-agent',
+        label: 'Maintainability Agent',
+        category: 'maintainability',
+        analyze: async (context) => this.runMaintainabilityEngine(context)
+      },
+      {
+        id: 'reliability-agent',
+        label: 'Reliability Agent',
+        category: 'reliability',
+        analyze: async (context) => this.runReliabilityEngine(context)
+      }
+    ];
+  }
 
   /**
    * Main analysis entry point - runs all engines
@@ -34,14 +71,16 @@ export class QualityAnalysisEngine {
     technicalDebtHours: number;
   }> {
     this.findings = [];
+    this.duplicationCandidates.clear();
+    this.totalLinesAnalyzed = 0;
 
-    // Run all analysis engines in parallel for performance
-    const analysisPromises = [
-      this.runSecurityEngine(context),
-      this.runPerformanceEngine(context),
-      this.runMaintainabilityEngine(context),
-      this.runReliabilityEngine(context)
-    ];
+    const analysisPromises = this.agents.map(async (agent) => {
+      try {
+        await agent.analyze(context);
+      } catch (error) {
+        console.warn(`[QualityAnalysisEngine] Agent ${agent.label} failed:`, error);
+      }
+    });
 
     await Promise.all(analysisPromises);
 
@@ -94,6 +133,7 @@ export class QualityAnalysisEngine {
     for (const file of context.file_snapshots) {
       if (!file.after) continue;
 
+      this.recordDuplicationCandidates(file.path, file.after);
       await this.analyzeComplexity(file.path, file.after);
       await this.analyzeDuplication(file.path, file.after);
       await this.analyzeNaming(file.path, file.after);
@@ -360,17 +400,17 @@ export class QualityAnalysisEngine {
   }
 
   private async analyzeDuplication(filePath: string, content: string): Promise<void> {
-    // Simple duplication detection (lines with 50+ characters)
-    const lines = content.split('\n').filter(line => line.trim().length > 50);
+    const lines = content.split('\n');
     const duplicates = new Map<string, number[]>();
 
     lines.forEach((line, index) => {
       const trimmed = line.trim();
+      if (trimmed.length <= 50) return;
       if (!duplicates.has(trimmed)) {
         duplicates.set(trimmed, []);
       }
-      const lineNumbers = duplicates.get(trimmed);
-      if (lineNumbers) lineNumbers.push(index + 1);
+      const entries = duplicates.get(trimmed);
+      if (entries) entries.push(index + 1);
     });
 
     duplicates.forEach((lineNumbers, line) => {
@@ -382,12 +422,12 @@ export class QualityAnalysisEngine {
           category: 'maintainability',
           rule: 'code-duplication',
           title: `Duplicated Code (${lineNumbers.length} instances)`,
-          description: 'Consider extracting to a common function',
+          description: 'Consider extracting shared helpers to reduce duplication.',
           file: filePath,
           line: lineNumbers[0],
-          impact: 'Increases maintenance overhead',
+          impact: 'Increases maintenance overhead and regression risk.',
           effort: 'MEDIUM',
-          confidence: 85
+          confidence: 80
         });
       }
     });
@@ -541,6 +581,7 @@ export class QualityAnalysisEngine {
     const blockerCount = this.findings.filter(f => f.severity === 'BLOCKER').length;
     const criticalCount = this.findings.filter(f => f.severity === 'CRITICAL').length;
     const majorCount = this.findings.filter(f => f.severity === 'MAJOR').length;
+    const duplicationStats = this.computeDuplicationMetrics();
 
     return {
       securityRating: blockerCount > 0 ? 'F' : criticalCount > 0 ? 'D' : majorCount > 3 ? 'C' : 'A',
@@ -548,7 +589,7 @@ export class QualityAnalysisEngine {
       reliabilityRating: this.findings.filter(f => f.engine === 'reliability' && f.severity !== 'MINOR').length > 5 ? 'C' : 'A',
       technicalDebtRatio: Math.min(50, this.findings.length * 2),
       coveragePercent: 75, // Would need actual test coverage data
-      duplicatedLinesPercent: this.findings.filter(f => f.rule === 'code-duplication').length * 0.5,
+      duplicatedLinesPercent: duplicationStats,
       complexityScore: 100 - Math.min(50, this.findings.filter(f => f.rule === 'cyclomatic-complexity').length * 5)
     };
   }
@@ -570,5 +611,60 @@ export class QualityAnalysisEngine {
 
       return total + (severityMultiplier[finding.severity] * effortMultiplier[finding.effort]);
     }, 0);
+  }
+
+  private recordDuplicationCandidates(filePath: string, content: string): void {
+    const lines = content.split('\n');
+    this.totalLinesAnalyzed += lines.length;
+
+    if (lines.length < 2) {
+      return;
+    }
+
+    const normalized = lines.map(line => line.trim());
+    for (let i = 0; i < normalized.length; i++) {
+      const remaining = normalized.length - i;
+      const window = remaining >= 3 ? 3 : remaining >= 2 ? 2 : 0;
+      if (window < 2) break;
+
+      const segment = normalized.slice(i, i + window);
+      const joined = segment.join('\n');
+      const significantChars = joined.replace(/\s+/g, '');
+      if (significantChars.length < 15) {
+        continue;
+      }
+
+      let entry = this.duplicationCandidates.get(joined);
+      if (!entry) {
+        entry = {
+          occurrences: new Set<string>(),
+          files: new Set<string>(),
+          length: window
+        };
+        this.duplicationCandidates.set(joined, entry);
+      }
+
+      entry.occurrences.add(`${filePath}:${i}`);
+      entry.files.add(filePath);
+    }
+  }
+
+  private computeDuplicationMetrics(): number {
+    if (this.totalLinesAnalyzed === 0) {
+      return 0;
+    }
+
+    let duplicatedLines = 0;
+    for (const entry of this.duplicationCandidates.values()) {
+      const occurrences = entry.occurrences.size;
+      if (occurrences <= 1) {
+        continue;
+      }
+
+      duplicatedLines += (occurrences - 1) * entry.length;
+    }
+
+    const percent = Math.min(100, (duplicatedLines / this.totalLinesAnalyzed) * 100);
+    return Number(percent.toFixed(2));
   }
 }

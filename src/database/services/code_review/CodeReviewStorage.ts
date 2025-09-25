@@ -1,27 +1,43 @@
 import { ReviewResult, ReviewFinding, ReviewPatch } from './types.js';
 import { CodeReviewContext } from './CodeReviewService.js';
 import { GeminiDbUtils } from '../gemini-integration-modules/GeminiDbUtils.js';
+import { parseGeminiJsonResponseSync } from '../gemini-integration-modules/GeminiResponseParsers.js';
 
 export class CodeReviewStorage {
   constructor(private geminiDbUtils: GeminiDbUtils) {}
 
   /**
    * Parse AI response and extract structured review data
-   */
+  */
   parseAiResponse(aiResponse: string, context?: CodeReviewContext): ReviewResult {
+    const tryParseReviewResult = (rawJson: string): ReviewResult | null => {
+      try {
+        const parsedResult = parseGeminiJsonResponseSync(rawJson);
+        if (this.isValidReviewResult(parsedResult)) {
+          return parsedResult;
+        }
+        console.warn('[CodeReviewStorage] Parsed JSON does not match ReviewResult schema.');
+      } catch (error) {
+        console.warn('[CodeReviewStorage] Failed to parse JSON using Gemini parsers:', error instanceof Error ? error.message : error);
+      }
+      return null;
+    };
+
     // Try to extract JSON from AI response
     const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/);
 
     if (jsonMatch) {
-      try {
-        const parsedResult = JSON.parse(jsonMatch[1]);
-        // Validate and return the parsed result
-        if (this.isValidReviewResult(parsedResult)) {
-          return parsedResult;
-        }
-      } catch (error) {
-        console.warn('Failed to parse JSON from AI response:', error);
+      const parsed = tryParseReviewResult(jsonMatch[1]);
+      if (parsed) {
+        return parsed;
       }
+    }
+
+    // Attempt to parse the whole response as a fallback (covers responses without fences
+    // or cases where the fenced block failed to repair)
+    const parsedFull = tryParseReviewResult(aiResponse);
+    if (parsedFull) {
+      return parsedFull;
     }
 
     // Fallback: parse markdown-style response

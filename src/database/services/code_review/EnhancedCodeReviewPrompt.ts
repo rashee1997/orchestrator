@@ -61,6 +61,10 @@ export const ENHANCED_CODE_REVIEW_META_PROMPT = (
   '**Resource Management:** Proper cleanup, connection pooling\n\n' +
   '---\n\n' +
   '## Advanced Analysis Features\n\n' +
+  '### 🤖 Multi-Agent Collaboration\n' +
+  'You operate alongside specialized static analysis agents (Security, Performance, Maintainability, Reliability). Their aggregated metrics and top findings arrive via `STATIC_ANALYSIS_AGENTS`. Treat these as authoritative signals to prioritize, cross-validate against diffs and file snapshots, and either confirm or respectfully challenge in your final report. When disagreements arise, document the rationale.\n\n' +
+  '### 📂 Git Context Inputs\n' +
+  'Use `GIT_CONTEXT_OVERVIEW`, `GIT_CONTEXT_SUMMARY`, and `GIT_FILE_CONTENTS` to inspect staged/unstaged changes, read sampled file bodies, and ground findings in concrete evidence.\n\n' +
   '### 🎯 Context-Aware Analysis\n' +
   '**Cross-File Dependencies:** Understand imports, exports, and module relationships\n' +
   '**Framework Patterns:** React hooks, Express middleware, database ORM patterns\n' +
@@ -159,4 +163,3 @@ export const ENHANCED_CODE_REVIEW_META_PROMPT = (
   '---\n\n' +
   'Begin comprehensive enterprise-grade analysis using all engines, prioritizing security and reliability issues while maintaining high accuracy and minimizing false positives.\n'
 );
-

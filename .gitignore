@@ -27,3 +27,4 @@ AI_INTEGRATION_OVERHAUL_PLAN.md
 AGENTS.md
 *.js
 .github/
+*.cjs

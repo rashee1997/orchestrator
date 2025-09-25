@@ -136,6 +136,25 @@ export async function handleCodeReview(
   gitService: GitService,
   geminiService: GeminiIntegrationService
 ): Promise<string> {
+  const refPattern = /^[A-Za-z0-9._/@\-~^]+$/;
+  const validateRef = (value: string | undefined, name: 'base_ref' | 'head_ref'): string | undefined => {
+    if (!value) return undefined;
+    if (!refPattern.test(value)) {
+      return `❌ **Invalid ${name}:** Contains unsupported characters. Allowed: alphanumerics, '.', '_', '-', '/', '@', '~', '^`;
+    }
+    return undefined;
+  };
+
+  const invalidBase = validateRef(args.base_ref, 'base_ref');
+  if (invalidBase) {
+    return invalidBase;
+  }
+
+  const invalidHead = validateRef(args.head_ref, 'head_ref');
+  if (invalidHead) {
+    return invalidHead;
+  }
+
   try {
     const { working_directory, agent_id = 'cline' } = args;
 
@@ -173,7 +192,7 @@ export async function handleCodeReview(
     }
 
     // Run analysis with the selected mode (basic vs enterprise)
-    const { analysis, modelUsed, mode } = await codeReviewService.analyzeWithMode(
+    const { analysisDisplay, rawAnalysis, modelUsed, mode } = await codeReviewService.analyzeWithMode(
       context,
       options,
       orchestrator
@@ -185,7 +204,7 @@ export async function handleCodeReview(
       reviewId = await storageService.storeReviewResult(
         agent_id,
         context,
-        analysis,
+        rawAnalysis,
         mode // Store mode ("basic" | "enterprise") in analysis_model
       );
     } catch (error) {
@@ -193,12 +212,22 @@ export async function handleCodeReview(
     }
 
     // Add header with context information
+    const fileStatsSegments = [
+      `**Files Changed:** ${context.file_snapshots.length}`,
+      `**Untracked:** ${context.untracked_files.length}`
+    ];
+
+    if (context.git_context_summary) {
+      fileStatsSegments.push(`**Staged Analyzed:** ${context.git_context_summary.staged}`);
+      fileStatsSegments.push(`**Unstaged Analyzed:** ${context.git_context_summary.unstaged}`);
+    }
+
     const header = `# 🛡️ AI Code Sentinel Review
 
 **Repository:** ${context.repo_root.split('/').pop() || 'Unknown'}
 **Agent:** \`${agent_id}\`
 **Base:** \`${context.base_ref}\` → **Head:** \`${context.head_ref}\`
-**Files Changed:** ${context.file_snapshots.length} | **Untracked:** ${context.untracked_files.length}
+${fileStatsSegments.join(' | ')}
 **Model Used:** \`${modelUsed}\` | **Mode:** ${mode === 'enterprise' ? '🏢 Enterprise Multi-Engine' : '⚡ Basic AI Analysis'}
 **Analyzed:** ${new Date().toISOString()}
 ${reviewId ? `**Review ID:** \`${reviewId}\`` : ''}
@@ -207,7 +236,7 @@ ${reviewId ? `**Review ID:** \`${reviewId}\`` : ''}
 
 `;
 
-    return header + analysis;
+    return header + analysisDisplay;
 
   } catch (error) {
     console.error('Code review error:', error);

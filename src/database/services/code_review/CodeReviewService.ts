@@ -2,7 +2,15 @@ import fs from 'fs/promises';
 import path from 'path';
 import { GitService } from '../../../utils/GitService.js';
 import { GeminiDbUtils } from '../gemini-integration-modules/GeminiDbUtils.js';
-import { QualityAnalysisEngine } from './QualityAnalysisEngine.js';
+import {
+  collectContextSections,
+  buildCombinedContextForAI,
+  bucketChanges
+} from '../../../utils/gitContextHelpers.js';
+import { FileReader } from '../../../services/file-operations/file-reader.js';
+import { ProjectAnalyzer } from '../../../services/file-operations/project-analyzer.js';
+import { QualityAnalysisEngine, QualityFinding } from './QualityAnalysisEngine.js';
+import { QualityMetrics } from './QualityPatterns.js';
 import { ENHANCED_CODE_REVIEW_META_PROMPT } from './EnhancedCodeReviewPrompt.js';
 
 export const CODE_REVIEW_META_PROMPT = `
@@ -141,7 +149,7 @@ Emoji legend
 
 ## Required Output (two synchronized parts)
 
-### 1) HUMAN REPORT (clear, actionable)
+### 1)  REPORT (clear, actionable)
 **Structure (exact headings):**
 
 1) 🔎 Summary
@@ -360,6 +368,41 @@ export interface CodeReviewContext {
   untracked_files: UntrackedFile[];
   file_snapshots: FileSnapshot[];
   project_config?: ProjectConfig;
+  git_context_markdown?: string;
+  git_context_summary?: {
+    staged: number;
+    unstaged: number;
+    total: number;
+  };
+  git_context_files?: Array<{
+    relativePath: string;
+    encoding: string;
+    size: number;
+    lines: number;
+    content: string;
+    error?: string;
+  }>;
+}
+
+interface SanitizedQualityAgentSummary {
+  engine: QualityFinding['engine'];
+  totalFindings: number;
+  severityBreakdown: Record<QualityFinding['severity'], number>;
+  summary: string;
+  topFindings: Array<{
+    severity: QualityFinding['severity'];
+    title: string;
+    file: string;
+    line: number;
+    impact: string;
+  }>;
+}
+
+interface SanitizedQualityInsights {
+  metrics: QualityMetrics;
+  qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+  technicalDebtHours: number;
+  agents: SanitizedQualityAgentSummary[];
 }
 
 export class CodeReviewService {
@@ -367,6 +410,26 @@ export class CodeReviewService {
     private gitService: GitService,
     private geminiDbUtils?: GeminiDbUtils
   ) {}
+
+  private readonly secretPatterns: RegExp[] = [
+    /['"]\s*(?:api[_-]?key|apikey|key|secret|token|password|pwd|pass)\s*['"]\s*:\s*['"][^'"]{8,}['"]/gi,
+    /(?:^|\s)((?:sk|pk|ak)_[a-zA-Z0-9]{20,})/gi,
+    /(?:^|\s)([a-f0-9]{32,})/gi,
+    /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gi,
+    /AKIA[0-9A-Z]{16}/gi,
+    /ghp_[a-zA-Z0-9]{36}/gi,
+    /github_pat_[a-zA-Z0-9_]{82}/gi,
+    /AIza[0-9A-Za-z_-]{35}/gi,
+    /-----BEGIN.*PRIVATE KEY-----[\s\S]*?-----END.*PRIVATE KEY-----/gi,
+  ];
+
+  private redactSecrets(content: string): string {
+    let redacted = content;
+    this.secretPatterns.forEach(pattern => {
+      redacted = redacted.replace(pattern, '[REDACTED_SECRET]');
+    });
+    return redacted;
+  }
 
   /**
    * Run analysis based on selected mode. In enterprise mode it augments the LLM
@@ -376,11 +439,25 @@ export class CodeReviewService {
     context: CodeReviewContext,
     options: CodeReviewOptions,
     orchestrator: any
-  ): Promise<{ analysis: string; modelUsed: string; mode: 'basic' | 'enterprise' }> {
+  ): Promise<{ analysisDisplay: string; rawAnalysis: string; modelUsed: string; mode: 'basic' | 'enterprise' }> {
     const isEnterprise = !!options.enterprise;
 
+    let qualityInsightsRaw: {
+      findings: QualityFinding[];
+      metrics: QualityMetrics;
+      qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+      technicalDebtHours: number;
+    } | undefined;
+    let sanitizedQualityInsights: SanitizedQualityInsights | undefined;
+
+    if (isEnterprise) {
+      const engine = new QualityAnalysisEngine();
+      qualityInsightsRaw = await engine.analyzeContext(context);
+      sanitizedQualityInsights = this.prepareQualityInsightsForPrompt(qualityInsightsRaw);
+    }
+
     // Build the base or enhanced prompt depending on mode
-    const prompt = this.formatPrompt(context, isEnterprise);
+    const prompt = this.formatPrompt(context, isEnterprise, sanitizedQualityInsights);
 
     // Execute AI analysis via orchestrator
     const result = await orchestrator.executeTask(
@@ -398,42 +475,20 @@ export class CodeReviewService {
     const modelUsed = result.model as string;
 
     if (!isEnterprise) {
-      return { analysis: aiReport, modelUsed, mode: 'basic' };
+      return { analysisDisplay: aiReport, rawAnalysis: aiReport, modelUsed, mode: 'basic' };
     }
 
-    // Enterprise mode: run the local quality analysis engine
-    const engine = new QualityAnalysisEngine();
-    const engineOutcome = await engine.analyzeContext(context);
+    const enterpriseHeader = this.buildEnterpriseSummaryHeader(
+      qualityInsightsRaw!,
+      sanitizedQualityInsights
+    );
 
-    // Render a concise enterprise summary to prepend to the AI report
-    const topFindings = engineOutcome.findings.slice(0, 10);
-    const enterpriseHeader = [
-      '# 🏢 Enterprise Multi-Engine Summary',
-      '',
-      '## 📊 Quality Metrics',
-      `- Security: ${engineOutcome.metrics.securityRating}`,
-      `- Maintainability: ${engineOutcome.metrics.maintainabilityRating}`,
-      `- Reliability: ${engineOutcome.metrics.reliabilityRating}`,
-      `- Technical Debt Ratio: ${engineOutcome.metrics.technicalDebtRatio}%`,
-      `- Duplicated Lines: ${engineOutcome.metrics.duplicatedLinesPercent}%`,
-      `- Complexity Score: ${engineOutcome.metrics.complexityScore}`,
-      `- Quality Gate: ${engineOutcome.qualityGateStatus}`,
-      `- Estimated Remediation Effort: ~${engineOutcome.technicalDebtHours}h`,
-      '',
-      '## 🎯 Priority Findings (Top 10)',
-      ...(
-        topFindings.length
-          ? topFindings.map((f, i) => (
-              `- ${i + 1}. [${f.severity}] (${f.engine}) ${f.title} — ${f.file}:${f.line}`
-            ))
-          : ['- No priority findings detected by static engines']
-      ),
-      '',
-      '---',
-      '',
-    ].join('\n');
-
-    return { analysis: enterpriseHeader + aiReport, modelUsed, mode: 'enterprise' };
+    return {
+      analysisDisplay: enterpriseHeader + aiReport,
+      rawAnalysis: aiReport,
+      modelUsed,
+      mode: 'enterprise'
+    };
   }
 
   async prepareReviewContext(options: CodeReviewOptions = {}): Promise<CodeReviewContext> {
@@ -508,6 +563,10 @@ export class CodeReviewService {
     let changedFiles: string[];
     let fileSnapshots: FileSnapshot[];
 
+    let gitContextMarkdown: string | undefined;
+    let gitContextSummary: { staged: number; unstaged: number; total: number } | undefined;
+    let gitContextFiles: CodeReviewContext['git_context_files'];
+
     if (options.baseRef || options.headRef) {
       // Traditional ref-based comparison
       changedFiles = await this.getChangedFilesBetween(baseRef, headRef);
@@ -532,6 +591,60 @@ export class CodeReviewService {
           after: await this.getFileContent(path).catch(() => undefined) // Current working tree
         }))
       );
+
+      const includeStaged = options.includeStagedChanges !== false;
+      const sections = await collectContextSections(this.gitService, includeStaged, true);
+      if (sections.length) {
+        gitContextMarkdown = buildCombinedContextForAI(this.gitService, sections);
+        const { staged, unstaged } = bucketChanges(sections);
+        gitContextSummary = {
+          staged: staged.length,
+          unstaged: unstaged.length,
+          total: staged.length + unstaged.length
+        };
+      }
+    }
+
+    const filesForReading = new Set<string>();
+    (changedFiles || []).forEach(file => filesForReading.add(file));
+    untrackedFiles.forEach(file => filesForReading.add(file.path));
+
+    if (filesForReading.size > 0) {
+      try {
+        const projectAnalyzer = new ProjectAnalyzer();
+        const projectContext = projectAnalyzer.getBasicContext(repoRoot);
+        const fileReader = new FileReader();
+        const MAX_FILES = 10;
+        const MAX_CONTENT_LENGTH = 2000;
+
+        const readResults = await fileReader.readSpecificFiles(
+          Array.from(filesForReading),
+          {
+            query: 'code_review_context',
+            maxFiles: MAX_FILES,
+            maxFileSize: 300_000
+          },
+          projectContext
+        );
+
+        gitContextFiles = readResults.map(result => {
+          const content = result.content || '';
+          const truncatedContent = content.length > MAX_CONTENT_LENGTH
+            ? `${content.slice(0, MAX_CONTENT_LENGTH)}\n... [truncated for review prompt]`
+            : content;
+
+          return {
+            relativePath: result.relativePath,
+            encoding: result.encoding,
+            size: result.size,
+            lines: result.lines,
+            content: truncatedContent,
+            error: result.error
+          };
+        });
+      } catch (error) {
+        console.warn('Failed to read git context files for review:', error);
+      }
     }
 
     return {
@@ -541,7 +654,10 @@ export class CodeReviewService {
       diff_unified: diffUnified,
       untracked_files: untrackedFiles,
       file_snapshots: fileSnapshots,
-      project_config: options.projectConfig
+      project_config: options.projectConfig,
+      git_context_markdown: gitContextMarkdown,
+      git_context_summary: gitContextSummary,
+      git_context_files: gitContextFiles
     };
   }
 
@@ -659,11 +775,15 @@ export class CodeReviewService {
     }
   }
 
-  formatPrompt(context: CodeReviewContext, enterprise: boolean = false): string {
+  formatPrompt(
+    context: CodeReviewContext,
+    enterprise: boolean = false,
+    qualityInsights?: SanitizedQualityInsights
+  ): string {
     // Apply secret redaction before creating prompt
     const sanitizedContext = this.sanitizeContextForAI(context);
 
-    const inputs = `
+    let inputs = `
 REPO_ROOT: ${sanitizedContext.repo_root}
 BASE_REF: ${sanitizedContext.base_ref}
 HEAD_REF: ${sanitizedContext.head_ref}
@@ -680,50 +800,164 @@ FILE_SNAPSHOTS: ${JSON.stringify(sanitizedContext.file_snapshots, null, 2)}
 PROJECT_CONFIG: ${JSON.stringify(sanitizedContext.project_config || {}, null, 2)}
 `;
 
+    if (sanitizedContext.git_context_markdown) {
+      inputs += `
+GIT_CONTEXT_OVERVIEW:
+${sanitizedContext.git_context_markdown}
+`;
+    }
+
+    if (sanitizedContext.git_context_summary) {
+      inputs += `
+GIT_CONTEXT_SUMMARY: ${JSON.stringify(sanitizedContext.git_context_summary)}
+`;
+    }
+
+    if (sanitizedContext.git_context_files && sanitizedContext.git_context_files.length > 0) {
+      inputs += `
+GIT_FILE_CONTENTS: ${JSON.stringify(sanitizedContext.git_context_files, null, 2)}
+`;
+    }
+
+    if (qualityInsights) {
+      inputs += `
+STATIC_ANALYSIS_AGENTS: ${JSON.stringify(qualityInsights, null, 2)}
+`;
+    }
+
     // Choose prompt based on enterprise mode
     return (enterprise ? ENHANCED_CODE_REVIEW_META_PROMPT : CODE_REVIEW_META_PROMPT) + '\n\n' + inputs;
   }
 
-  private sanitizeContextForAI(context: CodeReviewContext): CodeReviewContext {
-    // Common secret patterns to redact
-    const secretPatterns = [
-      // API Keys
-      /['"]\s*(?:api[_-]?key|apikey|key|secret|token|password|pwd|pass)\s*['"]\s*:\s*['"][^'"]{8,}['"]/gi,
-      // Common API key formats
-      /(?:^|\s)((?:sk|pk|ak)_[a-zA-Z0-9]{20,})/gi,
-      /(?:^|\s)([a-f0-9]{32,})/gi,
-      // JWT tokens
-      /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gi,
-      // AWS keys
-      /AKIA[0-9A-Z]{16}/gi,
-      // GitHub tokens
-      /ghp_[a-zA-Z0-9]{36}/gi,
-      /github_pat_[a-zA-Z0-9_]{82}/gi,
-      // Google API keys
-      /AIza[0-9A-Za-z_-]{35}/gi,
-      // Private keys
-      /-----BEGIN.*PRIVATE KEY-----[\s\S]*?-----END.*PRIVATE KEY-----/gi,
-    ];
+  private prepareQualityInsightsForPrompt(qualityResult?: {
+    findings: QualityFinding[];
+    metrics: QualityMetrics;
+    qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+    technicalDebtHours: number;
+  }): SanitizedQualityInsights | undefined {
+    if (!qualityResult) {
+      return undefined;
+    }
 
-    const redactSecrets = (content: string): string => {
-      let redacted = content;
-      secretPatterns.forEach(pattern => {
-        redacted = redacted.replace(pattern, '[REDACTED_SECRET]');
+    const severityLevels: QualityFinding['severity'][] = ['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'INFO'];
+    const engineOrder: QualityFinding['engine'][] = ['security', 'performance', 'maintainability', 'reliability'];
+
+    const agents: SanitizedQualityAgentSummary[] = [];
+
+    for (const engine of engineOrder) {
+      const engineFindings = qualityResult.findings.filter(f => f.engine === engine);
+      if (engineFindings.length === 0) {
+        continue;
+      }
+
+      const severityBreakdown = severityLevels.reduce<Record<QualityFinding['severity'], number>>((acc, severity) => {
+        acc[severity] = engineFindings.filter(f => f.severity === severity).length;
+        return acc;
+      }, {
+        BLOCKER: 0,
+        CRITICAL: 0,
+        MAJOR: 0,
+        MINOR: 0,
+        INFO: 0
       });
-      return redacted;
-    };
+
+      const highSeverityCount = severityBreakdown.BLOCKER + severityBreakdown.CRITICAL;
+      const summary = this.redactSecrets(`Detected ${engineFindings.length} findings (${highSeverityCount} high severity).`);
+
+      const topFindings = engineFindings
+        .slice(0, 3)
+        .map(finding => ({
+          severity: finding.severity,
+          title: this.redactSecrets(finding.title),
+          file: finding.file,
+          line: finding.line,
+          impact: this.redactSecrets(finding.impact)
+        }));
+
+      agents.push({
+        engine,
+        totalFindings: engineFindings.length,
+        severityBreakdown,
+        summary,
+        topFindings
+      });
+    }
 
     return {
+      metrics: qualityResult.metrics,
+      qualityGateStatus: qualityResult.qualityGateStatus,
+      technicalDebtHours: qualityResult.technicalDebtHours,
+      agents
+    };
+  }
+
+  private buildEnterpriseSummaryHeader(
+    qualityResult: {
+      findings: QualityFinding[];
+      metrics: QualityMetrics;
+      qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+      technicalDebtHours: number;
+    },
+    sanitizedQuality: SanitizedQualityInsights | undefined
+  ): string {
+    const lines: string[] = [];
+    lines.push('# 🏢 Enterprise Multi-Engine Summary');
+    lines.push('');
+    lines.push('## 📊 Quality Metrics');
+    lines.push(`- Security: ${qualityResult.metrics.securityRating}`);
+    lines.push(`- Maintainability: ${qualityResult.metrics.maintainabilityRating}`);
+    lines.push(`- Reliability: ${qualityResult.metrics.reliabilityRating}`);
+    lines.push(`- Technical Debt Ratio: ${qualityResult.metrics.technicalDebtRatio}%`);
+    lines.push(`- Duplicated Lines: ${qualityResult.metrics.duplicatedLinesPercent}%`);
+    lines.push(`- Complexity Score: ${qualityResult.metrics.complexityScore}`);
+    lines.push(`- Quality Gate: ${qualityResult.qualityGateStatus}`);
+    lines.push(`- Estimated Remediation Effort: ~${qualityResult.technicalDebtHours}h`);
+
+    if (sanitizedQuality?.agents?.length) {
+      lines.push('');
+      lines.push('## 🤖 Static Agent Highlights');
+      sanitizedQuality.agents.forEach(agent => {
+        lines.push(`- **${this.capitalize(agent.engine)} Agent:** ${agent.summary}`);
+        if (agent.topFindings.length) {
+          agent.topFindings.forEach(finding => {
+            lines.push(`  - ${finding.severity} — ${finding.title} (${finding.file}:${finding.line})`);
+          });
+        }
+      });
+    }
+
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+
+    return lines.join('\n');
+  }
+
+  private capitalize(value: string): string {
+    if (!value) return value;
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
+  private sanitizeContextForAI(context: CodeReviewContext): CodeReviewContext {
+    return {
       ...context,
-      diff_unified: redactSecrets(context.diff_unified),
+      diff_unified: this.redactSecrets(context.diff_unified),
       untracked_files: context.untracked_files.map(file => ({
         ...file,
-        content: redactSecrets(file.content)
+        content: this.redactSecrets(file.content)
       })),
       file_snapshots: context.file_snapshots.map(snapshot => ({
         ...snapshot,
-        before: snapshot.before ? redactSecrets(snapshot.before) : snapshot.before,
-        after: snapshot.after ? redactSecrets(snapshot.after) : snapshot.after
+        before: snapshot.before ? this.redactSecrets(snapshot.before) : snapshot.before,
+        after: snapshot.after ? this.redactSecrets(snapshot.after) : snapshot.after
+      })),
+      git_context_markdown: context.git_context_markdown
+        ? this.redactSecrets(context.git_context_markdown)
+        : context.git_context_markdown,
+      git_context_summary: context.git_context_summary,
+      git_context_files: context.git_context_files?.map(file => ({
+        ...file,
+        content: this.redactSecrets(file.content)
       }))
     };
   }

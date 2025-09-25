@@ -70,6 +70,7 @@ export class MultiModelOrchestrator {
     private hasOAuthCredentials: boolean = false;
     private claudeCodeAvailable: boolean = false;
     private mistralAvailable: boolean = false;
+    private temporarilyDisabledModels: Map<string, number> = new Map();
 
     private initPromise?: Promise<void>;
 
@@ -536,6 +537,8 @@ export class MultiModelOrchestrator {
             tryAllModels?: boolean; // New option to try all available models
         } = {}
     ): Promise<{ content: string; model: string; executionTime: number }> {
+        this.refreshTemporarilyDisabledModels();
+
         await this.waitForInitialization();
 
         const startTime = Date.now();
@@ -600,10 +603,24 @@ export class MultiModelOrchestrator {
                 } catch (error: any) {
                     lastError = error;
                     console.warn(`[Multi-Model Orchestrator] Attempt ${attempt}/${maxRetries} failed for ${taskType} on ${modelName}:`, error.message);
-                    
+
                     // Update failure statistics
                     this.updateTaskStats(modelName, false, Date.now() - startTime);
-                    
+
+                    if ((error as any)?.rateLimitExceeded) {
+                        const retryAfterMs = (error as any)?.retryAfterMs as number | undefined;
+                        this.markModelTemporarilyUnavailable(
+                            modelName,
+                            retryAfterMs,
+                            `Rate limit or quota exceeded: ${error.message}`
+                        );
+                        break; // Do not retry this model immediately
+                    }
+
+                    if ((error as any)?.nonRetryable) {
+                        break;
+                    }
+
                     // If this isn't the last attempt for this model, wait before retry
                     if (attempt < maxRetries) {
                         await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
@@ -685,13 +702,91 @@ export class MultiModelOrchestrator {
         // Use the OAuth-enabled GeminiApiClient directly to ensure OAuth is used when available
         if (this.geminiApiClient) {
             console.log(`[Multi-Model Orchestrator] Using OAuth-enabled GeminiApiClient for model: ${model}`);
-            const response = await this.geminiApiClient.askGemini(prompt, model, systemInstruction);
-            return response.content[0]?.text || 'No response generated';
+            try {
+                const response = await this.geminiApiClient.askGemini(prompt, model, systemInstruction);
+                return response.content[0]?.text || 'No response generated';
+            } catch (error: any) {
+                throw this.normalizeGeminiError(error, model, true);
+            }
         } else {
             console.log(`[Multi-Model Orchestrator] Fallback to geminiService for model: ${model}`);
             // Fallback to geminiService if no direct client available
-            const response = await this.geminiService.askGemini(prompt, model, systemInstruction);
-            return response.content[0]?.text || 'No response generated';
+            try {
+                const response = await this.geminiService.askGemini(prompt, model, systemInstruction);
+                return response.content[0]?.text || 'No response generated';
+            } catch (error: any) {
+                throw this.normalizeGeminiError(error, model, false);
+            }
+        }
+    }
+
+    /**
+     * Normalize Gemini errors and flag rate-limit conditions for orchestration logic.
+     */
+    private normalizeGeminiError(error: any, model: string, usedOAuth: boolean): Error {
+        const status = error?.response?.status ?? error?.code;
+        const message = error?.response?.data?.error?.message || error?.message || String(error);
+        const normalized = new Error(`Gemini (${model}) request failed${usedOAuth ? ' [OAuth]' : ''}: ${message}`);
+
+        const lowerMessage = (message || '').toLowerCase();
+        const rateLimited = status === 429 || lowerMessage.includes('quota exceeded') || lowerMessage.includes('rate limit');
+
+        if (rateLimited) {
+            (normalized as any).rateLimitExceeded = true;
+            (normalized as any).nonRetryable = true;
+
+            const retryAfterHeader = error?.response?.headers?.['retry-after'];
+            let retryAfterMs: number | undefined;
+            if (retryAfterHeader) {
+                const retrySeconds = Number.parseInt(retryAfterHeader, 10);
+                if (!Number.isNaN(retrySeconds) && retrySeconds > 0) {
+                    retryAfterMs = retrySeconds * 1000;
+                }
+            }
+
+            if (!retryAfterMs) {
+                // Default cooldown: 15 minutes for rate limits, 60 minutes for quota exhaustion
+                retryAfterMs = lowerMessage.includes('per day') ? 60 * 60 * 1000 : 15 * 60 * 1000;
+            }
+
+            (normalized as any).retryAfterMs = retryAfterMs;
+        }
+
+        (normalized as any).originalError = error;
+        return normalized;
+    }
+
+    private markModelTemporarilyUnavailable(modelName: string, retryAfterMs: number | undefined, reason: string): void {
+        const modelInfo = this.availableModels.get(modelName);
+        if (!modelInfo) {
+            return;
+        }
+
+        const cooldown = retryAfterMs && retryAfterMs > 0 ? retryAfterMs : 15 * 60 * 1000;
+        const resumeAt = Date.now() + cooldown;
+
+        this.availableModels.set(modelName, { ...modelInfo, available: false });
+        this.temporarilyDisabledModels.set(modelName, resumeAt);
+
+        const minutes = Math.ceil(cooldown / 60000);
+        console.warn(`[Multi-Model Orchestrator] Temporarily disabling model ${modelName} for ~${minutes}m (${reason}).`);
+    }
+
+    private refreshTemporarilyDisabledModels(): void {
+        if (this.temporarilyDisabledModels.size === 0) {
+            return;
+        }
+
+        const now = Date.now();
+        for (const [modelName, resumeAt] of this.temporarilyDisabledModels.entries()) {
+            if (now >= resumeAt) {
+                const modelInfo = this.availableModels.get(modelName);
+                if (modelInfo) {
+                    this.availableModels.set(modelName, { ...modelInfo, available: true });
+                    console.log(`[Multi-Model Orchestrator] Model ${modelName} re-enabled after cooldown.`);
+                }
+                this.temporarilyDisabledModels.delete(modelName);
+            }
         }
     }
 

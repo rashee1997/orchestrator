@@ -975,42 +975,133 @@ export async function parseGeminiJsonResponse(
   }
 }
 
+function isLikelyJsonContent(content: string): boolean {
+  const trimmed = content.trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function extractJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const fenceRegex = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const language = (match[1] || '').toLowerCase();
+    const body = match[2] ? match[2].trim() : '';
+    if (!body) continue;
+
+    if (language === 'json' || language === 'json5' || language === 'jsonc') {
+      candidates.push(body);
+    } else if (!language && isLikelyJsonContent(body)) {
+      candidates.push(body);
+    }
+  }
+
+  if (candidates.length === 0) {
+    const firstBrace = text.indexOf('{');
+    if (firstBrace !== -1) {
+      const remainder = text.slice(firstBrace);
+      const lastBrace = remainder.lastIndexOf('}');
+      if (lastBrace !== -1) {
+        candidates.push(remainder.slice(0, lastBrace + 1));
+      }
+    }
+
+    const firstBracket = text.indexOf('[');
+    if (firstBracket !== -1) {
+      const remainder = text.slice(firstBracket);
+      const lastBracket = remainder.lastIndexOf(']');
+      if (lastBracket !== -1) {
+        candidates.push(remainder.slice(0, lastBracket + 1));
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const candidate of candidates) {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      unique.push(candidate);
+    }
+  }
+
+  return unique;
+}
+
+function isFallbackResult(result: any): boolean {
+  return !!(result && typeof result === 'object' && (result._parsing_failed || result._recovery_attempted));
+}
+
+function tryParseJsonCandidate(rawCandidate: string): { success: boolean; data?: any; fallback?: boolean } {
+  const sanitized = preSanitizeCodeContent(rawCandidate);
+
+  if (sanitized.length > 15000) {
+    const chunkedResult = attemptChunkedRepair(sanitized);
+    if (chunkedResult.success && !isFallbackResult(chunkedResult.data)) {
+      return { success: true, data: chunkedResult.data, fallback: false };
+    }
+  }
+
+  const jsonrepairResult = attemptJsonRepair(sanitized);
+  if (jsonrepairResult.success && !isFallbackResult(jsonrepairResult.data)) {
+    return { success: true, data: jsonrepairResult.data, fallback: false };
+  }
+
+  const aiFixerResult = attemptAiJsonFixerRepair(sanitized);
+  if (aiFixerResult.success && !isFallbackResult(aiFixerResult.data)) {
+    return { success: true, data: aiFixerResult.data, fallback: false };
+  }
+
+  const quickRepairResult = JSONRepairAgent.quickRepair(sanitized);
+  if (quickRepairResult.success && !isFallbackResult(quickRepairResult.data)) {
+    return { success: true, data: quickRepairResult.data, fallback: false };
+  }
+
+  try {
+    const originalResult = parseGeminiJsonResponseOriginal(sanitized);
+    return {
+      success: true,
+      data: originalResult,
+      fallback: isFallbackResult(originalResult)
+    };
+  } catch (error) {
+    return { success: false };
+  }
+}
+
 /**
  * Synchronous version of parseGeminiJsonResponse (without AI repair)
  * For backwards compatibility with existing code
  */
 export function parseGeminiJsonResponseSync(textResponse: string): any {
-  // Pre-sanitize first
-  const sanitizedResponse = preSanitizeCodeContent(textResponse);
+  const candidates = extractJsonCandidates(textResponse);
+  if (!candidates.length) {
+    candidates.push(textResponse);
+  } else {
+    candidates.push(textResponse);
+  }
 
-  // Try chunked repair for large responses first
-  if (sanitizedResponse.length > 15000) {
-    const chunkedResult = attemptChunkedRepair(sanitizedResponse);
-    if (chunkedResult.success) {
-      return chunkedResult.data;
+  let lastFallback: any = null;
+
+  for (const candidate of candidates) {
+    const { success, data, fallback } = tryParseJsonCandidate(candidate);
+    if (!success) {
+      continue;
     }
+
+    if (!fallback) {
+      return data;
+    }
+
+    lastFallback = data;
   }
 
-  // Try jsonrepair
-  const jsonrepairResult = attemptJsonRepair(sanitizedResponse);
-  if (jsonrepairResult.success) {
-    return jsonrepairResult.data;
+  if (lastFallback) {
+    return lastFallback;
   }
 
-  // Try ai-json-fixer
-  const aiFixerResult = attemptAiJsonFixerRepair(sanitizedResponse);
-  if (aiFixerResult.success) {
-    return aiFixerResult.data;
-  }
-
-  // Try quick repair
-  const quickRepairResult = JSONRepairAgent.quickRepair(sanitizedResponse);
-  if (quickRepairResult.success) {
-    return quickRepairResult.data;
-  }
-
-  // Fall back to original parsing logic
-  return parseGeminiJsonResponseOriginal(sanitizedResponse);
+  return parseGeminiJsonResponseOriginal(preSanitizeCodeContent(textResponse));
 }
 
 /**

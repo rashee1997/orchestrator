@@ -1,7 +1,7 @@
 -- Database Schema for Advanced Conversation Storage System
 
 -- Enable foreign key support
-PRAGMA foreign_keys = ON;
+-- (Foreign key enforcement should be enabled via your SQLite client or migration script, not in the schema file)
 
 -- Agents table
 CREATE TABLE IF NOT EXISTS agents (
@@ -278,8 +278,10 @@ CREATE INDEX IF NOT EXISTS idx_patches_finding_id ON code_review_patches (findin
 CREATE INDEX IF NOT EXISTS idx_patches_file_path ON code_review_patches (file_path);
 
 -- Insert default agents
-INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
-VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
+VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+ON CONFLICT(agent_id) DO NOTHING;
 
-INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
-VALUES ('test_agent', 'Test AI Agent', 'Agent for testing purposes.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
+VALUES ('test_agent', 'Test AI Agent', 'Agent for testing purposes.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+ON CONFLICT(agent_id) DO NOTHING;
