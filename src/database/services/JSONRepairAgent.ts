@@ -22,12 +22,16 @@ interface RepairResult {
     warnings?: string[];
 }
 
+type SeverityLevel = JSONAnalysis['severity'];
+
+const MARKDOWN_CODE_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)\s*```/;
+
 /**
  * Enhanced JSON Repair Agent with progressive repair strategies and confidence scoring
  */
 export class JSONRepairAgent {
-    private orchestrator: MultiModelOrchestrator;
-    private maxRepairAttempts: number = 3;
+    private readonly orchestrator: MultiModelOrchestrator;
+    private readonly maxRepairAttempts = 3;
 
     constructor(memoryManager: MemoryManager, geminiService: GeminiIntegrationService) {
         this.orchestrator = new MultiModelOrchestrator(memoryManager, geminiService);
@@ -126,70 +130,50 @@ export class JSONRepairAgent {
      * Analyzes JSON to determine error types and severity
      */
     private analyzeJSON(jsonString: string): JSONAnalysis {
-        const errors: string[] = [];
-        let severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
-        const suggestions: string[] = [];
-
-        try {
-            JSON.parse(jsonString);
+        if (JSONRepairAgent.isValidJSON(jsonString)) {
             return {
                 isValid: true,
                 errorType: [],
                 severity: 'low',
-                confidence: 1.0,
+                confidence: 1,
                 suggestions: []
             };
-        } catch (error: any) {
-            // Check for common JSON issues
-            if (jsonString.includes('```')) {
-                errors.push('markdown-code-blocks');
-                suggestions.push('Remove markdown code block markers');
-                severity = 'medium';
-            }
-
-            if (jsonString.includes('\n') && !jsonString.includes('\\n')) {
-                errors.push('unescaped-newlines');
-                suggestions.push('Escape newlines in string values');
-                if (severity === 'low') severity = 'medium';
-            }
-
-            if ((jsonString.match(/"/g) || []).length % 2 !== 0) {
-                errors.push('unmatched-quotes');
-                suggestions.push('Fix quote escaping and matching');
-                severity = 'high';
-            }
-
-            if (jsonString.includes(',"') && jsonString.includes(',}')) {
-                errors.push('trailing-commas');
-                suggestions.push('Remove trailing commas');
-                severity = 'low';
-            }
-
-            const openBraces = (jsonString.match(/{/g) || []).length;
-            const closeBraces = (jsonString.match(/}/g) || []).length;
-            const openBrackets = (jsonString.match(/\[/g) || []).length;
-            const closeBrackets = (jsonString.match(/\]/g) || []).length;
-
-            if (openBraces !== closeBraces || openBrackets !== closeBrackets) {
-                errors.push('unmatched-brackets');
-                suggestions.push('Fix bracket/brace matching');
-                severity = 'critical';
-            }
-
-            if (jsonString.length < 10 || !jsonString.trim().startsWith('{') && !jsonString.trim().startsWith('[')) {
-                errors.push('incomplete-structure');
-                suggestions.push('Complete the JSON structure');
-                severity = 'critical';
-            }
-
-            return {
-                isValid: false,
-                errorType: errors,
-                severity,
-                confidence: Math.max(0.1, 1 - (errors.length * 0.2)),
-                suggestions
-            };
         }
+
+        const errors = new Set<string>();
+        const suggestions = new Set<string>();
+        let severity: SeverityLevel = 'low';
+        const trimmed = jsonString.trim();
+
+        const registerIssue = (condition: boolean, error: string, suggestion: string, level: SeverityLevel) => {
+            if (!condition) {
+                return;
+            }
+
+            errors.add(error);
+            suggestions.add(suggestion);
+            severity = JSONRepairAgent.promoteSeverity(severity, level);
+        };
+
+        registerIssue(trimmed.includes('```'), 'markdown-code-blocks', 'Remove markdown code block markers', 'medium');
+        registerIssue(trimmed.includes('\n') && !trimmed.includes('\\n'), 'unescaped-newlines', 'Escape newlines in string values', 'medium');
+        registerIssue(JSONRepairAgent.countCharacter(trimmed, '"') % 2 !== 0, 'unmatched-quotes', 'Fix quote escaping and matching', 'high');
+        registerIssue(trimmed.includes(',"') && trimmed.includes(',}'), 'trailing-commas', 'Remove trailing commas', 'low');
+
+        const bracesBalanced = JSONRepairAgent.countCharacter(trimmed, '{') === JSONRepairAgent.countCharacter(trimmed, '}');
+        const bracketsBalanced = JSONRepairAgent.countCharacter(trimmed, '[') === JSONRepairAgent.countCharacter(trimmed, ']');
+        registerIssue(!(bracesBalanced && bracketsBalanced), 'unmatched-brackets', 'Fix bracket/brace matching', 'critical');
+
+        const incompleteStructure = trimmed.length < 10 || (!trimmed.startsWith('{') && !trimmed.startsWith('['));
+        registerIssue(incompleteStructure, 'incomplete-structure', 'Complete the JSON structure', 'critical');
+
+        return {
+            isValid: false,
+            errorType: Array.from(errors),
+            severity,
+            confidence: Math.max(0.1, 1 - errors.size * 0.2),
+            suggestions: Array.from(suggestions)
+        };
     }
 
     /**
@@ -270,8 +254,8 @@ ${context}`;
         }
 
         prompt += `\n\n**EXAMPLE OF CODE CONTENT REPAIR:**
-BROKEN: "code_content": "\`\`\`diff\n--- a/file.ts\n+++ b/file.ts\nconst x = \"test\";\n\`\`\`"
-FIXED:  "code_content": "--- a/file.ts\\n+++ b/file.ts\\nconst x = \\\"test\\\";\\n"
+BROKEN: "code_content": "\`\`\`diff\n--- a/file.ts\n+++ b/file.ts\nconst x = "test";\n\`\`\`"
+FIXED:  "code_content": "--- a/file.ts\\n+++ b/file.ts\\nconst x = 'test';\\n"
 
 Remove \`\`\`, escape quotes, escape newlines!`;
 
@@ -294,7 +278,7 @@ Remove \`\`\`, escape quotes, escape newlines!`;
             case 'string-escaping':
                 return `**STRING ESCAPING FOCUS:**
 - Escape all newlines as \\n
-- Escape all quotes as \"
+- Escape all quotes as "
 - Escape all backslashes as \\\\
 - Fix unmatched quote pairs`;
 
@@ -329,17 +313,15 @@ Remove \`\`\`, escape quotes, escape newlines!`;
             let repaired = malformedJSON.trim();
 
             // Remove markdown code blocks
-            const markdownMatch = repaired.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/);
+            const markdownMatch = RegExp(/```(?:json)?\s*([\s\S]*?)\s*```/).exec(repaired);
             if (markdownMatch) {
                 repaired = markdownMatch[1].trim();
             }
 
             // Enhanced cleaning
             repaired = repaired
-                // Remove control characters
-                .replace(/[\\u0000-\\u001F\\u007F-\\u009F]/g, '')
                 // Fix unescaped backslashes (preserve valid escapes)
-                .replace(/\\\\(?![\"\\\\\/bfnrtu])/g, '\\\\\\\\')
+                .replace(/\\(?!["\\bfnrtu/])/g, '\\\\')
                 // Remove trailing commas
                 .replace(/,\\s*([}\\]])/g, '$1')
                 // Fix common newline issues
@@ -375,9 +357,13 @@ Remove \`\`\`, escape quotes, escape newlines!`;
 
             // Validate structure completeness
             if (expectedStructure) {
-                const expectedFields = expectedStructure.match(/\"(\\w+)\"/g) || [];
-                for (const field of expectedFields) {
-                    const fieldName = field.replace(/"/g, '');
+                const fieldRegex = /"(\w+)"/g;
+                const expectedFields: string[] = [];
+                let match;
+                while ((match = fieldRegex.exec(expectedStructure)) !== null) {
+                    expectedFields.push(match[1]);
+                }
+                for (const fieldName of expectedFields) {
                     if (!(fieldName in parsed)) {
                         confidence -= 0.1;
                         warnings.push(`Missing expected field: ${fieldName}`);
@@ -400,7 +386,11 @@ Remove \`\`\`, escape quotes, escape newlines!`;
 
             // Check for suspicious empty values
             const jsonStr = JSON.stringify(parsed);
-            const emptyValueCount = (jsonStr.match(/\"\"|(null)|(\\[\\])|(\\{\\})/g) || []).length;
+            const emptyRegex = /""|(null)|\\[\\]|\\{\\} /g;
+            let emptyValueCount = 0;
+            while (emptyRegex.exec(jsonStr) !== null) {
+                emptyValueCount++;
+            }
             if (emptyValueCount > 3) {
                 confidence -= 0.15;
                 warnings.push('Many empty values detected');
@@ -447,7 +437,7 @@ Remove \`\`\`, escape quotes, escape newlines!`;
    - Escape ALL newlines as \\n
    - Escape ALL quotes as \\"
    - Escape ALL backslashes as \\\\
-   - Example: "\`\`\`diff\nconst x = \"hello\";\n\`\`\`" becomes "const x = \\\"hello\\\";\\n"
+   - Example: "\`\`\`diff\nconst x = "hello";\n\`\`\`" becomes "const x = \\\\"hello\\";\\n"
 
 5. If the JSON is fundamentally incomplete, make reasonable assumptions to complete it
 6. Always validate your output is parseable JSON before responding
@@ -500,63 +490,66 @@ RESPOND WITH VALID JSON ONLY.`;
      * Extracts JSON from AI model response
      */
     private extractJSONFromResponse(response: string): string {
-        // Remove markdown code blocks
         let cleaned = response.trim();
-        
-        // Remove markdown JSON blocks
-        const markdownMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        if (markdownMatch) {
-            cleaned = markdownMatch[1].trim();
-        }
+        cleaned = this.removeMarkdownCodeBlock(cleaned);
 
-        // Find JSON boundaries
-        const openBrace = cleaned.indexOf('{');
-        const openBracket = cleaned.indexOf('[');
-        
-        if (openBrace === -1 && openBracket === -1) {
+        const startIdx = this.findJsonStartIndex(cleaned);
+        if (startIdx === -1) {
             throw new Error('No JSON structure found in response');
         }
 
-        let startIdx: number;
-        let endChar: string;
+        return this.extractJsonWithBracketMatching(cleaned, startIdx);
+    }
 
-        if (openBrace !== -1 && (openBracket === -1 || openBrace < openBracket)) {
-            startIdx = openBrace;
-            endChar = '}';
-        } else {
-            startIdx = openBracket;
-            endChar = ']';
+    /**
+     * Removes markdown code block from the response if present
+     */
+    private removeMarkdownCodeBlock(text: string): string {
+        const markdownRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
+        const markdownMatch = markdownRegex.exec(text);
+        return markdownMatch ? markdownMatch[1].trim() : text;
+    }
+
+    /**
+     * Finds the start index of JSON object or array
+     */
+    private findJsonStartIndex(text: string): number {
+        const openBrace = text.indexOf('{');
+        const openBracket = text.indexOf('[');
+        if (openBrace === -1 && openBracket === -1) {
+            return -1;
         }
+        if (openBrace !== -1 && (openBracket === -1 || openBrace < openBracket)) {
+            return openBrace;
+        }
+        return openBracket;
+    }
 
-        // Extract JSON with proper bracket matching
+    /**
+     * Extracts JSON string from text starting at startIdx using bracket matching
+     */
+    private extractJsonWithBracketMatching(text: string, startIdx: number): string {
         let bracketCount = 0;
         let inString = false;
         let escaped = false;
         let result = '';
+        const openingChar = text[startIdx];
+        const closingChar = openingChar === '{' ? '}' : ']';
 
-        for (let i = startIdx; i < cleaned.length; i++) {
-            const char = cleaned[i];
+        for (let i = startIdx; i < text.length; i++) {
+            const char = text[i];
             result += char;
 
             if (escaped) {
                 escaped = false;
-                continue;
-            }
-
-            if (char === '\\') {
+            } else if (char === '\\') {
                 escaped = true;
-                continue;
-            }
-
-            if (char === '"' && !escaped) {
+            } else if (char === '"') {
                 inString = !inString;
-                continue;
-            }
-
-            if (!inString) {
-                if (char === '{' || char === '[') {
+            } else if (!inString) {
+                if (char === openingChar) {
                     bracketCount++;
-                } else if (char === '}' || char === ']') {
+                } else if (char === closingChar) {
                     bracketCount--;
                     if (bracketCount === 0) {
                         break;
@@ -566,6 +559,38 @@ RESPOND WITH VALID JSON ONLY.`;
         }
 
         return result;
+    }
+
+    /**
+     * Helper method to count structure elements in a string
+     */
+    static getStructureCounts(str: string): {openBraces: number, closeBraces: number, openBrackets: number, closeBrackets: number, quotes: number} {
+        const openBraceRegex = /{/g;
+        let openBraces = 0;
+        while (openBraceRegex.exec(str) !== null) {
+            openBraces++;
+        }
+        const closeBraceRegex = /}/g;
+        let closeBraces = 0;
+        while (closeBraceRegex.exec(str) !== null) {
+            closeBraces++;
+        }
+        const openBracketRegex = /\[/g;
+        let openBrackets = 0;
+        while (openBracketRegex.exec(str) !== null) {
+            openBrackets++;
+        }
+        const closeBracketRegex = /\]/g;
+        let closeBrackets = 0;
+        while (closeBracketRegex.exec(str) !== null) {
+            closeBrackets++;
+        }
+        const quoteRegex = /"/g;
+        let quotes = 0;
+        while (quoteRegex.exec(str) !== null) {
+            quotes++;
+        }
+        return {openBraces, closeBraces, openBrackets, closeBrackets, quotes};
     }
 
     /**
@@ -580,6 +605,27 @@ RESPOND WITH VALID JSON ONLY.`;
         }
     }
 
+    private static promoteSeverity(current: SeverityLevel, candidate: SeverityLevel): SeverityLevel {
+        const priority: Record<SeverityLevel, number> = {
+            low: 0,
+            medium: 1,
+            high: 2,
+            critical: 3
+        };
+
+        return priority[candidate] > priority[current] ? candidate : current;
+    }
+
+    private static countCharacter(source: string, character: string): number {
+        let count = 0;
+        for (const current of source) {
+            if (current === character) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     /**
      * Enhanced static quick repair with better error handling
      */
@@ -590,7 +636,7 @@ RESPOND WITH VALID JSON ONLY.`;
             let repaired = malformedJSON.trim();
 
             // Remove markdown code blocks
-            const markdownMatch = repaired.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            const markdownMatch = RegExp(/```(?:json)?\s*([\s\S]*?)\s*```/).exec(repaired);
             if (markdownMatch) {
                 repaired = markdownMatch[1].trim();
                 errors.push('Removed markdown code blocks');
@@ -598,10 +644,8 @@ RESPOND WITH VALID JSON ONLY.`;
 
             // Enhanced repair sequence
             repaired = repaired
-                // Remove control characters
-                .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
                 // Fix unescaped backslashes (preserve valid escapes)
-                .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+                .replace(/\\(?!["\\bfnrtu/])/g, '\\\\')
                 // Remove trailing commas
                 .replace(/,\s*([}\]])/g, '$1')
                 // Fix common newline issues
@@ -638,22 +682,17 @@ RESPOND WITH VALID JSON ONLY.`;
             repairLog.push(`Starting repair on ${repaired.length} character JSON`);
 
             // Step 1: Structure analysis
-            const openBraces = (repaired.match(/{/g) || []).length;
-            const closeBraces = (repaired.match(/}/g) || []).length;
-            const openBrackets = (repaired.match(/\[/g) || []).length;
-            const closeBrackets = (repaired.match(/\]/g) || []).length;
-
+            const structure = this.getStructureCounts(repaired);
+            const {openBraces, closeBraces, openBrackets, closeBrackets, quotes} = structure;
             repairLog.push(`Structure: {${openBraces}/${closeBraces}} [${openBrackets}/${closeBrackets}]`);
-
-            // Step 2: Quote analysis
-            const quotes = (repaired.match(/"/g) || []).length;
             repairLog.push(`Found ${quotes} quotes (${quotes % 2 === 0 ? 'even' : 'odd - potential issue'})`);
 
             // Step 3: Progressive repairs
             const originalLength = repaired.length;
 
             // Remove markdown
-            const markdownMatch = repaired.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            const markdownRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
+            const markdownMatch = markdownRegex.exec(repaired);
             if (markdownMatch) {
                 repaired = markdownMatch[1].trim();
                 repairLog.push(`Removed markdown blocks (${originalLength} -> ${repaired.length})`);
@@ -683,8 +722,7 @@ RESPOND WITH VALID JSON ONLY.`;
             // Apply standard fixes
             const beforeCleanup = repaired.length;
             repaired = repaired
-                .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
-                .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+                .replace(/\\(?!["\\bfnrtu/])/g, '\\\\')
                 .replace(/,\s*([}\]])/g, '$1')
                 .replace(/\n/g, '\\n')
                 .replace(/\r/g, '\\r');

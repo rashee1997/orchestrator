@@ -14,7 +14,6 @@ import { codeReviewTool, handleCodeReview } from './code_review_tool.js';
 import { codeReviewHistoryTool } from './code_review_history_tool.js';
 
 import { MemoryManager } from '../database/memory_manager.js';
-import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 
 export interface Tool {
@@ -36,7 +35,7 @@ function normalizeToTool(tool: any): Tool {
 }
 
 function formatUsage(inputSchema: any): string {
-    if (!inputSchema || !inputSchema.properties) return '';
+    if (!inputSchema?.properties) return '';
     const props = inputSchema.properties;
     const required = inputSchema.required || [];
     let usage = '';

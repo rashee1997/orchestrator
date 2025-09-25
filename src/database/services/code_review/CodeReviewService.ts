@@ -398,28 +398,30 @@ interface SanitizedQualityAgentSummary {
   }>;
 }
 
+type QualityGateStatus = 'PASS' | 'FAIL' | 'WARNING';
+
 interface SanitizedQualityInsights {
   metrics: QualityMetrics;
-  qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+  qualityGateStatus: QualityGateStatus;
   technicalDebtHours: number;
   agents: SanitizedQualityAgentSummary[];
 }
 
 export class CodeReviewService {
   constructor(
-    private gitService: GitService,
-    private geminiDbUtils?: GeminiDbUtils
+    private readonly gitService: GitService,
+    private readonly geminiDbUtils?: GeminiDbUtils
   ) {}
 
   private readonly secretPatterns: RegExp[] = [
     /['"]\s*(?:api[_-]?key|apikey|key|secret|token|password|pwd|pass)\s*['"]\s*:\s*['"][^'"]{8,}['"]/gi,
-    /(?:^|\s)((?:sk|pk|ak)_[a-zA-Z0-9]{20,})/gi,
+    /(?:^|\s)((?:sk|pk|ak)_[a-z0-9]{20,})/gi,
     /(?:^|\s)([a-f0-9]{32,})/gi,
-    /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gi,
+    /eyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/gi,
     /AKIA[0-9A-Z]{16}/gi,
-    /ghp_[a-zA-Z0-9]{36}/gi,
-    /github_pat_[a-zA-Z0-9_]{82}/gi,
-    /AIza[0-9A-Za-z_-]{35}/gi,
+    /ghp_[a-z0-9]{36}/gi,
+    /github_pat_\w{82}/gi,
+    /AIza[-\da-z_]{35}/gi,
     /-----BEGIN.*PRIVATE KEY-----[\s\S]*?-----END.*PRIVATE KEY-----/gi,
   ];
 
@@ -445,7 +447,7 @@ export class CodeReviewService {
     let qualityInsightsRaw: {
       findings: QualityFinding[];
       metrics: QualityMetrics;
-      qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+      qualityGateStatus: QualityGateStatus;
       technicalDebtHours: number;
     } | undefined;
     let sanitizedQualityInsights: SanitizedQualityInsights | undefined;
@@ -493,159 +495,29 @@ export class CodeReviewService {
 
   async prepareReviewContext(options: CodeReviewOptions = {}): Promise<CodeReviewContext> {
     const repoRoot = this.gitService.getWorkingDirectory();
+    const comparingRefs = Boolean(options.baseRef || options.headRef);
 
-    // Default behavior: analyze current uncommitted changes when no specific refs provided
-    let baseRef: string;
-    let headRef: string;
-    let diffUnified: string;
+    const { baseRef, headRef, diffUnified: rawDiff } = comparingRefs
+      ? this.getDiffForExplicitRefs(options)
+      : this.getDiffForWorkingTree(options);
 
-    if (options.baseRef || options.headRef) {
-      // Specific refs provided - use traditional diff between refs
-      baseRef = options.baseRef || 'HEAD~1';
-      headRef = options.headRef || 'HEAD';
-      diffUnified = this.gitService.getDiffBetweenRefs(baseRef, headRef);
-    } else {
-      // Default: analyze current uncommitted changes
-      baseRef = 'HEAD';
-      headRef = 'working-tree';
+    const untrackedFiles = await this.loadUntrackedFiles(options, comparingRefs);
+    const diffUnified = this.buildSyntheticDiffIfNeeded(rawDiff, untrackedFiles);
 
-      const diffs: string[] = [];
+    const {
+      changedFiles,
+      fileSnapshots,
+      gitContextMarkdown,
+      gitContextSummary
+    } = await this.resolveFileSnapshots({
+      baseRef,
+      headRef,
+      options,
+      untrackedFiles,
+      comparingRefs
+    });
 
-      // Include staged changes by default (unless explicitly disabled)
-      const shouldIncludeStaged = options.includeStagedChanges !== false;
-      if (shouldIncludeStaged) {
-        const stagedDiff = this.gitService.getDiffOutput({ staged: true });
-        if (stagedDiff && stagedDiff.trim()) {
-          diffs.push(stagedDiff);
-        }
-      }
-
-      // Always include unstaged changes for uncommitted analysis
-      const unstagedDiff = this.gitService.getDiffOutput({ staged: false });
-      if (unstagedDiff && unstagedDiff.trim()) {
-        diffs.push(unstagedDiff);
-      }
-
-      // Combine all diffs
-      diffUnified = diffs.join('\n\n');
-    }
-
-    // Get untracked files if requested (or by default when analyzing uncommitted changes)
-    let untrackedFiles: UntrackedFile[] = [];
-    const shouldIncludeUntracked = options.includeUntrackedFiles ?? (!options.baseRef && !options.headRef);
-    if (shouldIncludeUntracked) {
-      const untrackedPaths = await this.getUntrackedFiles();
-      untrackedFiles = await Promise.all(
-        untrackedPaths.map(async (path) => ({
-          path,
-          lang_hint: this.detectLanguageHint(path),
-          content: await this.getFileContent(path)
-        }))
-      );
-    }
-
-    // If we have no diff but have untracked files, create a synthetic diff for them
-    if (!diffUnified.trim() && untrackedFiles.length > 0) {
-      const syntheticDiffs: string[] = [];
-      for (const file of untrackedFiles) {
-        // Create a synthetic diff showing the entire file as new
-        const lines = file.content.split('\n');
-        const diffHeader = `diff --git a/${file.path} b/${file.path}\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/${file.path}`;
-        const diffContent = lines.map((line, index) => `+${line}`).join('\n');
-        const hunkHeader = `@@ -0,0 +1,${lines.length} @@`;
-
-        syntheticDiffs.push(`${diffHeader}\n${hunkHeader}\n${diffContent}`);
-      }
-      diffUnified = syntheticDiffs.join('\n\n');
-    }
-
-    // Get file snapshots for changed files
-    let changedFiles: string[];
-    let fileSnapshots: FileSnapshot[];
-
-    let gitContextMarkdown: string | undefined;
-    let gitContextSummary: { staged: number; unstaged: number; total: number } | undefined;
-    let gitContextFiles: CodeReviewContext['git_context_files'];
-
-    if (options.baseRef || options.headRef) {
-      // Traditional ref-based comparison
-      changedFiles = await this.getChangedFilesBetween(baseRef, headRef);
-      fileSnapshots = await Promise.all(
-        changedFiles.map(async (path) => ({
-          path,
-          before: await this.getFileContent(path, baseRef).catch(() => undefined),
-          after: await this.getFileContent(path, headRef).catch(() => undefined)
-        }))
-      );
-    } else {
-      // Analyzing current uncommitted changes - get files from diff output and working tree
-      changedFiles = await this.getCurrentlyChangedFiles();
-
-      // Add untracked files to the changed files list for snapshot purposes
-      const allFiles = new Set([...changedFiles, ...untrackedFiles.map(f => f.path)]);
-
-      fileSnapshots = await Promise.all(
-        Array.from(allFiles).map(async (path) => ({
-          path,
-          before: await this.getFileContent(path, 'HEAD').catch(() => undefined), // Will be undefined for untracked files
-          after: await this.getFileContent(path).catch(() => undefined) // Current working tree
-        }))
-      );
-
-      const includeStaged = options.includeStagedChanges !== false;
-      const sections = await collectContextSections(this.gitService, includeStaged, true);
-      if (sections.length) {
-        gitContextMarkdown = buildCombinedContextForAI(this.gitService, sections);
-        const { staged, unstaged } = bucketChanges(sections);
-        gitContextSummary = {
-          staged: staged.length,
-          unstaged: unstaged.length,
-          total: staged.length + unstaged.length
-        };
-      }
-    }
-
-    const filesForReading = new Set<string>();
-    (changedFiles || []).forEach(file => filesForReading.add(file));
-    untrackedFiles.forEach(file => filesForReading.add(file.path));
-
-    if (filesForReading.size > 0) {
-      try {
-        const projectAnalyzer = new ProjectAnalyzer();
-        const projectContext = projectAnalyzer.getBasicContext(repoRoot);
-        const fileReader = new FileReader();
-        const MAX_FILES = 10;
-        const MAX_CONTENT_LENGTH = 2000;
-
-        const readResults = await fileReader.readSpecificFiles(
-          Array.from(filesForReading),
-          {
-            query: 'code_review_context',
-            maxFiles: MAX_FILES,
-            maxFileSize: 300_000
-          },
-          projectContext
-        );
-
-        gitContextFiles = readResults.map(result => {
-          const content = result.content || '';
-          const truncatedContent = content.length > MAX_CONTENT_LENGTH
-            ? `${content.slice(0, MAX_CONTENT_LENGTH)}\n... [truncated for review prompt]`
-            : content;
-
-          return {
-            relativePath: result.relativePath,
-            encoding: result.encoding,
-            size: result.size,
-            lines: result.lines,
-            content: truncatedContent,
-            error: result.error
-          };
-        });
-      } catch (error) {
-        console.warn('Failed to read git context files for review:', error);
-      }
-    }
+    const gitContextFiles = await this.buildGitFileContext(repoRoot, changedFiles, untrackedFiles);
 
     return {
       repo_root: repoRoot,
@@ -659,6 +531,177 @@ export class CodeReviewService {
       git_context_summary: gitContextSummary,
       git_context_files: gitContextFiles
     };
+  }
+
+  private getDiffForExplicitRefs(options: CodeReviewOptions): { baseRef: string; headRef: string; diffUnified: string } {
+    const baseRef = options.baseRef || 'HEAD~1';
+    const headRef = options.headRef || 'HEAD';
+    const diffUnified = this.gitService.getDiffBetweenRefs(baseRef, headRef);
+    return { baseRef, headRef, diffUnified };
+  }
+
+  private getDiffForWorkingTree(options: CodeReviewOptions): { baseRef: string; headRef: string; diffUnified: string } {
+    const diffs: string[] = [];
+    const shouldIncludeStaged = options.includeStagedChanges !== false;
+    if (shouldIncludeStaged) {
+      const stagedDiff = this.gitService.getDiffOutput({ staged: true });
+      if (stagedDiff?.trim()) {
+        diffs.push(stagedDiff);
+      }
+    }
+
+    const unstagedDiff = this.gitService.getDiffOutput({ staged: false });
+    if (unstagedDiff?.trim()) {
+      diffs.push(unstagedDiff);
+    }
+
+    return {
+      baseRef: 'HEAD',
+      headRef: 'working-tree',
+      diffUnified: diffs.join('\n\n')
+    };
+  }
+
+  private async loadUntrackedFiles(options: CodeReviewOptions, comparingRefs: boolean): Promise<UntrackedFile[]> {
+    const shouldIncludeUntracked = options.includeUntrackedFiles ?? !comparingRefs;
+    if (!shouldIncludeUntracked) {
+      return [];
+    }
+
+    const untrackedPaths = await this.getUntrackedFiles();
+    return Promise.all(
+      untrackedPaths.map(async (path) => ({
+        path,
+        lang_hint: this.detectLanguageHint(path),
+        content: await this.getFileContent(path)
+      }))
+    );
+  }
+
+  private buildSyntheticDiffIfNeeded(diffUnified: string, untrackedFiles: UntrackedFile[]): string {
+    if (diffUnified.trim() || untrackedFiles.length === 0) {
+      return diffUnified;
+    }
+
+    const syntheticDiffs = untrackedFiles.map(file => {
+      const lines = file.content.split('\n');
+      const diffHeader = `diff --git a/${file.path} b/${file.path}\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/${file.path}`;
+      const diffContent = lines.map(line => `+${line}`).join('\n');
+      const hunkHeader = `@@ -0,0 +1,${lines.length} @@`;
+      return `${diffHeader}\n${hunkHeader}\n${diffContent}`;
+    });
+
+    return syntheticDiffs.join('\n\n');
+  }
+
+  private async resolveFileSnapshots(params: {
+    baseRef: string;
+    headRef: string;
+    options: CodeReviewOptions;
+    untrackedFiles: UntrackedFile[];
+    comparingRefs: boolean;
+  }): Promise<{
+    changedFiles: string[];
+    fileSnapshots: FileSnapshot[];
+    gitContextMarkdown?: string;
+    gitContextSummary?: { staged: number; unstaged: number; total: number };
+  }> {
+    if (params.comparingRefs) {
+      const changedFiles = await this.getChangedFilesBetween(params.baseRef, params.headRef);
+      const fileSnapshots = await Promise.all(
+        changedFiles.map(async (path) => ({
+          path,
+          before: await this.getFileContent(path, params.baseRef).catch(() => undefined),
+          after: await this.getFileContent(path, params.headRef).catch(() => undefined)
+        }))
+      );
+
+      return { changedFiles, fileSnapshots };
+    }
+
+    const changedFiles = await this.getCurrentlyChangedFiles();
+    const allFiles = new Set([...changedFiles, ...params.untrackedFiles.map(f => f.path)]);
+
+    const fileSnapshots = await Promise.all(
+      Array.from(allFiles).map(async (path) => ({
+        path,
+        before: await this.getFileContent(path, 'HEAD').catch(() => undefined),
+        after: await this.getFileContent(path).catch(() => undefined)
+      }))
+    );
+
+    const includeStaged = params.options.includeStagedChanges !== false;
+    const sections = await collectContextSections(this.gitService, includeStaged, true);
+
+    if (!sections.length) {
+      return { changedFiles, fileSnapshots };
+    }
+
+    const gitContextMarkdown = buildCombinedContextForAI(this.gitService, sections);
+    const { staged, unstaged } = bucketChanges(sections);
+    const gitContextSummary = {
+      staged: staged.length,
+      unstaged: unstaged.length,
+      total: staged.length + unstaged.length
+    };
+
+    return {
+      changedFiles,
+      fileSnapshots,
+      gitContextMarkdown,
+      gitContextSummary
+    };
+  }
+
+  private async buildGitFileContext(
+    repoRoot: string,
+    changedFiles: string[],
+    untrackedFiles: UntrackedFile[]
+  ): Promise<CodeReviewContext['git_context_files']> {
+    const filesForReading = new Set<string>();
+    changedFiles.forEach(file => filesForReading.add(file));
+    untrackedFiles.forEach(file => filesForReading.add(file.path));
+
+    if (filesForReading.size === 0) {
+      return undefined;
+    }
+
+    try {
+      const projectAnalyzer = new ProjectAnalyzer();
+      const projectContext = projectAnalyzer.getBasicContext(repoRoot);
+      const fileReader = new FileReader();
+      const MAX_FILES = 10;
+      const MAX_CONTENT_LENGTH = 2000;
+
+      const readResults = await fileReader.readSpecificFiles(
+        Array.from(filesForReading),
+        {
+          query: 'code_review_context',
+          maxFiles: MAX_FILES,
+          maxFileSize: 300_000
+        },
+        projectContext
+      );
+
+      return readResults.map(result => {
+        const content = result.content || '';
+        const truncatedContent = content.length > MAX_CONTENT_LENGTH
+          ? `${content.slice(0, MAX_CONTENT_LENGTH)}\n... [truncated for review prompt]`
+          : content;
+
+        return {
+          relativePath: result.relativePath,
+          encoding: result.encoding,
+          size: result.size,
+          lines: result.lines,
+          content: truncatedContent,
+          error: result.error
+        };
+      });
+    } catch (error) {
+      console.warn('Failed to read git context files for review:', error);
+      return undefined;
+    }
   }
 
   private async getCurrentlyChangedFiles(): Promise<string[]> {
@@ -737,7 +780,8 @@ export class CodeReviewService {
         return await fs.readFile(fullPath, 'utf-8');
       }
     } catch (error) {
-      throw new Error(`Failed to read file ${filePath}${ref ? ` at ${ref}` : ''}: ${error}`);
+      const refSuffix = ref ? ` at ${ref}` : '';
+      throw new Error(`Failed to read file ${filePath}${refSuffix}: ${error}`);
     }
   }
 
@@ -764,10 +808,10 @@ export class CodeReviewService {
       return result;
     } catch (error: any) {
       // If the file doesn't exist at this ref (new file), return empty string
-      if (error.message && error.message.includes('exists on disk, but not in')) {
+      if (error.message?.includes('exists on disk, but not in')) {
         return '';
       }
-      if (error.message && error.message.includes('does not exist')) {
+      if (error.message?.includes('does not exist')) {
         return '';
       }
       // For other errors, still throw
@@ -832,7 +876,7 @@ STATIC_ANALYSIS_AGENTS: ${JSON.stringify(qualityInsights, null, 2)}
   private prepareQualityInsightsForPrompt(qualityResult?: {
     findings: QualityFinding[];
     metrics: QualityMetrics;
-    qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+    qualityGateStatus: QualityGateStatus;
     technicalDebtHours: number;
   }): SanitizedQualityInsights | undefined {
     if (!qualityResult) {
@@ -895,7 +939,7 @@ STATIC_ANALYSIS_AGENTS: ${JSON.stringify(qualityInsights, null, 2)}
     qualityResult: {
       findings: QualityFinding[];
       metrics: QualityMetrics;
-      qualityGateStatus: 'PASS' | 'FAIL' | 'WARNING';
+      qualityGateStatus: QualityGateStatus;
       technicalDebtHours: number;
     },
     sanitizedQuality: SanitizedQualityInsights | undefined
