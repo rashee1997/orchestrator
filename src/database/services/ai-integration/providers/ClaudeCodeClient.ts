@@ -16,7 +16,7 @@ interface InitMessage {
     session_id: string;
     tools: string[];
     mcp_servers: string[];
-    apiKeySource: "none" | "/login managed key" | string;
+    apiKeySource: string;
 }
 
 interface AssistantMessage {
@@ -92,7 +92,7 @@ export interface ClaudeCodeResponse {
 export class ClaudeCodeClient {
     private claudePath: string;
     private readonly defaultMaxOutputTokens = 16000;
-    private crossPlatformHelper: CrossPlatformClaudeCode;
+    private readonly crossPlatformHelper: CrossPlatformClaudeCode;
 
     constructor(claudePath: string = "claude") {
         this.crossPlatformHelper = CrossPlatformClaudeCode.getInstance();
@@ -195,6 +195,188 @@ export class ClaudeCodeClient {
         }
     }
 
+    private isInitMessage(chunk: ClaudeCodeMessage): chunk is InitMessage {
+        return chunk.type === "system" && "subtype" in chunk && chunk.subtype === "init";
+    }
+
+    private isAssistantMessage(chunk: ClaudeCodeMessage): chunk is AssistantMessage {
+        return chunk.type === "assistant" && "message" in chunk;
+    }
+
+    private isResultMessage(chunk: ClaudeCodeMessage): chunk is ResultMessage {
+        return chunk.type === "result" && "result" in chunk;
+    }
+
+    /**
+     * Initialize streaming state variables
+     */
+    private initializeStreamingState() {
+        return {
+            isSubscriber: false,
+            sessionId: "",
+            responseContent: "",
+            usage: {
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                totalCost: 0,
+            },
+            partialData: null as string | null,
+            processError: null as Error | null,
+            stderrLogs: "",
+        };
+    }
+
+    /**
+     * Set up process event handlers
+     */
+    private setupProcessEventHandlers(
+        process: ExecaChildProcess,
+        rl: readline.Interface,
+        state: ReturnType<typeof this.initializeStreamingState>
+    ): void {
+        process.stderr?.on("data", (data: any) => {
+            state.stderrLogs += data.toString();
+        });
+
+        process.on("error", (err: NodeJS.ErrnoException) => {
+            if (err.message.includes("ENOENT") || err.code === "ENOENT") {
+                state.processError = this.createClaudeCodeNotFoundError(err);
+            } else {
+                state.processError = err;
+            }
+            rl.close();
+        });
+    }
+
+    /**
+     * Send messages to Claude Code process
+     */
+    private sendMessagesToProcess(process: ExecaChildProcess, messages: any[]): void {
+        const stdinData = JSON.stringify(messages);
+        setImmediate(() => {
+            try {
+                if (process.stdin) {
+                    process.stdin.write(stdinData, "utf8", (error: any) => {
+                        if (error) {
+                            console.error("Error writing to Claude Code stdin:", error);
+                            process.kill();
+                        }
+                    });
+                    process.stdin.end();
+                }
+            } catch (error) {
+                console.error("Error accessing Claude Code stdin:", error);
+                process.kill();
+            }
+        });
+    }
+
+    /**
+     * Process init message chunk
+     */
+    private processInitMessage(chunk: InitMessage, state: ReturnType<typeof this.initializeStreamingState>): void {
+        state.sessionId = chunk.session_id;
+        state.isSubscriber = chunk.apiKeySource === "none";
+        console.log(`[ClaudeCode] Session ${state.sessionId} - ${state.isSubscriber ? 'Subscriber' : 'API User'}`);
+    }
+
+    /**
+     * Process assistant message chunk
+     */
+    private processAssistantMessage(chunk: AssistantMessage, state: ReturnType<typeof this.initializeStreamingState>): void {
+        const message = chunk.message;
+
+        if (message.stop_reason !== null) {
+            this.checkForApiError(message);
+        }
+
+        this.extractResponseContent(message, state);
+        this.updateUsageStats(message, state);
+    }
+
+    /**
+     * Check for API errors in assistant message
+     */
+    private checkForApiError(message: AssistantMessage['message']): void {
+        const textContent = message.content.find(c => c.type === 'text' && c.text);
+        if (!textContent?.text?.startsWith("API Error")) return;
+        const text = textContent.text;
+
+        const errorStart = text.indexOf("{");
+        const errorMessage = text.slice(errorStart);
+        throw new Error(`Claude Code API Error: ${errorMessage}`);
+    }
+
+    /**
+     * Extract response content from assistant message
+     */
+    private extractResponseContent(message: AssistantMessage['message'], state: ReturnType<typeof this.initializeStreamingState>): void {
+        for (const content of message.content) {
+            if (content.type === "text" && content.text) {
+                state.responseContent += content.text;
+            }
+        }
+    }
+
+    /**
+     * Update usage statistics from assistant message
+     */
+    private updateUsageStats(message: AssistantMessage['message'], state: ReturnType<typeof this.initializeStreamingState>): void {
+        state.usage.inputTokens += message.usage.input_tokens;
+        state.usage.outputTokens += message.usage.output_tokens;
+        state.usage.cacheReadTokens += message.usage.cache_read_input_tokens || 0;
+        state.usage.cacheWriteTokens += message.usage.cache_creation_input_tokens || 0;
+    }
+
+    /**
+     * Process result message chunk
+     */
+    private processResultMessage(chunk: ResultMessage, state: ReturnType<typeof this.initializeStreamingState>): void {
+        state.usage.totalCost = state.isSubscriber ? 0 : chunk.total_cost_usd;
+        console.log(`[ClaudeCode] Completed in ${chunk.duration_ms}ms`);
+        throw new Error("COMPLETE");
+    }
+
+    /**
+     * Process streaming chunk
+     */
+    private processStreamingChunk(
+        chunk: ClaudeCodeMessage,
+        state: ReturnType<typeof this.initializeStreamingState>
+    ): void {
+        if (this.isInitMessage(chunk)) {
+            this.processInitMessage(chunk, state);
+            return;
+        }
+
+        if (this.isAssistantMessage(chunk)) {
+            this.processAssistantMessage(chunk, state);
+            return;
+        }
+
+        if (this.isResultMessage(chunk)) {
+            this.processResultMessage(chunk, state);
+        }
+    }
+
+    /**
+     * Handle remaining partial data
+     */
+    private handleRemainingPartialData(partialData: string | null, state: ReturnType<typeof this.initializeStreamingState>): void {
+        if (partialData?.startsWith(`{"type":"assistant"`)) {
+            const { chunk } = this.parseChunk("", partialData);
+            if (chunk && this.isAssistantMessage(chunk)) {
+                for (const content of chunk.message.content) {
+                    if (content.type === "text" && content.text) {
+                        state.responseContent += content.text;
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Execute Claude Code request
      */
@@ -220,149 +402,82 @@ export class ClaudeCodeClient {
             input: process.stdout as any,
         });
 
+        const state = this.initializeStreamingState();
+        this.setupProcessEventHandlers(process, rl, state);
+        this.sendMessagesToProcess(process, options.messages);
+
         try {
-            let isSubscriber = false;
-            let sessionId = "";
-            let responseContent = "";
-            let usage = {
-                inputTokens: 0,
-                outputTokens: 0,
-                cacheReadTokens: 0,
-                cacheWriteTokens: 0,
-                totalCost: 0,
-            };
+            await this.handleStreamingOutput(
+                rl,
+                (chunk, newPartialData) => {
+                    state.partialData = newPartialData;
+                    if (!chunk) return;
+                    this.processStreamingChunk(chunk, state);
+                },
+                () => state.processError
+            );
 
-            let partialData: string | null = null;
-            let processError: Error | null = null;
-            let stderrLogs = "";
-
-            // Handle process events
-            process.stderr?.on("data", (data: any) => {
-                stderrLogs += data.toString();
-            });
-
-            process.on("error", (err: any) => {
-                if (err.message.includes("ENOENT") || (err as any).code === "ENOENT") {
-                    processError = this.createClaudeCodeNotFoundError(err);
-                } else {
-                    processError = err;
-                }
-                rl.close();
-            });
-
-            // Send messages to Claude Code
-            const stdinData = JSON.stringify(options.messages);
-            setImmediate(() => {
-                try {
-                    if (process.stdin) {
-                        process.stdin.write(stdinData, "utf8", (error: any) => {
-                            if (error) {
-                                console.error("Error writing to Claude Code stdin:", error);
-                                process.kill();
-                            }
-                        });
-                        process.stdin.end();
-                    }
-                } catch (error) {
-                    console.error("Error accessing Claude Code stdin:", error);
-                    process.kill();
-                }
-            });
-
-            // Process streaming output
-            for await (const line of rl) {
-                if (processError) {
-                    throw processError;
-                }
-
-                if (!line.trim()) continue;
-
-                const { chunk, newPartialData } = this.parseChunk(line, partialData);
-                partialData = newPartialData;
-
-                if (!chunk) continue;
-
-                // Handle different message types
-                if (chunk.type === "system" && "subtype" in chunk && chunk.subtype === "init") {
-                    const initMsg = chunk as InitMessage;
-                    sessionId = initMsg.session_id;
-                    isSubscriber = initMsg.apiKeySource === "none";
-                    console.log(`[ClaudeCode] Session ${sessionId} - ${isSubscriber ? 'Subscriber' : 'API User'}`);
-                    continue;
-                }
-
-                if (chunk.type === "assistant" && "message" in chunk) {
-                    const assistantMsg = chunk as AssistantMessage;
-                    const message = assistantMsg.message;
-
-                    // Check for API errors
-                    if (message.stop_reason !== null) {
-                        const textContent = message.content.find(c => c.type === 'text' && c.text);
-                        if (textContent?.text?.startsWith("API Error")) {
-                            const errorStart = textContent.text.indexOf("{");
-                            const errorMessage = textContent.text.slice(errorStart);
-                            throw new Error(`Claude Code API Error: ${errorMessage}`);
-                        }
-                    }
-
-                    // Extract content (filter out thinking blocks)
-                    for (const content of message.content) {
-                        if (content.type === "text" && content.text) {
-                            responseContent += content.text;
-                        }
-                        // Note: thinking blocks are available but not included in response
-                    }
-
-                    // Accumulate usage
-                    usage.inputTokens += message.usage.input_tokens;
-                    usage.outputTokens += message.usage.output_tokens;
-                    usage.cacheReadTokens += message.usage.cache_read_input_tokens || 0;
-                    usage.cacheWriteTokens += message.usage.cache_creation_input_tokens || 0;
-                    continue;
-                }
-
-                if (chunk.type === "result" && "result" in chunk) {
-                    const resultMsg = chunk as ResultMessage;
-                    usage.totalCost = isSubscriber ? 0 : resultMsg.total_cost_usd;
-                    console.log(`[ClaudeCode] Completed in ${resultMsg.duration_ms}ms`);
-                    break;
-                }
-            }
-
-            // Handle any remaining partial data
-            if (partialData && partialData.startsWith(`{"type":"assistant"`)) {
-                const { chunk } = this.parseChunk("", partialData);
-                if (chunk && chunk.type === "assistant" && "message" in chunk) {
-                    const assistantMsg = chunk as AssistantMessage;
-                    for (const content of assistantMsg.message.content) {
-                        if (content.type === "text" && content.text) {
-                            responseContent += content.text;
-                        }
-                    }
-                }
-            }
+            this.handleRemainingPartialData(state.partialData, state);
 
             const { exitCode } = await process;
             if (exitCode !== null && exitCode !== 0) {
-                throw new Error(
-                    `Claude Code process exited with code ${exitCode}.${stderrLogs ? ` Error: ${stderrLogs.trim()}` : ""}`
-                );
+                const stderrInfo = state.stderrLogs ? ` Error: ${state.stderrLogs.trim()}` : "";
+                throw new Error(`Claude Code process exited with code ${exitCode}.${stderrInfo}`);
             }
 
             return {
-                content: responseContent || "No response generated",
-                usage,
-                isSubscriber,
-                sessionId,
+                content: state.responseContent || "No response generated",
+                usage: state.usage,
+                isSubscriber: state.isSubscriber,
+                sessionId: state.sessionId,
                 executionTime: Date.now() - startTime,
             };
 
+        } catch (e) {
+            if (e === "COMPLETE") {
+                return {
+                    content: state.responseContent || "No response generated",
+                    usage: state.usage,
+                    isSubscriber: state.isSubscriber,
+                    sessionId: state.sessionId,
+                    executionTime: Date.now() - startTime,
+                };
+            }
+            throw e;
         } finally {
             rl.close();
-            if (process && !process.killed) {
+            if (process !== null && !process.killed) {
                 process.kill();
             }
             await this.unlinkTempSystemPrompt(systemPromptFile);
+        }
+    }
+
+    /**
+     * Helper to handle streaming output and reduce cognitive complexity
+     */
+    private async handleStreamingOutput(
+        rl: readline.Interface,
+        onChunk: (chunk: ClaudeCodeMessage | null, newPartialData: string | null) => void,
+        getProcessError: () => Error | null
+    ): Promise<void> {
+        let partialData: string | null = null;
+        for await (const line of rl) {
+            const processError = getProcessError();
+            if (processError) {
+                throw processError;
+            }
+            if (!line.trim()) continue;
+            const { chunk, newPartialData } = this.parseChunk(line, partialData);
+            partialData = newPartialData;
+            try {
+                onChunk(chunk, partialData);
+            } catch (e) {
+                if (e === "COMPLETE") {
+                    break;
+                }
+                throw e;
+            }
         }
     }
 
@@ -371,17 +486,21 @@ export class ClaudeCodeClient {
      */
     private createClaudeCodeNotFoundError(originalError: Error): Error {
         const platformConfig = this.crossPlatformHelper.getPlatformConfig();
+        const setupInstructions = platformConfig.setupInstructions;
+        const platform = platformConfig.platform;
+        const pathsCount = platformConfig.possiblePaths.length;
+        const originalMessage = originalError.message;
 
-        const errorMessage = `
-Claude Code CLI not found at "${this.claudePath}".
-
-${platformConfig.setupInstructions}
-
-Platform: ${platformConfig.platform}
-Checked paths: ${platformConfig.possiblePaths.length} locations
-
-Original error: ${originalError.message}
-        `.trim();
+        const errorMessage = [
+            `Claude Code CLI not found at "${this.claudePath}".`,
+            "",
+            setupInstructions,
+            "",
+            `Platform: ${platform}`,
+            `Checked paths: ${pathsCount} locations`,
+            "",
+            `Original error: ${originalMessage}`
+        ].join("\n").trim();
 
         const error = new Error(errorMessage);
         error.name = "ClaudeCodeNotFoundError";
@@ -403,7 +522,7 @@ Original error: ${originalError.message}
                 this.claudePath !== "claude" ? this.claudePath : undefined
             );
 
-            if (detection.found && detection.path) {
+            if (detection.found === true && detection.path) {
                 this.claudePath = detection.path;
 
                 return {

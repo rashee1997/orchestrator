@@ -25,7 +25,7 @@ export interface GitCommitSummary {
 }
 
 export class GitService {
-    private workingDirectory: string;
+    private readonly workingDirectory: string;
 
     constructor(workingDirectory?: string) {
         this.workingDirectory = this.resolveWorkingDirectory(workingDirectory);
@@ -53,7 +53,7 @@ export class GitService {
                     return currentDir;
                 }
             } catch (error) {
-                // Continue searching
+                console.warn(`Error while searching for closest git repository in "${currentDir}":`, error);
             }
             currentDir = path.dirname(currentDir);
         }
@@ -63,14 +63,10 @@ export class GitService {
     }
 
     private validateGitRepository(): void {
-        try {
-            execSync('git rev-parse --git-dir', {
-                cwd: this.workingDirectory,
-                stdio: 'pipe'
-            });
-        } catch (error) {
-            throw new Error(`Not a git repository: ${this.workingDirectory}`);
-        }
+        execSync('git rev-parse --git-dir', {
+            cwd: this.workingDirectory,
+            stdio: 'pipe'
+        });
     }
 
     private executeGitCommand(args: string[]): string {
@@ -125,65 +121,73 @@ export class GitService {
     /** Gather staged or unstaged changes. Returns an empty array on error. */
     private gatherChanges(staged: boolean): GitChange[] {
         try {
-            const changes: GitChange[] = [];
-
-            if (staged) {
-                // For staged changes, use diff --cached
-                const args = ['diff', '--name-status', '--cached'];
-                const statusOutput = this.executeGitCommand(args);
-
-                if (statusOutput.trim()) {
-                    const lines = statusOutput.split('\n').filter(line => line.trim());
-                    for (const line of lines) {
-                        if (line.length < 2) continue;
-                        const statusCode = line.substring(0, 1).trim();
-                        const filePath = line.substring(1).trim();
-
-                        changes.push({
-                            filePath: path.join(this.workingDirectory, filePath),
-                            status: this.getChangeStatusFromCode(statusCode),
-                            changeType: 'staged'
-                        });
-                    }
-                }
-            } else {
-                // For unstaged changes, use git status --porcelain to get both modified and untracked files
-                // Use --untracked-files=all so directories aren't collapsed into a single entry
-                const statusOutput = this.executeGitCommand([
-                    'status',
-                    '--porcelain=1',
-                    '--untracked-files=all'
-                ]);
-
-                if (statusOutput.trim()) {
-                    const lines = statusOutput.split('\n').filter(line => line.trim());
-                    for (const line of lines) {
-                        if (line.length < 3) continue;
-
-                        // git status --porcelain format: XY filename
-                        // X = staged status, Y = unstaged status
-                        const stagedStatus = line[0];
-                        const unstagedStatus = line[1];
-                        const filePath = line.substring(3).trim();
-
-                        // Only include unstaged changes (Y column not empty and not space)
-                        if (unstagedStatus !== ' ' && unstagedStatus !== '') {
-                            changes.push({
-                                filePath: path.join(this.workingDirectory, filePath),
-                                status: this.getChangeStatusFromCode(unstagedStatus),
-                                changeType: 'unstaged'
-                            });
-                        }
-                    }
-                }
-            }
-
-            return changes;
+            return staged
+                ? this.gatherStagedChangesHelper()
+                : this.gatherUnstagedChangesHelper();
         } catch (error) {
             const changeType = staged ? 'staged' : 'unstaged';
             console.error(`Error gathering ${changeType} changes:`, error);
             return [];
         }
+    }
+
+    /** Helper for gathering staged changes */
+    private gatherStagedChangesHelper(): GitChange[] {
+        const changes: GitChange[] = [];
+        const args = ['diff', '--name-status', '--cached'];
+        const statusOutput = this.executeGitCommand(args);
+
+        if (!statusOutput.trim()) {
+            return changes;
+        }
+
+        const lines = statusOutput.split('\n').filter(line => line.trim());
+        for (const line of lines) {
+            if (line.length < 2) continue;
+            const statusCode = line.substring(0, 1).trim();
+            const filePath = line.substring(1).trim();
+
+            changes.push({
+                filePath: path.join(this.workingDirectory, filePath),
+                status: this.getChangeStatusFromCode(statusCode),
+                changeType: 'staged'
+            });
+        }
+        return changes;
+    }
+
+    /** Helper for gathering unstaged changes */
+    private gatherUnstagedChangesHelper(): GitChange[] {
+        const changes: GitChange[] = [];
+        const statusOutput = this.executeGitCommand([
+            'status',
+            '--porcelain=1',
+            '--untracked-files=all'
+        ]);
+
+        if (!statusOutput.trim()) {
+            return changes;
+        }
+
+        const lines = statusOutput.split('\n').filter(line => line.trim());
+        for (const line of lines) {
+            if (line.length < 3) continue;
+
+            // git status --porcelain format: XY filename
+            // X = staged status, Y = unstaged status
+            const unstagedStatus = line[1];
+            const filePath = line.substring(3).trim();
+
+            // Only include unstaged changes (Y column not empty and not space)
+            if (unstagedStatus !== ' ' && unstagedStatus !== '') {
+                changes.push({
+                    filePath: path.join(this.workingDirectory, filePath),
+                    status: this.getChangeStatusFromCode(unstagedStatus),
+                    changeType: 'unstaged'
+                });
+            }
+        }
+        return changes;
     }
 
     private getChangeStatusFromCode(code: string): string {
@@ -302,6 +306,7 @@ export class GitService {
         try {
             return this.executeGitCommand(['branch', '--show-current']).trim();
         } catch (error) {
+            console.error('Error getting current branch:', error);
             return 'unknown';
         }
     }
@@ -310,6 +315,7 @@ export class GitService {
         try {
             return this.executeGitCommand(['log', '--oneline', `-${count}`]);
         } catch (error) {
+            console.error('Error getting recent commits:', error);
             return '';
         }
     }
@@ -323,6 +329,7 @@ export class GitService {
             const output = this.executeGitCommand(['show', commitRef, '--no-patch', "--format=%ct"]).trim();
             return Number.parseInt(output, 10);
         } catch (error) {
+            console.error('Error getting commit timestamp:', error);
             return Date.now() / 1000;
         }
     }
@@ -548,56 +555,72 @@ export class GitService {
         const changeType = context.changes.length ? context.changes[0].changeType : 'staged';
 
         let formattedContext = "## Git Context for Commit Message Generation\n\n";
-
-        // Add change summary with file analysis
-        formattedContext += `### Change Summary\n`;
-        formattedContext += `- **Repository:** ${path.basename(context.workingDirectory)}\n`;
-        formattedContext += `- **Branch:** ${context.currentBranch}\n`;
-        formattedContext += `- **Change Type:** ${changeType}\n`;
-        formattedContext += `- **Total Files:** ${context.changes.length}\n\n`;
-
-        // Analyze files by type and purpose
-        const fileAnalysis = this.analyzeFileChanges(context.changes);
-        if (Object.keys(fileAnalysis).length) {
-            formattedContext += `### File Analysis\n`;
-            for (const [category, files] of Object.entries(fileAnalysis)) {
-                formattedContext += `**${category}:**\n`;
-                for (const file of files) {
-                    formattedContext += `- \`${path.basename(file.filePath)}\` (${file.status})\n`;
-                }
-                formattedContext += `\n`;
-            }
-        }
-
-        // Add full diff - essential for understanding what changed
-        if (context.diff) {
-            formattedContext += `### Full Diff of ${changeType === 'staged' ? 'Staged' : 'Unstaged'} Changes\n\`\`\`diff\n${context.diff}\n\`\`\`\n\n`;
-        } else {
-            formattedContext += `### Full Diff of ${changeType === 'staged' ? 'Staged' : 'Unstaged'} Changes\n\`\`\`diff\n(No diff available)\n\`\`\`\n\n`;
-        }
-
-        // Add statistical summary
-        if (context.summary) {
-            formattedContext += "### Statistical Summary\n```\n" + context.summary + "\n```\n\n";
-        } else {
-            formattedContext += "### Statistical Summary\n```\n(No summary available)\n```\n\n";
-        }
-
-        // Add recent commits for context and pattern recognition
-        if (context.recentCommits) {
-            formattedContext += "### Recent Commit History (for pattern context)\n```\n" + context.recentCommits + "\n```\n\n";
-        }
-
-        // Add guidance for commit message generation
-        formattedContext += `### Additional Context for Commit Message Generation\n`;
-        formattedContext += `Analyze the above changes and consider:\n`;
-        formattedContext += `1. **Primary Purpose**: What is the main goal of these changes?\n`;
-        formattedContext += `2. **Functional Impact**: How do these changes affect the application?\n`;
-        formattedContext += `3. **File Categories**: Are these infrastructure, features, fixes, or tools?\n`;
-        formattedContext += `4. **Scope**: What module/component is primarily affected?\n`;
-        formattedContext += `5. **Breaking Changes**: Do any changes break existing functionality?\n\n`;
+        formattedContext += this.formatChangeSummary(context, changeType);
+        formattedContext += this.formatFileAnalysis(context.changes);
+        formattedContext += this.formatDiffSection(context.diff, changeType);
+        formattedContext += this.formatStatisticalSummary(context.summary);
+        formattedContext += this.formatRecentCommits(context.recentCommits);
+        formattedContext += this.formatCommitGuidance();
 
         return formattedContext;
+    }
+
+    private formatChangeSummary(context: GitContext, changeType: string): string {
+        return (
+            `### Change Summary\n` +
+            `- **Repository:** ${path.basename(context.workingDirectory)}\n` +
+            `- **Branch:** ${context.currentBranch}\n` +
+            `- **Change Type:** ${changeType}\n` +
+            `- **Total Files:** ${context.changes.length}\n\n`
+        );
+    }
+
+    private formatFileAnalysis(changes: GitChange[]): string {
+        const fileAnalysis = this.analyzeFileChanges(changes);
+        if (!Object.keys(fileAnalysis).length) return '';
+        let result = `### File Analysis\n`;
+        for (const [category, files] of Object.entries(fileAnalysis)) {
+            result += `**${category}:**\n`;
+            for (const file of files) {
+                result += `- \`${path.basename(file.filePath)}\` (${file.status})\n`;
+            }
+            result += `\n`;
+        }
+        return result;
+    }
+
+    private formatDiffSection(diff: string, changeType: string): string {
+        const label = changeType === 'staged' ? 'Staged' : 'Unstaged';
+        if (diff) {
+            return `### Full Diff of ${label} Changes\n\`\`\`diff\n${diff}\n\`\`\`\n\n`;
+        }
+        return `### Full Diff of ${label} Changes\n\`\`\`diff\n(No diff available)\n\`\`\`\n\n`;
+    }
+
+    private formatStatisticalSummary(summary: string): string {
+        if (summary) {
+            return "### Statistical Summary\n```\n" + summary + "\n```\n\n";
+        }
+        return "### Statistical Summary\n```\n(No summary available)\n```\n\n";
+    }
+
+    private formatRecentCommits(recentCommits: string): string {
+        if (recentCommits) {
+            return "### Recent Commit History (for pattern context)\n```\n" + recentCommits + "\n```\n\n";
+        }
+        return '';
+    }
+
+    private formatCommitGuidance(): string {
+        return (
+            `### Additional Context for Commit Message Generation\n` +
+            `Analyze the above changes and consider:\n` +
+            `1. **Primary Purpose**: What is the main goal of these changes?\n` +
+            `2. **Functional Impact**: How do these changes affect the application?\n` +
+            `3. **File Categories**: Are these infrastructure, features, fixes, or tools?\n` +
+            `4. **Scope**: What module/component is primarily affected?\n` +
+            `5. **Breaking Changes**: Do any changes break existing functionality?\n\n`
+        );
     }
 
     /** Group changes into logical “categories” for a nicer UI. */
@@ -620,7 +643,10 @@ export class GitService {
                 category = this.formatCategoryLabel(sig);
             }
 
-            (analysis[category] ??= []).push(change);
+            if (!analysis[category]) {
+                analysis[category] = [];
+            }
+            analysis[category].push(change);
         }
 
         return analysis;
@@ -682,6 +708,7 @@ export class GitService {
             const unstagedChanges = this.gatherChanges(false);
             return stagedChanges.length > 0 || unstagedChanges.length > 0;
         } catch (error) {
+            console.error('Error checking for uncommitted changes:', error);
             return false;
         }
     }
@@ -728,7 +755,7 @@ export class GitService {
                     }
                 }
             } catch (error) {
-                // Skip directories we can't read
+                console.warn(`Skipping directory "${currentPath}" due to error:`, error);
             }
         };
 
@@ -749,7 +776,7 @@ export class GitService {
                     return currentDir;
                 }
             } catch (error) {
-                // Continue searching
+                console.warn(`Error while searching for closest git repository in "${currentDir}":`, error);
             }
             currentDir = path.dirname(currentDir);
         }
