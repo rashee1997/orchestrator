@@ -1,22 +1,39 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { MemoryManager } from '../database/memory_manager.js';
-import { GitService, GitContext, GitChange } from '../utils/GitService.js';
+import {
+    GitService,
+    GitContext,
+    GitChange,
+    GitCommitSummary
+} from '../utils/GitService.js';
 import { CommitMessageAI, CommitMessageOptions } from '../utils/CommitMessageAI.js';
 import { InternalToolDefinition } from './index.js';
 import * as path from 'path';
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+/** Simple label for a context block – used only for UI rendering */
 type ContextLabel = 'Staged' | 'Unstaged';
 
+/** Internal representation of a context section returned by `collectContextSections` */
 interface ContextSection {
     label: ContextLabel;
     context: GitContext;
 }
 
-function bucketChanges(sections: ContextSection[]): { staged: GitChange[]; unstaged: GitChange[] } {
+/** Result of bucketising changes across all sections */
+interface ChangeBuckets {
+    staged: GitChange[];
+    unstaged: GitChange[];
+}
+
+/** Helper: deduplicate changes across sections and bucket them */
+function bucketChanges(sections: ContextSection[]): ChangeBuckets {
     const deduped = new Map<string, GitChange>();
 
-    for (const section of sections) {
-        for (const change of section.context.changes) {
+    for (const { context } of sections) {
+        for (const change of context.changes) {
             const key = `${change.changeType}:${change.filePath}`;
             if (!deduped.has(key)) {
                 deduped.set(key, change);
@@ -26,53 +43,65 @@ function bucketChanges(sections: ContextSection[]): { staged: GitChange[]; unsta
 
     const all = Array.from(deduped.values());
     return {
-        staged: all.filter(change => change.changeType === 'staged'),
-        unstaged: all.filter(change => change.changeType === 'unstaged')
+        staged: all.filter(c => c.changeType === 'staged'),
+        unstaged: all.filter(c => c.changeType === 'unstaged')
     };
 }
 
-async function collectContextSections(gitService: GitService, includeStaged: boolean, includeUnstaged: boolean): Promise<ContextSection[]> {
+/** Collect staged/unstaged contexts with sane labeling */
+async function collectContextSections(
+    gitService: GitService,
+    includeStaged: boolean,
+    includeUnstaged: boolean
+): Promise<ContextSection[]> {
     const sections: ContextSection[] = [];
 
     if (includeStaged) {
-        const stagedContext = await gitService.getCommitContext(true);
-        if (stagedContext.changes.length > 0) {
-            const hasStaged = stagedContext.changes.some(change => change.changeType === 'staged');
-            sections.push({
-                label: hasStaged ? 'Staged' : 'Unstaged',
-                context: stagedContext
-            });
+        const staged = await gitService.getCommitContext(true);
+        if (staged.changes.length) {
+            sections.push({ label: 'Staged', context: staged });
         }
     }
 
     if (includeUnstaged) {
-        const unstagedContext = await gitService.getCommitContext(false);
-        const hasUnstaged = unstagedContext.changes.some(change => change.changeType === 'unstaged');
-        const alreadyIncludedUnstaged = sections.some(section => section.label === 'Unstaged');
-
-        if (hasUnstaged && !alreadyIncludedUnstaged) {
-            sections.push({
-                label: 'Unstaged',
-                context: unstagedContext
-            });
+        const unstaged = await gitService.getCommitContext(false);
+        if (unstaged.changes.length) {
+            // Avoid duplicate “Unstaged” block when staged already contains unstaged changes
+            const already = sections.some(s => s.label === 'Unstaged');
+            if (!already) sections.push({ label: 'Unstaged', context: unstaged });
         }
     }
 
     return sections;
 }
 
-function buildCombinedContextForAI(gitService: GitService, sections: ContextSection[]): string {
+/** Build a combined AI‑ready context string. Handles duplicate headers and optional diff‑size limiting. */
+function buildCombinedContextForAI(
+    gitService: GitService,
+    sections: ContextSection[],
+    maxDiffSize: number = 200_000 // 200 KB – safe for most LLM prompts
+): string {
     const header = '## Git Context for Commit Message Generation';
 
-    return sections.map(section => {
+    const parts = sections.map(section => {
         const formatted = gitService.formatContextForAI(section.context);
 
+        // Replace the generic header with a specific one when multiple sections exist
         if (sections.length > 1 && formatted.includes(header)) {
             return formatted.replace(header, `## ${section.label} Changes`);
         }
-
         return formatted;
-    }).join('\n\n');
+    });
+
+    const combined = parts.join('\n\n');
+
+    // Truncate extremely large diffs – keep the beginning & end for context
+    if (combined.length > maxDiffSize) {
+        const start = combined.slice(0, maxDiffSize / 2);
+        const end = combined.slice(-maxDiffSize / 2);
+        return `${start}\n... [TRUNCATED DUE TO SIZE] ...\n${end}`;
+    }
+    return combined;
 }
 
 function buildChangedFilesSection(sections: ContextSection[]): string {

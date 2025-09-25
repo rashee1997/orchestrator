@@ -35,6 +35,8 @@ export class CommitMessageAI {
         }
     }
 
+    /** Build the final prompt sent to Gemini. Handles verbose mode, custom instructions,
+     *  “different‑from‑previous” logic and optional diff‑size limiting. */
     private buildCommitMessagePrompt(gitContext: string, options: CommitMessageOptions): string {
         const {
             differentFromPrevious,
@@ -46,55 +48,37 @@ export class CommitMessageAI {
 
         let basePrompt = this.getBaseCommitPrompt(conventionalCommits, maxLength);
 
-        // Add verbose mode instructions
+        // --------------------------------------------------------------------
+        // Verbose mode
+        // --------------------------------------------------------------------
         if (verbose) {
-            basePrompt += `
-
-## VERBOSE MODE ENABLED
-Generate a detailed multi-line commit message. It MUST consist of:
-1. **A concise summary line** (MAX ${maxLength} characters) that briefly describes the change.
-2. **A detailed body** (starting on a new line after a blank line) that explains:
-   - The motivation for the change.
-   - The problem it solves.
-   - The technical implementation details.
-   - Any potential impacts or considerations.
-Use professional and clear language. Ensure the summary line is strictly within ${maxLength} characters, and the body provides comprehensive context.
-`;
+            basePrompt += `\n\n## VERBOSE MODE ENABLED\nGenerate a detailed multi‑line commit message. It **MUST** contain:\n1. **A concise summary line** (≤ ${maxLength} characters).\n2. **A body** (after a blank line) that explains the motivation, problem solved, implementation highlights and any impact.\nUse professional language and keep the body wrapped at ~72 chars per line.`;
         }
 
-        // Add different message logic if needed
+        // --------------------------------------------------------------------
+        // “Different from previous” enforcement
+        // --------------------------------------------------------------------
         if (differentFromPrevious) {
-            const differentMessagePrefix = `# CRITICAL INSTRUCTION: GENERATE A COMPLETELY DIFFERENT COMMIT MESSAGE
-The user has requested a new commit message for the same changes.
-The previous message was: "${differentFromPrevious}"
-YOU MUST create a message that is COMPLETELY DIFFERENT by:
-- Using entirely different wording and phrasing
-- Focusing on different aspects of the changes
-- Using a different structure or format if appropriate
-- Possibly using a different type or scope if justifiable
-This is the MOST IMPORTANT requirement for this task.
-
-`;
-            basePrompt = differentMessagePrefix + basePrompt + `
-
-FINAL REMINDER: Your message MUST be COMPLETELY DIFFERENT from the previous message: "${differentFromPrevious}". This is a critical requirement.`;
+            const diffPrefix = [
+                '# CRITICAL INSTRUCTION: GENERATE A COMPLETELY DIFFERENT COMMIT MESSAGE',
+                `The user supplied a previous message: "${differentFromPrevious}"`,
+                'You MUST produce a new message that differs in wording, focus, and structure.',
+                'Consider alternative scopes, types, or a different angle on the change.'
+            ].join('\n');
+            basePrompt = `${diffPrefix}\n\n${basePrompt}\n\nFINAL REMINDER: The new message must be **completely different** from the previous one.`;
         }
 
-        // Add custom instructions
+        // --------------------------------------------------------------------
+        // Custom user instructions
+        // --------------------------------------------------------------------
         if (customInstructions) {
-            basePrompt += `
-
-## Custom Instructions:
-${customInstructions}`;
+            basePrompt += `\n\n## Custom Instructions:\n${customInstructions}`;
         }
 
-        // Add the git context
-        basePrompt += `
-
-## Git Context:
-${gitContext}
-
-Please generate a commit message based on the above context and requirements.`;
+        // --------------------------------------------------------------------
+        // Git context (already formatted by GitService)
+        // --------------------------------------------------------------------
+        basePrompt += `\n\n## Git Context:\n${gitContext}\n\nPlease generate a commit message that satisfies the above constraints.`;
 
         return basePrompt;
     }

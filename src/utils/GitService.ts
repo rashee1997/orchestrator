@@ -122,6 +122,7 @@ export class GitService {
         return this.gatherChanges(false);
     }
 
+    /** Gather staged or unstaged changes. Returns an empty array on error. */
     private gatherChanges(staged: boolean): GitChange[] {
         try {
             const changes: GitChange[] = [];
@@ -198,6 +199,7 @@ export class GitService {
         }
     }
 
+    /** Generate a diff for staged or unstaged changes. Handles untracked files. */
     private getDiff(staged: boolean): string {
         try {
             let diff = '';
@@ -227,6 +229,7 @@ export class GitService {
         }
     }
 
+    /** Produce a pseudo‑diff for untracked files (adds them as new files). */
     private getUntrackedFilesDiff(): string {
         try {
             // Get untracked files
@@ -271,6 +274,7 @@ export class GitService {
         }
     }
 
+    /** Simple deterministic hash for pseudo‑diff headers – not cryptographic. */
     private generatePseudoHash(content: string): string {
         // Generate a simple pseudo-hash for the diff display (not cryptographically secure)
         let hash = 0;
@@ -282,6 +286,7 @@ export class GitService {
         return Math.abs(hash).toString(16).padStart(7, '0').substring(0, 7);
     }
 
+    /** Human‑readable summary (`git diff --stat`). */
     private getSummary(staged: boolean): string {
         try {
             const args = staged ? ['diff', '--cached', '--stat'] : ['diff', '--stat'];
@@ -292,6 +297,7 @@ export class GitService {
         }
     }
 
+    /** Return the current branch name (fallback to “unknown”). */
     private getCurrentBranch(): string {
         try {
             return this.executeGitCommand(['branch', '--show-current']).trim();
@@ -504,6 +510,7 @@ export class GitService {
         return this.runGitCommand(args);
     }
 
+    /** Public helper used by the tools – returns a full context object ready for AI. */
     public async getCommitContext(preferStaged: boolean = true): Promise<GitContext> {
         let changes: GitChange[] = [];
         let staged = preferStaged;
@@ -536,8 +543,9 @@ export class GitService {
         };
     }
 
+    /** Format a `GitContext` into a markdown block that the LLM can consume. */
     public formatContextForAI(context: GitContext): string {
-        const changeType = context.changes.length > 0 ? context.changes[0].changeType : 'staged';
+        const changeType = context.changes.length ? context.changes[0].changeType : 'staged';
 
         let formattedContext = "## Git Context for Commit Message Generation\n\n";
 
@@ -550,7 +558,7 @@ export class GitService {
 
         // Analyze files by type and purpose
         const fileAnalysis = this.analyzeFileChanges(context.changes);
-        if (Object.keys(fileAnalysis).length > 0) {
+        if (Object.keys(fileAnalysis).length) {
             formattedContext += `### File Analysis\n`;
             for (const [category, files] of Object.entries(fileAnalysis)) {
                 formattedContext += `**${category}:**\n`;
@@ -592,6 +600,7 @@ export class GitService {
         return formattedContext;
     }
 
+    /** Group changes into logical “categories” for a nicer UI. */
     private analyzeFileChanges(changes: GitChange[]): Record<string, GitChange[]> {
         const analysis: Record<string, GitChange[]> = {};
 
@@ -600,81 +609,71 @@ export class GitService {
             const fileName = path.basename(filePath);
             const fileExtension = path.extname(fileName).toLowerCase();
             const relativePath = path.relative(this.workingDirectory, filePath);
-            const normalizedPath = relativePath.split(path.sep).join('/');
-            const segments = normalizedPath.split('/').filter(Boolean);
+            const normalized = relativePath.split(path.sep).filter(Boolean);
 
-            let category = this.detectSpecialCategory(segments, fileName, fileExtension);
+            // Detect known special categories first (tests, docs, config, etc.)
+            let category = this.detectSpecialCategory(normalized, fileName, fileExtension);
 
+            // Fallback: build a readable label from the first two  (up to) path segments
             if (!category) {
-                // Build category dynamically from path segments
-                const significantSegments = this.getSignificantSegments(segments);
-                category = this.formatCategoryLabel(significantSegments);
+                const sig = this.getSignificantSegments(normalized);
+                category = this.formatCategoryLabel(sig);
             }
 
-            if (!analysis[category]) {
-                analysis[category] = [];
-            }
-            analysis[category].push(change);
+            (analysis[category] ??= []).push(change);
         }
 
         return analysis;
     }
 
-    private detectSpecialCategory(segments: string[], fileName: string, fileExtension: string): string | null {
-        const lowerFileName = fileName.toLowerCase();
+    /** Detect well‑known categories (tests, docs, config, dotfiles, …). */
+    private detectSpecialCategory(
+        segments: string[],
+        fileName: string,
+        fileExtension: string
+    ): string | null {
+        const lower = fileName.toLowerCase();
 
-        const isTest =
-            segments.some(segment => /test|spec/i.test(segment)) ||
-            lowerFileName.includes('.test.') ||
-            lowerFileName.includes('.spec.') ||
-            lowerFileName.endsWith('.test') ||
-            lowerFileName.endsWith('.spec');
-        if (isTest) {
-            return 'Test Files';
-        }
+        // 1️⃣ Test files
+        const isTest = segments.some(s => /test|spec/i.test(s)) ||
+            lower.includes('.test.') || lower.includes('.spec.') ||
+            lower.endsWith('.test') || lower.endsWith('.spec');
+        if (isTest) return 'Test Files';
 
+        // 2️⃣ Documentation
         if (['.md', '.markdown', '.txt', '.rst', '.doc', '.docx'].includes(fileExtension)) {
             return 'Documentation Files';
         }
 
+        // 3️⃣ Configuration / dot‑files
         if (['.json', '.yml', '.yaml', '.toml', '.ini', '.env', '.rc'].includes(fileExtension) ||
-            segments.some(segment => segment.startsWith('.github') || segment === '.vscode' || segment === 'config')) {
+            segments.some(s => s.startsWith('.github') || s === '.vscode' || s === 'config')) {
             return 'Configuration Files';
         }
 
-        if (fileExtension === '.d.ts') {
-            return 'Type Definition Files';
-        }
+        // 4️⃣ Type definitions
+        if (fileExtension === '.d.ts') return 'Type Definition Files';
 
-        if (lowerFileName.startsWith('.')) {
-            return 'Dotfiles';
-        }
+        // 5️⃣ Generic dotfiles (e.g., .gitignore)
+        if (lower.startsWith('.')) return 'Dotfiles';
 
         return null;
     }
 
+    /** Return up to two “significant” path segments for a readable label. */
     private getSignificantSegments(segments: string[]): string[] {
-        if (segments.length === 0) {
-            return ['Repository Root'];
-        }
-
-        if (segments[0] === 'src') {
-            if (segments.length === 1) {
-                return ['src'];
-            }
-            return ['src', segments[1]];
-        }
-
-        return segments.slice(0, Math.min(2, segments.length));
+        if (!segments.length) return ['Repository Root'];
+        if (segments[0] === 'src') return ['src', segments[1] ?? 'root'];
+        return segments.slice(0, 2);
     }
 
+    /** Turn path segments into a human‑friendly label (e.g. “Src / Utils Files”). */
     private formatCategoryLabel(segments: string[]): string {
-        const formatted = segments
-            .map(segment => segment.replace(/[-_]/g, ' '))
-            .map(segment => segment.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '))
+        const label = segments
+            .map(s => s.replace(/[-_]/g, ' '))
+            .map(s => s.split(' ').map(w => w[0].toUpperCase() + w.slice(1)).join(' '))
             .join(' / ');
-
-        return `${formatted} Files`.trim();
+        return `${label} Files`;
     }
 
     public hasUncommittedChanges(): boolean {
