@@ -18,6 +18,7 @@ import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from '
 import { randomUUID } from 'crypto';
 import { ConversationMessage, ConversationSession } from '../database/managers/ConversationHistoryManager.js';
 import { callTavilyApi, WebSearchResult } from '../integrations/tavily.js';
+import { FileOperationsService } from '../services/file-operations/index.js';
 
 const VALID_FOCUS_AREAS = [
     "code_review", "code_explanation", "enhancement_suggestions", "bug_fixing",
@@ -262,6 +263,26 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 maximum: 5
             },
             live_review_file_paths: { type: 'array', items: { type: 'string' }, description: 'Array of full file paths for live chunking and review.', nullable: true },
+            enable_autonomous_file_reading: {
+                type: 'boolean',
+                description: 'Enable autonomous file discovery and reading based on query context. Will intelligently find and read relevant files using patterns, language detection, and gitignore rules.',
+                default: false,
+                nullable: true
+            },
+            autonomous_file_patterns: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Custom glob patterns for autonomous file search (e.g., ["**/*.ts", "src/**/*.py"]). If not provided, patterns will be generated based on query context.',
+                nullable: true
+            },
+            max_autonomous_files: {
+                type: 'number',
+                description: 'Maximum number of files to autonomously read',
+                default: 15,
+                minimum: 1,
+                maximum: 30,
+                nullable: true
+            },
             focus_area: { type: 'string', description: 'Manually set a focus area to override autonomous selection.', enum: VALID_FOCUS_AREAS, nullable: true },
             analysis_focus_points: {
                 type: 'array',
@@ -347,7 +368,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             enable_corrective_rag,
             reflection_frequency,
             long_rag_chunk_size,
-            citation_accuracy_threshold
+            citation_accuracy_threshold,
+            // Autonomous file reading parameters
+            enable_autonomous_file_reading,
+            autonomous_file_patterns,
+            max_autonomous_files
         } = args;
 
         // Validate and sanitize count parameters to prevent negative values
@@ -622,7 +647,175 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             return { content: [{ type: 'text', text: markdownOutput }] };
         }
 
-        // NORMAL MODE: Only when NO live files are provided
+        // AUTONOMOUS FILE READING MODE: Alternative to live files and RAG
+        let autonomousFileReadingResult: any = null;
+        if (enable_autonomous_file_reading && !live_review_file_paths?.length) {
+            console.log('[ask_gemini] 🤖 AUTONOMOUS FILE READING: Discovering and reading relevant files based on query context');
+
+            try {
+                // Log autonomous file reading mode
+                await conversationHistoryManager.storeConversationMessage(
+                    currentSessionId,
+                    'system',
+                    `🤖 **AUTONOMOUS FILE READING**: Analyzing query for intelligent file discovery. Max files: ${max_autonomous_files || 15}`,
+                    'thought',
+                    {
+                        mode: 'autonomous_file_reading',
+                        query_analysis: query.substring(0, 200),
+                        max_files: max_autonomous_files || 15,
+                        custom_patterns: autonomous_file_patterns || null,
+                        patterns_source: autonomous_file_patterns ? 'user_provided' : 'auto_generated'
+                    }
+                );
+
+                // Initialize file operations service with Gemini service for AI pattern generation
+                const fileOpsService = new FileOperationsService(geminiService);
+
+                // Perform smart file discovery
+                const fileReadOptions = {
+                    query: query,
+                    patterns: autonomous_file_patterns, // Will be auto-generated if empty
+                    maxFiles: Math.max(1, Math.min(30, max_autonomous_files || 15)),
+                    maxFileSize: 1024 * 1024, // 1MB per file
+                    searchContent: true, // Enable content-based filtering
+                    caseSensitive: false,
+                    excludeDirs: ['node_modules', '.git', 'dist', 'build', '.next'], // Additional exclusions
+                };
+
+                autonomousFileReadingResult = await fileOpsService.discoverAndReadFiles(fileReadOptions);
+
+                console.log(`[ask_gemini] ✅ Autonomous file reading completed: ${autonomousFileReadingResult.totalFilesRead} files read in ${autonomousFileReadingResult.searchTimeMs}ms`);
+
+                if (autonomousFileReadingResult.files.length > 0) {
+                    // Use focus area templates when specified, otherwise use regular approach
+                    let template;
+                    let useTemplate = false;
+
+                    if (focus_area) {
+                        useTemplate = true;
+                        switch (focus_area) {
+                            case 'code_review':
+                                template = CODE_REVIEW_META_PROMPT;
+                                break;
+                            case 'code_explanation':
+                                template = CODE_EXPLANATION_META_PROMPT;
+                                break;
+                            case 'enhancement_suggestions':
+                                template = ENHANCEMENT_SUGGESTIONS_META_PROMPT;
+                                break;
+                            case 'bug_fixing':
+                                template = BUG_FIXING_META_PROMPT;
+                                break;
+                            case 'refactoring':
+                                template = REFACTORING_META_PROMPT;
+                                break;
+                            case 'testing':
+                                template = TESTING_META_PROMPT;
+                                break;
+                            case 'documentation':
+                                template = DOCUMENTATION_META_PROMPT;
+                                break;
+                            case 'code_modularization_orchestration':
+                                template = CODE_MODULARIZATION_ORCHESTATION_META_PROMPT;
+                                break;
+                            default:
+                                template = DEFAULT_CODEBASE_ASSISTANT_META_PROMPT;
+                                break;
+                        }
+                    }
+
+                    // Format discovered files
+                    const fileContents: string[] = [];
+                    for (const file of autonomousFileReadingResult.files) {
+                        if (file.encoding === 'utf-8' && file.content) {
+                            const languageInfo = (file as any).detectedLanguages ? ` (${(file as any).detectedLanguages.join(', ')})` : '';
+                            fileContents.push(`## File: ${file.relativePath}${languageInfo}\n\n\`\`\`${file.extension.slice(1) || 'text'}\n${file.content}\n\`\`\``);
+                        } else if (file.encoding === 'binary') {
+                            fileContents.push(`## File: ${file.relativePath}\n\n*Binary file - ${file.size} bytes*`);
+                        }
+                    }
+
+                    const contextForPrompt = fileContents.join('\n\n---\n\n');
+
+                    let finalQuery;
+                    if (useTemplate && template) {
+                        // Include conversation history if continuing
+                        let conversationHistoryForPrompt = '';
+                        if (continue_session && hasConversationHistory) {
+                            conversationHistoryForPrompt = historyMessages.map(m => `${m.sender}: ${m.message_content}`).join('\n');
+                        }
+
+                        // Use focus area template
+                        finalQuery = template
+                            .replace('{context}', contextForPrompt)
+                            .replace('{query}', query)
+                            .replace('{conversation_history}', conversationHistoryForPrompt);
+                    } else {
+                        // Simply append file context to the original query
+                        finalQuery = `${query}\n\n## Relevant Files Found:\n\n${contextForPrompt}`;
+                    }
+
+                    console.log('[ask_gemini] 🚀 Sending query with discovered file context to Gemini...');
+                    const geminiResponse = await geminiService.askGemini(finalQuery, model, systemInstruction);
+                    const aiAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
+
+                    // Format response with enhanced file discovery summary
+                    const fileDiscoveryInfo = `### 🤖 Autonomous File Discovery\n- **Project:** ${autonomousFileReadingResult.projectContext.projectType} (${autonomousFileReadingResult.projectContext.primaryLanguage})\n- **Pattern Source:** ${autonomousFileReadingResult.patternSource.replace('_', ' ')}\n- **Files Found:** ${autonomousFileReadingResult.totalFilesFound}\n- **Files Read:** ${autonomousFileReadingResult.totalFilesRead}\n- **Search Time:** ${autonomousFileReadingResult.searchTimeMs}ms\n- **Patterns:** ${autonomousFileReadingResult.searchPatterns.slice(0, 3).join(', ')}${autonomousFileReadingResult.searchPatterns.length > 3 ? '...' : ''}\n${focus_area ? `- **Focus Area:** ${focus_area}` : ''}\n\n`;
+
+                    const markdownOutput = `${fileDiscoveryInfo}${aiAnswer}`;
+
+                    await conversationHistoryManager.storeConversationMessage(
+                        currentSessionId,
+                        'ai',
+                        markdownOutput,
+                        'text',
+                        {
+                            mode: 'autonomous_file_reading',
+                            files_discovered: autonomousFileReadingResult.totalFilesFound,
+                            files_read: autonomousFileReadingResult.totalFilesRead,
+                            search_time_ms: autonomousFileReadingResult.searchTimeMs,
+                            search_patterns: autonomousFileReadingResult.searchPatterns,
+                            pattern_source: autonomousFileReadingResult.patternSource,
+                            project_type: autonomousFileReadingResult.projectContext.projectType,
+                            primary_language: autonomousFileReadingResult.projectContext.primaryLanguage,
+                            focus_area: focus_area || null,
+                            template_used: useTemplate,
+                            file_paths: autonomousFileReadingResult.files.map((f: any) => f.relativePath),
+                            bypass_rag: true
+                        }
+                    );
+
+                    return { content: [{ type: 'text', text: markdownOutput }] };
+                } else {
+                    console.log('[ask_gemini] ⚠️ No files found by autonomous discovery, falling back to normal mode');
+                    await conversationHistoryManager.storeConversationMessage(
+                        currentSessionId,
+                        'system',
+                        `⚠️ **Autonomous File Reading**: No relevant files found. Falling back to ${enable_rag ? 'RAG mode' : 'general assistant mode'}.`,
+                        'thought',
+                        {
+                            autonomous_file_reading_failed: true,
+                            fallback_mode: enable_rag ? 'rag' : 'general',
+                            search_patterns_tried: autonomousFileReadingResult.searchPatterns,
+                            files_found: 0
+                        }
+                    );
+                }
+
+            } catch (error: any) {
+                console.error('[ask_gemini] Error during autonomous file reading:', error);
+                await conversationHistoryManager.storeConversationMessage(
+                    currentSessionId,
+                    'system',
+                    `❌ **Autonomous File Reading Error**: ${error?.message || 'Unknown error'}. Falling back to normal mode.`,
+                    'thought',
+                    { error: error?.message || 'Unknown error', fallback_to_rag: enable_rag }
+                );
+                // Continue to normal processing
+            }
+        }
+
+        // NORMAL MODE: Only when NO live files are provided and autonomous file reading is disabled or failed
         // Only perform autonomous RAG decision when:
         // 1. User explicitly requested to continue the conversation (continue=true)
         // 2. There is actual conversation history

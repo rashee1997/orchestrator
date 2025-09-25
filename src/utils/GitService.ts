@@ -147,7 +147,12 @@ export class GitService {
                 }
             } else {
                 // For unstaged changes, use git status --porcelain to get both modified and untracked files
-                const statusOutput = this.executeGitCommand(['status', '--porcelain']);
+                // Use --untracked-files=all so directories aren't collapsed into a single entry
+                const statusOutput = this.executeGitCommand([
+                    'status',
+                    '--porcelain=1',
+                    '--untracked-files=all'
+                ]);
 
                 if (statusOutput.trim()) {
                     const lines = statusOutput.split('\n').filter(line => line.trim());
