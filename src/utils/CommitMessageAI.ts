@@ -140,11 +140,8 @@ Generate commit messages following this exact structure:
 - Keep scope concise and lowercase
 
 ### Description Rules
-- Use imperative mood ("add" not "added" or "adds")
-- Start with lowercase letter
-- No period at the end
-- Maximum ${maxLength} characters
-- Be concise but descriptive
+- Imperative mood, lowercase start, no period at end.
+- Max ${maxLength} characters. Concise and descriptive.
 
 ### Body Guidelines (Optional)
 - Start one blank line after description
@@ -167,7 +164,7 @@ When analyzing staged changes:
 
 For significant changes, include a detailed body explaining the changes.
 
-**Multi-line Format for Complex Changes:**
+**Multi-line Format for Complex Changes (if verbose):**
 For substantial changes, use this format:
 \`\`\`
 <type>[optional scope]: <summary>
@@ -175,10 +172,8 @@ For substantial changes, use this format:
 <detailed body explaining what and why>
 \`\`\`
 
-Where:
-- Summary line: concise, under ${maxLength} characters
-- Body: detailed explanation after blank line, wrapped at 72 chars
-- Body should explain WHAT changed and WHY (motivation/context)
+- Summary line: concise, max ${maxLength} chars.
+- Body: detailed explanation (what & why) after blank line, wrapped at 72 chars.
 
 Return ONLY the commit message in the conventional format, nothing else.`;
         } else {
