@@ -90,3 +90,97 @@ export interface CachedChunk {
     file_path_relative: string;
     full_file_path: string;
 }
+
+export interface BoostRule {
+    name: string;
+    pattern: RegExp;
+    boost: number;
+    description: string;
+}
+
+export interface BoostConfiguration {
+    // Language-specific patterns
+    methodImplementationPatterns: BoostRule[];
+    implementationContentPatterns: BoostRule[];
+    implementationSignaturePatterns: BoostRule[];
+
+    // Boost multipliers
+    entityNameExactMatchBoost: number;
+    entityNamePartialMatchBoost: number;
+    entityNameFuzzyMatchThreshold: number;
+    entityNameFuzzyMatchBoost: number;
+
+    fileNameMatchBoost: number;
+    directoryMatchBoost: number;
+
+    substantialContentThreshold: number;
+    substantialContentBoost: number;
+    largeContentThreshold: number;
+    largeContentBoost: number;
+
+    languageMatchBoost: number;
+    codeTypeMatchBoost: number;
+    implementationVsDeclarationBoost: number;
+
+    maxTotalBoost: number;
+    implementationDiversificationThreshold: number;
+    implementationBoostMultiplier: number;
+    entityBoostMultiplier: number;
+}
+
+export const DEFAULT_BOOST_CONFIGURATION: BoostConfiguration = {
+    methodImplementationPatterns: [
+        { name: 'function_definitions', pattern: /\b(?:function|def|func|fn)\s+\w+\s*[\(\{]/, boost: 0.15, description: 'Function definitions' },
+        { name: 'method_signatures', pattern: /\b(?:public|private|protected|static|async|override)\s+(?:\w+\s+)?\w+\s*\(/, boost: 0.15, description: 'Method signatures' },
+        { name: 'constructors', pattern: /\b(?:constructor|__init__|new)\s*\(/, boost: 0.15, description: 'Constructor patterns' },
+        { name: 'arrow_functions', pattern: /\w+\s*[=:]\s*(?:\([^)]*\)\s*)?=>/, boost: 0.15, description: 'Arrow functions' },
+        { name: 'method_calls', pattern: /\b(?:this|self)\.\w+\s*\(/, boost: 0.15, description: 'Method calls with this/self' },
+        { name: 'class_definitions', pattern: /\b(?:class|struct|interface|enum|trait)\s+\w+/, boost: 0.15, description: 'Class definitions' }
+    ],
+
+    implementationContentPatterns: [
+        { name: 'type_definitions', pattern: /\b(?:class|interface|enum|struct|trait|type|union|record)\s+\w+/, boost: 0.05, description: 'Type/class definitions' },
+        { name: 'function_keywords', pattern: /\b(?:function|def|func|fn|method|proc)\s+\w+/, boost: 0.05, description: 'Function definitions' },
+        { name: 'access_modifiers', pattern: /\b(?:public|private|protected|static|final|abstract|virtual|override|async|const|let|var)\s+\w+/, boost: 0.05, description: 'Access modifiers' },
+        { name: 'return_statements', pattern: /\b(?:return|yield|throw)\s+/, boost: 0.05, description: 'Return statements' },
+        { name: 'assignments', pattern: /\b(?:this|self|@)\.[\w$]+\s*[=:]/, boost: 0.05, description: 'Assignment patterns' },
+        { name: 'control_flow', pattern: /\b(?:if|for|while|switch|match|case|when|loop|do)\s*[\(\{]/, boost: 0.05, description: 'Control flow' },
+        { name: 'exception_handling', pattern: /\b(?:try|catch|except|finally|rescue|ensure)\b/, boost: 0.05, description: 'Exception handling' },
+        { name: 'async_patterns', pattern: /\b(?:await|async|Promise|Future|Task|Deferred|Observable)\b/, boost: 0.05, description: 'Async patterns' },
+        { name: 'memory_management', pattern: /\b(?:new|delete|malloc|free|alloc)\b/, boost: 0.05, description: 'Memory management' },
+        { name: 'imports', pattern: /\b(?:import|from|include|require|use|using)\s+/, boost: 0.05, description: 'Import/include statements' }
+    ],
+
+    implementationSignaturePatterns: [
+        { name: 'constructors', pattern: /\b(?:constructor|__init__|new|init)\s*\(/, boost: 0.4, description: 'Constructor patterns' },
+        { name: 'main_methods', pattern: /\b(?:main|run|execute|start|begin|init|setup|configure)\w*\s*\(/, boost: 0.4, description: 'Main/entry methods' },
+        { name: 'process_methods', pattern: /\b(?:process|handle|manage|operate|perform|apply)\w*\s*\(/, boost: 0.4, description: 'Process/handle methods' },
+        { name: 'update_methods', pattern: /\b(?:update|modify|change|set|assign|alter)\w*\s*\(/, boost: 0.4, description: 'Update/modify methods' },
+        { name: 'get_methods', pattern: /\b(?:get|fetch|retrieve|find|search|query|select)\w*\s*\(/, boost: 0.4, description: 'Get/fetch/retrieve methods' },
+        { name: 'create_methods', pattern: /\b(?:create|build|make|generate|construct|produce)\w*\s*\(/, boost: 0.4, description: 'Create/build/make methods' },
+        { name: 'async_methods', pattern: /\basync\s+\w+\s*\(/, boost: 0.4, description: 'Async method patterns' },
+        { name: 'public_methods', pattern: /\b(?:public|export|def)\s+\w+\s*\(/, boost: 0.4, description: 'Public method patterns' }
+    ],
+
+    entityNameExactMatchBoost: 0.4,
+    entityNamePartialMatchBoost: 0.25,
+    entityNameFuzzyMatchThreshold: 0.7,
+    entityNameFuzzyMatchBoost: 0.2,
+
+    fileNameMatchBoost: 0.15,
+    directoryMatchBoost: 0.08,
+
+    substantialContentThreshold: 500,
+    substantialContentBoost: 0.1,
+    largeContentThreshold: 1000,
+    largeContentBoost: 0.1,
+
+    languageMatchBoost: 0.05,
+    codeTypeMatchBoost: 0.1,
+    implementationVsDeclarationBoost: 0.1,
+
+    maxTotalBoost: 0.6,
+    implementationDiversificationThreshold: 0.4,
+    implementationBoostMultiplier: 1.5,
+    entityBoostMultiplier: 0.25
+};
