@@ -208,6 +208,75 @@ CREATE TABLE IF NOT EXISTS refined_prompts (
 CREATE INDEX IF NOT EXISTS idx_refined_prompts_agent_id ON refined_prompts (agent_id);
 CREATE INDEX IF NOT EXISTS idx_refined_prompts_timestamp ON refined_prompts (refinement_timestamp);
 
+-- AI Code Review Results table
+CREATE TABLE IF NOT EXISTS code_review_sessions (
+    review_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    repository_path TEXT NOT NULL,
+    base_ref TEXT NOT NULL,
+    head_ref TEXT NOT NULL,
+    review_timestamp INTEGER NOT NULL,
+    review_timestamp_iso TEXT NOT NULL,
+    analysis_model TEXT,
+    risk_score INTEGER, -- 0-10 scale
+    overall_status TEXT, -- 'pass', 'block', 'pass_with_fixes'
+    total_files_changed INTEGER DEFAULT 0,
+    total_untracked_files INTEGER DEFAULT 0,
+    high_issues_count INTEGER DEFAULT 0,
+    medium_issues_count INTEGER DEFAULT 0,
+    low_issues_count INTEGER DEFAULT 0,
+    project_config_json TEXT, -- Store project configuration
+    diff_context_summary TEXT, -- Brief summary of changes
+    full_ai_response TEXT, -- Complete AI analysis response
+    FOREIGN KEY (agent_id) REFERENCES agents (agent_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_agent_id ON code_review_sessions (agent_id);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_timestamp ON code_review_sessions (review_timestamp);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo ON code_review_sessions (repository_path);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_status ON code_review_sessions (overall_status);
+
+-- Code Review Findings table - separate concerns for detailed findings
+CREATE TABLE IF NOT EXISTS code_review_findings (
+    finding_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    line_start INTEGER,
+    line_end INTEGER,
+    severity TEXT NOT NULL, -- 'high', 'medium', 'low'
+    category TEXT NOT NULL, -- 'security', 'correctness', 'performance', etc.
+    rule_code TEXT, -- Rule or standard identifier
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    impact TEXT,
+    fix_suggestion TEXT,
+    code_snippet TEXT,
+    hunk_header TEXT,
+    needs_verification BOOLEAN DEFAULT 0,
+    creation_timestamp INTEGER NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES code_review_sessions (review_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_findings_review_id ON code_review_findings (review_id);
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON code_review_findings (severity);
+CREATE INDEX IF NOT EXISTS idx_findings_category ON code_review_findings (category);
+CREATE INDEX IF NOT EXISTS idx_findings_file_path ON code_review_findings (file_path);
+
+-- Code Review Patches table - store suggested fixes
+CREATE TABLE IF NOT EXISTS code_review_patches (
+    patch_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    finding_id TEXT, -- Optional: link to specific finding
+    file_path TEXT NOT NULL,
+    patch_title TEXT NOT NULL,
+    unified_diff TEXT NOT NULL,
+    patch_description TEXT,
+    creation_timestamp INTEGER NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES code_review_sessions (review_id) ON DELETE CASCADE,
+    FOREIGN KEY (finding_id) REFERENCES code_review_findings (finding_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_patches_review_id ON code_review_patches (review_id);
+CREATE INDEX IF NOT EXISTS idx_patches_finding_id ON code_review_patches (finding_id);
+CREATE INDEX IF NOT EXISTS idx_patches_file_path ON code_review_patches (file_path);
+
 -- Insert default agents
 INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
 VALUES ('cline', 'Default AI Agent', 'Automatically created default agent for testing and operations.', STRFTIME('%s', 'now') * 1000, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'));

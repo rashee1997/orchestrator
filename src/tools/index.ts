@@ -10,6 +10,8 @@ import { geminiToolDefinitions, getGeminiToolHandlers } from './gemini_tools.js'
 import { embeddingToolDefinitions, getEmbeddingToolHandlers } from './embedding_tools.js';
 import { promptRefinementToolDefinitions, getPromptRefinementToolHandlers } from './prompt_refinement_tools.js';
 import { gitCommitToolDefinitions, getGitCommitToolHandlers } from './git_commit_tools.js';
+import { codeReviewTool, handleCodeReview } from './code_review_tool.js';
+import { codeReviewHistoryTool } from './code_review_history_tool.js';
 
 import { MemoryManager } from '../database/memory_manager.js';
 import { GeminiIntegrationService } from '../database/services/GeminiIntegrationService.js';
@@ -23,6 +25,14 @@ export interface Tool {
 
 export interface InternalToolDefinition extends Tool {
     func?: (args: any, memoryManagerInstance?: MemoryManager) => Promise<any>;
+}
+
+function normalizeToTool(tool: any): Tool {
+    return {
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.inputSchema || {}
+    };
 }
 
 function formatUsage(inputSchema: any): string {
@@ -81,6 +91,8 @@ export async function getAllToolDefinitions(memoryManager: MemoryManager): Promi
         ...stripFuncFromDefs(geminiToolDefinitions),
         ...stripFuncFromDefs(embeddingToolDefinitions),
         ...stripFuncFromDefs(gitCommitToolDefinitions),
+        normalizeToTool(codeReviewTool),
+        normalizeToTool(codeReviewHistoryTool),
         stripFuncFromDefs([listToolsToolDefinition])[0]
     ];
 
@@ -97,11 +109,27 @@ export async function getAllToolHandlers(memoryManager: MemoryManager) {
         return listToolsToolDefinition.func(args, memoryManager);
     };
 
+    const codeReviewHandler = async (args: any) => {
+        const { GitService } = await import('../utils/GitService.js');
+        const gitService = new GitService();
+        const geminiService = memoryManager.getGeminiIntegrationService();
+        const result = await handleCodeReview(args, gitService, geminiService);
+        return { content: [{ type: 'text', text: result }] };
+    };
+
+    const codeReviewHistoryHandler = async (args: any) => {
+        const { handleCodeReviewHistory } = await import('./code_review_history_tool.js');
+        const geminiService = memoryManager.getGeminiIntegrationService();
+        const result = await handleCodeReviewHistory(args, geminiService);
+        return { content: [{ type: 'text', text: result }] };
+    };
 
     return {
         ...getConversationToolHandlers(memoryManager),
         ...getAiTaskEnhancementToolHandlers(memoryManager),
         'list_tools': listToolsHandler,
+        'ai_code_sentinel': codeReviewHandler,
+        'code_review_history': codeReviewHistoryHandler,
         ...getDatabaseManagementToolHandlers(memoryManager),
         ...getPlanManagementToolHandlers(memoryManager),
         ...getKnowledgeGraphToolHandlers(memoryManager),

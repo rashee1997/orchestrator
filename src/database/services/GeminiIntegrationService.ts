@@ -623,4 +623,11 @@ export class GeminiIntegrationService {
             throw error;
         }
     }
+
+    /**
+     * Get access to GeminiDbUtils for code review storage operations
+     */
+    getGeminiDbUtils(): GeminiDbUtils {
+        return this.geminiDbUtils;
+    }
 }
