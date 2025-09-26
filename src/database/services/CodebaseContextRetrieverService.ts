@@ -3,7 +3,7 @@ import { CodebaseEmbeddingService } from './CodebaseEmbeddingService.js';
 import { IKnowledgeGraphManager } from '../factories/KnowledgeGraphFactory.js';
 import { GeminiIntegrationService } from './GeminiIntegrationService.js';
 import { PlanTaskManager } from '../managers/PlanTaskManager.js';
-import { parseGeminiJsonResponse, parseGeminiJsonResponseSync } from './gemini-integration-modules/GeminiResponseParsers.js';
+import { parseGeminiJsonResponseSync } from './gemini-integration-modules/GeminiResponseParsers.js';
 import { getCurrentModel } from './gemini-integration-modules/GeminiConfig.js';
 
 export interface ContextRetrievalOptions {
@@ -17,10 +17,6 @@ export interface ContextRetrievalOptions {
     useHybridSearch?: boolean;
     enableReranking?: boolean;
     maxContextLength?: number;
-    // taskType?: 'RETRIEVAL_QUERY' | 'RETRIEVAL_DOCUMENT' | 'CODE_RETRIEVAL_QUERY' | 'SEMANTIC_SIMILARITY' | 'CLASSIFICATION'; // COMMENTED OUT
-    // enableKeywordSearch?: boolean; // COMMENTED OUT
-    // keywordWeight?: number; // COMMENTED OUT
-    // enableBatchProcessing?: boolean; // COMMENTED OUT
 }
 
 export interface RetrievedCodeContext {
@@ -50,15 +46,15 @@ interface KGNode {
 type QueryIntent = 'find_example' | 'refactor_code' | 'debug_error' | 'add_feature' | 'understand_code' | 'general_query';
 
 export class CodebaseContextRetrieverService {
-    private memoryManager: MemoryManager;
-    private embeddingService: CodebaseEmbeddingService;
-    private kgManager: IKnowledgeGraphManager;
-    private geminiService: GeminiIntegrationService;
-    private planTaskManager: PlanTaskManager;
-    private contextCache: Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>;
-    private cacheTTL: number;
-    private maxCacheSize: number;
-    private retrievalTimeout: number;
+    private readonly memoryManager: MemoryManager;
+    private readonly embeddingService: CodebaseEmbeddingService;
+    private readonly kgManager: IKnowledgeGraphManager;
+    private readonly geminiService: GeminiIntegrationService;
+    private readonly planTaskManager: PlanTaskManager;
+    private readonly contextCache: Map<string, { timestamp: number; data: RetrievedCodeContext[]; }>;
+    private readonly cacheTTL: number;
+    private readonly maxCacheSize: number;
+    private readonly retrievalTimeout: number;
 
     constructor(memoryManager: MemoryManager) {
         this.memoryManager = memoryManager;
@@ -74,11 +70,12 @@ export class CodebaseContextRetrieverService {
 
     private _generateCacheKey(agentId: string, prompt: string, options: ContextRetrievalOptions): string {
         // Enhanced cache key to include all relevant options
+        const sortedPaths = options.targetFilePaths ? options.targetFilePaths.slice().toSorted((a, b) => a.localeCompare(b)) : undefined;
         const optionsStr = JSON.stringify({
             topKEmbeddings: options.topKEmbeddings,
             kgQueryDepth: options.kgQueryDepth,
             topKKgResults: options.topKKgResults,
-            targetFilePaths: options.targetFilePaths?.sort(),
+            targetFilePaths: sortedPaths,
             embeddingScoreThreshold: options.embeddingScoreThreshold,
             useHybridSearch: options.useHybridSearch,
             enableReranking: options.enableReranking
@@ -93,8 +90,8 @@ export class CodebaseContextRetrieverService {
     private _cleanupCache(): void {
         if (this.contextCache.size > this.maxCacheSize) {
             const entries = Array.from(this.contextCache.entries());
-            entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
-            const toRemove = entries.slice(0, Math.floor(this.maxCacheSize * 0.3));
+            const sortedEntries = entries.toSorted((a, b) => a[1].timestamp - b[1].timestamp);
+            const toRemove = sortedEntries.slice(0, Math.floor(this.maxCacheSize * 0.3));
             toRemove.forEach(([key]) => this.contextCache.delete(key));
             console.log(`[CodebaseContextRetriever] Cleaned up ${toRemove.length} expired cache entries`);
         }
@@ -140,12 +137,14 @@ export class CodebaseContextRetrieverService {
             const adaptiveTimeout = this._calculateAdaptiveTimeout(options);
             
             // Set up timeout for the entire retrieval process
-            const result = await Promise.race([
+        const result = await Promise.race([
                 this._performContextRetrieval(agentId, prompt, options),
                 new Promise<RetrievedCodeContext[]>((_, reject) =>
                     setTimeout(() => reject(new Error(`Context retrieval timeout after ${adaptiveTimeout}ms`)), adaptiveTimeout)
                 )
-            ]);
+            ]).catch((error) => {
+                throw error;
+            });
 
             // Cache the result
             this.contextCache.set(cacheKey, { timestamp: Date.now(), data: result });
@@ -203,54 +202,14 @@ export class CodebaseContextRetrieverService {
         prompt: string,
         options: ContextRetrievalOptions
     ): Promise<RetrievedCodeContext[]> {
-        const startTime = Date.now();
-        const adaptiveTimeout = this._calculateAdaptiveTimeout(options);
-        const remainingTime = () => adaptiveTimeout - (Date.now() - startTime);
-        
         // Step 1: Fast Mode Detection & Parallel Analysis (Performance Optimization)
-        let queryIntent: QueryIntent = 'general_query';
-        let keywords: string[] = [];
-        
-        // Always perform full AI analysis (removed fast mode logic)
-        console.log(`[Context Retrieval] Starting parallel analysis phase...`);
-        try {
-            // Parallelize independent API calls to save ~6 seconds
-            const [intentResult, keywordResult] = await Promise.allSettled([
-                this.classifyQueryIntent(prompt),
-                this.extractTechnicalTerms(agentId, prompt)
-            ]);
-
-            if (intentResult.status === 'fulfilled') {
-                queryIntent = intentResult.value;
-                console.log(`Query Intent Classified as: ${queryIntent}`);
-            } else {
-                console.warn('Failed to classify query intent, using default:', intentResult.reason);
-            }
-
-            if (keywordResult.status === 'fulfilled') {
-                keywords = keywordResult.value;
-                console.log(`[Dynamic Entity Extraction] Found ${keywords.length} relevant terms: ${keywords.slice(0, 5).join(', ')}`);
-            } else {
-                console.warn('Failed to extract keywords, using fallback:', keywordResult.reason);
-                keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
-            }
-        } catch (error) {
-            console.warn('Parallel analysis failed, proceeding with defaults:', error);
-            keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
-        }
+        const { queryIntent, keywords } = await this._performParallelAnalysis(agentId, prompt);
 
         // Step 1.5: Direct Entity Name Search
-        let directEntityResults: RetrievedCodeContext[] = [];
-        if (keywords.length > 0) {
-            try {
-                directEntityResults = await this.retrieveContextByEntityNames(agentId, keywords, options);
-            } catch (error) {
-                console.error('Error during direct entity name retrieval:', error);
-            }
-        }
+        const directEntityResults = await this._getDirectEntityResults(agentId, keywords, options);
 
         // Step 2: Intent-Driven Parallel Retrieval from Multiple Sources
-        const retrievalPromises = this.getRetrievalPromisesByIntent(queryIntent, agentId, prompt, keywords, options);
+        const retrievalPromises = this._getRetrievalPromises(queryIntent, agentId, prompt, keywords, options);
 
         let semanticResults: RetrievedCodeContext[] = [];
         let kgResults: RetrievedCodeContext[] = [];
@@ -259,16 +218,17 @@ export class CodebaseContextRetrieverService {
 
         try {
             [semanticResults, kgResults, docResults, taskLogResults] = await Promise.allSettled(retrievalPromises)
-                .then(results => results.map((result, index) => {
+                .then(results => results.map((result: PromiseSettledResult<RetrievedCodeContext[]>, index: number) => {
                     if (result.status === 'fulfilled') {
                         return result.value;
                     } else {
                         console.error(`Retrieval promise ${index} failed:`, result.reason);
-                        return [];
+                        throw result.reason;
                     }
                 })) as [RetrievedCodeContext[], RetrievedCodeContext[], RetrievedCodeContext[], RetrievedCodeContext[]];
         } catch (error) {
             console.error('Error during parallel retrieval:', error);
+            throw error;
         }
 
         // Step 3: Reciprocal Rank Fusion to combine results robustly
@@ -290,13 +250,7 @@ export class CodebaseContextRetrieverService {
         }
 
         // Step 5: Self-Correction: Identify and fill context gaps (always perform)
-        let gapFilledResults: RetrievedCodeContext[] = [];
-        try {
-            gapFilledResults = await this._identifyAndFillContextGaps(agentId, prompt, filteredResults, options);
-        } catch (error) {
-            console.error('Error during context gap filling:', error);
-            gapFilledResults = filteredResults;
-        }
+        const gapFilledResults = await this._identifyAndFillContextGaps(agentId, prompt, filteredResults, options);
 
         // Step 6: Proactive Context Expansion (always perform)
         let finalContext: RetrievedCodeContext[] = [];
@@ -347,13 +301,14 @@ export class CodebaseContextRetrieverService {
             }
         }
 
-        return Array.from(scores.entries())
+        const result = Array.from(scores.entries())
             .map(([key, score]) => {
                 const item = items.get(key)!;
                 item.relevanceScore = score;
                 return item;
             })
-            .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+            .sort((a: RetrievedCodeContext, b: RetrievedCodeContext) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+        return result;
     }
 
     private async classifyQueryIntent(prompt: string): Promise<QueryIntent> {
@@ -363,7 +318,7 @@ Respond with only the category name.`;
 
         try {
             const response = await this.geminiService.askGemini(intentPrompt, getCurrentModel());
-            const classification = response.content[0].text?.trim().toLowerCase() as QueryIntent;
+            const classification = response.content?.[0]?.text?.trim().toLowerCase() as QueryIntent;
 
             if (['find_example', 'refactor_code', 'debug_error', 'add_feature', 'understand_code'].includes(classification)) {
                 return classification;
@@ -375,7 +330,7 @@ Respond with only the category name.`;
         return 'general_query';
     }
 
-    private getRetrievalPromisesByIntent(
+    private _getRetrievalPromises(
         intent: QueryIntent,
         agentId: string,
         prompt: string,
@@ -424,14 +379,6 @@ Respond with only the category name.`;
         try {
             console.log(`[Semantic Search] Performing direct semantic search`);
 
-            // // Apply task-specific query enhancement - COMMENTED OUT FOR PERFORMANCE
-            // let enhancedPrompt = prompt;
-            // if (options.taskType === 'CODE_RETRIEVAL_QUERY') {
-            //     enhancedPrompt = `Find code implementations and definitions related to: ${prompt}`;
-            // } else if (options.taskType === 'SEMANTIC_SIMILARITY') {
-            //     enhancedPrompt = `Find semantically similar code patterns and concepts for: ${prompt}`;
-            // }
-
             const embeddingResults = await this.embeddingService.retrieveSimilarCodeChunks(
                 agentId,
                 prompt, // Use original prompt directly
@@ -440,22 +387,13 @@ Respond with only the category name.`;
             );
 
             const results: RetrievedCodeContext[] = embeddingResults.map(res => ({
-                type: (res.metadata?.type as any) || 'generic_code_chunk',
+                type: res.metadata?.type || 'generic_code_chunk',
                 sourcePath: res.file_path_relative,
                 entityName: res.entity_name || undefined,
                 content: res.chunk_text,
                 relevanceScore: res.score || 0.0,
                 metadata: res.metadata || {}
             }));
-
-            // // Apply hybrid search if enabled - COMMENTED OUT FOR SIMPLICITY
-            // if (options.useHybridSearch && options.enableKeywordSearch) {
-            //     console.log('[Enhanced Semantic Search] Applying hybrid keyword enhancement');
-            //     const keywordResults = await this.performEnhancedKeywordSearch(agentId, prompt, options);
-            //
-            //     // Combine and apply hybrid ranking
-            //     results = this.applyHybridRanking([results, keywordResults], options.keywordWeight || 0.7);
-            // }
 
             console.log(`[Semantic Search] Found ${results.length} results using direct search`);
             return results;
@@ -478,11 +416,11 @@ Respond with only the category name.`;
 
             let keywords: string[] = [];
             try {
-                const parsed = JSON.parse(keywordResult.content[0].text || '{}');
+                const parsed = JSON.parse(keywordResult.content?.[0]?.text || '{}');
                 keywords = parsed.keywords || [];
             } catch {
                 // Fallback keyword extraction
-                keywords = prompt.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g) || [];
+                keywords = prompt.match(/\b\w+\b/g) || [];
             }
 
             if (keywords.length === 0) return [];
@@ -505,7 +443,7 @@ Respond with only the category name.`;
             keywordResults.forEach((result, index) => {
                 if (result.status === 'fulfilled') {
                     const contexts = result.value.map(res => ({
-                        type: (res.metadata?.type as any) || 'generic_code_chunk',
+                        type: res.metadata?.type || 'generic_code_chunk',
                         sourcePath: res.file_path_relative,
                         entityName: res.entity_name || undefined,
                         content: res.chunk_text,
@@ -513,8 +451,7 @@ Respond with only the category name.`;
                         metadata: {
                             ...res.metadata,
                             searchType: 'keyword',
-                            searchKeyword: keywords[index],
-                            // taskType removed for simplification
+                            searchKeyword: keywords[index]
                         }
                     }));
                     allKeywordContexts.push(...contexts);
@@ -524,7 +461,7 @@ Respond with only the category name.`;
             return allKeywordContexts;
         } catch (error) {
             console.error('[Enhanced Keyword Search] Error:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -565,7 +502,9 @@ Respond with only the category name.`;
             const kgQueryResults = JSON.parse(rawKgResults);
 
             if (kgQueryResults && kgQueryResults.results && Array.isArray(kgQueryResults.results)) {
-                return kgQueryResults.results.slice(0, topK).map((node: any, index: number) => ({
+                const slicedResults = kgQueryResults.results.slice(0, topK);
+                const sortedResults = slicedResults.slice().toSorted((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+                return sortedResults.map((node: KGNode, index: number) => ({
                     type: 'kg_node_info',
                     sourcePath: node.name,
                     entityName: node.entityType !== 'file' ? node.name : undefined,
@@ -574,9 +513,10 @@ Respond with only the category name.`;
                     metadata: { kgNodeType: node.entityType }
                 }));
             }
-        } catch (error) {
-            console.error("Error during KG search:", error);
-        }
+            } catch (error) {
+                console.error("Error during KG search:", error);
+                throw error;
+            }
 
         return [];
     }
@@ -607,58 +547,17 @@ Respond with only the category name.`;
 
         const issues: string[] = [];
         const validContexts: RetrievedCodeContext[] = [];
-        
+
         // Extract key technical terms from the query
         const queryTerms = await this.extractTechnicalTerms('default-agent', prompt);
-        const lowercasePrompt = prompt.toLowerCase();
 
         // Relevance scoring
         let totalRelevanceScore = 0;
         let relevantContextCount = 0;
 
         for (const context of contexts) {
-            const contentLower = context.content.toLowerCase();
-            let contextRelevanceScore = 0;
+            const contextRelevanceScore = this.calculateContextRelevanceScore(context, queryTerms, prompt);
 
-            // 1. Direct term matching with source vs reference distinction
-            const directMatches = queryTerms.filter(term =>
-                contentLower.includes(term.toLowerCase()) ||
-                context.sourcePath.toLowerCase().includes(term.toLowerCase())
-            );
-
-            // CRITICAL FIX: Distinguish between source content and mere mentions
-            const isSourceContent = this.isSourceContent(context, queryTerms);
-            const isMereReference = this.isMereReference(context, queryTerms);
-
-            if (isSourceContent) {
-                // High score for actual implementation/definition
-                contextRelevanceScore += directMatches.length * 0.6;
-            } else if (isMereReference) {
-                // Heavily penalize mere mentions/references
-                contextRelevanceScore += directMatches.length * 0.1;
-            } else {
-                // Normal scoring for other matches
-                contextRelevanceScore += directMatches.length * 0.4;
-            }
-            
-            // 2. Semantic relevance through path analysis
-            if (context.sourcePath && this.isPathRelevantToQuery(context.sourcePath, prompt)) {
-                contextRelevanceScore += 0.3;
-            }
-            
-            // 3. Entity name relevance
-            if (context.entityName && queryTerms.some(term => 
-                context.entityName!.toLowerCase().includes(term.toLowerCase())
-            )) {
-                contextRelevanceScore += 0.3;
-            }
-            
-            // 4. Content depth and quality
-            if (context.content.length > 100 && context.content.includes('function') || 
-                context.content.includes('class') || context.content.includes('interface')) {
-                contextRelevanceScore += 0.2;
-            }
-            
             // Consider context relevant if it meets minimum threshold
             if (contextRelevanceScore >= 0.5) {
                 validContexts.push(context);
@@ -666,31 +565,77 @@ Respond with only the category name.`;
                 relevantContextCount++;
             }
         }
-        
+
         // Calculate overall relevance
         const averageRelevance = relevantContextCount > 0 ? totalRelevanceScore / relevantContextCount : 0;
         const coverageRatio = relevantContextCount / contexts.length;
         const finalScore = (averageRelevance * 0.7) + (coverageRatio * 0.3);
-        
+
         // Validation checks
         if (validContexts.length === 0) {
             issues.push('No contextually relevant content found for the query');
         }
-        
+
         if (finalScore < 0.4) {
             issues.push('Retrieved context has low relevance to the query');
         }
-        
+
         if (coverageRatio < 0.3) {
             issues.push('Most retrieved contexts are not relevant to the query');
         }
-        
+
         return {
             isRelevant: finalScore >= 0.4 && validContexts.length > 0,
             score: finalScore,
             validContexts,
             issues
         };
+    }
+
+    private calculateContextRelevanceScore(context: RetrievedCodeContext, queryTerms: string[], prompt: string): number {
+        const contentLower = context.content.toLowerCase();
+        let score = 0;
+
+        // 1. Direct term matching with source vs reference distinction
+        const directMatches = queryTerms.filter(term =>
+            contentLower.includes(term.toLowerCase()) ||
+            context.sourcePath.toLowerCase().includes(term.toLowerCase())
+        );
+
+        // CRITICAL FIX: Distinguish between source content and mere mentions
+        const isSourceContent = this.isSourceContent(context, queryTerms);
+        const isMereReference = this.isMereReference(context, queryTerms);
+
+        if (isSourceContent) {
+            // High score for actual implementation/definition
+            score += directMatches.length * 0.6;
+        } else if (isMereReference) {
+            // Heavily penalize mere mentions/references
+            score += directMatches.length * 0.1;
+        } else {
+            // Normal scoring for other matches
+            score += directMatches.length * 0.4;
+        }
+
+        // 2. Semantic relevance through path analysis
+        if (context.sourcePath && this.isPathRelevantToQuery(context.sourcePath, prompt)) {
+            score += 0.3;
+        }
+
+        // 3. Entity name relevance
+        if (context.entityName && queryTerms.some(term =>
+            context.entityName!.toLowerCase().includes(term.toLowerCase())
+        )) {
+            score += 0.3;
+        }
+
+        // 4. Content depth and quality
+        if (context.content.length > 100 && (context.content.includes('function') ||
+            context.content.includes('class') || context.content.includes('interface'))) {
+            score += 0.2;
+        }
+
+        return score;
     }
     
     private async extractTechnicalTerms(agentId: string, prompt: string): Promise<string[]> {
@@ -772,23 +717,18 @@ Respond with only the category name.`;
             // Query knowledge graph for entities containing these words
             const matchingEntities: string[] = [];
             for (const word of queryWords) {
-                try {
-                    const nodes = await this.kgManager.openNodes(agentId, [word]);
-                    nodes.forEach((node: any) => {
-                        if (node.name && node.name.length > 1) {
-                            matchingEntities.push(node.name);
-                        }
-                    });
-                } catch (error) {
-                    // Continue with other words if one fails
-                    console.debug(`Failed to query KG for word: ${word}`);
-                }
+                const nodes = await this.kgManager.openNodes(agentId, [word]);
+                nodes.forEach((node: any) => {
+                    if (node.name?.length > 1) {
+                        matchingEntities.push(node.name);
+                    }
+                });
             }
 
             return [...new Set(matchingEntities)];
         } catch (error) {
             console.warn('[Partial Entity Match] Error:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -828,7 +768,7 @@ Respond with only the category name.`;
             return [...new Set(entityNames)];
         } catch (error) {
             console.warn('[Relevant File Names] Error:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -863,7 +803,7 @@ Respond with only the category name.`;
             return matches.slice(0, 20); // Limit to prevent too many matches
         } catch (error) {
             console.warn('[Fuzzy Entity Match] Error:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -875,7 +815,7 @@ Respond with only the category name.`;
             return await this.embeddingService.repository.getAllEntityNames(agentId);
         } catch (error) {
             console.warn('[Get Available Entities] Error:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -944,11 +884,10 @@ Respond with only the category name.`;
     }
     
     private isPathRelevantToQuery(path: string, prompt: string): boolean {
-        const pathLower = path.toLowerCase();
         const promptLower = prompt.toLowerCase();
 
         // Extract meaningful parts from path
-        const pathParts = path.split(/[\/\\.]/).filter(part => part.length > 2);
+        const pathParts = path.split(/[/\\.]/).filter(part => part.length > 2);
 
         // Check if any path part is mentioned in the query
         return pathParts.some(part => promptLower.includes(part.toLowerCase()));
@@ -1012,35 +951,67 @@ Respond with only the category name.`;
     private async filterWithAI(prompt: string, contexts: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
         if (contexts.length === 0) return [];
 
-        // First, validate context relevance
+        const { validContexts } = await this.performRelevanceValidation(prompt, contexts);
+        contexts = validContexts;
+
+        const targetPaths = options.targetFilePaths || [];
+        const isCodeExplanationQuery = /\b(how does|how is|explain|understand|work|implement|integrate)\b/i.test(prompt);
+
+        const filterPrompt = this.buildFilterPrompt(prompt, contexts, targetPaths, isCodeExplanationQuery);
+
+        try {
+            const response = await this.geminiService.askGemini(filterPrompt, getCurrentModel());
+            const parsedResponse = parseGeminiJsonResponseSync(response.content?.[0]?.text ?? '');
+
+            if (!parsedResponse || !Array.isArray(parsedResponse.relevant_indices)) {
+                console.warn("[CodebaseContextRetrieverService] AI filtering returned malformed response. Returning top results instead.");
+                return contexts.slice(0, (options.topKEmbeddings ?? 10));
+            }
+
+            const relevantIndices: number[] = parsedResponse.relevant_indices;
+            let filtered = contexts.filter((_, idx) => relevantIndices.includes(idx));
+
+            filtered = this.applySafeguards(filtered, contexts, targetPaths, isCodeExplanationQuery, relevantIndices);
+
+            return filtered;
+        } catch (e) {
+            console.error("Error filtering with AI:", e);
+            return contexts.slice(0, (options.topKEmbeddings ?? 10));
+        }
+    }
+
+    private async performRelevanceValidation(prompt: string, contexts: RetrievedCodeContext[]): Promise<{ validation: any; validContexts: RetrievedCodeContext[] }> {
         const relevanceValidation = await this.validateContextRelevance(prompt, contexts);
-        
+
         if (!relevanceValidation.isRelevant) {
-            console.warn(`[CodebaseContextRetrieverService] Context relevance validation failed: ${relevanceValidation.issues.join(', ')}`); 
+            console.warn(`[CodebaseContextRetrieverService] Context relevance validation failed: ${relevanceValidation.issues.join(', ')}`);
             console.warn(`[CodebaseContextRetrieverService] Relevance score: ${relevanceValidation.score.toFixed(3)}, Valid contexts: ${relevanceValidation.validContexts.length}/${contexts.length}`);
-            
-            // Return only the valid contexts if any, otherwise use a fallback
+
             if (relevanceValidation.validContexts.length > 0) {
-                contexts = relevanceValidation.validContexts;
+                return { validation: relevanceValidation, validContexts: relevanceValidation.validContexts };
             } else {
-                // Fallback: return top contexts based on relevance scores
-                return contexts.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0)).slice(0, 3);
+                const sortedContexts = [...contexts].sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+                return { validation: relevanceValidation, validContexts: sortedContexts.slice(0, 3) };
             }
         } else {
             console.log(`[CodebaseContextRetrieverService] Context relevance validation passed: score=${relevanceValidation.score.toFixed(3)}, valid=${relevanceValidation.validContexts.length}/${contexts.length}`);
+            return { validation: relevanceValidation, validContexts: contexts };
         }
+    }
 
-        const targetPaths = options.targetFilePaths || [];
-
-        // Detect if this is a code explanation/understanding query
-        const isCodeExplanationQuery = /\b(how does|how is|explain|understand|work|implement|integrate)\b/i.test(prompt);
+    private buildFilterPrompt(prompt: string, contexts: RetrievedCodeContext[], targetPaths: string[], isCodeExplanationQuery: boolean): string {
         const expectedRetentionRate = isCodeExplanationQuery ? "80-95%" : "60-80%";
+        const queryType = isCodeExplanationQuery ? 'CODE EXPLANATION - Be inclusive of related code' : 'GENERAL QUERY - Be selective';
+        const relevanceText = isCodeExplanationQuery ? 'Medium relevance (include for context)' : 'Low relevance';
+        const specialInstruction = isCodeExplanationQuery ?
+            '**SPECIAL INSTRUCTION FOR CODE EXPLANATION:** When explaining how code works, include ALL relevant code chunks that show different aspects, methods, properties, and usage patterns. Be inclusive rather than selective.' :
+            '**STANDARD FILTERING:** Focus on the most directly relevant contexts.';
 
         let filterPrompt = `You are an expert code analyst specializing in context relevance assessment for RAG systems. Your task is to identify the most relevant code contexts for a given query with high precision.
 
 **QUERY:** "${prompt}"
 
-**QUERY TYPE:** ${isCodeExplanationQuery ? 'CODE EXPLANATION - Be inclusive of related code' : 'GENERAL QUERY - Be selective'}
+**QUERY TYPE:** ${queryType}
 
 **ANALYSIS INSTRUCTIONS:**
 1. **Primary Relevance**: Look for contexts that directly contain, implement, or define what the user is asking about
@@ -1052,12 +1023,10 @@ Respond with only the category name.`;
 - Direct match (class/function name appears): High relevance
 - Implementation details of requested functionality: High relevance
 - Usage examples or integrations: Medium-high relevance
-- Related but not directly applicable: ${isCodeExplanationQuery ? 'Medium relevance (include for context)' : 'Low relevance'}
+- Related but not directly applicable: ${relevanceText}
 - Unrelated or generic code: Exclude
 
-${isCodeExplanationQuery ?
-'**SPECIAL INSTRUCTION FOR CODE EXPLANATION:** When explaining how code works, include ALL relevant code chunks that show different aspects, methods, properties, and usage patterns. Be inclusive rather than selective.' :
-'**STANDARD FILTERING:** Focus on the most directly relevant contexts.'}
+${specialInstruction}
 
 Return a JSON object with a single key "relevant_indices" containing an array of the indices of the most relevant items (typically ${expectedRetentionRate} of provided contexts).
 Example: {"relevant_indices": [0, 2, 5, 7, 9]}
@@ -1067,49 +1036,33 @@ ONLY respond with the JSON object, nothing else.`;
             filterPrompt += `\n\n**Special Instruction:** Prioritize items from the following target file paths: ${targetPaths.join(', ')}. Ensure that relevant content from these paths is included if it directly addresses the prompt.`;
         }
 
-        filterPrompt += `\n\nContext Items:\n${contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 150)}...`).join('\n')}`;
+        const contextItems = contexts.map((ctx, idx) => `Item ${idx}: [${ctx.type}] ${ctx.sourcePath} - ${ctx.content.substring(0, 150)}...`).join('\n');
+        filterPrompt += `\n\nContext Items:\n${contextItems}`;
 
-        try {
-            const response = await this.geminiService.askGemini(filterPrompt, getCurrentModel());
-            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
+        return filterPrompt;
+    }
 
-            if (!parsedResponse || !Array.isArray(parsedResponse.relevant_indices)) {
-                console.warn("[CodebaseContextRetrieverService] AI filtering returned malformed response. Returning top results instead.");
-                return contexts.slice(0, (options.topKEmbeddings ?? 10));
-            }
-
-            const relevantIndices: number[] = parsedResponse.relevant_indices;
-            let filtered = contexts.filter((_, idx) => relevantIndices.includes(idx));
-
-            // Safeguard: For code explanation queries, ensure we don't filter too aggressively
-            const minExpectedItems = isCodeExplanationQuery ? Math.ceil(contexts.length * 0.7) : Math.ceil(contexts.length * 0.5);
-            if (filtered.length < minExpectedItems) {
-                console.warn(`[CodebaseContextRetrieverService] AI filtering returned only ${filtered.length}/${contexts.length} items (expected at least ${minExpectedItems}). Adding more relevant contexts.`);
-                // Add the top-scored contexts that weren't included
-                const remainingContexts = contexts.filter((_, idx) => !relevantIndices.includes(idx));
-                const additionalNeeded = minExpectedItems - filtered.length;
-                filtered = [...filtered, ...remainingContexts.slice(0, additionalNeeded)];
-            }
-
-            // Resilience check: If user specified target files and AI filtered them all out, add them back in.
-            if (targetPaths.length > 0) {
-                const targetedContexts = contexts.filter(ctx => targetPaths.includes(ctx.sourcePath));
-                const filteredTargeted = filtered.filter(ctx => targetPaths.includes(ctx.sourcePath));
-
-                if (targetedContexts.length > 0 && filteredTargeted.length === 0) {
-                    console.warn(`[CodebaseContextRetrieverService] AI filtered out all targeted contexts. Re-including them.`);
-                    filtered = [...filtered, ...targetedContexts];
-                    // Re-deduplicate
-                    filtered = Array.from(new Map(filtered.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
-                }
-            }
-
-            return filtered;
-        } catch (e) {
-            console.error("Error filtering with AI:", e);
-            // Fallback to returning a slice of the original contexts
-            return contexts.slice(0, (options.topKEmbeddings ?? 10));
+    private applySafeguards(filtered: RetrievedCodeContext[], contexts: RetrievedCodeContext[], targetPaths: string[], isCodeExplanationQuery: boolean, relevantIndices: number[]): RetrievedCodeContext[] {
+        const minExpectedItems = isCodeExplanationQuery ? Math.ceil(contexts.length * 0.7) : Math.ceil(contexts.length * 0.5);
+        if (filtered.length < minExpectedItems) {
+            console.warn(`[CodebaseContextRetrieverService] AI filtering returned only ${filtered.length}/${contexts.length} items (expected at least ${minExpectedItems}). Adding more relevant contexts.`);
+            const remainingContexts = contexts.filter((_, idx) => !relevantIndices.includes(idx));
+            const additionalNeeded = minExpectedItems - filtered.length;
+            filtered = [...filtered, ...remainingContexts.slice(0, additionalNeeded)];
         }
+
+        if (targetPaths.length > 0) {
+            const targetedContexts = contexts.filter(ctx => targetPaths.includes(ctx.sourcePath));
+            const filteredTargeted = filtered.filter(ctx => targetPaths.includes(ctx.sourcePath));
+
+            if (targetedContexts.length > 0 && filteredTargeted.length === 0) {
+                console.warn(`[CodebaseContextRetrieverService] AI filtered out all targeted contexts. Re-including them.`);
+                filtered = [...filtered, ...targetedContexts];
+                filtered = Array.from(new Map(filtered.map(item => [`${item.sourcePath}#${item.content.substring(0, 100)}`, item])).values());
+            }
+        }
+
+        return filtered;
     }
 
     private async _identifyAndFillContextGaps(agentId: string, prompt: string, currentContext: RetrievedCodeContext[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
@@ -1133,7 +1086,7 @@ ONLY respond with the JSON object.`;
 
         try {
             const response = await this.geminiService.askGemini(gapAnalysisPrompt, getCurrentModel());
-            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
+            const parsedResponse = parseGeminiJsonResponseSync(response.content?.[0]?.text ?? '');
 
             if (!parsedResponse || !Array.isArray(parsedResponse.missing_entities) || parsedResponse.missing_entities.length === 0) {
                 console.log("[Context Self-Correction] No context gaps identified.");
@@ -1154,6 +1107,7 @@ ONLY respond with the JSON object.`;
 
         } catch (e) {
             console.error("Error during context self-correction:", e);
+            throw e;
         }
 
         return currentContext;
@@ -1171,9 +1125,9 @@ ONLY respond with the JSON object.`;
 
         try {
             const response = await this.geminiService.askGemini(expansionPrompt, getCurrentModel());
-            const parsedResponse = parseGeminiJsonResponseSync(response.content[0].text ?? '');
+            const parsedResponse = parseGeminiJsonResponseSync(response.content?.[0]?.text ?? '');
 
-            if (parsedResponse && Array.isArray(parsedResponse.suggested_entities) && parsedResponse.suggested_entities.length > 0) {
+            if (parsedResponse?.suggested_entities?.length > 0) {
                 const suggestions: string[] = parsedResponse.suggested_entities;
                 console.log("Proactive expansion suggestions:", suggestions);
                 const expansionResults = await this.retrieveContextByEntityNames(agentId, suggestions, options);
@@ -1183,6 +1137,7 @@ ONLY respond with the JSON object.`;
             }
         } catch (e) {
             console.error("Error in proactive context expansion:", e);
+            throw e;
         }
 
         return currentContext;
@@ -1208,7 +1163,7 @@ ONLY respond with the JSON object.`;
             }));
         } catch (error) {
             console.error("Error retrieving context by entity names:", error);
-            return [];
+            throw error;
         }
     }
 
@@ -1220,7 +1175,7 @@ Prompt: "${prompt}"`;
 
         try {
             const result = await this.geminiService.askGemini(extractionPrompt, getCurrentModel());
-            const parsedResponse = parseGeminiJsonResponseSync(result.content[0].text ?? '');
+            const parsedResponse = parseGeminiJsonResponseSync(result.content?.[0]?.text ?? '');
 
             if (parsedResponse && Array.isArray(parsedResponse.entities)) {
                 return parsedResponse.entities;
@@ -1231,8 +1186,54 @@ Prompt: "${prompt}"`;
 
         } catch (error) {
             console.error("Error extracting keywords with Gemini:", error);
+            throw error;
+        }
+    }
+
+    private async _performParallelAnalysis(agentId: string, prompt: string): Promise<{ queryIntent: QueryIntent; keywords: string[] }> {
+        let queryIntent: QueryIntent = 'general_query';
+        let keywords: string[] = [];
+
+        // Always perform full AI analysis (removed fast mode logic)
+        console.log(`[Context Retrieval] Starting parallel analysis phase...`);
+        try {
+            // Parallelize independent API calls to save ~6 seconds
+            const [intentResult, keywordResult] = await Promise.allSettled([
+                this.classifyQueryIntent(prompt),
+                this.extractTechnicalTerms(agentId, prompt)
+            ]);
+
+            if (intentResult.status === 'fulfilled') {
+                queryIntent = intentResult.value;
+                console.log(`Query Intent Classified as: ${queryIntent}`);
+            } else {
+                console.warn('Failed to classify query intent, using default:', intentResult.reason);
+            }
+
+            if (keywordResult.status === 'fulfilled') {
+                keywords = keywordResult.value;
+                console.log(`[Dynamic Entity Extraction] Found ${keywords.length} relevant terms: ${keywords.slice(0, 5).join(', ')}`);
+            } else {
+                console.warn('Failed to extract keywords, using fallback:', keywordResult.reason);
+                keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
+            }
+        } catch (error) {
+            console.warn('Parallel analysis failed, proceeding with defaults:', error);
+            keywords = prompt.split(/\s+/).filter((w: string) => w.length > 3);
         }
 
-        return prompt.split(/\s+/).filter((w: string) => w.length > 3 && /\w/.test(w));
+        return { queryIntent, keywords };
+    }
+
+    private async _getDirectEntityResults(agentId: string, keywords: string[], options: ContextRetrievalOptions): Promise<RetrievedCodeContext[]> {
+        if (keywords.length > 0) {
+            try {
+                return await this.retrieveContextByEntityNames(agentId, keywords, options);
+            } catch (error) {
+                console.error('Error during direct entity name retrieval:', error);
+                return [];
+            }
+        }
+        return [];
     }
 }

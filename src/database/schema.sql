@@ -292,12 +292,11 @@ WITH
         SELECT STRFTIME('%s', 'now') * 1000 AS creation_timestamp_unix,
                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') AS creation_timestamp_iso
     )
-INSERT INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
+INSERT OR IGNORE INTO agents (agent_id, name, description, creation_timestamp_unix, creation_timestamp_iso)
 SELECT d.agent_id,
        d.name,
        d.description,
        t.creation_timestamp_unix,
        t.creation_timestamp_iso
 FROM default_agents d
-CROSS JOIN timestamp_defaults t
-ON CONFLICT(agent_id) DO NOTHING;
+CROSS JOIN timestamp_defaults t;

@@ -3,10 +3,10 @@ import { CodebaseEmbeddingRecord } from '../../types/codebase_embeddings.js';
 import { executeWithRetry } from './CodebaseEmbeddingRepository.helpers.retry.js';
 
 export class CodebaseEmbeddingReadRepository {
-  private db: Database;
-  private metadataTable = 'codebase_embeddings';
-  private maxRetries = 3;
-  private retryDelay = 1000;
+  private readonly db: Database;
+  private readonly metadataTable = 'codebase_embeddings';
+  private readonly maxRetries = 3;
+  private readonly retryDelay = 1000;
 
   constructor(db: Database) {
     this.db = db;

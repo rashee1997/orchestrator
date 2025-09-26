@@ -304,9 +304,10 @@ export async function getAuthStatus(): Promise<AuthStatus> {
     const hasApiKeys = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
     const hasOAuth = await checkOAuthAvailability();
     const hasClaudeCode = await checkClaudeCodeAvailability();
-
-    let preferredAuth: AuthMethod = 'api_key';
+    
+    let preferredAuth: AuthMethod;
     if (hasClaudeCode) preferredAuth = 'subscription';
+
     else if (hasOAuth) preferredAuth = 'oauth';
     else if (hasApiKeys) preferredAuth = 'api_key';
     else preferredAuth = 'hybrid';
@@ -421,29 +422,45 @@ export function isValidShortName(modelName: string): boolean {
 /**
  * Get current model synchronously (for backward compatibility)
  */
-export function getCurrentModel(useFallback: boolean = false): string {
-    return useFallback ? GEMINI_MODEL_CONFIG.fallbackModel : GEMINI_MODEL_CONFIG.defaultModel;
+export function getCurrentModel(): string {
+    return GEMINI_MODEL_CONFIG.defaultModel;
+}
+
+export function getFallbackModel(): string {
+    return GEMINI_MODEL_CONFIG.fallbackModel;
 }
 
 /**
  * Get current model with OAuth awareness (async version)
  */
-export async function getCurrentModelAsync(useFallback: boolean = false): Promise<string> {
+export async function getCurrentModelAsync(): Promise<string> {
     const authStatus = await getAuthStatus();
 
-    if (!useFallback && authStatus.hasOAuth && supportsOAuth(GEMINI_MODEL_CONFIG.defaultModel)) {
+    if (authStatus.hasOAuth && supportsOAuth(GEMINI_MODEL_CONFIG.defaultModel)) {
         return GEMINI_MODEL_CONFIG.defaultModel; // Use OAuth model
     }
 
-    return useFallback ? GEMINI_MODEL_CONFIG.fallbackModel : GEMINI_MODEL_CONFIG.defaultModel;
+    return GEMINI_MODEL_CONFIG.defaultModel;
 }
 
-export const getCurrentEmbeddingModel = (useFallback: boolean = false): string => {
-    return useFallback ? GEMINI_MODEL_CONFIG.fallbackEmbeddingModel : GEMINI_MODEL_CONFIG.embeddingModel;
+export async function getFallbackModelAsync(): Promise<string> {
+    return GEMINI_MODEL_CONFIG.fallbackModel;
+}
+
+export const getCurrentEmbeddingModel = (): string => {
+    return GEMINI_MODEL_CONFIG.embeddingModel;
 };
 
-export const getCurrentEmbeddingDimensions = (useFallback: boolean = false): number => {
-    return useFallback ? GEMINI_MODEL_CONFIG.fallbackEmbeddingDimensions : GEMINI_MODEL_CONFIG.embeddingDimensions;
+export const getFallbackEmbeddingModel = (): string => {
+    return GEMINI_MODEL_CONFIG.fallbackEmbeddingModel;
+};
+
+export const getCurrentEmbeddingDimensions = (): number => {
+    return GEMINI_MODEL_CONFIG.embeddingDimensions;
+};
+
+export const getFallbackEmbeddingDimensions = (): number => {
+    return GEMINI_MODEL_CONFIG.fallbackEmbeddingDimensions;
 };
 
 export const shouldRetryWithFallback = (error: any): boolean => {

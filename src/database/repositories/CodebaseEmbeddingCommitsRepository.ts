@@ -1,7 +1,7 @@
 import { Database } from 'better-sqlite3';
 
 export class CodebaseEmbeddingCommitsRepository {
-  private db: Database;
+  private readonly db: Database;
 
   constructor(db: Database) {
     this.db = db;

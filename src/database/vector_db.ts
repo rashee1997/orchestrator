@@ -2,7 +2,7 @@ import * as fs from 'fs';
 
 // src/database/vector_db.ts
 import Database from 'better-sqlite3';
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import * as os from 'os';
@@ -87,138 +87,147 @@ export async function initializeVectorStoreDatabase(): Promise<Database> {
         return initializationPromise;
     }
 
-    initializationPromise = (async () => {
-        let db: Database | undefined;
-        let needsInitialization = false;
-
-        try {
-            // Check if database file exists
-            const dbExists = existsSync(VECTOR_DB_PATH);
-
-            db = new Database(VECTOR_DB_PATH, {
-                fileMustExist: false,
-                timeout: 30000,
-                verbose: process.env.NODE_ENV === 'development' ? console.log : undefined
-            });
-
-            console.log(`[vector_db] Vector store database ${dbExists ? 'opened' : 'created'} successfully at: ${VECTOR_DB_PATH}`);
-
-            // Enable WAL mode for better concurrency
+        initializationPromise = (async () => {
+            let db: Database | undefined;
+            let needsInitialization = false;
+    
             try {
-                db.pragma('journal_mode = WAL');
-                console.log('[vector_db] WAL mode enabled.');
-            } catch (walError) {
-                console.error('[vector_db] Failed to enable WAL mode:', walError);
-            }
-
-            // Set other performance pragmas
-            try {
-                db.pragma('synchronous = NORMAL');
-                db.pragma('cache_size = -10000'); // 10MB cache
-                db.pragma('temp_store = MEMORY');
-                db.pragma('mmap_size = 268435456'); // 256MB mmap
-                console.log('[vector_db] Performance pragmas set.');
-            } catch (pragmaError) {
-                console.error('[vector_db] Failed to set performance pragmas:', pragmaError);
-            }
-
-            // Load extension with retry logic
-            let extensionLoaded = false;
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    console.log(`[vector_db] Attempt ${attempt} to load vec extension...`);
-                    db.loadExtension(SQLITE_VEC_EXTENSION_PATH);
-                    extensionLoaded = true;
-                    console.log(`[vector_db] Successfully loaded vec extension from ${SQLITE_VEC_EXTENSION_PATH}`);
-                    break;
-                } catch (extError: any) {
-                    console.error(`[vector_db] Attempt ${attempt} failed to load vec extension:`, extError.message);
-                    if (attempt < 3) {
-                        console.log(`[vector_db] Waiting 1 second before retry...`);
-                        await new Promise(resolve => setTimeout(resolve, 1000));
+                const dbExists = existsSync(VECTOR_DB_PATH);
+    
+                db = new Database(VECTOR_DB_PATH, {
+                    fileMustExist: false,
+                    timeout: 30000,
+                    verbose: process.env.NODE_ENV === 'development' ? console.log : undefined
+                });
+    
+                console.log(`[vector_db] Vector store database ${dbExists ? 'opened' : 'created'} successfully at: ${VECTOR_DB_PATH}`);
+    
+                setupWalAndPragmas(db);
+                await loadVecExtensionWithRetry(db, SQLITE_VEC_EXTENSION_PATH);
+    
+                needsInitialization = checkTableInitialization(db);
+    
+                if (needsInitialization) {
+                    await initializeSchema(db, dbExists);
+                }
+    
+                await createVecVirtualTable(db);
+    
+                await verifyDatabaseIntegrity(db);
+    
+                vectorDbInstance = db;
+                console.log('[vector_db] Vector store database initialization complete.');
+                return db;
+    
+            } catch (error) {
+                console.error('[vector_db] CRITICAL: Error during initialization:', error);
+    
+                if (db) {
+                    try {
+                        db.close();
+                    } catch (closeError) {
+                        console.error('[vector_db] Error closing DB after initialization failure:', closeError);
                     }
                 }
+    
+                await restoreFromBackup();
+    
+                throw error;
             }
-
-            if (!extensionLoaded) {
-                throw new Error('Failed to load sqlite-vec extension after 3 attempts');
-            }
-
-            // Check if tables exist
-            try {
-                const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='codebase_embeddings'").get();
-                if (!tableInfo) {
-                    needsInitialization = true;
-                }
-            } catch (error) {
-                console.error('[vector_db] Error checking table existence:', error);
-                needsInitialization = true;
-            }
-
-            if (needsInitialization) {
-                console.log(`[vector_db] Reading vector store schema from: ${VECTOR_SCHEMA_PATH}`);
-                const schema = readFileSync(VECTOR_SCHEMA_PATH, 'utf-8');
-
-                // Create backup before schema changes
-                if (dbExists) {
-                    await createBackup(db);
-                }
-
-                console.log('[vector_db] Applying vector store database schema...');
-                db.exec(schema);
-                console.log('[vector_db] Vector store database schema applied successfully.');
-            }
-
-            // Create vec virtual table if not exists with dynamic dimensions
-            try {
-                const vectorDimensions = getCurrentEmbeddingDimensions();
-                console.log(`[vector_db] Creating vec virtual table with ${vectorDimensions} dimensions...`);
-                
-                db.exec(`
-                    CREATE VIRTUAL TABLE IF NOT EXISTS codebase_embeddings_vec_idx USING vec0(
-                        embedding_id TEXT,
-                        embedding float[${vectorDimensions}]
-                    );
-                `);
-                console.log(`[vector_db] vec virtual table created or already exists with ${vectorDimensions} dimensions.`);
-            } catch (vssError) {
-                console.error('[vector_db] Error creating vec virtual table:', vssError);
-                throw vssError;
-            }
-
-            // Verify database integrity
-            try {
-                const integrityCheck = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
-                if (integrityCheck.integrity_check !== 'ok') {
-                    console.warn('[vector_db] Database integrity check failed:', integrityCheck.integrity_check);
-                    // Attempt to recover
-                    await recoverDatabase(db);
-                }
-            } catch (integrityError) {
-                console.error('[vector_db] Error during integrity check:', integrityError);
-            }
-
-            vectorDbInstance = db;
-            console.log('[vector_db] Vector store database initialization complete.');
-            return db;
-
-        } catch (error) {
-            console.error('[vector_db] CRITICAL: Error during initialization:', error);
-
-            if (db) {
-                try {
-                    db.close();
-                } catch (closeError) {
-                    console.error('[vector_db] Error closing DB after initialization failure:', closeError);
-                }
-            }
-
-            // Attempt to restore from backup
-            await restoreFromBackup();
-
-            throw error;
+        })();
+    
+    function setupWalAndPragmas(db: Database): void {
+        try {
+            db.pragma('journal_mode = WAL');
+            console.log('[vector_db] WAL mode enabled.');
+        } catch (walError) {
+            console.error('[vector_db] Failed to enable WAL mode:', walError);
         }
-    })();
+    
+        try {
+            db.pragma('synchronous = NORMAL');
+            db.pragma('cache_size = -10000');
+            db.pragma('temp_store = MEMORY');
+            db.pragma('mmap_size = 268435456');
+            console.log('[vector_db] Performance pragmas set.');
+        } catch (pragmaError) {
+            console.error('[vector_db] Failed to set performance pragmas:', pragmaError);
+        }
+    }
+    
+    async function loadVecExtensionWithRetry(db: Database, extensionPath: string): Promise<void> {
+        let extensionLoaded = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                console.log(`[vector_db] Attempt ${attempt} to load vec extension...`);
+                db.loadExtension(extensionPath);
+                extensionLoaded = true;
+                console.log(`[vector_db] Successfully loaded vec extension from ${extensionPath}`);
+                break;
+            } catch (extError: any) {
+                console.error(`[vector_db] Attempt ${attempt} failed to load vec extension:`, extError.message);
+                if (attempt < 3) {
+                    console.log(`[vector_db] Waiting 1 second before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+        }
+        if (!extensionLoaded) {
+            throw new Error('Failed to load sqlite-vec extension after 3 attempts');
+        }
+    }
+    
+    function checkTableInitialization(db: Database): boolean {
+        try {
+            const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='codebase_embeddings'").get();
+            return !tableInfo;
+        } catch (error) {
+            console.error('[vector_db] Error checking table existence:', error);
+            return true;
+        }
+    }
+    
+    async function initializeSchema(db: Database, dbExists: boolean): Promise<void> {
+        console.log(`[vector_db] Reading vector store schema from: ${VECTOR_SCHEMA_PATH}`);
+        const schema = readFileSync(VECTOR_SCHEMA_PATH, 'utf-8');
+    
+        if (dbExists) {
+            await createBackup(db);
+        }
+    
+        console.log('[vector_db] Applying vector store database schema...');
+        db.exec(schema);
+        console.log('[vector_db] Vector store database schema applied successfully.');
+    }
+    
+    async function createVecVirtualTable(db: Database): Promise<void> {
+        try {
+            const vectorDimensions = getCurrentEmbeddingDimensions();
+            console.log(`[vector_db] Creating vec virtual table with ${vectorDimensions} dimensions...`);
+            db.exec(`
+                CREATE VIRTUAL TABLE IF NOT EXISTS codebase_embeddings_vec_idx USING vec0(
+                    embedding_id TEXT,
+                    embedding float[${vectorDimensions}]
+                );
+            `);
+            console.log(`[vector_db] vec virtual table created or already exists with ${vectorDimensions} dimensions.`);
+        } catch (vssError) {
+            console.error('[vector_db] Error creating vec virtual table:', vssError);
+            throw vssError;
+        }
+    }
+    
+    async function verifyDatabaseIntegrity(db: Database): Promise<void> {
+        try {
+            const integrityCheck = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
+            if (integrityCheck.integrity_check !== 'ok') {
+                console.warn('[vector_db] Database integrity check failed:', integrityCheck.integrity_check);
+                await recoverDatabase(db);
+            }
+        } catch (integrityError) {
+            console.error('[vector_db] Error during integrity check:', integrityError);
+        }
+    }
 
     try {
         return await initializationPromise;
@@ -284,7 +293,7 @@ function getBackupFiles(): string[] {
         const files = fs.readdirSync(BACKUP_DIR);
         return files
             .filter((f: string) => f.startsWith('vector_store_') && f.endsWith('.db'))
-            .sort()
+            .sort((a, b) => a.localeCompare(b))
             .map((f: string) => join(BACKUP_DIR, f));
     } catch {
         return [];

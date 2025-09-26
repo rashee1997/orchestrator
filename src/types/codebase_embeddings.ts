@@ -130,7 +130,7 @@ export interface BoostConfiguration {
 
 export const DEFAULT_BOOST_CONFIGURATION: BoostConfiguration = {
     methodImplementationPatterns: [
-        { name: 'function_definitions', pattern: /\b(?:function|def|func|fn)\s+\w+\s*[\(\{]/, boost: 0.15, description: 'Function definitions' },
+        { name: 'function_definitions', pattern: /\b(?:function|def|func|fn)\s+\w+\s*[({]/, boost: 0.15, description: 'Function definitions' },
         { name: 'method_signatures', pattern: /\b(?:public|private|protected|static|async|override)\s+(?:\w+\s+)?\w+\s*\(/, boost: 0.15, description: 'Method signatures' },
         { name: 'constructors', pattern: /\b(?:constructor|__init__|new)\s*\(/, boost: 0.15, description: 'Constructor patterns' },
         { name: 'arrow_functions', pattern: /\w+\s*[=:]\s*(?:\([^)]*\)\s*)?=>/, boost: 0.15, description: 'Arrow functions' },
@@ -144,7 +144,7 @@ export const DEFAULT_BOOST_CONFIGURATION: BoostConfiguration = {
         { name: 'access_modifiers', pattern: /\b(?:public|private|protected|static|final|abstract|virtual|override|async|const|let|var)\s+\w+/, boost: 0.05, description: 'Access modifiers' },
         { name: 'return_statements', pattern: /\b(?:return|yield|throw)\s+/, boost: 0.05, description: 'Return statements' },
         { name: 'assignments', pattern: /\b(?:this|self|@)\.[\w$]+\s*[=:]/, boost: 0.05, description: 'Assignment patterns' },
-        { name: 'control_flow', pattern: /\b(?:if|for|while|switch|match|case|when|loop|do)\s*[\(\{]/, boost: 0.05, description: 'Control flow' },
+        { name: 'control_flow', pattern: /\b(?:if|for|while|switch|match|case|when|loop|do)\s*[({]/, boost: 0.05, description: 'Control flow' },
         { name: 'exception_handling', pattern: /\b(?:try|catch|except|finally|rescue|ensure)\b/, boost: 0.05, description: 'Exception handling' },
         { name: 'async_patterns', pattern: /\b(?:await|async|Promise|Future|Task|Deferred|Observable)\b/, boost: 0.05, description: 'Async patterns' },
         { name: 'memory_management', pattern: /\b(?:new|delete|malloc|free|alloc)\b/, boost: 0.05, description: 'Memory management' },
