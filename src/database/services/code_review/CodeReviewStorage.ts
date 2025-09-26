@@ -51,7 +51,7 @@ export class CodeReviewStorage {
     agentId: string,
     context: CodeReviewContext,
     aiResponse: string,
-    analysisModel: string = 'gemini-1.5-pro'
+    analysisModel: string = 'gemini-2.5-pro'
   ): Promise<string> {
     const reviewResult = this.parseAiResponse(aiResponse, context);
 

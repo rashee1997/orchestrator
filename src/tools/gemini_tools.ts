@@ -25,6 +25,8 @@ const VALID_FOCUS_AREAS = [
     "refactoring", "testing", "documentation", "code_modularization_orchestration", "codebase_analysis"
 ];
 
+const FILE_CONTEXT_TYPE = 'ask_gemini_file_context';
+
 function stripCitationMarkers(value: string | undefined | null): string {
     if (!value) {
         return value ?? '';
@@ -107,6 +109,79 @@ async function findProjectRoot(startDir: string): Promise<string> {
             currentDir = parentDir;
         }
     }
+}
+
+function determineAutonomousFileBudget(query: string, userMax?: number): {
+    maxFiles: number;
+    reasoning: string;
+    signals: string[];
+} {
+    const normalized = query.toLowerCase();
+    const signals: string[] = [];
+    const filePattern = /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|rb|go|java|cs|rs|php|sh|yaml|yml|toml|ini|cfg|conf)/gi;
+    const referencedFiles = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = filePattern.exec(query)) !== null) {
+        const cleaned = match[0].replace(/["'`]/g, '');
+        if (cleaned) {
+            referencedFiles.add(cleaned);
+        }
+    }
+
+    let budget = referencedFiles.size > 0 ? referencedFiles.size + 2 : 6;
+    if (referencedFiles.size > 0) {
+        signals.push(`explicit file references (${referencedFiles.size})`);
+    }
+
+    const singleFileFocus = referencedFiles.size === 1 && (
+        normalized.includes('only') ||
+        normalized.includes('just this') ||
+        normalized.includes('focus on') ||
+        normalized.includes('explain')
+    );
+    if (singleFileFocus) {
+        budget = Math.min(budget, 4);
+        signals.push('single-file emphasis');
+    }
+
+    const broadKeywords = ['overview', 'architecture', 'entire', 'all files', 'whole project', 'codebase', 'audit'];
+    if (broadKeywords.some(keyword => normalized.includes(keyword))) {
+        budget = Math.max(budget, 10);
+        signals.push('broad-scope intent');
+    }
+
+    const investigativeKeywords = ['bug', 'regression', 'root cause', 'failure', 'diagnose', 'investigate'];
+    if (investigativeKeywords.some(keyword => normalized.includes(keyword))) {
+        budget += 2;
+        signals.push('investigation keywords');
+    }
+
+    if (normalized.includes('test') || normalized.includes('spec')) {
+        budget += 2;
+        signals.push('tests mentioned');
+    }
+
+    if (normalized.includes('documentation') || normalized.includes('docs')) {
+        budget += 1;
+        signals.push('documentation context');
+    }
+
+    if (query.length > 400) {
+        budget += 2;
+        signals.push('long query');
+    }
+
+    const cap = Math.max(1, Math.min(userMax ?? 15, 30));
+    const minimum = Math.max(1, referencedFiles.size || 1);
+    const finalBudget = Math.max(minimum, Math.min(cap, Math.round(budget)));
+
+    const reasoning = signals.length > 0 ? signals.join(', ') : 'default heuristic';
+
+    return {
+        maxFiles: finalBudget,
+        reasoning,
+        signals
+    };
 }
 
 async function _getIntentFocusArea(query: string, geminiService: GeminiIntegrationService): Promise<string | null> {
@@ -499,6 +574,59 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         await conversationHistoryManager.storeConversationMessage(currentSessionId, 'user', query);
 
+        interface FileContextEntry {
+            path: string;
+            absolutePath?: string;
+            encoding?: string;
+            size?: number;
+            content?: string;
+            metadata?: Record<string, any>;
+        }
+
+        const persistFileReadContext = async (
+            mode: 'live_file_only' | 'autonomous_file_reading',
+            files: FileContextEntry[],
+            additionalMetadata: Record<string, any> = {}
+        ): Promise<string | null> => {
+            if (!files?.length) {
+                return null;
+            }
+
+            try {
+                const contextPayload = {
+                    session_id: currentSessionId,
+                    mode,
+                    recorded_at: new Date().toISOString(),
+                    files: files.map(file => ({
+                        path: file.path,
+                        absolute_path: file.absolutePath,
+                        encoding: file.encoding || 'utf-8',
+                        size: file.size ?? (file.content ? Buffer.byteLength(file.content, 'utf-8') : undefined),
+                        content: file.content,
+                        metadata: file.metadata || {}
+                    })),
+                    metadata: {
+                        ...additionalMetadata,
+                        agent_id,
+                        request_query: query,
+                        execution_mode: execution_mode || 'generative_answer'
+                    }
+                };
+
+                const contextId = await memoryManagerInstance.storeContext(
+                    agent_id,
+                    FILE_CONTEXT_TYPE,
+                    contextPayload
+                );
+
+                console.log(`[ask_gemini] 💾 Stored ${mode} context snapshot (${files.length} files) as ${contextId}`);
+                return contextId;
+            } catch (error) {
+                console.error(`[ask_gemini] Failed to persist ${mode} context snapshot:`, error);
+                return null;
+            }
+        };
+
         const historyMessages = await conversationHistoryManager.getConversationMessages(currentSessionId, sanitized_conversation_history_limit);
         const hasConversationHistory = historyMessages.length > 1; // More than just the current user query
         let ragQuery = query;
@@ -524,7 +652,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             );
 
             // Process ONLY the live files - directly read file content, no RAG, no embeddings
-            let liveFilesContent: Map<string, string> = new Map();
+            let liveFilesContent: Map<string, { content: string; absolutePath: string; size: number }> = new Map();
             try {
                 console.log('[ask_gemini] 📄 Reading live files directly from filesystem...');
 
@@ -547,8 +675,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
                     try {
                         const content = await fs.readFile(fullPath, 'utf-8');
-                        liveFilesContent.set(keyPath, content);
-                        console.log(`[ask_gemini] ✅ Successfully read file: ${path.basename(fullPath)} (${content.length} chars)`);
+                        const size = Buffer.byteLength(content, 'utf-8');
+                        liveFilesContent.set(keyPath, {
+                            content,
+                            absolutePath: fullPath,
+                            size
+                        });
+                        console.log(`[ask_gemini] ✅ Successfully read file: ${path.basename(fullPath)} (${size} bytes)`);
                     } catch (error: any) {
                         console.warn(`[ask_gemini] ⚠️ Could not read live file: ${filePath}. Resolved to: ${fullPath}. Error: ${error.message}`);
                     }
@@ -604,14 +737,33 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
             // Format context from live files only
             let contextForPrompt = '';
+            let liveFileContextId: string | null = null;
             if (liveFilesContent.size > 0) {
                 const fileContents: string[] = [];
-                for (const [filePath, content] of liveFilesContent.entries()) {
-                    fileContents.push(`## File: ${filePath}\n\n\`\`\`\n${content}\n\`\`\``);
+                const filesForContext: FileContextEntry[] = [];
+                for (const [filePath, fileData] of liveFilesContent.entries()) {
+                    fileContents.push(`## File: ${filePath}\n\n\`\`\`\n${fileData.content}\n\`\`\``);
+                    filesForContext.push({
+                        path: filePath,
+                        absolutePath: fileData.absolutePath,
+                        encoding: 'utf-8',
+                        size: fileData.size,
+                        content: fileData.content
+                    });
                 }
                 contextForPrompt = fileContents.join('\n\n---\n\n');
+
+                liveFileContextId = await persistFileReadContext(
+                    'live_file_only',
+                    filesForContext,
+                    {
+                        requested_file_paths: live_review_file_paths,
+                        focus_area: focus_area || null
+                    }
+                );
             } else {
                 contextForPrompt = 'No content could be extracted from the provided files.';
+                console.warn('[ask_gemini] ⚠️ No live file content available to persist');
             }
 
             // Create prompt with ONLY live file context - no conversation history
@@ -641,7 +793,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     files_processed: processedFiles,
                     bypass_rag: true,
                     bypass_history: true
-                }
+                },
+                liveFileContextId || null
             );
 
             return { content: [{ type: 'text', text: markdownOutput }] };
@@ -652,30 +805,42 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         if (enable_autonomous_file_reading && !live_review_file_paths?.length) {
             console.log('[ask_gemini] 🤖 AUTONOMOUS FILE READING: Discovering and reading relevant files based on query context');
 
+            const fileBudget = determineAutonomousFileBudget(query, max_autonomous_files);
+            console.log(`[ask_gemini] 📊 Autonomous file budget determined: ${fileBudget.maxFiles} (signals: ${fileBudget.signals.join(', ') || 'default heuristic'})`);
+
             try {
+                
                 // Log autonomous file reading mode
                 await conversationHistoryManager.storeConversationMessage(
                     currentSessionId,
                     'system',
-                    `🤖 **AUTONOMOUS FILE READING**: Analyzing query for intelligent file discovery. Max files: ${max_autonomous_files || 15}`,
+                    `🤖 **AUTONOMOUS FILE READING**: Analyzing query for intelligent file discovery. Planned file budget: ${fileBudget.maxFiles}`,
                     'thought',
                     {
                         mode: 'autonomous_file_reading',
                         query_analysis: query.substring(0, 200),
-                        max_files: max_autonomous_files || 15,
+                        file_budget: {
+                            max_files: fileBudget.maxFiles,
+                            reasoning: fileBudget.reasoning,
+                            signals: fileBudget.signals,
+                            user_cap: max_autonomous_files || null
+                        },
                         custom_patterns: autonomous_file_patterns || null,
                         patterns_source: autonomous_file_patterns ? 'user_provided' : 'auto_generated'
                     }
                 );
 
                 // Initialize file operations service with Gemini service for AI pattern generation
-                const fileOpsService = new FileOperationsService(geminiService);
+                const multiModelOrchestrator = typeof geminiService.getMultiModelOrchestrator === 'function'
+                    ? geminiService.getMultiModelOrchestrator()
+                    : undefined;
+                const fileOpsService = new FileOperationsService(geminiService, multiModelOrchestrator);
 
                 // Perform smart file discovery
                 const fileReadOptions = {
                     query: query,
                     patterns: autonomous_file_patterns, // Will be auto-generated if empty
-                    maxFiles: Math.max(1, Math.min(30, max_autonomous_files || 15)),
+                    maxFiles: fileBudget.maxFiles,
                     maxFileSize: 1024 * 1024, // 1MB per file
                     searchContent: true, // Enable content-based filtering
                     caseSensitive: false,
@@ -690,6 +855,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     // Use focus area templates when specified, otherwise use regular approach
                     let template;
                     let useTemplate = false;
+                    let autonomousContextId: string | null = null;
 
                     if (focus_area) {
                         useTemplate = true;
@@ -726,16 +892,62 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
                     // Format discovered files
                     const fileContents: string[] = [];
+                    const filesForContext: FileContextEntry[] = [];
                     for (const file of autonomousFileReadingResult.files) {
                         if (file.encoding === 'utf-8' && file.content) {
                             const languageInfo = (file as any).detectedLanguages ? ` (${(file as any).detectedLanguages.join(', ')})` : '';
                             fileContents.push(`## File: ${file.relativePath}${languageInfo}\n\n\`\`\`${file.extension.slice(1) || 'text'}\n${file.content}\n\`\`\``);
+                            filesForContext.push({
+                                path: file.relativePath,
+                                absolutePath: file.path,
+                                encoding: file.encoding,
+                                size: file.size,
+                                content: file.content,
+                                metadata: {
+                                    extension: file.extension,
+                                    detectedLanguages: file.detectedLanguages,
+                                    matchedKeywords: file.matchedKeywords,
+                                    lastModified: file.lastModified ? file.lastModified.toISOString() : undefined,
+                                    lines: file.lines
+                                }
+                            });
                         } else if (file.encoding === 'binary') {
                             fileContents.push(`## File: ${file.relativePath}\n\n*Binary file - ${file.size} bytes*`);
+                            filesForContext.push({
+                                path: file.relativePath,
+                                absolutePath: file.path,
+                                encoding: file.encoding,
+                                size: file.size,
+                                metadata: {
+                                    extension: file.extension,
+                                    detectedLanguages: file.detectedLanguages,
+                                    lastModified: file.lastModified ? file.lastModified.toISOString() : undefined,
+                                    lines: file.lines
+                                }
+                            });
                         }
                     }
 
                     const contextForPrompt = fileContents.join('\n\n---\n\n');
+
+                    autonomousContextId = await persistFileReadContext(
+                        'autonomous_file_reading',
+                        filesForContext,
+                        {
+                            total_files_found: autonomousFileReadingResult.totalFilesFound,
+                            total_files_read: autonomousFileReadingResult.totalFilesRead,
+                            search_time_ms: autonomousFileReadingResult.searchTimeMs,
+                            search_patterns: autonomousFileReadingResult.searchPatterns,
+                            pattern_source: autonomousFileReadingResult.patternSource,
+                            project_context: autonomousFileReadingResult.projectContext,
+                            file_budget: {
+                                max_files: fileBudget.maxFiles,
+                                reasoning: fileBudget.reasoning,
+                                signals: fileBudget.signals,
+                                user_cap: max_autonomous_files || null
+                            }
+                        }
+                    );
 
                     let finalQuery;
                     if (useTemplate && template) {
@@ -781,8 +993,15 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                             focus_area: focus_area || null,
                             template_used: useTemplate,
                             file_paths: autonomousFileReadingResult.files.map((f: any) => f.relativePath),
-                            bypass_rag: true
-                        }
+                            bypass_rag: true,
+                            file_budget: {
+                                max_files: fileBudget.maxFiles,
+                                reasoning: fileBudget.reasoning,
+                                signals: fileBudget.signals,
+                                user_cap: max_autonomous_files || null
+                            }
+                        },
+                        autonomousContextId || null
                     );
 
                     return { content: [{ type: 'text', text: markdownOutput }] };
@@ -797,7 +1016,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                             autonomous_file_reading_failed: true,
                             fallback_mode: enable_rag ? 'rag' : 'general',
                             search_patterns_tried: autonomousFileReadingResult.searchPatterns,
-                            files_found: 0
+                            files_found: 0,
+                            file_budget: {
+                                max_files: fileBudget.maxFiles,
+                                reasoning: fileBudget.reasoning,
+                                signals: fileBudget.signals,
+                                user_cap: max_autonomous_files || null
+                            }
                         }
                     );
                 }
@@ -809,7 +1034,16 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     'system',
                     `❌ **Autonomous File Reading Error**: ${error?.message || 'Unknown error'}. Falling back to normal mode.`,
                     'thought',
-                    { error: error?.message || 'Unknown error', fallback_to_rag: enable_rag }
+                    {
+                        error: error?.message || 'Unknown error',
+                        fallback_to_rag: enable_rag,
+                        file_budget: {
+                            max_files: fileBudget.maxFiles,
+                            reasoning: fileBudget.reasoning,
+                            signals: fileBudget.signals,
+                            user_cap: max_autonomous_files || null
+                        }
+                    }
                 );
                 // Continue to normal processing
             }

@@ -5,6 +5,7 @@ import { isBinaryFile } from 'isbinaryfile';
 import ignore from 'ignore';
 import { FileReadOptions, FileReadResult, ProjectContext } from './types.js';
 import { AIFileFilter } from './ai-file-filter.js';
+import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * File Reading and Discovery Service
@@ -14,9 +15,9 @@ export class FileReader {
     private aiFileFilter?: AIFileFilter;
     private gitignoreCache = new Map<string, any>();
 
-    constructor(geminiService?: any) {
+    constructor(geminiService?: any, private orchestrator?: MultiModelOrchestrator) {
         if (geminiService) {
-            this.aiFileFilter = new AIFileFilter(geminiService);
+            this.aiFileFilter = new AIFileFilter(geminiService, orchestrator);
         }
     }
 

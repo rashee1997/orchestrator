@@ -1,6 +1,7 @@
 import { ProjectAnalyzer } from './project-analyzer.js';
 import { PatternGenerator } from './pattern-generator.js';
 import { FileReader } from './file-reader.js';
+import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 import {
     FileReadOptions,
     FileReadResult,
@@ -18,10 +19,13 @@ export class FileOperationsService {
     private patternGenerator: PatternGenerator;
     private fileReader: FileReader;
 
-    constructor(geminiService?: any) {
+    constructor(
+        geminiService?: any,
+        private orchestrator?: MultiModelOrchestrator
+    ) {
         this.projectAnalyzer = new ProjectAnalyzer();
-        this.patternGenerator = new PatternGenerator(geminiService);
-        this.fileReader = new FileReader(geminiService);
+        this.patternGenerator = new PatternGenerator(geminiService, orchestrator);
+        this.fileReader = new FileReader(geminiService, orchestrator);
     }
 
     /**

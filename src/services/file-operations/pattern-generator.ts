@@ -1,6 +1,7 @@
 import { ProjectContext, PatternGenerationOptions, LanguageExtensionMap } from './types.js';
 import fg from 'fast-glob';
 import path from 'path';
+import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * Smart Pattern Generation Service
@@ -31,7 +32,10 @@ export class PatternGenerator {
         'unknown': ['.ts', '.js', '.py', '.java', '.go', '.rs']
     };
 
-    constructor(private geminiService?: any) {}
+    constructor(
+        private geminiService?: any,
+        private orchestrator?: MultiModelOrchestrator
+    ) {}
 
     /**
      * Generate smart patterns using AI if available, fallback to rule-based
@@ -50,7 +54,7 @@ export class PatternGenerator {
         }
 
         // Try AI generation if available and enabled
-        if (this.geminiService && options.useAI !== false) {
+        if ((this.orchestrator || this.geminiService) && options.useAI !== false) {
             try {
                 const aiPatterns = await this.generateAIPatterns(query, projectContext, options);
                 if (aiPatterns.length > 0) {
@@ -82,11 +86,23 @@ export class PatternGenerator {
         const prompt = this.buildLocationAwareAIPrompt(query, projectContext, actualFiles, options);
 
         try {
-            const response = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash');
-            const content = response.content?.[0]?.text?.trim();
+            let aiContent: string | undefined;
 
-            if (content) {
-                const patterns = this.parseAIResponse(content);
+            if (this.orchestrator) {
+                const result = await this.orchestrator.executeTask(
+                    'simple_analysis',
+                    prompt,
+                    undefined,
+                    { contextLength: prompt.length }
+                );
+                aiContent = result.content?.trim();
+            } else if (this.geminiService) {
+                const response = await this.geminiService.askGemini(prompt);
+                aiContent = response.content?.[0]?.text?.trim();
+            }
+
+            if (aiContent) {
+                const patterns = this.parseAIResponse(aiContent);
                 console.log('[PatternGenerator] 🤖 AI generated patterns based on actual file locations');
                 return patterns;
             }

@@ -72,6 +72,7 @@ export class GeminiIntegrationService {
     public get embeddingModelName(): string { return EMBEDDING_MODEL_NAME; }
     public get defaultAskModelName(): string { return DEFAULT_ASK_MODEL_NAME; }
     public get refinementModelName(): string { return REFINEMENT_MODEL_NAME; }
+    public getMultiModelOrchestrator(): MultiModelOrchestrator | undefined { return this.multiModelOrchestrator; }
 
     private _generateCacheKey(service: string, ...args: any[]): string {
         return `${service}:${JSON.stringify(args)}`;

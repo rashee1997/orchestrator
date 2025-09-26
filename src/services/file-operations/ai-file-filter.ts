@@ -1,12 +1,16 @@
 import path from 'path';
 import { FileReadOptions } from './types.js';
+import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * AI-powered File Filtering Utility
  * Uses AI to intelligently prioritize and filter files based on query relevance
  */
 export class AIFileFilter {
-    constructor(private geminiService: any) {}
+    constructor(
+        private geminiService: any,
+        private orchestrator?: MultiModelOrchestrator
+    ) {}
 
     /**
      * Use AI to filter and prioritize files based on query relevance
@@ -26,8 +30,20 @@ export class AIFileFilter {
             const filesList = this.prepareFilesList(files, rootDir);
             const prompt = this.buildFileFilterPrompt(options.query, filesList, options.maxFiles || 20);
 
-            const response = await this.geminiService.askGemini(prompt, 'gemini-1.5-flash');
-            const aiResponse = response.content?.[0]?.text?.trim();
+            let aiResponse: string | undefined;
+
+            if (this.orchestrator) {
+                const result = await this.orchestrator.executeTask(
+                    'intent_analysis',
+                    prompt,
+                    undefined,
+                    { contextLength: prompt.length }
+                );
+                aiResponse = result.content?.trim();
+            } else {
+                const response = await this.geminiService.askGemini(prompt);
+                aiResponse = response.content?.[0]?.text?.trim();
+            }
 
             if (aiResponse) {
                 const selectedFiles = this.parseAIResponse(aiResponse, files, rootDir);
