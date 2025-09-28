@@ -618,11 +618,9 @@ export class GeminiApiClient {
         }
     }
 
-    // Check if model supports OAuth (Flash 2.5 and Pro 2.5)
+    // Check if model supports OAuth (only 2.5 models)
     private supportsOAuth(modelName: string): boolean {
-        return modelName.includes('2.5') ||
-               modelName.includes('gemini-2.5-flash') ||
-               modelName.includes('gemini-2.5-pro');
+        return modelName.includes('2.5');
     }
 
     // Check if this is an embedding model (always use API keys)

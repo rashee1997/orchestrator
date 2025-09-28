@@ -213,9 +213,9 @@ export class GeminiProvider extends AIProvider {
 
     getSupportedModels(): string[] {
         return [
-            'gemini-2.5-flash',
+            'gemini-flash-latest',
             'gemini-2.5-pro',
-            'gemini-2.5-flash-lite',
+            'gemini-flash-lite-latest',
             'gemini-2.0-flash',
             'models/gemini-embedding-001',
             'models/text-embedding-004'

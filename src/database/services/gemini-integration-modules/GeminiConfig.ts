@@ -73,7 +73,7 @@ export interface GeminiModelConfig {
 
 export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
     defaultModel: "gemini-2.5-pro",
-    fallbackModel: "gemini-2.5-flash-lite",
+    fallbackModel: "gemini-flash-lite-latest",
     embeddingModel: "models/gemini-embedding-001",
     fallbackEmbeddingModel: "models/text-embedding-004",
     embeddingDimensions: 3072,
@@ -84,7 +84,9 @@ export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
         "models/text-embedding-004",
         "gemini-2.0-flash-lite",
         "gemini-1.5-flash",
-        "gemini-1.5-pro"
+        "gemini-1.5-pro",
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest"
     ], // API key required models
     claudeCodeModels: [
         "claude-sonnet-4-20250514",
@@ -151,6 +153,28 @@ export const GEMINI_MODEL_CONFIG: GeminiModelConfig = {
             costTier: "free",
             requiresApiKey: true,
             description: "Gemini Embedding Model - Text embeddings (API key only)"
+        },
+        "gemini-flash-latest": {
+            name: "gemini-flash-latest",
+            provider: "gemini",
+            authMethod: "api_key",
+            rateLimit: 15,
+            maxTokens: 8192,
+            contextWindow: 1000000,
+            costTier: "free",
+            requiresApiKey: true,
+            description: "Gemini Flash Latest - Current generation (API key only)"
+        },
+        "gemini-flash-lite-latest": {
+            name: "gemini-flash-lite-latest",
+            provider: "gemini",
+            authMethod: "api_key",
+            rateLimit: 15,
+            maxTokens: 8192,
+            contextWindow: 1000000,
+            costTier: "free",
+            requiresApiKey: true,
+            description: "Gemini Flash Lite Latest - Lightweight version (API key only)"
         },
         // Claude Code Models
         "claude-sonnet-4-20250514": {

@@ -206,6 +206,29 @@ export class MultiModelOrchestrator {
             tier: 'free_api'
         });
 
+        // Latest-coded models (API key only)
+        this.availableModels.set('gemini-flash-latest', {
+            name: 'gemini-flash-latest',
+            provider: 'gemini',
+            capability: 'medium',
+            costTier: 'free',
+            rateLimit: 15, // API Key only
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
+        });
+
+        this.availableModels.set('gemini-flash-lite-latest', {
+            name: 'gemini-flash-lite-latest',
+            provider: 'gemini',
+            capability: 'simple',
+            costTier: 'free',
+            rateLimit: 15, // API Key only
+            available: geminiApiKeyAvailable,
+            authMethod: 'api_key',
+            tier: 'free_api'
+        });
+
         // Add embedding models (always use API keys)
         this.availableModels.set('models/gemini-embedding-001', {
             name: 'models/gemini-embedding-001',
@@ -263,16 +286,6 @@ export class MultiModelOrchestrator {
                 tier: 'subscription'
             });
 
-            this.availableModels.set('claude-opus-4-1-20250805', {
-                name: 'claude-opus-4-1-20250805',
-                provider: 'claude_code',
-                capability: 'complex',
-                costTier: 'subscription',
-                rateLimit: 20, // More conservative for most powerful model
-                available: true,
-                authMethod: 'subscription',
-                tier: 'subscription'
-            });
 
             this.availableModels.set('claude-3-5-haiku-20241022', {
                 name: 'claude-3-5-haiku-20241022',
@@ -285,7 +298,7 @@ export class MultiModelOrchestrator {
                 tier: 'subscription'
             });
 
-            console.log('[Multi-Model Orchestrator] Claude Code integration enabled with 3 models');
+            console.log('[Multi-Model Orchestrator] Claude Code integration enabled with 2 models (Sonnet + Haiku)');
         } else {
             console.log('[Multi-Model Orchestrator] Claude Code CLI not available - Claude models unavailable');
         }
@@ -329,12 +342,12 @@ export class MultiModelOrchestrator {
             }
         };
 
-        // Simple tasks - default to Gemini Flash Lite, fall back through other providers
+        // Simple tasks - prioritize Claude Haiku for basic usage, then Gemini models
         const simpleModelOrder: string[] = [];
-        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash-lite');
-        pushIfAvailable(simpleModelOrder, 'gemini-2.0-flash');
-        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash');
         if (this.claudeCodeAvailable) pushIfAvailable(simpleModelOrder, 'claude-3-5-haiku-20241022');
+        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash-lite');
+        pushIfAvailable(simpleModelOrder, 'gemini-2.0-flash-lite');
+        pushIfAvailable(simpleModelOrder, 'gemini-2.5-flash');
         if (this.mistralAvailable) pushIfAvailable(simpleModelOrder, 'mistral-medium-latest');
 
         this.taskRules.set('query_rewriting', {
@@ -370,11 +383,11 @@ export class MultiModelOrchestrator {
         });
 
         const commitMessageModelOrder: string[] = [];
+        if (this.claudeCodeAvailable) pushIfAvailable(commitMessageModelOrder, 'claude-3-5-haiku-20241022');
         pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-flash-lite');
         pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-flash');
         pushIfAvailable(commitMessageModelOrder, 'gemini-2.5-pro');
         pushIfAvailable(commitMessageModelOrder, 'gemini-2.0-flash-lite');
-        if (this.claudeCodeAvailable) pushIfAvailable(commitMessageModelOrder, 'claude-3-5-haiku-20241022');
         if (this.mistralAvailable) pushIfAvailable(commitMessageModelOrder, 'mistral-medium-latest');
 
         this.taskRules.set('commit_message_generation', {
@@ -385,10 +398,10 @@ export class MultiModelOrchestrator {
             complexity: 'simple'
         });
 
-        // Medium tasks - use Claude Code Sonnet or best available
+        // Medium tasks - prioritize Claude Sonnet for general usage
         const mediumModelOrder: string[] = [];
-        pushIfAvailable(mediumModelOrder, 'gemini-2.5-flash');
         if (this.claudeCodeAvailable) pushIfAvailable(mediumModelOrder, 'claude-sonnet-4-20250514');
+        pushIfAvailable(mediumModelOrder, 'gemini-2.5-flash');
         if (this.mistralAvailable) pushIfAvailable(mediumModelOrder, 'mistral-medium-latest');
         pushIfAvailable(mediumModelOrder, 'gemini-2.5-pro');
         pushIfAvailable(mediumModelOrder, 'gemini-2.5-flash-lite');
@@ -402,12 +415,12 @@ export class MultiModelOrchestrator {
             complexity: 'medium'
         });
 
-        // Intent analysis - specifically use Gemini 2.5 Flash for speed and efficiency
+        // Intent analysis - use Claude Haiku for fast analysis, then Gemini
         const intentAnalysisModelOrder: string[] = [];
+        if (this.claudeCodeAvailable) pushIfAvailable(intentAnalysisModelOrder, 'claude-3-5-haiku-20241022'); // Fast Claude model
         pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash');        // Primary choice for intent analysis
         pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-flash-lite');   // Fast fallback
         pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.0-flash-lite');   // Another fast option
-        if (this.claudeCodeAvailable) pushIfAvailable(intentAnalysisModelOrder, 'claude-3-5-haiku-20241022'); // Fast Claude model
         pushIfAvailable(intentAnalysisModelOrder, 'gemini-2.5-pro');          // Last resort (too powerful for this task)
 
         this.taskRules.set('intent_analysis', {
@@ -418,14 +431,11 @@ export class MultiModelOrchestrator {
             complexity: 'medium'
         });
 
-        // Complex tasks - prefer Claude Code Opus/Sonnet for advanced reasoning
+        // Complex tasks - prefer Claude Sonnet for advanced reasoning
         const complexModelOrder: string[] = [];
+        if (this.claudeCodeAvailable) pushIfAvailable(complexModelOrder, 'claude-sonnet-4-20250514');
         pushIfAvailable(complexModelOrder, 'gemini-2.5-pro');
         pushIfAvailable(complexModelOrder, 'gemini-2.5-flash');
-        if (this.claudeCodeAvailable) {
-            pushIfAvailable(complexModelOrder, 'claude-opus-4-1-20250805');
-            pushIfAvailable(complexModelOrder, 'claude-sonnet-4-20250514');
-        }
         if (this.mistralAvailable) pushIfAvailable(complexModelOrder, 'mistral-medium-latest');
 
         this.taskRules.set('complex_analysis', {
@@ -460,13 +470,10 @@ export class MultiModelOrchestrator {
             complexity: 'complex'
         });
 
-        // Code generation tasks - prefer Gemini 2.5 Pro for superior code quality
+        // Code generation tasks - prefer Claude Sonnet for excellent code quality
         const codeGenerationModelOrder: string[] = [];
+        if (this.claudeCodeAvailable) pushIfAvailable(codeGenerationModelOrder, 'claude-sonnet-4-20250514');    // Excellent code quality
         pushIfAvailable(codeGenerationModelOrder, 'gemini-2.5-pro');       // Best for code generation
-        if (this.claudeCodeAvailable) {
-            pushIfAvailable(codeGenerationModelOrder, 'claude-opus-4-1-20250805');     // Excellent for complex code
-            pushIfAvailable(codeGenerationModelOrder, 'claude-sonnet-4-20250514');    // Good code quality
-        }
         pushIfAvailable(codeGenerationModelOrder, 'gemini-2.5-flash');     // Fast fallback
         if (this.mistralAvailable) pushIfAvailable(codeGenerationModelOrder, 'mistral-medium-latest');
 
@@ -495,7 +502,7 @@ export class MultiModelOrchestrator {
         if (contextLength > rule.maxContextLength) {
             console.log(`[Multi-Model Orchestrator] Context length ${contextLength} exceeds limit ${rule.maxContextLength} for ${taskType}, selecting high-capacity model`);
             // For large contexts, prefer models with higher capacity
-            const highCapacityModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash-lite', 'mistral-medium-latest'];
+            const highCapacityModels = ['gemini-flash-latest', 'gemini-2.5-pro', 'gemini-2.0-flash-lite', 'mistral-medium-latest'];
             for (const modelName of highCapacityModels) {
                 const model = this.availableModels.get(modelName);
                 if (model?.available) {
@@ -534,7 +541,8 @@ export class MultiModelOrchestrator {
             maxRetries?: number;
             timeout?: number;
             contextLength?: number;
-            tryAllModels?: boolean; // New option to try all available models
+            tryAllModels?: boolean;
+            model?: string;
         } = {}
     ): Promise<{ content: string; model: string; executionTime: number }> {
         this.refreshTemporarilyDisabledModels();
@@ -542,7 +550,7 @@ export class MultiModelOrchestrator {
         await this.waitForInitialization();
 
         const startTime = Date.now();
-        const { maxRetries = 3, timeout = 30000, contextLength = prompt.length, tryAllModels = false } = options;
+        const { maxRetries = 3, timeout = 30000, contextLength = prompt.length, tryAllModels = false, model: requestedModel } = options;
 
         const rule = this.taskRules.get(taskType);
         if (!rule) {
@@ -550,8 +558,27 @@ export class MultiModelOrchestrator {
         }
 
         // Get ordered list of models to try (preferred + fallbacks)
-        const modelsToTry = [rule.preferredModel, ...rule.fallbackModels]
-            .filter(modelName => this.availableModels.get(modelName)?.available);
+        let modelsToTry: string[];
+
+        if (requestedModel) {
+            // Check if the requested model is available and suitable for this task
+            const requestedModelInfo = this.availableModels.get(requestedModel);
+            if (requestedModelInfo?.available) {
+                // Prioritize the requested model, then add other suitable models as fallbacks
+                const otherModels = [rule.preferredModel, ...rule.fallbackModels]
+                    .filter(modelName => modelName !== requestedModel && this.availableModels.get(modelName)?.available);
+                modelsToTry = [requestedModel, ...otherModels];
+                console.log(`[Multi-Model Orchestrator] Prioritizing requested model: ${requestedModel} for ${taskType}`);
+            } else {
+                console.warn(`[Multi-Model Orchestrator] Requested model ${requestedModel} is not available, falling back to task rules`);
+                modelsToTry = [rule.preferredModel, ...rule.fallbackModels]
+                    .filter(modelName => this.availableModels.get(modelName)?.available);
+            }
+        } else {
+            // No specific model requested, use task rules
+            modelsToTry = [rule.preferredModel, ...rule.fallbackModels]
+                .filter(modelName => this.availableModels.get(modelName)?.available);
+        }
 
         if (modelsToTry.length === 0) {
             throw new Error(`No available models for task type: ${taskType}`);
@@ -907,6 +934,91 @@ export class MultiModelOrchestrator {
      * Test if a model supports OAuth (for debugging)
      */
     modelSupportsOAuth(modelName: string): boolean {
-        return modelName.includes('2.5');
+        // Use the actual model names instead of checking for '2.5'
+        const oauthSupportedModels = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash-lite'
+        ];
+        return oauthSupportedModels.includes(modelName) || modelName.includes('2.5');
+    }
+
+    /**
+     * Execute a query with intelligent model routing - similar to geminiService.askGemini
+     * This method provides a drop-in replacement for geminiService.askGemini with proper model routing
+     */
+    async askAI(
+        prompt: string,
+        requestedModel?: string,
+        systemInstruction?: string,
+        contextData?: any,
+        toolConfig?: any
+    ): Promise<{ content: Array<{ text: string }>; groundingMetadata?: any }> {
+        await this.waitForInitialization();
+
+        // Determine the appropriate task type based on the context and prompt
+        let taskType: RagTaskType = 'final_answer_generation'; // Default for general queries
+
+        // Analyze the prompt to determine task type
+        const promptLower = prompt.toLowerCase();
+        if (promptLower.includes('rewrite') || promptLower.includes('rephrase')) {
+            taskType = 'query_rewriting';
+        } else if (promptLower.includes('summarize') || promptLower.includes('summary')) {
+            taskType = 'context_summarization';
+        } else if (promptLower.includes('analyze') && prompt.length < 1000) {
+            taskType = 'simple_analysis';
+        } else if (promptLower.includes('analyze') || promptLower.includes('review')) {
+            taskType = 'complex_analysis';
+        } else if (promptLower.includes('decide') || promptLower.includes('choose')) {
+            taskType = 'decision_making';
+        } else if (promptLower.includes('code') || promptLower.includes('function') || promptLower.includes('implement')) {
+            taskType = 'code_generation';
+        } else if (promptLower.includes('plan') || promptLower.includes('strategy')) {
+            taskType = 'planning';
+        } else if (promptLower.includes('intent') || promptLower.includes('classify')) {
+            taskType = 'intent_analysis';
+        } else if (promptLower.includes('json') || promptLower.includes('extract')) {
+            taskType = 'json_extraction';
+        }
+
+        console.log(`[MultiModelOrchestrator] Mapped prompt to task type: ${taskType}`);
+
+        // If toolConfig is provided and contains Google Search, delegate to Gemini for now
+        // TODO: In the future, we could implement tool support across all providers
+        if (toolConfig?.tools?.some((tool: any) => tool.googleSearch)) {
+            console.log(`[MultiModelOrchestrator] Tool config detected, delegating to Gemini for Google Search support`);
+
+            // Force use of Gemini for tool-enabled requests
+            const geminiModel = requestedModel || 'gemini-flash-latest';
+            if (this.geminiApiClient) {
+                const response = await this.geminiApiClient.askGemini(prompt, geminiModel, systemInstruction, undefined, toolConfig);
+                return {
+                    content: response.content.map(part => ({ text: part.text || '' })),
+                    groundingMetadata: response.groundingMetadata
+                };
+            } else {
+                const response = await this.geminiService.askGemini(prompt, geminiModel, systemInstruction, undefined, toolConfig);
+                return {
+                    content: response.content.map(part => ({ text: part.text || '' })),
+                    groundingMetadata: response.groundingMetadata
+                };
+            }
+        }
+
+        // Execute the task with proper model routing
+        const result = await this.executeTask(
+            taskType,
+            prompt,
+            systemInstruction,
+            {
+                model: requestedModel,
+                contextLength: prompt.length + (systemInstruction?.length || 0)
+            }
+        );
+
+        // Return in the same format as geminiService.askGemini
+        return {
+            content: [{ text: result.content }]
+        };
     }
 }

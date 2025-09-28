@@ -58,7 +58,12 @@ export interface FileReadServiceResult {
     errors: string[];
     projectContext: ProjectContext;
     searchPatterns: string[];
-    patternSource: 'user_provided' | 'ai_generated' | 'rule_based' | 'project_analysis';
+    patternSource: 'user_provided' | 'ai_generated' | 'rule_based' | 'project_analysis' | 'explicit_priority';
+    // Explicit file validation
+    explicitFilesRequested?: string[];
+    explicitFilesFound?: string[];
+    explicitFilesMissing?: string[];
+    explicitFileWarnings?: string[];
 }
 
 export interface PatternGenerationOptions {
