@@ -1,16 +1,12 @@
 import path from 'path';
 import { FileReadOptions } from './types.js';
-import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * AI-powered File Filtering Utility
  * Uses AI to intelligently prioritize and filter files based on query relevance
  */
 export class AIFileFilter {
-    constructor(
-        private geminiService: any,
-        private orchestrator?: MultiModelOrchestrator
-    ) {}
+    constructor(private geminiService: any) {}
 
     /**
      * Use AI to filter and prioritize files based on query relevance
@@ -26,24 +22,28 @@ export class AIFileFilter {
 
         console.log(`[AIFileFilter] 🤖 AI filtering ${files.length} files for query: "${options.query.substring(0, 100)}..."`);
 
+        // First, check for exact file name matches in the query
+        const exactMatches = this.findExactFileMatches(files, rootDir, options.query);
+        if (exactMatches.length > 0) {
+            console.log(`[AIFileFilter] 🎯 EXACT MATCH PRIORITY: Found ${exactMatches.length} exact file matches for query "${options.query}"`);
+            exactMatches.forEach(match => {
+                console.log(`[AIFileFilter]   ✅ ${path.relative(rootDir, match)}`);
+            });
+            const remainingFiles = files.filter(f => !exactMatches.includes(f));
+            const maxFiles = options.maxFiles || 20;
+            const additionalFiles = await this.filterAndPrioritizeFiles(remainingFiles, rootDir, {
+                ...options,
+                maxFiles: maxFiles - exactMatches.length
+            });
+            return [...exactMatches, ...additionalFiles.slice(0, maxFiles - exactMatches.length)];
+        }
+
         try {
             const filesList = this.prepareFilesList(files, rootDir);
             const prompt = this.buildFileFilterPrompt(options.query, filesList, options.maxFiles || 20);
 
-            let aiResponse: string | undefined;
-
-            if (this.orchestrator) {
-                const result = await this.orchestrator.executeTask(
-                    'intent_analysis',
-                    prompt,
-                    undefined,
-                    { contextLength: prompt.length }
-                );
-                aiResponse = result.content?.trim();
-            } else {
-                const response = await this.geminiService.askGemini(prompt);
-                aiResponse = response.content?.[0]?.text?.trim();
-            }
+            const response = await this.geminiService.askGemini(prompt, 'gemini-2.5-flash');
+            const aiResponse = response.content?.[0]?.text?.trim();
 
             if (aiResponse) {
                 const selectedFiles = this.parseAIResponse(aiResponse, files, rootDir);
@@ -92,25 +92,34 @@ export class AIFileFilter {
      * Build AI prompt for file filtering
      */
     private buildFileFilterPrompt(query: string, filesList: string, maxFiles: number): string {
+        // Extract potential file names from the query
+        const potentialFileNames = this.extractPotentialFileNames(query);
+
+        let filePriorityInstruction = '';
+        if (potentialFileNames.length > 0) {
+            filePriorityInstruction = `\n\n**URGENT FILE PRIORITY:** The query mentions these specific files: ${potentialFileNames.join(', ')}\n- These files MUST be included in your selection if they exist in the available files\n- Prioritize them above ALL other files\n- They are the PRIMARY target of the user's request`;
+        }
+
         return `You are an expert code analyst specializing in intelligent file selection for code analysis tasks.
 
 **TASK:** Analyze the user's query and the available files, then select the ${maxFiles} MOST RELEVANT files that should be read to fulfill the user's request.
 
 **USER'S QUERY:**
-"${query}"
+"${query}"${filePriorityInstruction}
 
 **AVAILABLE FILES:**
 ${filesList}
 
 **SELECTION CRITERIA:**
-1. **Primary Relevance:** Files directly mentioned or implied by the query
-2. **Supporting Files:** Related files that provide necessary context
-3. **Dependency Priority:** Files that the main target files depend on
-4. **Avoid Redundancy:** Don't select files with similar/duplicate functionality
+1. **PRIMARY PRIORITY:** Files directly mentioned in the query (HIGHEST priority)
+2. **Secondary Relevance:** Files directly implied by the query
+3. **Supporting Files:** Related files that provide necessary context
+4. **Dependency Priority:** Files that the main target files depend on
+5. **Avoid Redundancy:** Don't select files with similar/duplicate functionality
 
 **CRITICAL INSTRUCTIONS:**
+- If the query mentions ANY specific file names, those files MUST be selected first
 - Focus on files that are ESSENTIAL to answer the user's query
-- If the query mentions a specific file (like "iterative_rag_orchestrator.ts"), prioritize it HIGHEST
 - Include supporting files that provide context for the main files
 - Prefer implementation files (.ts, .js) over test files unless tests are specifically requested
 - Consider file names, paths, and likely content relevance
@@ -200,6 +209,69 @@ Selected files:`;
             .sort((a, b) => b.score - a.score)
             .map(item => item.file)
             .slice(0, options.maxFiles || 20);
+    }
+
+    /**
+     * Extract potential file names from the query
+     */
+    private extractPotentialFileNames(query: string): string[] {
+        const potentialFiles: string[] = [];
+
+        // Look for quoted strings that might be file names
+        const quotedMatches = query.match(/"([^"]+)"/g) || [];
+        const singleQuotedMatches = query.match(/'([^']+)'/g) || [];
+        const backtickMatches = query.match(/`([^`]+)`/g) || [];
+
+        potentialFiles.push(...quotedMatches.map(m => m.slice(1, -1)));
+        potentialFiles.push(...singleQuotedMatches.map(m => m.slice(1, -1)));
+        potentialFiles.push(...backtickMatches.map(m => m.slice(1, -1)));
+
+        // Look for file extensions in the query
+        const fileExtensionPattern = /\b[\w\-]+\.[a-zA-Z0-9]+\b/g;
+        const extensionMatches = query.match(fileExtensionPattern) || [];
+        potentialFiles.push(...extensionMatches);
+
+        // Look for camelCase/PascalCase patterns that might be file names
+        const camelCasePattern = /\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b/g;
+        const camelCaseMatches = query.match(camelCasePattern) || [];
+        potentialFiles.push(...camelCaseMatches);
+
+        // Remove duplicates and filter out very short matches
+        return [...new Set(potentialFiles)].filter(name => name.length > 3);
+    }
+
+    /**
+     * Find exact file name matches in the query
+     */
+    private findExactFileMatches(files: string[], rootDir: string, query: string): string[] {
+        const queryLower = query.toLowerCase();
+        const exactMatches: string[] = [];
+
+        for (const file of files) {
+            const fileName = path.basename(file).toLowerCase();
+            const relativePath = path.relative(rootDir, file).toLowerCase();
+
+            // Check for exact file name matches (with or without extension)
+            if (queryLower.includes(fileName)) {
+                exactMatches.push(file);
+                continue;
+            }
+
+            // Check for file name without extension
+            const fileNameNoExt = fileName.replace(/\.[^.]*$/, '');
+            if (queryLower.includes(fileNameNoExt)) {
+                exactMatches.push(file);
+                continue;
+            }
+
+            // Check for relative path matches
+            if (queryLower.includes(relativePath)) {
+                exactMatches.push(file);
+                continue;
+            }
+        }
+
+        return exactMatches;
     }
 
     /**

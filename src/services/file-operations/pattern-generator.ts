@@ -1,7 +1,6 @@
 import { ProjectContext, PatternGenerationOptions, LanguageExtensionMap } from './types.js';
 import fg from 'fast-glob';
 import path from 'path';
-import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * Smart Pattern Generation Service
@@ -32,10 +31,25 @@ export class PatternGenerator {
         'unknown': ['.ts', '.js', '.py', '.java', '.go', '.rs']
     };
 
-    constructor(
-        private geminiService?: any,
-        private orchestrator?: MultiModelOrchestrator
-    ) {}
+    constructor(private geminiService?: any) {}
+
+    /**
+     * Extract explicit file mentions from the query
+     */
+    private extractExplicitFiles(query: string): string[] {
+        const filePattern = /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|rb|go|java|cs|rs|php|sh|yaml|yml|toml|ini|cfg|conf)/gi;
+        const explicitFiles = new Set<string>();
+        let match: RegExpExecArray | null;
+
+        while ((match = filePattern.exec(query)) !== null) {
+            const cleaned = match[0].replace(/["'`]/g, '');
+            if (cleaned) {
+                explicitFiles.add(cleaned);
+            }
+        }
+
+        return Array.from(explicitFiles);
+    }
 
     /**
      * Generate smart patterns using AI if available, fallback to rule-based
@@ -45,29 +59,75 @@ export class PatternGenerator {
         projectContext: ProjectContext,
         userPatterns?: string[],
         options: PatternGenerationOptions = {}
-    ): Promise<{ patterns: string[]; source: 'user_provided' | 'ai_generated' | 'rule_based' }> {
+    ): Promise<{ patterns: string[]; source: 'user_provided' | 'ai_generated' | 'rule_based' | 'explicit_priority' }> {
 
-        // Use user patterns if provided
+        // Extract explicit file mentions from query first
+        const explicitFiles = this.extractExplicitFiles(query);
+
+        if (explicitFiles.length > 0) {
+            console.log(`[PatternGenerator] 🎯 Found ${explicitFiles.length} explicit file mentions: ${explicitFiles.join(', ')}`);
+        }
+
+        // Use user patterns if provided, but ALWAYS prioritize explicit files
         if (userPatterns && userPatterns.length > 0) {
-            console.log(`[PatternGenerator] 📝 Using ${userPatterns.length} user-provided patterns`);
-            return { patterns: userPatterns, source: 'user_provided' };
+            const combinedPatterns = [...userPatterns];
+
+            // Add explicit file patterns at the beginning (highest priority)
+            explicitFiles.forEach(file => {
+                combinedPatterns.unshift(file); // Direct relative path
+                combinedPatterns.unshift(`**/${file}`); // Anywhere in project
+                combinedPatterns.unshift(`**/src/**/${file}`); // Common src location
+            });
+
+            if (explicitFiles.length > 0) {
+                console.log(`[PatternGenerator] 📝 Using ${userPatterns.length} user patterns + ${explicitFiles.length} explicit files (prioritized)`);
+                return { patterns: combinedPatterns, source: 'explicit_priority' };
+            } else {
+                console.log(`[PatternGenerator] 📝 Using ${userPatterns.length} user-provided patterns`);
+                return { patterns: userPatterns, source: 'user_provided' };
+            }
+        }
+
+        // Generate patterns with explicit files having highest priority
+        let finalPatterns: string[] = [];
+        let source: 'user_provided' | 'ai_generated' | 'rule_based' | 'explicit_priority' = 'rule_based';
+
+        // Always start with explicit file patterns if found
+        if (explicitFiles.length > 0) {
+            explicitFiles.forEach(file => {
+                finalPatterns.push(file); // Direct relative path
+                finalPatterns.push(`**/${file}`); // Anywhere in project
+                finalPatterns.push(`**/src/**/${file}`); // Common src location
+                finalPatterns.push(`**/*/${file}`); // Any subdirectory
+            });
+            source = 'explicit_priority';
         }
 
         // Try AI generation if available and enabled
-        if ((this.orchestrator || this.geminiService) && options.useAI !== false) {
+        if (this.geminiService && options.useAI !== false) {
             try {
                 const aiPatterns = await this.generateAIPatterns(query, projectContext, options);
                 if (aiPatterns.length > 0) {
-                    return { patterns: aiPatterns, source: 'ai_generated' };
+                    finalPatterns.push(...aiPatterns);
+                    if (explicitFiles.length === 0) {
+                        source = 'ai_generated';
+                    }
                 }
             } catch (error) {
                 console.warn('[PatternGenerator] ⚠️ AI generation failed:', error);
             }
         }
 
-        // Fallback to rule-based generation
+        // Add rule-based patterns as fallback
         const rulePatterns = this.generateRuleBasedPatterns(query, projectContext, options);
-        return { patterns: rulePatterns, source: 'rule_based' };
+        finalPatterns.push(...rulePatterns);
+
+        // Remove duplicates while preserving order (explicit files first)
+        const uniquePatterns = Array.from(new Set(finalPatterns));
+
+        console.log(`[PatternGenerator] 🔍 Generated ${uniquePatterns.length} patterns (source: ${source}), explicit files: ${explicitFiles.length}`);
+
+        return { patterns: uniquePatterns, source };
     }
 
     /**
@@ -86,23 +146,11 @@ export class PatternGenerator {
         const prompt = this.buildLocationAwareAIPrompt(query, projectContext, actualFiles, options);
 
         try {
-            let aiContent: string | undefined;
+            const response = await this.geminiService.askGemini(prompt);
+            const content = response.content?.[0]?.text?.trim();
 
-            if (this.orchestrator) {
-                const result = await this.orchestrator.executeTask(
-                    'simple_analysis',
-                    prompt,
-                    undefined,
-                    { contextLength: prompt.length }
-                );
-                aiContent = result.content?.trim();
-            } else if (this.geminiService) {
-                const response = await this.geminiService.askGemini(prompt);
-                aiContent = response.content?.[0]?.text?.trim();
-            }
-
-            if (aiContent) {
-                const patterns = this.parseAIResponse(aiContent);
+            if (content) {
+                const patterns = this.parseAIResponse(content);
                 console.log('[PatternGenerator] 🤖 AI generated patterns based on actual file locations');
                 return patterns;
             }

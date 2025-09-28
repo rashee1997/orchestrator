@@ -1,7 +1,6 @@
 import { ProjectAnalyzer } from './project-analyzer.js';
 import { PatternGenerator } from './pattern-generator.js';
 import { FileReader } from './file-reader.js';
-import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 import {
     FileReadOptions,
     FileReadResult,
@@ -19,13 +18,76 @@ export class FileOperationsService {
     private patternGenerator: PatternGenerator;
     private fileReader: FileReader;
 
-    constructor(
-        geminiService?: any,
-        private orchestrator?: MultiModelOrchestrator
-    ) {
+    constructor(geminiService?: any) {
         this.projectAnalyzer = new ProjectAnalyzer();
-        this.patternGenerator = new PatternGenerator(geminiService, orchestrator);
-        this.fileReader = new FileReader(geminiService, orchestrator);
+        this.patternGenerator = new PatternGenerator(geminiService);
+        this.fileReader = new FileReader(geminiService);
+    }
+
+    /**
+     * Extract explicit file mentions from the query
+     */
+    private extractExplicitFiles(query: string): string[] {
+        const filePattern = /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|py|rb|go|java|cs|rs|php|sh|yaml|yml|toml|ini|cfg|conf)/gi;
+        const explicitFiles = new Set<string>();
+        let match: RegExpExecArray | null;
+
+        while ((match = filePattern.exec(query)) !== null) {
+            const cleaned = match[0].replace(/["'`]/g, '');
+            if (cleaned) {
+                explicitFiles.add(cleaned);
+            }
+        }
+
+        return Array.from(explicitFiles);
+    }
+
+    /**
+     * Check if explicitly requested files were found in the results
+     */
+    private validateExplicitFiles(
+        explicitFiles: string[],
+        foundFiles: any[],
+        query: string
+    ): { found: string[]; missing: string[]; warnings: string[] } {
+        if (explicitFiles.length === 0) {
+            return { found: [], missing: [], warnings: [] };
+        }
+
+        const found: string[] = [];
+        const missing: string[] = [];
+        const warnings: string[] = [];
+
+        console.log(`[FileOperationsService] 🔍 Validating ${explicitFiles.length} explicit files against ${foundFiles.length} found files`);
+        explicitFiles.forEach(requestedFile => {
+            console.log(`[FileOperationsService]   Looking for: "${requestedFile}"`);
+
+            const matchingFile = foundFiles.find(file => {
+                const exactMatch = file.relativePath === requestedFile;
+                const endsWithMatch = file.relativePath.endsWith(`/${requestedFile}`);
+                const includesMatch = file.relativePath.includes(requestedFile);
+
+                console.log(`[FileOperationsService]     Checking "${file.relativePath}": exact=${exactMatch}, endsWith=${endsWithMatch}, includes=${includesMatch}`);
+
+                return exactMatch || endsWithMatch || includesMatch;
+            });
+
+            if (matchingFile) {
+                console.log(`[FileOperationsService]   ✅ Found match: ${matchingFile.relativePath}`);
+                found.push(requestedFile);
+            } else {
+                console.log(`[FileOperationsService]   ❌ No match found for: ${requestedFile}`);
+                missing.push(requestedFile);
+                warnings.push(`❌ Requested file "${requestedFile}" not found in project`);
+            }
+        });
+
+        if (missing.length > 0 && found.length === 0) {
+            warnings.push(`🔍 Consider checking: file paths, spelling, or if files exist in the current project`);
+        }
+
+        console.log(`[FileOperationsService] 📊 Validation result: ${found.length} found, ${missing.length} missing`);
+        return { found, missing, warnings };
     }
 
     /**
@@ -36,37 +98,119 @@ export class FileOperationsService {
         console.log('[FileOperationsService] 🚀 Starting intelligent file discovery...');
 
         try {
-            // 1. Analyze project context
+            // 1. Extract explicit file mentions from query
+            const explicitFiles = this.extractExplicitFiles(options.query);
+            if (explicitFiles.length > 0) {
+                console.log(`[FileOperationsService] 🎯 Explicit files requested: ${explicitFiles.join(', ')}`);
+            }
+
+            // 2. Analyze project context
             const projectContext = await this.projectAnalyzer.analyzeProject(options.rootDir);
             console.log(`[FileOperationsService] 📊 Project: ${projectContext.projectType} (${projectContext.primaryLanguage})`);
 
-            // 2. Generate smart search patterns
-            const patternOptions: PatternGenerationOptions = {
-                useAI: true,
-                maxPatterns: 12,
-                includeTests: options.query?.toLowerCase().includes('test') || false,
-                includeConfigs: options.query?.toLowerCase().includes('config') || false
+            // --- STAGE 1: Read Explicitly Requested Files Directly (Guaranteed Read) ---
+            let explicitReadResults: FileReadResult[] = [];
+            let explicitFilesReadCount = 0;
+            let explicitErrors: string[] = [];
+
+            if (explicitFiles.length > 0) {
+                // Use a non-limiting options object for reading specific files
+                const specificReadOptions = { ...options, maxFiles: undefined }; 
+                explicitReadResults = await this.fileReader.readSpecificFiles(explicitFiles, specificReadOptions, projectContext);
+                
+                explicitFilesReadCount = explicitReadResults.filter(r => !r.error).length;
+                explicitErrors = explicitReadResults.filter(r => r.error).map(r => r.error!);
+
+                console.log(`[FileOperationsService] 📖 STAGE 1 Complete: Read ${explicitFilesReadCount}/${explicitFiles.length} explicit files directly.`);
+            }
+
+            // --- STAGE 2: Autonomous Context Search (Supplementary Files) ---
+            const maxFilesBudget = options.maxFiles || 20;
+            const maxFilesForAutonomousSearch = Math.max(0, maxFilesBudget - explicitFilesReadCount);
+            
+            // Initializing containers for autonomous search results
+            let fileResults: {
+                files: FileReadResult[];
+                totalFilesFound: number;
+                totalFilesRead: number;
+                errors: string[];
+            } = {
+                files: [],
+                totalFilesFound: 0,
+                totalFilesRead: 0,
+                errors: []
             };
 
-            const { patterns, source } = await this.patternGenerator.generateSmartPatterns(
-                options.query,
-                projectContext,
-                options.patterns,
-                patternOptions
-            );
+            let patterns: string[] = [];
+            let source: 'user_provided' | 'ai_generated' | 'rule_based' | 'explicit_priority' = 'rule_based';
 
-            console.log(`[FileOperationsService] 🎯 Generated ${patterns.length} patterns (${source})`);
+            if (maxFilesForAutonomousSearch > 0 || (options.patterns && options.patterns.length > 0)) {
+                
+                // 3. Generate smart search patterns
+                const patternOptions: PatternGenerationOptions = {
+                    useAI: true,
+                    maxPatterns: 12,
+                    includeTests: options.query?.toLowerCase().includes('test') || false,
+                    includeConfigs: options.query?.toLowerCase().includes('config') || false
+                };
 
-            // 3. Search and read files
-            const searchOptions = { ...options, patterns };
-            const fileResults = await this.fileReader.searchAndReadFiles(searchOptions, projectContext);
+                ({ patterns, source } = await this.patternGenerator.generateSmartPatterns(
+                    options.query,
+                    projectContext,
+                    options.patterns,
+                    patternOptions
+                ));
+
+                console.log(`[FileOperationsService] 🎯 Generated ${patterns.length} patterns (${source}) for supplementary search (Budget: ${maxFilesForAutonomousSearch}).`);
+
+                // 4. Search and read supplementary files
+                const searchOptions = { 
+                    ...options, 
+                    patterns, 
+                    maxFiles: maxFilesForAutonomousSearch 
+                };
+
+                fileResults = await this.fileReader.searchAndReadFiles(searchOptions, projectContext);
+            } else {
+                console.log('[FileOperationsService] 🚫 STAGE 2 Skipped: Max files budget exhausted by explicit requests or no patterns provided.');
+            }
+
+            // --- STAGE 3: Combine and Validate Results ---
+            
+            // Combine files, filtering out any potential duplicates if the autonomous search also found an explicit file
+            const explicitFilePaths = new Set(explicitReadResults.filter(r => !r.error).map(r => r.path));
+            const supplementaryFiles = fileResults.files.filter(f => !explicitFilePaths.has(f.path));
+            
+            const combinedFiles = [...explicitReadResults.filter(r => !r.error), ...supplementaryFiles];
+            const totalFilesRead = combinedFiles.length;
+            const combinedErrors = [...explicitErrors, ...fileResults.errors];
+            
+            // 5. Validate that explicit files were successfully read
+            const validation = this.validateExplicitFiles(explicitFiles, combinedFiles, options.query);
+
+            if (validation.warnings.length > 0) {
+                console.warn('[FileOperationsService] ⚠️ Explicit file validation warnings:');
+                validation.warnings.forEach(warning => console.warn(`  ${warning}`));
+            }
+
+            if (validation.found.length > 0) {
+                console.log(`[FileOperationsService] ✅ Found ${validation.found.length}/${explicitFiles.length} explicitly requested files`);
+            }
 
             const result: FileReadServiceResult = {
-                ...fileResults,
+                files: combinedFiles,
+                totalFilesFound: fileResults.totalFilesFound, // Tracks files found by the autonomous glob search
+                totalFilesRead: totalFilesRead,
                 searchTimeMs: Date.now() - startTime,
+                errors: combinedErrors,
                 projectContext,
-                searchPatterns: patterns,
-                patternSource: source
+                searchPatterns: patterns, // Patterns used for supplementary search
+                patternSource: source,
+                // Add explicit file validation info
+                explicitFilesRequested: explicitFiles,
+                explicitFilesFound: validation.found,
+                explicitFilesMissing: validation.missing,
+                explicitFileWarnings: validation.warnings
             };
 
             console.log(`[FileOperationsService] ✅ Discovery complete: ${result.totalFilesRead} files read in ${result.searchTimeMs}ms`);
@@ -83,7 +227,12 @@ export class FileOperationsService {
                 errors: [error.message || 'Unknown error occurred'],
                 projectContext: this.projectAnalyzer.getBasicContext(options.rootDir),
                 searchPatterns: [],
-                patternSource: 'rule_based'
+                patternSource: 'rule_based',
+                // Explicit file validation for failure case
+                explicitFilesRequested: this.extractExplicitFiles(options.query),
+                explicitFilesFound: [],
+                explicitFilesMissing: this.extractExplicitFiles(options.query),
+                explicitFileWarnings: [`❌ Discovery failed before files could be validated: ${error.message}`]
             };
         }
     }

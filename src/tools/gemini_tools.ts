@@ -15,6 +15,7 @@ import { REFINEMENT_MODEL_NAME, DEFAULT_ASK_MODEL_NAME, getCurrentModel, getCurr
 import { META_PROMPT } from '../database/services/gemini-integration-modules/GeminiPromptTemplates.js';
 import { ContextRetrievalOptions } from '../database/services/CodebaseContextRetrieverService.js';
 import { IterativeRagOrchestrator, IterativeRagResult, IterativeRagArgs } from './rag/iterative_rag_orchestrator.js';
+import { MultiModelOrchestrator } from './rag/multi_model_orchestrator.js';
 import { randomUUID } from 'crypto';
 import { ConversationMessage, ConversationSession } from '../database/managers/ConversationHistoryManager.js';
 import { callTavilyApi, WebSearchResult } from '../integrations/tavily.js';
@@ -26,6 +27,22 @@ const VALID_FOCUS_AREAS = [
 ];
 
 const FILE_CONTEXT_TYPE = 'ask_gemini_file_context';
+
+function getAIDisplayName(modelName: string): string {
+    if (modelName.includes('claude')) {
+        if (modelName.includes('sonnet')) return 'Claude Sonnet';
+        if (modelName.includes('haiku')) return 'Claude Haiku';
+        if (modelName.includes('opus')) return 'Claude Opus';
+        return 'Claude';
+    }
+    if (modelName.includes('gemini')) {
+        return 'Gemini';
+    }
+    if (modelName.includes('mistral')) {
+        return 'Mistral';
+    }
+    return 'AI Assistant';
+}
 
 function stripCitationMarkers(value: string | undefined | null): string {
     if (!value) {
@@ -93,23 +110,9 @@ function getAllModelNames(): string[] {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function findProjectRoot(startDir: string): Promise<string> {
-    let currentDir = startDir;
-    while (true) {
-        const packageJsonPath = path.join(currentDir, 'package.json');
-        try {
-            await fs.access(packageJsonPath);
-            return currentDir;
-        } catch (error) {
-            const parentDir = path.dirname(currentDir);
-            if (parentDir === currentDir) {
-                console.warn('[ask_gemini] Could not find package.json to determine project root. Falling back to current working directory.');
-                return process.cwd();
-            }
-            currentDir = parentDir;
-        }
-    }
-}
+// Removed the old fragile findProjectRoot utility function here. 
+// We will now rely on the ProjectAnalyzer within FileOperationsService 
+// or the user-provided project_root_path.
 
 function determineAutonomousFileBudget(query: string, userMax?: number): {
     maxFiles: number;
@@ -294,6 +297,11 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         properties: {
             agent_id: { type: 'string', description: 'The agent ID to use for context retrieval.' },
             query: { type: 'string', description: 'The query string to send to Gemini.' },
+            project_root_path: { 
+                type: 'string', 
+                description: 'Optional: The absolute file path to the project root directory. If provided, all file searches (RAG, autonomous, live review) will be anchored here, overriding autonomous root detection.',
+                nullable: true
+            },
             session_id: { type: ['string', 'null'], description: 'The UUID of a past conversation to continue. Use this with `continue: true`.', nullable: true },
             session_name: { type: ['string', 'null'], description: 'Optional: A human-readable name for the session to continue or create. If provided with `continue: true`, it will try to find a session by this name.', nullable: true },
             session_sequence_number: { type: ['number', 'null'], description: 'Optional: A sequence number for the session to continue or create. If provided with `continue: true`, it will try to find a session by this sequence number among your created sessions.', nullable: true },
@@ -383,15 +391,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     topKKgResults: { type: 'number', nullable: true },
                     embeddingScoreThreshold: { type: 'number', nullable: true },
                     useHybridSearch: { type: 'boolean', nullable: true, description: 'Enable hybrid search combining vector and keyword search' },
-                    // enableKeywordSearch: { type: 'boolean', nullable: true, description: 'Enable enhanced keyword search within hybrid search' }, // COMMENTED OUT
-                    // keywordWeight: { type: 'number', nullable: true, description: 'Weight for keyword search results (0.0-1.0)', minimum: 0, maximum: 1 }, // COMMENTED OUT
-                    // taskType: { // COMMENTED OUT
-                    //     type: 'string',
-                    //     nullable: true,
-                    //     enum: ['RETRIEVAL_QUERY', 'RETRIEVAL_DOCUMENT', 'CODE_RETRIEVAL_QUERY', 'SEMANTIC_SIMILARITY', 'CLASSIFICATION'],
-                    //     description: 'Gemini task type for optimized search behavior'
-                    // },
-                    // enableBatchProcessing: { type: 'boolean', nullable: true, description: 'Enable batch processing of contexts (3 files at a time)' }, // COMMENTED OUT
                     enableReranking: { type: 'boolean', nullable: true, description: 'Enable AI-powered context reranking' },
                     maxContextLength: { type: 'number', nullable: true, description: 'Maximum context length for processing' }
                 },
@@ -447,7 +446,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             // Autonomous file reading parameters
             enable_autonomous_file_reading,
             autonomous_file_patterns,
-            max_autonomous_files
+            max_autonomous_files,
+            project_root_path // NEW ARGUMENT
         } = args;
 
         // Validate and sanitize count parameters to prevent negative values
@@ -470,6 +470,13 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             long_rag_chunk_size: sanitized_long_rag_chunk_size,
             citation_accuracy_threshold: sanitized_citation_accuracy_threshold
         };
+        
+        // --- Custom Project Root Handling ---
+        const effectiveRootPath = project_root_path ? path.resolve(project_root_path) : undefined;
+        if (effectiveRootPath) {
+            console.log(`[ask_gemini] anchor: Using explicit project root path: ${effectiveRootPath}`);
+        }
+        // --- End Custom Project Root Handling ---
 
         let focus_area = sanitized_args.focus_area; // Make focus_area mutable
 
@@ -484,6 +491,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
 
         const geminiService = memoryManagerInstance.getGeminiIntegrationService();
         const conversationHistoryManager = memoryManagerInstance.conversationHistoryManager;
+
+        // Initialize MultiModelOrchestrator for intelligent model routing
+        const multiModelOrchestrator = await MultiModelOrchestrator!.create(memoryManagerInstance, geminiService);
 
         // Autonomous focus area selection
         let autonomousFocusArea: string | null = null;
@@ -656,6 +666,9 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
             try {
                 console.log('[ask_gemini] 📄 Reading live files directly from filesystem...');
 
+                // Determine the base path for resolving relative live files
+                const liveFileBasePath = effectiveRootPath || process.cwd(); 
+
                 for (const filePath of live_review_file_paths) {
                     if (!filePath) continue; // Skip empty/null paths
 
@@ -667,9 +680,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         fullPath = filePath;
                         console.log(`[ask_gemini] 📂 Reading absolute path: ${fullPath}`);
                     } else {
-                        // If it's a relative path, resolve it against the project root
-                        const projectRoot = await findProjectRoot(process.cwd());
-                        fullPath = path.resolve(projectRoot, filePath);
+                        // If it's a relative path, resolve it against the calculated base path
+                        fullPath = path.resolve(liveFileBasePath, filePath);
                         console.log(`[ask_gemini] 📂 Reading relative path: ${filePath} -> ${fullPath}`);
                     }
 
@@ -773,12 +785,14 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{conversation_history}', ''); // NO history in live file mode
 
             console.log('[ask_gemini] 🚀 Sending live file prompt to Gemini...');
-            const geminiResponse = await geminiService.askGemini(finalPrompt, model, systemInstruction);
+            const geminiResponse = await multiModelOrchestrator!.askAI(finalPrompt, model, systemInstruction);
             const finalAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
+            const actualModelUsed = model || getCurrentModel();
+            const aiDisplayName = getAIDisplayName(actualModelUsed);
 
             // Build response for live file mode
             const processedFiles = Array.from(liveFilesContent.keys());
-            const markdownOutput = `## 🤖 Gemini Response (Live File Mode)\n\n> ${query}\n\n${finalAnswer}\n\n---\n\n## 📁 Live Files Analyzed\n\n${processedFiles.map(p => `- ${path.basename(p)}`).join('\n')}\n\n**Mode**: Direct file analysis (no RAG search, no conversation history)`;
+            const markdownOutput = `## 🤖 ${aiDisplayName} Response (Live File Mode)\n\n> ${query}\n\n${finalAnswer}\n\n---\n\n## 📁 Live Files Analyzed\n\n${processedFiles.map(p => `- ${path.basename(p)}`).join('\n')}\n\n**Mode**: Direct file analysis (no RAG search, no conversation history)`;
 
             // Store the response
             await conversationHistoryManager.storeConversationMessage(
@@ -834,7 +848,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const multiModelOrchestrator = typeof geminiService.getMultiModelOrchestrator === 'function'
                     ? geminiService.getMultiModelOrchestrator()
                     : undefined;
-                const fileOpsService = new FileOperationsService(geminiService, multiModelOrchestrator);
+                const fileOpsService = new FileOperationsService(geminiService);
 
                 // Perform smart file discovery
                 const fileReadOptions = {
@@ -844,6 +858,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     maxFileSize: 1024 * 1024, // 1MB per file
                     searchContent: true, // Enable content-based filtering
                     caseSensitive: false,
+                    rootDir: effectiveRootPath, // <<< PASS EXPLICIT ROOT PATH
                     excludeDirs: ['node_modules', '.git', 'dist', 'build', '.next'], // Additional exclusions
                 };
 
@@ -967,14 +982,39 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                         finalQuery = `${query}\n\n## Relevant Files Found:\n\n${contextForPrompt}`;
                     }
 
-                    console.log('[ask_gemini] 🚀 Sending query with discovered file context to Gemini...');
-                    const geminiResponse = await geminiService.askGemini(finalQuery, model, systemInstruction);
+                    console.log('[ask_gemini] 🚀 Sending query with discovered file context to AI...');
+                    const geminiResponse = await multiModelOrchestrator!.askAI(finalQuery, model, systemInstruction);
                     const aiAnswer = geminiResponse.content?.[0]?.text ?? 'No response could be generated.';
+                    const actualModelUsed = model || getCurrentModel();
+                    const aiDisplayName = getAIDisplayName(actualModelUsed);
 
                     // Format response with enhanced file discovery summary
-                    const fileDiscoveryInfo = `### 🤖 Autonomous File Discovery\n- **Project:** ${autonomousFileReadingResult.projectContext.projectType} (${autonomousFileReadingResult.projectContext.primaryLanguage})\n- **Pattern Source:** ${autonomousFileReadingResult.patternSource.replace('_', ' ')}\n- **Files Found:** ${autonomousFileReadingResult.totalFilesFound}\n- **Files Read:** ${autonomousFileReadingResult.totalFilesRead}\n- **Search Time:** ${autonomousFileReadingResult.searchTimeMs}ms\n- **Patterns:** ${autonomousFileReadingResult.searchPatterns.slice(0, 3).join(', ')}${autonomousFileReadingResult.searchPatterns.length > 3 ? '...' : ''}\n${focus_area ? `- **Focus Area:** ${focus_area}` : ''}\n\n`;
+                    let fileDiscoveryInfo = `## 🤖 ${aiDisplayName} Response\n\n> ${query}\n\n### 🤖 Autonomous File Discovery\n- **Project:** ${autonomousFileReadingResult.projectContext.projectType} (${autonomousFileReadingResult.projectContext.primaryLanguage})\n- **Pattern Source:** ${autonomousFileReadingResult.patternSource.replace('_', ' ')}\n- **Files Found:** ${autonomousFileReadingResult.totalFilesFound}\n- **Files Read:** ${autonomousFileReadingResult.totalFilesRead}\n- **Search Time:** ${autonomousFileReadingResult.searchTimeMs}ms\n- **Patterns:** ${autonomousFileReadingResult.searchPatterns.slice(0, 3).join(', ')}${autonomousFileReadingResult.searchPatterns.length > 3 ? '...' : ''}\n${focus_area ? `- **Focus Area:** ${focus_area}` : ''}\n`;
 
-                    const markdownOutput = `${fileDiscoveryInfo}${aiAnswer}`;
+                    // Add explicit file validation information
+                    if (autonomousFileReadingResult.explicitFilesRequested && autonomousFileReadingResult.explicitFilesRequested.length > 0) {
+                        fileDiscoveryInfo += `\n### 🎯 Explicit File Request Status\n`;
+                        fileDiscoveryInfo += `- **Files Requested:** ${autonomousFileReadingResult.explicitFilesRequested.join(', ')}\n`;
+
+                        if (autonomousFileReadingResult.explicitFilesFound && autonomousFileReadingResult.explicitFilesFound.length > 0) {
+                            fileDiscoveryInfo += `- **Files Found:** ✅ ${autonomousFileReadingResult.explicitFilesFound.join(', ')}\n`;
+                        }
+
+                        if (autonomousFileReadingResult.explicitFilesMissing && autonomousFileReadingResult.explicitFilesMissing.length > 0) {
+                            fileDiscoveryInfo += `- **Files Missing:** ❌ ${autonomousFileReadingResult.explicitFilesMissing.join(', ')}\n`;
+                        }
+
+                        if (autonomousFileReadingResult.explicitFileWarnings && autonomousFileReadingResult.explicitFileWarnings.length > 0) {
+                            fileDiscoveryInfo += `\n**⚠️ File Discovery Warnings:**\n`;
+                            autonomousFileReadingResult.explicitFileWarnings.forEach((warning: string) => {
+                                fileDiscoveryInfo += `- ${warning}\n`;
+                            });
+                        }
+                    }
+
+                    fileDiscoveryInfo += `\n`;
+
+                    const markdownOutput = `${fileDiscoveryInfo}${aiAnswer}\n\n---`;
 
                     await conversationHistoryManager.storeConversationMessage(
                         currentSessionId,
@@ -1069,7 +1109,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     .replace('{web_search_flags}', `google_search=${google_search || false}, enable_web_search=${enable_web_search || false}`)
                     .replace('{continuation_mode}', `continue=${continue_session || false}`);
 
-                const decisionResult = await geminiService.askGemini(decisionPrompt, getCurrentModel());
+                const decisionResult = await multiModelOrchestrator!.askAI(decisionPrompt, getCurrentModel());
                 const decisionResponse = await parseGeminiJsonResponse(decisionResult.content[0].text ?? '', {
                     expectedStructure: '{"decision": "ANSWER_FROM_HISTORY or PERFORM_RAG", "reasoning": "string", "rag_query": "string or null"}',
                     contextDescription: 'RAG decision response for conversation continuation',
@@ -1179,10 +1219,6 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 const enhancedContextOptions = {
                     ...context_options,
                     useHybridSearch: enable_hybrid_search || context_options?.useHybridSearch || false,
-                    // enableKeywordSearch: context_options?.enableKeywordSearch ?? true, // COMMENTED OUT
-                    // keywordWeight: context_options?.keywordWeight ?? 0.8, // COMMENTED OUT
-                    // taskType: context_options?.taskType || 'CODE_RETRIEVAL_QUERY', // COMMENTED OUT
-                    // enableBatchProcessing: context_options?.enableBatchProcessing ?? true, // COMMENTED OUT
                     enableReranking: context_options?.enableReranking ?? true
                 };
 
@@ -1204,7 +1240,8 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                     conversation_history_limit: sanitized_conversation_history_limit,
                     google_search: google_search,
                     continue_session: continue_session,
-                    execution_mode: execution_mode // Pass execution mode to control citation behavior
+                    execution_mode: execution_mode, // Pass execution mode to control citation behavior
+                    project_root_path: effectiveRootPath // <<< PASS EXPLICIT ROOT PATH
                 };
 
                 console.log(`[ask_gemini] Enhanced RAG enabled: hybrid=${enhancedRagArgs.enable_hybrid_search}, agentic=${enhancedRagArgs.enable_agentic_planning}, reflection=${enhancedRagArgs.enable_reflection}`);
@@ -1234,7 +1271,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
                 .replace('{retrievedCodeContextString}', contextString)
                 .replace('{agentId}', agent_id);
             try {
-                const result = await geminiService.askGemini(metaPromptContent, modelToUse);
+                const result = await multiModelOrchestrator!.askAI(metaPromptContent, modelToUse);
                 const rawPlanContent = result.content?.[0]?.text ?? '';
                 const cleanedPlanContent = stripCitationMarkers(rawPlanContent);
                 if (rawPlanContent !== cleanedPlanContent) {
@@ -1306,6 +1343,7 @@ export const askGeminiToolDefinition: InternalToolDefinition = {
         let finalAnswer = iterativeResult?.finalAnswer;
         let googleSearchSources: { title: string; url: string }[] = [];
         let webChunksToStore: any[] = [];
+        let actualModelUsed = model || getCurrentModel();
 
         if (!finalAnswer) {
             // Enhanced context analysis
@@ -1461,9 +1499,12 @@ Conversation History (if any):
                 }
             }
 
-            const geminiResponse = await geminiService.askGemini(finalPrompt, model, finalSystemInstruction, undefined, toolConfig);
+            const geminiResponse = await multiModelOrchestrator!.askAI(finalPrompt, model, finalSystemInstruction, undefined, toolConfig);
 
-            // Extract Google Search sources from Gemini's response if available
+            // Update which model was actually used for dynamic response header
+            actualModelUsed = model || getCurrentModel();
+
+            // Extract Google Search sources from AI response if available
             if ((google_search || enable_web_search) && geminiResponse.groundingMetadata?.groundingChunks) {
                 const chunks = geminiResponse.groundingMetadata.groundingChunks;
                 googleSearchSources = chunks
@@ -1505,10 +1546,11 @@ Conversation History (if any):
             };
         }
 
-        // Build the final markdown output
+        // Build the final markdown output with dynamic AI name
+        const aiDisplayName = getAIDisplayName(actualModelUsed);
         // Check if finalAnswer already contains the header to avoid duplication
         let markdownOutput: string;
-        if (finalAnswer.includes('## 🤖 Gemini Response')) {
+        if (finalAnswer.includes('## 🤖')) {
             // finalAnswer already has the formatted response, use it as-is
             markdownOutput = finalAnswer;
             // Ensure it ends with a separator for analytics
@@ -1516,8 +1558,8 @@ Conversation History (if any):
                 markdownOutput += '\n\n---';
             }
         } else {
-            // Add the header for raw responses
-            markdownOutput = `## 🤖 Gemini Response\n\n> ${query}\n\n${finalAnswer}\n\n---`;
+            // Add the header for raw responses with dynamic AI name
+            markdownOutput = `## 🤖 ${aiDisplayName} Response\n\n> ${query}\n\n${finalAnswer}\n\n---`;
         }
 
         // Check if we have any sources to display

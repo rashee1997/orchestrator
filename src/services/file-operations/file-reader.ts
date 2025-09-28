@@ -5,7 +5,6 @@ import { isBinaryFile } from 'isbinaryfile';
 import ignore from 'ignore';
 import { FileReadOptions, FileReadResult, ProjectContext } from './types.js';
 import { AIFileFilter } from './ai-file-filter.js';
-import { MultiModelOrchestrator } from '../../tools/rag/multi_model_orchestrator.js';
 
 /**
  * File Reading and Discovery Service
@@ -15,9 +14,9 @@ export class FileReader {
     private aiFileFilter?: AIFileFilter;
     private gitignoreCache = new Map<string, any>();
 
-    constructor(geminiService?: any, private orchestrator?: MultiModelOrchestrator) {
+    constructor(geminiService?: any) {
         if (geminiService) {
-            this.aiFileFilter = new AIFileFilter(geminiService, orchestrator);
+            this.aiFileFilter = new AIFileFilter(geminiService);
         }
     }
 
@@ -220,6 +219,8 @@ export class FileReader {
     /**
      * Read a specific list of files sequentially. The list may include absolute or relative paths.
      * Respects maxFiles in options (if provided) and ensures unique processing order.
+     * 
+     * IMPORTANT: This method is used to guarantee reading of explicit file paths provided by the user.
      */
     async readSpecificFiles(
         filePaths: string[],
@@ -234,17 +235,76 @@ export class FileReader {
 
         for (let index = 0; index < maxFiles; index++) {
             const originalPath = uniquePaths[index];
-            const absolutePath = path.isAbsolute(originalPath)
+            let absolutePath: string;
+            let finalRelativePath: string;
+            let found = false;
+            
+            // Default path assuming it's relative to root or absolute
+            absolutePath = path.isAbsolute(originalPath)
                 ? originalPath
                 : path.join(projectContext.rootDir, originalPath);
+            finalRelativePath = path.relative(projectContext.rootDir, absolutePath);
 
+            // Check if the file exists at the initial resolved location
             try {
-                const result = await this.readSingleFile(absolutePath, projectContext.rootDir, options);
-                // Preserve the relative path based on the project root for consistency
-                result.relativePath = path.relative(projectContext.rootDir, absolutePath);
-                results.push(result);
-            } catch (error) {
-                results.push(this.createErrorResult(absolutePath, projectContext.rootDir, error));
+                await fs.access(absolutePath);
+                found = true;
+                console.log(`[FileReader] 🎯 Found explicit file at resolved path: ${finalRelativePath}`);
+            } catch {
+                // If the path failed, and it was just a filename (no separators), try recursive search
+                if (!originalPath.includes(path.sep) && !originalPath.includes('/')) {
+                    
+                    console.log(`[FileReader] 🔍 Attempting recursive search for explicit filename: **/${originalPath}`);
+                    
+                    const gitignore = await this.loadGitignore(projectContext.rootDir);
+                    
+                    const searchResults = await fg([`**/${originalPath}`], {
+                        cwd: projectContext.rootDir,
+                        absolute: true,
+                        onlyFiles: true,
+                        ignore: ['**/node_modules/**', '**/.git/**'].map(dir => `${dir}/**`),
+                        deep: 10
+                    });
+
+                    // Filter search results using gitignore rules
+                    const filteredResults = searchResults.filter(absPath => 
+                        !gitignore.ignores(path.relative(projectContext.rootDir, absPath))
+                    );
+
+                    if (filteredResults.length > 0) {
+                        absolutePath = filteredResults[0]; // Use the first match
+                        finalRelativePath = path.relative(projectContext.rootDir, absolutePath);
+                        found = true;
+                        console.log(`[FileReader] ✅ Found explicit file via recursive search at: ${finalRelativePath}`);
+                    } else {
+                        found = false;
+                        console.warn(`[FileReader] ❌ Explicit file not found anywhere: ${originalPath}`);
+                    }
+                } else {
+                    // If it was a path (e.g., src/foo/bar.ts) but didn't exist
+                    found = false;
+                    console.warn(`[FileReader] ❌ Explicit file path not found: ${originalPath}`);
+                }
+            }
+
+            if (found) {
+                try {
+                    const result = await this.readSingleFile(absolutePath, projectContext.rootDir, options);
+                    // Ensure relative path is accurately set from the final absolute path
+                    result.relativePath = finalRelativePath; 
+                    results.push(result);
+                } catch (error) {
+                    // Error during actual read (e.g., permissions, encoding)
+                    results.push(this.createErrorResult(absolutePath, projectContext.rootDir, error));
+                }
+            } else {
+                 // File genuinely missing
+                const missingPath = path.isAbsolute(originalPath) ? originalPath : path.join(projectContext.rootDir, originalPath);
+                results.push(this.createErrorResult(
+                    missingPath, 
+                    projectContext.rootDir, 
+                    new Error(`Requested file not found in project: ${originalPath}`)
+                ));
             }
         }
 
@@ -465,16 +525,29 @@ export class FileReader {
      * Create error result for failed file reads
      */
     private createErrorResult(filePath: string, rootDir: string, error: any): FileReadResult {
+        const relativePath = path.relative(rootDir, filePath);
+        
+        // Custom error message for missing files
+        let errorMessage = error?.message || error;
+        if (errorMessage.includes("Requested file not found in project")) {
+             // Extract just the filename for cleaner display
+             const requestedFile = path.basename(relativePath);
+             errorMessage = `Requested file not found in project: ${requestedFile}`;
+        } else if (errorMessage.includes("File not found")) {
+             errorMessage = `File not found: ${path.basename(relativePath)}`;
+        }
+
+
         return {
             path: filePath,
-            relativePath: path.relative(rootDir, filePath),
+            relativePath: relativePath,
             content: '',
             size: 0,
             extension: path.extname(filePath),
             lastModified: new Date(),
             lines: 0,
             encoding: 'unsupported',
-            error: `Failed to read file: ${error?.message || error}`
+            error: `Failed to read file: ${errorMessage}`
         };
     }
 

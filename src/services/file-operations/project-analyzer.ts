@@ -43,7 +43,8 @@ export class ProjectAnalyzer {
      * Analyze project context from root directory
      */
     async analyzeProject(rootDir?: string): Promise<ProjectContext> {
-        const projectRoot = rootDir || await this.findProjectRoot();
+        // Prioritize explicit root path if provided. Otherwise, attempt autonomous detection.
+        const projectRoot = rootDir ? path.resolve(rootDir) : await this.findProjectRoot();
 
         // Check cache
         if (this.contextCache.has(projectRoot)) {
@@ -51,6 +52,10 @@ export class ProjectAnalyzer {
         }
 
         console.log(`[ProjectAnalyzer] 🔍 Analyzing project at: ${projectRoot}`);
+        if (rootDir) {
+            console.log(`[ProjectAnalyzer] 📝 Using explicit root path provided by user.`);
+        }
+
 
         const context: ProjectContext = {
             rootDir: projectRoot,
