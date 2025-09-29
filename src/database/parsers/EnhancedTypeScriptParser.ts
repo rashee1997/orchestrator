@@ -864,13 +864,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       ? path.resolve(normalized)
       : path.resolve(process.cwd(), normalized);
 
-    const workspaceRoot = path.resolve(process.cwd());
-    const workspaceWithSeparator = workspaceRoot.endsWith(path.sep)
-      ? workspaceRoot
-      : `${workspaceRoot}${path.sep}`;
-    if (resolved !== workspaceRoot && !resolved.startsWith(workspaceWithSeparator)) {
-      throw new ParserError(`File path escapes working directory: ${filePath}`);
-    }
+    this._ensureWithinWorkspace(resolved, filePath);
 
     return resolved.replace(/\\+/g, '/');
   }
@@ -893,26 +887,52 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
   }
 
   private _resolveImportPath(source: string, filePath: string): string {
-    if (!source.startsWith('.')) return source;
+    if (!source) {
+      throw new ParserError('Import source cannot be empty.');
+    }
 
     if (/\0/.test(source)) {
       throw new ParserError(`Invalid import path: ${source}`);
     }
 
+    if (path.isAbsolute(source)) {
+      const sanitizedAbsolute = this._sanitizeFilePath(source);
+      this._ensureWithinProjectRoot(sanitizedAbsolute, source);
+      return sanitizedAbsolute;
+    }
+
+    if (!source.startsWith('.')) return source;
+
     const normalizedSource = path.normalize(source);
     const baseDirectory = path.dirname(this._sanitizeFilePath(filePath));
     const resolved = path.resolve(baseDirectory, normalizedSource);
 
-    if (this._currentProjectRoot) {
-      const normalizedRoot = this._currentProjectRoot.endsWith(path.sep)
-        ? this._currentProjectRoot
-        : `${this._currentProjectRoot}${path.sep}`;
-      if (resolved !== this._currentProjectRoot && !resolved.startsWith(normalizedRoot)) {
-        throw new ParserError(`Import path escapes project root: ${source}`);
-      }
-    }
+    this._ensureWithinWorkspace(resolved, source);
+    this._ensureWithinProjectRoot(resolved, source);
 
     return resolved.replace(/\\+/g, '/');
+  }
+
+  private _ensureWithinProjectRoot(targetPath: string, originalInput: string): void {
+    if (!this._currentProjectRoot) return;
+    const normalizedTarget = targetPath.replace(/\\+/g, '/');
+    const root = this._currentProjectRoot;
+    const normalizedRoot = root.endsWith('/') ? root : `${root}/`;
+    if (normalizedTarget !== root && !normalizedTarget.startsWith(normalizedRoot)) {
+      throw new ParserError(`Import path escapes project root: ${originalInput}`);
+    }
+  }
+
+  private _ensureWithinWorkspace(targetPath: string, originalInput: string): void {
+    const workspaceRootRaw = path.resolve(process.cwd());
+    const normalizedTarget = targetPath.replace(/\\+/g, '/');
+    const workspaceRoot = workspaceRootRaw.replace(/\\+/g, '/');
+    const workspaceWithSeparator = workspaceRoot.endsWith('/')
+      ? workspaceRoot
+      : `${workspaceRoot}/`;
+    if (normalizedTarget !== workspaceRoot && !normalizedTarget.startsWith(workspaceWithSeparator)) {
+      throw new ParserError(`Path escapes working directory: ${originalInput}`);
+    }
   }
 
   public clearCache(): void { this.astCache.clear(); this.fullParseCache.clear(); }
