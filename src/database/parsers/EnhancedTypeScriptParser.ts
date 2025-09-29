@@ -102,7 +102,9 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
   }
 
   private async _performFullParse(filePath: string, fileContent: string, projectRootPath: string, options: ParseOptions): Promise<FullParseResult> {
-    const cacheKey = this._getCacheKey(filePath, fileContent, projectRootPath, options);
+    const sanitizedFilePath = this._sanitizeFilePath(filePath);
+    const sanitizedProjectRoot = projectRootPath ? this._sanitizeFilePath(projectRootPath) : '';
+    const cacheKey = this._getCacheKey(sanitizedFilePath, fileContent, sanitizedProjectRoot, options);
     if (this.fullParseCache.has(cacheKey)) {
       return this.fullParseCache.get(cacheKey)!;
     }
@@ -110,15 +112,16 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     this._resetState(fileContent);
 
     try {
-      const ast = this._parseWithCache(fileContent, filePath);
-      const absoluteFilePath = path.resolve(filePath).replace(/\\/g, '/');
-      const relativeFilePath = projectRootPath ? path.relative(projectRootPath, absoluteFilePath).replace(/\\/g, '/') : filePath;
-      this._currentFilePath = absoluteFilePath;
-      this._currentProjectRoot = projectRootPath ? path.resolve(projectRootPath) : undefined;
+      const ast = this._parseWithCache(fileContent, sanitizedFilePath);
+      const relativeFilePath = sanitizedProjectRoot
+        ? this._computeRelativePath(sanitizedProjectRoot, sanitizedFilePath)
+        : this._normalizeDisplayPath(filePath, sanitizedFilePath);
+      this._currentFilePath = sanitizedFilePath;
+      this._currentProjectRoot = sanitizedProjectRoot || undefined;
       const initialContext: VisitorContext = {
         fullNamePrefix: relativeFilePath,
         isExported: false,
-        filePath: absoluteFilePath,
+        filePath: sanitizedFilePath,
       };
 
       this._visit(ast, initialContext, options);
@@ -217,8 +220,8 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
   // --- START: Node Handlers Map ---
 
   private readonly nodeHandlers: Partial<Record<AST_NODE_TYPES, (node: any, context: VisitorContext, options: ParseOptions) => VisitorContext | void>> = {
-    [AST_NODE_TYPES.ImportDeclaration]: node => {
-      this._imports.push(...this._processImportDeclaration(node));
+    [AST_NODE_TYPES.ImportDeclaration]: (node, ctx) => {
+      this._imports.push(...this._processImportDeclaration(node, ctx));
     },
     [AST_NODE_TYPES.ExportNamedDeclaration]: (node, ctx) => this._processExportNamedDeclaration(node, ctx),
     [AST_NODE_TYPES.ExportAllDeclaration]: (node, ctx) => {
@@ -296,15 +299,47 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
 
   // --- START: Handler Implementations ---
 
-  private _processImportDeclaration(node: TSESTree.ImportDeclaration): EnhancedExtractedImport[] {
-    const source = node.source.value;
+  private _processImportDeclaration(
+    node: TSESTree.ImportDeclaration,
+    context: VisitorContext
+  ): EnhancedExtractedImport[] {
+    const source = String(node.source.value);
     const originalImportString = this._typeNodeToString(node);
-    if (node.specifiers.length === 0) { return [{ type: 'file', targetPath: source, originalImportString, importedSymbols: [], isDynamicImport: false, isTypeOnlyImport: node.importKind === 'type', startLine: node.loc.start.line, endLine: node.loc.end.line, originalSpecifier: source }]; }
+    const baseFilePath = context.filePath || this._currentFilePath;
+    const importType = this._determineImportType(source, baseFilePath);
+    const resolvedPath = importType === 'file' && baseFilePath ? this._resolveImportPath(source, baseFilePath) : undefined;
+
+    if (node.specifiers.length === 0) {
+      return [
+        {
+          type: importType,
+          targetPath: importType === 'file' ? resolvedPath ?? source : source,
+          originalImportString,
+          importedSymbols: [],
+          isDynamicImport: false,
+          isTypeOnlyImport: node.importKind === 'type',
+          startLine: node.loc.start.line,
+          endLine: node.loc.end.line,
+          originalSpecifier: source,
+          resolvedPath,
+        },
+      ];
+    }
+
     return node.specifiers.map(specifier => ({
-      type: 'file', targetPath: source, originalImportString,
-      importedSymbols: this._extractImportedSymbols(specifier), isDynamicImport: false,
-      isTypeOnlyImport: node.importKind === 'type' || (specifier.type === AST_NODE_TYPES.ImportSpecifier && specifier.importKind === 'type'),
-      isNamespaceImport: specifier.type === AST_NODE_TYPES.ImportNamespaceSpecifier, startLine: node.loc.start.line, endLine: node.loc.end.line, originalSpecifier: source,
+      type: importType,
+      targetPath: importType === 'file' ? resolvedPath ?? source : source,
+      originalImportString,
+      importedSymbols: this._extractImportedSymbols(specifier),
+      isDynamicImport: false,
+      isTypeOnlyImport:
+        node.importKind === 'type' ||
+        (specifier.type === AST_NODE_TYPES.ImportSpecifier && specifier.importKind === 'type'),
+      isNamespaceImport: specifier.type === AST_NODE_TYPES.ImportNamespaceSpecifier,
+      startLine: node.loc.start.line,
+      endLine: node.loc.end.line,
+      originalSpecifier: source,
+      resolvedPath,
     }));
   }
 
@@ -320,6 +355,8 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     const source = node.source!.value;
     const baseFilePath = context.filePath || this._currentFilePath;
     const importKind = this._determineReExportKind(node);
+    const importType = this._determineImportType(source, baseFilePath);
+    const resolvedPath = importType === 'file' && baseFilePath ? this._resolveImportPath(source, baseFilePath) : undefined;
     const importedSymbols =
       node.type === AST_NODE_TYPES.ExportAllDeclaration
         ? ['*']
@@ -328,8 +365,8 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
             .filter((name): name is string => !!name);
 
     return {
-      type: this._determineImportType(source, context.fullNamePrefix),
-      targetPath: baseFilePath ? this._resolveImportPath(source, baseFilePath) : source,
+      type: importType,
+      targetPath: importType === 'file' ? resolvedPath ?? source : source,
       originalImportString: this._typeNodeToString(node),
       importedSymbols,
       isDynamicImport: false,
@@ -338,13 +375,27 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       startLine: node.loc.start.line,
       endLine: node.loc.end.line,
       originalSpecifier: source,
+      resolvedPath,
     };
   }
   
   private _processDynamicImport(node: TSESTree.ImportExpression): void {
     if (node.source.type === AST_NODE_TYPES.Literal) {
       const source = String(node.source.value);
-      this._imports.push({ type: 'file', targetPath: source, originalImportString: this._typeNodeToString(node), importedSymbols: [], isDynamicImport: true, isTypeOnlyImport: false, startLine: node.loc.start.line, endLine: node.loc.end.line, originalSpecifier: source });
+      const importType = this._determineImportType(source, this._currentFilePath);
+      const resolvedPath = importType === 'file' ? this._resolveImportPath(source, this._currentFilePath) : undefined;
+      this._imports.push({
+        type: importType,
+        targetPath: importType === 'file' ? resolvedPath ?? source : source,
+        originalImportString: this._typeNodeToString(node),
+        importedSymbols: [],
+        isDynamicImport: true,
+        isTypeOnlyImport: false,
+        startLine: node.loc.start.line,
+        endLine: node.loc.end.line,
+        originalSpecifier: source,
+        resolvedPath,
+      });
     }
   }
 
@@ -768,7 +819,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     if (specifier.type === AST_NODE_TYPES.ImportDefaultSpecifier) return ['default'];
     return [];
   }
-  private _determineImportType(source: string, filePath: string): 'module' | 'file' {
+  private _determineImportType(source: string, _filePath: string): 'module' | 'file' {
     return source.startsWith('.') || path.isAbsolute(source) ? 'file' : 'module';
   }
 
@@ -799,6 +850,48 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     return undefined;
   }
 
+  private _sanitizeFilePath(filePath: string): string {
+    if (!filePath) {
+      throw new ParserError('File path cannot be empty.');
+    }
+
+    if (/\0/.test(filePath)) {
+      throw new ParserError(`Invalid file path: ${filePath}`);
+    }
+
+    const normalized = path.normalize(filePath);
+    const resolved = path.isAbsolute(normalized)
+      ? path.resolve(normalized)
+      : path.resolve(process.cwd(), normalized);
+
+    const workspaceRoot = path.resolve(process.cwd());
+    const workspaceWithSeparator = workspaceRoot.endsWith(path.sep)
+      ? workspaceRoot
+      : `${workspaceRoot}${path.sep}`;
+    if (resolved !== workspaceRoot && !resolved.startsWith(workspaceWithSeparator)) {
+      throw new ParserError(`File path escapes working directory: ${filePath}`);
+    }
+
+    return resolved.replace(/\\+/g, '/');
+  }
+
+  private _computeRelativePath(projectRoot: string, filePath: string): string {
+    const relative = path.relative(projectRoot, filePath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new ParserError(`File path ${filePath} is outside of project root ${projectRoot}`);
+    }
+    const normalized = relative.replace(/\\+/g, '/');
+    return normalized || path.basename(filePath);
+  }
+
+  private _normalizeDisplayPath(originalPath: string, sanitizedAbsolute: string): string {
+    if (path.isAbsolute(originalPath)) {
+      return sanitizedAbsolute;
+    }
+    const normalizedOriginal = originalPath.replace(/\\+/g, '/');
+    return normalizedOriginal || path.basename(sanitizedAbsolute);
+  }
+
   private _resolveImportPath(source: string, filePath: string): string {
     if (!source.startsWith('.')) return source;
 
@@ -807,7 +900,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
     }
 
     const normalizedSource = path.normalize(source);
-    const baseDirectory = path.resolve(path.dirname(filePath));
+    const baseDirectory = path.dirname(this._sanitizeFilePath(filePath));
     const resolved = path.resolve(baseDirectory, normalizedSource);
 
     if (this._currentProjectRoot) {
@@ -819,7 +912,7 @@ export class EnhancedTypeScriptParser extends BaseLanguageParser {
       }
     }
 
-    return resolved;
+    return resolved.replace(/\\+/g, '/');
   }
 
   public clearCache(): void { this.astCache.clear(); this.fullParseCache.clear(); }
